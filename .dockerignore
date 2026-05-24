@@ -1,0 +1,10 @@
+.git
+.beads
+data
+tmp
+node_modules
+frontend/dist
+*.db
+*.db-*
+coverage.out
+mailmirror

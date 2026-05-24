@@ -1,0 +1,12 @@
+.beads
+.codex
+.agents
+data/
+tmp/
+node_modules/
+frontend/dist/
+*.db
+*.db-*
+coverage.out
+mailmirror
+tsconfig.tsbuildinfo
