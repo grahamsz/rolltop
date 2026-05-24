@@ -5,6 +5,7 @@ export type User = {
   is_admin: boolean;
   date_locale: string;
   date_format: "mdy" | "dmy" | "ymd" | "locale" | string;
+  theme: "classic" | "modern" | string;
 };
 
 export type Mailbox = {

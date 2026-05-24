@@ -268,6 +268,46 @@ func TestMarkRunningSyncRunsInterruptedSurvivesLateFinish(t *testing.T) {
 	}
 }
 
+func TestUpdateUserDisplayPreferencesPersistsTheme(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "theme@example.test", "Theme", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := db.UpdateUserDisplayPreferences(ctx, user.ID, "en-GB", "dmy", "modern")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.DateLocale != "en-GB" || updated.DateFormat != "dmy" || updated.Theme != "modern" {
+		t.Fatalf("updated preferences = %+v", updated)
+	}
+
+	if _, err := db.CreateSession(ctx, user.ID, "theme-token", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	_, sessionUser, err := db.GetSessionUser(ctx, "theme-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionUser.Theme != "modern" {
+		t.Fatalf("session user theme = %q", sessionUser.Theme)
+	}
+
+	updated, err = db.UpdateUserDisplayPreferences(ctx, user.ID, "", "bogus", "neon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.DateFormat != "mdy" || updated.Theme != "classic" {
+		t.Fatalf("normalized preferences = %+v", updated)
+	}
+}
+
 func testMailbox(t *testing.T, ctx context.Context, db *Store) (User, MailAccount, Mailbox, BlobRecord) {
 	t.Helper()
 	user, err := db.CreateUser(ctx, "mail@example.test", "Mail", "hash", false)

@@ -10,6 +10,7 @@ type User struct {
 	IsAdmin      bool
 	DateLocale   string
 	DateFormat   string
+	Theme        string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }

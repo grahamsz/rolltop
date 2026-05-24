@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"html"
+	"net/mail"
 	"regexp"
 	"strings"
 	"time"
@@ -13,7 +14,7 @@ import (
 	"mailmirror/internal/store"
 )
 
-func replyComposeForm(msg store.MessageRecord) composeForm {
+func replyComposeForm(msg store.MessageRecord, thread []store.MessageRecord, own map[string]bool) composeForm {
 	subject := strings.TrimSpace(msg.Subject)
 	if subject == "" {
 		subject = "(no subject)"
@@ -22,12 +23,61 @@ func replyComposeForm(msg store.MessageRecord) composeForm {
 		subject = "Re: " + subject
 	}
 	return composeForm{
-		To:          msg.FromAddr,
+		To:          replyRecipient(msg, thread, own),
 		Subject:     subject,
 		Body:        quotedReplyBody(msg),
 		BodyHTML:    "",
 		InReplyToID: msg.ID,
 	}
+}
+
+func replyRecipient(msg store.MessageRecord, thread []store.MessageRecord, own map[string]bool) string {
+	if !messageFromOwnAddress(msg, own) {
+		return msg.FromAddr
+	}
+	if recipient := firstNonOwnAddress([]string{msg.ToAddr, msg.CCAddr}, own); recipient != "" {
+		return recipient
+	}
+	for i := len(thread) - 1; i >= 0; i-- {
+		candidate := thread[i]
+		if candidate.ID == msg.ID || messageFromOwnAddress(candidate, own) {
+			continue
+		}
+		if recipient := firstNonOwnAddress([]string{candidate.FromAddr}, own); recipient != "" {
+			return recipient
+		}
+	}
+	return msg.FromAddr
+}
+
+func messageFromOwnAddress(msg store.MessageRecord, own map[string]bool) bool {
+	for _, identity := range addressIdentities(msg.FromAddr) {
+		if own[identity] {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonOwnAddress(values []string, own map[string]bool) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if addrs, err := mail.ParseAddressList(value); err == nil {
+			for _, addr := range addrs {
+				if !own[store.SenderIdentity(addr.Address)] {
+					return addr.String()
+				}
+			}
+			continue
+		}
+		if identity := store.SenderIdentity(value); identity != "" && !own[identity] {
+			return value
+		}
+	}
+	return ""
 }
 
 func forwardComposeForm(msg store.MessageRecord) composeForm {

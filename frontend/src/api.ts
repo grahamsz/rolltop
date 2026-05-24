@@ -117,7 +117,7 @@ export const api = {
       account_needs_password?: boolean;
     }>("/api/account"),
   storage: () => getJSON<StorageStats>("/api/storage"),
-  saveProfile: (csrf: string, profile: { date_locale: string; date_format: string }) =>
+  saveProfile: (csrf: string, profile: { date_locale: string; date_format: string; theme: string }) =>
     postJSON<{ user: User }>("/api/profile", csrf, profile),
   saveAccount: (csrf: string, account: Record<string, unknown>) => postJSON<{ ok: boolean }>("/api/account", csrf, account),
   syncAccount: (csrf: string) => postJSON<{ ok: boolean }>("/api/account/sync", csrf),
