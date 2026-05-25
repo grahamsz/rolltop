@@ -28,6 +28,7 @@ func (s *Server) apiMail(w http.ResponseWriter, r *http.Request) {
 	page := pageFromRequest(r)
 	offset := (page - 1) * pageSize
 	fetchLimit := pageSize*3 + 1
+	var mailboxID int64
 	var messages []store.MessageRecord
 	var activeMailbox *apiMailbox
 	var err error
@@ -37,7 +38,15 @@ func (s *Server) apiMail(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		mb, mbErr := s.store.GetMailboxForUser(r.Context(), cu.User.ID, id)
+		mailboxID = id
+	}
+	cacheKey := mailListCacheKey{UserID: cu.User.ID, MailboxID: mailboxID, Page: page}
+	if s.writeMailListNotModifiedIfFresh(w, r, cacheKey) {
+		return
+	}
+	generation := s.mailListGeneration(cu.User.ID)
+	if mailboxID != 0 {
+		mb, mbErr := s.store.GetMailboxForUser(r.Context(), cu.User.ID, mailboxID)
 		if store.IsNotFound(mbErr) {
 			http.NotFound(w, r)
 			return
@@ -66,13 +75,16 @@ func (s *Server) apiMail(w http.ResponseWriter, r *http.Request) {
 	if hasNext {
 		conversations = conversations[:pageSize]
 	}
-	writeJSONCached(w, r, map[string]any{
+	etag, ok := writeJSONCachedWithETag(w, r, map[string]any{
 		"conversations":  apiConversations(conversations),
 		"page":           page,
 		"has_prev":       page > 1,
 		"has_next":       hasNext,
 		"active_mailbox": activeMailbox,
 	})
+	if ok {
+		s.rememberMailListETag(cacheKey, etag, generation)
+	}
 }
 
 // apiSearch combines URL query parsing, optional mailbox filtering, sender-history

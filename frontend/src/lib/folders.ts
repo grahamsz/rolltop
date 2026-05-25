@@ -11,8 +11,8 @@ export type FolderNode = {
 };
 
 /** folderTree converts flat mailbox names into a nested tree while preserving mailbox IDs. */
-export function folderTree(mailboxes: Mailbox[]): FolderNode[] {
-  const visible = mailboxes.filter((mailbox) => mailbox.show_in_sidebar !== false);
+export function folderTree(mailboxes: Mailbox[], options: { includeHidden?: boolean } = {}): FolderNode[] {
+  const visible = options.includeHidden ? mailboxes : mailboxes.filter((mailbox) => mailbox.show_in_sidebar !== false);
   const byName = new Map(visible.map((mailbox) => [mailbox.name, mailbox]));
   const nodes = new Map<number, FolderNode>();
   for (const mailbox of visible) {

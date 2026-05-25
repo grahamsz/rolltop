@@ -393,9 +393,9 @@ func (s *Server) apiSetMessageStarred(w http.ResponseWriter, r *http.Request, id
 		if err := s.syncer.SyncStarStateForMessage(context.Background(), userID, messageID); err != nil {
 			log.Printf("sync starred flag user_id=%d message_id=%d: %v", userID, messageID, err)
 		}
-		s.events.Notify(userID)
+		s.notifyUserChanged(userID)
 	}(cu.User.ID, msg.ID)
-	s.events.Notify(cu.User.ID)
+	s.notifyUserChanged(cu.User.ID)
 	writeJSON(w, map[string]any{"ok": true, "message": apiMessageFromRecord(msg, msg.BodyText)})
 }
 
@@ -504,9 +504,16 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 		}
 	}
 	matchDetails := s.threadSearchMatchDetails(ctx, cu.User.ID, threadMessages, query)
+	markedRead := false
+	defer func() {
+		if markedRead {
+			s.notifyUserChanged(cu.User.ID)
+		}
+	}()
 	for idx, threadMsg := range threadMessages {
 		if !threadMsg.IsRead {
 			if err := s.store.MarkMessageReadForUser(ctx, cu.User.ID, threadMsg.ID, true, true); err == nil {
+				markedRead = true
 				threadMsg.IsRead = true
 				threadMsg.ReadSyncPending = true
 				if s.syncer != nil {

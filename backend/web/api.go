@@ -109,10 +109,14 @@ func writeJSON(w http.ResponseWriter, value any) {
 }
 
 func writeJSONCached(w http.ResponseWriter, r *http.Request, value any) {
+	_, _ = writeJSONCachedWithETag(w, r, value)
+}
+
+func writeJSONCachedWithETag(w http.ResponseWriter, r *http.Request, value any) (string, bool) {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "failed to encode response")
-		return
+		return "", false
 	}
 	sum := sha256.Sum256(raw)
 	etag := `"` + hex.EncodeToString(sum[:]) + `"`
@@ -121,9 +125,10 @@ func writeJSONCached(w http.ResponseWriter, r *http.Request, value any) {
 	w.Header().Set("ETag", etag)
 	if r.Method == http.MethodGet && etagMatches(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
-		return
+		return etag, true
 	}
 	_, _ = w.Write(append(raw, '\n'))
+	return etag, true
 }
 
 func etagMatches(header string, etag string) bool {

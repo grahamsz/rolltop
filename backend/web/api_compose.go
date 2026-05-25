@@ -53,6 +53,7 @@ func (s *Server) apiCompose(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "Could not send message.")
 			return
 		}
+		s.notifyUserChanged(cu.User.ID)
 		writeJSON(w, map[string]any{"ok": true, "message_id": sent.ID})
 	default:
 		methodNotAllowed(w)

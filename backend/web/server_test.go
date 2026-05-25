@@ -42,6 +42,71 @@ func TestWriteJSONCachedETagNotModified(t *testing.T) {
 	}
 }
 
+func TestImmutableFrontendAssetCacheScope(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{path: "assets/index-release123.js", want: true},
+		{path: "assets/index-release123.css", want: true},
+		{path: "assets/chunk-release123.JS", want: true},
+		{path: "sw.js", want: false},
+		{path: "manifest.webmanifest", want: false},
+		{path: "index.html", want: false},
+		{path: "icon.svg", want: false},
+	}
+	for _, tt := range cases {
+		if got := isImmutableFrontendAsset(tt.path); got != tt.want {
+			t.Fatalf("isImmutableFrontendAsset(%q) = %t, want %t", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestAPIMailCachedETagShortCircuitsBeforeStore(t *testing.T) {
+	user := store.User{ID: 42, Email: "cache@example.test", Name: "Cache"}
+	server := &Server{mailListCache: newMailListCache()}
+	key := mailListCacheKey{UserID: user.ID, MailboxID: 7, Page: 3}
+	etag := `"cached-mailbox-page"`
+	server.rememberMailListETag(key, etag, server.mailListGeneration(user.ID))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mail?mailbox=7&page=3", nil)
+	req.Header.Set("If-None-Match", etag)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: user}))
+	rec := httptest.NewRecorder()
+
+	server.apiMail(rec, req)
+
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("304 body = %q", rec.Body.String())
+	}
+	if got := rec.Header().Get("ETag"); got != etag {
+		t.Fatalf("etag = %q, want %q", got, etag)
+	}
+}
+
+func TestMailListCachedETagInvalidatesOnUserChange(t *testing.T) {
+	userID := int64(99)
+	server := &Server{events: newEventHub(), mailListCache: newMailListCache()}
+	key := mailListCacheKey{UserID: userID, Page: 1}
+	etag := `"cached-all-mail"`
+	server.rememberMailListETag(key, etag, server.mailListGeneration(userID))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mail?page=1", nil)
+	req.Header.Set("If-None-Match", etag)
+	if !server.writeMailListNotModifiedIfFresh(httptest.NewRecorder(), req, key) {
+		t.Fatal("expected cached etag to be fresh before invalidation")
+	}
+
+	server.notifyUserChanged(userID)
+
+	if server.writeMailListNotModifiedIfFresh(httptest.NewRecorder(), req, key) {
+		t.Fatal("expected cached etag to be stale after invalidation")
+	}
+}
+
 func TestSetupCreatesFirstAdmin(t *testing.T) {
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
@@ -207,6 +272,9 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, mailbox.ID, 4, 0, 5, 0); err != nil {
+		t.Fatal(err)
+	}
 	blob, err := db.CreateBlob(ctx, store.BlobRecord{UserID: user.ID, Kind: "message", Path: "messages/search-stats.eml", SHA256: "sha", Size: 4})
 	if err != nil {
 		t.Fatal(err)
@@ -269,10 +337,10 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	if box.SearchIndexedCount == nil || *box.SearchIndexedCount != 1 {
 		t.Fatalf("search indexed count = %v", box.SearchIndexedCount)
 	}
-	if box.SearchIndexTotal == nil || *box.SearchIndexTotal != 2 {
+	if box.SearchIndexTotal == nil || *box.SearchIndexTotal != 4 {
 		t.Fatalf("search index total = %v", box.SearchIndexTotal)
 	}
-	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 50 {
+	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 25 {
 		t.Fatalf("search index percent = %v", box.SearchIndexPercent)
 	}
 	if emptyBox.SearchIndexPercent == nil || *emptyBox.SearchIndexPercent != 0 {

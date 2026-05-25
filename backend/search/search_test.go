@@ -658,3 +658,32 @@ func TestSearchDateOperators(t *testing.T) {
 		t.Fatalf("year ids = %v", ids)
 	}
 }
+
+func TestSearchPlainNegatedTermExcludesMatches(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	messages := []store.MessageRecord{
+		{ID: 1, UserID: 1, Subject: "Longmont errands", BodyText: "Downtown longmont lunch plans", Date: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)},
+		{ID: 2, UserID: 1, Subject: "Longmont spa", BodyText: "Spavia longmont appointment links", Date: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)},
+		{ID: 3, UserID: 1, Subject: "Spavia receipt", BodyText: "Spavia links without the city", Date: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{ID: 4, UserID: 2, Subject: "Longmont other tenant", BodyText: "No spavia here", Date: time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC)},
+	}
+	for _, msg := range messages {
+		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ids, err := svc.Search(ctx, 1, "longmont -spavia", SortBest, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("ids = %v", ids)
+	}
+}

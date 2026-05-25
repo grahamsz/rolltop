@@ -78,6 +78,7 @@ type Server struct {
 	statusRefreshBlockedUntil map[int64]time.Time
 	storageMu                 sync.Mutex
 	storageCached             map[int64]storageStatsCacheEntry
+	mailListCache             *mailListCache
 }
 
 type contextKey string
@@ -213,9 +214,10 @@ func New(opts Options) (*Server, error) {
 
 		statusRefreshRunning:      map[int64]bool{},
 		statusRefreshBlockedUntil: map[int64]time.Time{},
+		mailListCache:             newMailListCache(),
 	}
 	if opts.Syncer != nil {
-		opts.Syncer.Notify = events.Notify
+		opts.Syncer.Notify = srv.notifyUserChanged
 	}
 	return srv, nil
 }
@@ -656,7 +658,10 @@ func (s *Server) populateMailboxSearchIndexStats(ctx context.Context, userID int
 		log.Printf("count search index user_id=%d mailbox_id=%d: %v", userID, box.ID, err)
 		return
 	}
-	total := box.LocalMessageCount
+	// Use the same remote-aware folder total as the local sync meter so the two
+	// percentages are directly comparable in the settings UI. When STATUS has
+	// not been fetched yet, MessageCount falls back to the local count.
+	total := box.MessageCount
 	percent := boundedPercent(indexed, total)
 	box.SearchIndexedCount = &indexed
 	box.SearchIndexTotal = &total

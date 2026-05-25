@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -350,10 +351,29 @@ func (s *Store) UpdateMailboxSettings(ctx context.Context, userID, mailboxID int
 	if err != nil {
 		return err
 	}
+	var accountID int64
+	var mailboxName string
+	if err := tx.QueryRowContext(ctx, `SELECT account_id, name FROM mailboxes WHERE user_id = ? AND id = ?`, userID, mailboxID).Scan(&accountID, &mailboxName); err != nil {
+		_ = tx.Rollback()
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if settings.SyncMode == "inherit" && len(mailboxParentNames(mailboxName)) == 0 {
+		_ = tx.Rollback()
+		return fmt.Errorf("%w: top-level folders cannot inherit sync mode", ErrInvalidMailboxSettings)
+	}
 	if settings.Role == "inbox" || settings.Role == "sent" || settings.Role == "drafts" || settings.Role == "trash" {
-		if _, err := tx.ExecContext(ctx, `UPDATE mailboxes SET role = '', updated_at = ?
-			WHERE user_id = ? AND account_id = (SELECT account_id FROM mailboxes WHERE user_id = ? AND id = ?) AND role = ? AND id <> ?`,
-			nowUnix(), userID, userID, mailboxID, settings.Role, mailboxID); err != nil {
+		var existingName string
+		err := tx.QueryRowContext(ctx, `SELECT name FROM mailboxes
+			WHERE user_id = ? AND account_id = ? AND role = ? AND id <> ?
+			LIMIT 1`, userID, accountID, settings.Role, mailboxID).Scan(&existingName)
+		if err == nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("%w: %s is already assigned to %s", ErrDuplicateMailboxRole, settings.Role, existingName)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
 			_ = tx.Rollback()
 			return err
 		}

@@ -8,6 +8,9 @@ import (
 	"fmt"
 )
 
+var ErrDuplicateMailboxRole = errors.New("mailbox role already assigned")
+var ErrInvalidMailboxSettings = errors.New("invalid mailbox settings")
+
 // IsNotFound normalizes sql.ErrNoRows checks across store and web packages.
 func IsNotFound(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)

@@ -10,6 +10,7 @@ import (
 )
 
 const frontendDistDir = "frontend/dist"
+const immutableFrontendAssetCacheControl = "public, max-age=31536000, immutable"
 
 func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -43,7 +44,23 @@ func (s *Server) handleFrontendAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if isImmutableFrontendAsset(clean) {
+		w.Header().Set("Cache-Control", immutableFrontendAssetCacheControl)
+	}
 	http.ServeFile(w, r, full)
+}
+
+func isImmutableFrontendAsset(cleanPath string) bool {
+	cleanPath = filepath.ToSlash(filepath.Clean(cleanPath))
+	if !strings.HasPrefix(cleanPath, "assets/") {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(cleanPath)) {
+	case ".js", ".css":
+		return true
+	default:
+		return false
+	}
 }
 
 func isAppRoute(p string) bool {

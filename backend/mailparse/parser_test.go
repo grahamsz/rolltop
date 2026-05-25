@@ -97,6 +97,29 @@ func TestParseDecodesISO2022JPSubjectAndBody(t *testing.T) {
 	}
 }
 
+func TestPDFAttachmentSearchableTextUsesExtractor(t *testing.T) {
+	originalExtractor := pdfTextExtractor
+	defer func() { pdfTextExtractor = originalExtractor }()
+	var received string
+	pdfTextExtractor = func(data []byte) (string, error) {
+		received = string(data)
+		return "Pillars of Community annual report", nil
+	}
+
+	text := Attachment{
+		Filename:    "community.pdf",
+		ContentType: "application/octet-stream",
+		Data:        []byte("%PDF fixture"),
+	}.SearchableText()
+
+	if received != "%PDF fixture" {
+		t.Fatalf("extractor received %q", received)
+	}
+	if !strings.Contains(text, "Pillars of Community") {
+		t.Fatalf("searchable text = %q", text)
+	}
+}
+
 func TestParseMarksCIDImagesInline(t *testing.T) {
 	raw := strings.Join([]string{
 		"From: sender.test",

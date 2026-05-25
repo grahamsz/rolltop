@@ -564,6 +564,17 @@
   gap: 8px;
   align-content: start;
   min-width: 0;
+
+  select {
+    width: 100%;
+    min-height: 36px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface-subtle);
+    color: var(--text);
+    padding: 6px 8px;
+    font-weight: 700;
+  }
 }
 
 .folder-edit-section-wide {
@@ -612,19 +623,44 @@
   }
 }
 
+.folder-mode-help {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+
+  p {
+    margin: 0;
+  }
+
+  strong {
+    color: var(--text);
+  }
+}
+
+.folder-role-warning {
+  border: 1px solid color-mix(in srgb, var(--warning, var(--accent)) 45%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warning, var(--accent)) 10%, var(--surface));
+  color: var(--text);
+  padding: 7px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .folder-icon-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  grid-template-columns: repeat(auto-fill, 42px);
   gap: 7px;
 
   button {
-    min-height: 38px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 8px;
-    padding: 7px 9px;
-    text-align: left;
+    width: 42px;
+    height: 42px;
+    min-height: 42px;
+    display: grid;
+    place-items: center;
+    padding: 0;
   }
 
   .icon {
@@ -634,24 +670,30 @@
 }
 
 .folder-edit-visibility {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: 7px;
 
-  label {
-    min-height: 36px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0;
+  button {
+    min-height: 34px;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--surface-subtle);
-    padding: 7px 9px;
+    color: var(--muted);
+    padding: 6px 10px;
     font-weight: 700;
-  }
+    box-shadow: none;
 
-  input {
-    margin: 0;
+    &:hover,
+    &.active {
+      border-color: var(--accent);
+      background: var(--active);
+      color: var(--text);
+    }
+
+    &.active {
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
   }
 }
 

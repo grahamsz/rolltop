@@ -4,6 +4,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -470,7 +471,7 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			s.serverError(w, err)
 			return
 		}
-		s.events.Notify(cu.User.ID)
+		s.notifyUserChanged(cu.User.ID)
 		writeJSON(w, map[string]any{"ok": true})
 	case "settings":
 		var in struct {
@@ -493,6 +494,14 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			ShowInAllMail:   in.ShowInAllMail,
 			IncludeInSearch: in.IncludeInSearch,
 		}); err != nil {
+			if errors.Is(err, store.ErrDuplicateMailboxRole) {
+				writeAPIError(w, http.StatusConflict, err.Error())
+				return
+			}
+			if errors.Is(err, store.ErrInvalidMailboxSettings) {
+				writeAPIError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 			s.serverError(w, err)
 			return
 		}
@@ -503,10 +512,10 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 				if err := s.syncer.ReconcileMailboxSearchIndex(ctx, userID, mailboxID, include); err != nil {
 					log.Printf("reconcile mailbox search index user_id=%d mailbox_id=%d include=%t: %v", userID, mailboxID, include, err)
 				}
-				s.events.Notify(userID)
+				s.notifyUserChanged(userID)
 			}(cu.User.ID, mailboxID, in.IncludeInSearch)
 		}
-		s.events.Notify(cu.User.ID)
+		s.notifyUserChanged(cu.User.ID)
 		writeJSON(w, map[string]any{"ok": true})
 	case "sync":
 		effectiveMode := mb.SyncMode
@@ -534,7 +543,7 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			return
 		}
 		run, err := s.syncer.StartRebuildMailboxSearchIndex(r.Context(), cu.User.ID, mb.ID, func() {
-			s.events.Notify(cu.User.ID)
+			s.notifyUserChanged(cu.User.ID)
 		})
 		if err != nil {
 			if store.IsNotFound(err) {

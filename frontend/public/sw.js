@@ -1,5 +1,4 @@
-const STATIC_CACHE = "mailmirror-static-v6";
-const DATA_CACHE = "mailmirror-data-v6";
+const STATIC_CACHE = "mailmirror-static-v7";
 const STATIC_ASSETS = ["/", "/mail", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -10,7 +9,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((key) => ![STATIC_CACHE, DATA_CACHE].includes(key)).map((key) => caches.delete(key)))
+      Promise.all(keys.filter((key) => key !== STATIC_CACHE).map((key) => caches.delete(key)))
     )
   );
   self.clients.claim();
@@ -23,17 +22,7 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname.startsWith("/brand-icons/") || url.pathname.startsWith("/plugins/")) return;
 
-  if (url.pathname.startsWith("/api/")) {
-    event.respondWith(
-      fetch(req)
-        .then((res) => {
-          if (res.ok) caches.open(DATA_CACHE).then((cache) => cache.put(req, res.clone()));
-          return res;
-        })
-        .catch(() => caches.match(req))
-    );
-    return;
-  }
+  if (url.pathname.startsWith("/api/")) return;
 
   event.respondWith(
     fetch(req)

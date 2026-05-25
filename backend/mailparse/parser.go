@@ -4,6 +4,7 @@ package mailparse
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"html"
@@ -13,6 +14,8 @@ import (
 	"mime/quotedprintable"
 	"net/mail"
 	"net/textproto"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -27,6 +30,15 @@ import (
 )
 
 var htmlTextNoiseBlockRE = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<head\b[^>]*>.*?</head>|<title\b[^>]*>.*?</title>|<!--.*?-->`)
+
+const (
+	maxAttachmentSearchBytes = 512 * 1024
+	maxPDFAttachmentBytes    = 32 * 1024 * 1024
+	maxPDFSearchTextBytes    = 1024 * 1024
+	pdfExtractionTimeout     = 10 * time.Second
+)
+
+var pdfTextExtractor = extractPDFTextWithPdftotext
 
 // Attachment is a decoded MIME part that may be indexed, displayed, or downloaded.
 type Attachment struct {
@@ -48,10 +60,17 @@ func (a Attachment) SearchableText() string {
 	mediaType = strings.ToLower(mediaType)
 	ext := strings.ToLower(filepath.Ext(a.Filename))
 	if mediaType == "text/html" || ext == ".html" || ext == ".htm" {
-		return normalizeText(stripHTML(string(limitBytes(a.Data, 512*1024))))
+		return normalizeText(stripHTML(string(limitBytes(a.Data, maxAttachmentSearchBytes))))
+	}
+	if isSearchablePDFType(mediaType, ext) {
+		text, err := pdfTextExtractor(a.Data)
+		if err != nil {
+			return ""
+		}
+		return normalizeText(string(limitBytes([]byte(text), maxPDFSearchTextBytes)))
 	}
 	if isSearchableTextType(mediaType, ext) {
-		return normalizeText(string(limitBytes(a.Data, 512*1024)))
+		return normalizeText(string(limitBytes(a.Data, maxAttachmentSearchBytes)))
 	}
 	return ""
 }
@@ -540,6 +559,44 @@ func limitBytes(data []byte, max int) []byte {
 		return data
 	}
 	return data[:max]
+}
+
+func isSearchablePDFType(mediaType, ext string) bool {
+	return mediaType == "application/pdf" || mediaType == "application/x-pdf" || ext == ".pdf"
+}
+
+func extractPDFTextWithPdftotext(data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", nil
+	}
+	if len(data) > maxPDFAttachmentBytes {
+		return "", errors.New("pdf attachment too large for search extraction")
+	}
+	tmp, err := os.CreateTemp("", "mailmirror-pdf-*.pdf")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pdfExtractionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "pdftotext", "-enc", "UTF-8", "-layout", tmpName, "-")
+	cmd.Stderr = io.Discard
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(limitBytes(out, maxPDFSearchTextBytes)), nil
 }
 
 func isSearchableTextType(mediaType, ext string) bool {

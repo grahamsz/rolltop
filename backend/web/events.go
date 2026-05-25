@@ -45,3 +45,10 @@ func (h *eventHub) Notify(userID int64) {
 		}
 	}
 }
+
+func (s *Server) notifyUserChanged(userID int64) {
+	s.noteMailListChanged(userID)
+	if s.events != nil {
+		s.events.Notify(userID)
+	}
+}

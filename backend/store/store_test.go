@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -453,6 +454,95 @@ func TestOnboardingMailboxDefaultsDiscoverAllButAutoSyncInboxOnly(t *testing.T) 
 	}
 	if child.SyncMode != "manual" {
 		t.Fatalf("inbox child sync mode = %q, want manual", child.SyncMode)
+	}
+}
+
+func TestUpdateMailboxSettingsRejectsInheritForTopLevelFolder(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "owner@example.test", "Owner", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, MailAccount{UserID: user.ID, Email: "owner@example.test", Host: "imap.example.test", Port: 993, Username: "owner@example.test", EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.UpdateMailboxSettings(ctx, user.ID, archive.ID, MailboxSettings{
+		SyncMode:        "inherit",
+		Role:            "",
+		Icon:            "folder",
+		ShowInSidebar:   true,
+		ShowInAllMail:   true,
+		IncludeInSearch: true,
+	})
+	if !errors.Is(err, ErrInvalidMailboxSettings) {
+		t.Fatalf("error = %v, want ErrInvalidMailboxSettings", err)
+	}
+	child, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Archive.2024")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxSettings(ctx, user.ID, child.ID, MailboxSettings{
+		SyncMode:        "inherit",
+		Role:            "",
+		Icon:            "folder",
+		ShowInSidebar:   true,
+		ShowInAllMail:   true,
+		IncludeInSearch: true,
+	}); err != nil {
+		t.Fatalf("child inherit update: %v", err)
+	}
+}
+
+func TestUpdateMailboxSettingsRejectsDuplicateSpecialRole(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "owner@example.test", "Owner", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, MailAccount{UserID: user.ID, Email: "owner@example.test", Host: "imap.example.test", Port: 993, Username: "owner@example.test", EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.UpdateMailboxSettings(ctx, user.ID, archive.ID, MailboxSettings{
+		SyncMode:        "manual",
+		Role:            "inbox",
+		Icon:            "inbox",
+		ShowInSidebar:   true,
+		ShowInAllMail:   true,
+		IncludeInSearch: true,
+	})
+	if !errors.Is(err, ErrDuplicateMailboxRole) {
+		t.Fatalf("error = %v, want ErrDuplicateMailboxRole", err)
+	}
+	currentInbox, err := db.GetMailboxForUser(ctx, user.ID, inbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentInbox.Role != "inbox" {
+		t.Fatalf("inbox role = %q, want inbox", currentInbox.Role)
 	}
 }
 

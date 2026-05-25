@@ -11,7 +11,7 @@ import { Field, Stat } from "../../components/common";
 import { emptyAccountForm, accountToForm } from "../../lib/accountForm";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
-import { folderTree, type FolderNode } from "../../lib/folders";
+import { folderParentNames, folderTree, type FolderNode } from "../../lib/folders";
 import { mergeSyncRuns } from "../../lib/sync";
 import { pluginIDs } from "../../plugins/registry";
 import { AdminRemoteImageBlocklist } from "../../plugins/remoteImageBlocklist/AdminRemoteImageBlocklist";
@@ -87,10 +87,10 @@ function percentValue(value: number | undefined) {
 }
 
 const syncModeChoices = [
-  { value: "inherit", label: "Inherit" },
-  { value: "auto", label: "Auto" },
-  { value: "manual", label: "Manual" },
-  { value: "never", label: "Never" }
+  { value: "auto", label: "Auto", description: "Sync automatically when MailMirror refreshes this account." },
+  { value: "manual", label: "Manual", description: "Keep the folder available, but sync only when requested." },
+  { value: "never", label: "Never", description: "Do not sync this folder." },
+  { value: "inherit", label: "Inherit", description: "Use the nearest parent folder sync mode." }
 ];
 
 const folderRoleChoices = [
@@ -100,6 +100,8 @@ const folderRoleChoices = [
   { value: "drafts", label: "Drafts" },
   { value: "trash", label: "Trash" }
 ];
+
+const uniqueFolderRoles = new Set(folderRoleChoices.map((choice) => choice.value).filter(Boolean));
 
 const folderIconChoices = [
   { value: "folder", label: "Folder" },
@@ -119,9 +121,18 @@ const folderVisibilityChoices = [
   { key: "include_in_search", label: "Search" }
 ] as const;
 
+function folderCanInherit(mailbox: Mailbox) {
+  return folderParentNames(mailbox.name).length > 0;
+}
+
+function folderSyncModeChoices(mailbox: Mailbox) {
+  return syncModeChoices.filter((choice) => choice.value !== "inherit" || folderCanInherit(mailbox));
+}
+
 function folderSettingsDraft(mailbox: Mailbox): FolderSettingsDraft {
+  const syncMode = mailbox.sync_mode || (folderCanInherit(mailbox) ? "inherit" : "auto");
   return {
-    sync_mode: mailbox.sync_mode || "inherit",
+    sync_mode: !folderCanInherit(mailbox) && syncMode === "inherit" ? "auto" : syncMode,
     role: mailbox.role || "",
     icon: mailbox.icon || "folder",
     show_in_sidebar: mailbox.show_in_sidebar,
@@ -131,7 +142,7 @@ function folderSettingsDraft(mailbox: Mailbox): FolderSettingsDraft {
 }
 
 function folderSyncModeLabel(value: string) {
-  return syncModeChoices.find((choice) => choice.value === value)?.label || "Inherit";
+  return syncModeChoices.find((choice) => choice.value === value)?.label || "Auto";
 }
 
 function folderRoleLabel(value: string) {
@@ -480,6 +491,15 @@ export function SettingsView({
     setFolderDraft((current) => current ? { ...current, ...patch } : current);
   }
 
+  function folderRoleConflict(folder: SyncFolder, role: string) {
+    if (!uniqueFolderRoles.has(role)) return null;
+    return folders.find((item) =>
+      item.mailbox.account_id === folder.mailbox.account_id &&
+      item.mailbox.id !== folder.mailbox.id &&
+      (item.mailbox.role || "") === role
+    ) || null;
+  }
+
   async function saveEditingFolder(event: FormEvent) {
     event.preventDefault();
     if (!editingFolderID || !folderDraft) return;
@@ -488,7 +508,16 @@ export function SettingsView({
       closeFolderSettings();
       return;
     }
-    const saved = await saveFolderSettings(folder, folderDraft);
+    const nextDraft = { ...folderDraft };
+    if (!folderCanInherit(folder.mailbox) && nextDraft.sync_mode === "inherit") {
+      nextDraft.sync_mode = "auto";
+    }
+    const conflict = folderRoleConflict(folder, nextDraft.role || "");
+    if (conflict) {
+      addToast(`${folderRoleLabel(nextDraft.role || "")} is already assigned to ${conflict.mailbox.name}.`, "error");
+      return;
+    }
+    const saved = await saveFolderSettings(folder, nextDraft);
     if (saved) closeFolderSettings();
   }
 
@@ -520,7 +549,7 @@ export function SettingsView({
     [folders, selectedAccountID]
   );
   const folderMap = useMemo(() => new Map(selectedFolders.map((folder) => [folder.mailbox.id, folder])), [selectedFolders]);
-  const folderNodes = useMemo(() => folderTree(selectedFolders.map((folder) => folder.mailbox)), [selectedFolders]);
+  const folderNodes = useMemo(() => folderTree(selectedFolders.map((folder) => folder.mailbox), { includeHidden: true }), [selectedFolders]);
   const selectedAccountLabel = account ? (account.label || account.email) : route.kind === "imap" && route.isNew ? "New IMAP server" : "IMAP server";
   const selectedSMTP = smtpAccounts.find((item) => item.id === selectedSMTPID) || null;
   const identitiesBySMTP = useMemo(() => {
@@ -887,6 +916,9 @@ export function SettingsView({
     const folder = editingFolderID ? folderMap.get(editingFolderID) : null;
     if (!folder || !folderDraft) return null;
     const currentIcon = folderDraft.icon || "folder";
+    const modeChoices = folderSyncModeChoices(folder.mailbox);
+    const selectedSyncMode = modeChoices.some((choice) => choice.value === folderDraft.sync_mode) ? folderDraft.sync_mode : "auto";
+    const roleConflict = folderRoleConflict(folder, folderDraft.role || "");
 
     return (
       <div className="folder-dialog-backdrop" role="presentation" onMouseDown={(event) => {
@@ -908,49 +940,55 @@ export function SettingsView({
 
           <div className="folder-edit-body">
             <section className="folder-edit-section">
-              <span className="settings-field-label">Sync mode</span>
-              <div className="folder-choice-buttons folder-choice-buttons-large">
-                {syncModeChoices.map((choice) => (
-                  <button
-                    className={folderDraft.sync_mode === choice.value ? "active" : ""}
-                    type="button"
-                    key={choice.value}
-                    onClick={() => updateFolderDraft({ sync_mode: choice.value })}
-                  >
-                    {choice.label}
-                  </button>
+              <label className="settings-field-label" htmlFor="folder-sync-mode">Sync mode</label>
+              <select
+                id="folder-sync-mode"
+                value={selectedSyncMode}
+                onChange={(event) => updateFolderDraft({ sync_mode: event.target.value })}
+              >
+                {modeChoices.map((choice) => (
+                  <option value={choice.value} key={choice.value}>{choice.label}</option>
+                ))}
+              </select>
+              <div className="folder-mode-help">
+                {modeChoices.map((choice) => (
+                  <p key={choice.value}><strong>{choice.label}:</strong> {choice.description}</p>
                 ))}
               </div>
             </section>
 
             <section className="folder-edit-section">
-              <span className="settings-field-label">Folder role</span>
-              <div className="folder-role-grid">
-                {folderRoleChoices.map((choice) => (
-                  <button
-                    className={folderDraft.role === choice.value ? "active" : ""}
-                    type="button"
-                    key={choice.value || "normal"}
-                    onClick={() => updateFolderDraft({ role: choice.value })}
-                  >
-                    {choice.label}
-                  </button>
-                ))}
-              </div>
+              <label className="settings-field-label" htmlFor="folder-role">Folder role</label>
+              <select
+                id="folder-role"
+                value={folderDraft.role || ""}
+                onChange={(event) => updateFolderDraft({ role: event.target.value })}
+              >
+                {folderRoleChoices.map((choice) => {
+                  const assigned = choice.value ? folderRoleConflict(folder, choice.value) : null;
+                  return (
+                    <option value={choice.value} key={choice.value || "normal"} disabled={Boolean(assigned)}>
+                      {choice.label}{assigned ? ` - used by ${assigned.mailbox.name}` : ""}
+                    </option>
+                  );
+                })}
+              </select>
+              {roleConflict ? <div className="folder-role-warning">{folderRoleLabel(folderDraft.role || "")} is already assigned to {roleConflict.mailbox.name}.</div> : null}
             </section>
 
             <section className="folder-edit-section folder-edit-section-wide">
               <span className="settings-field-label">Sidebar icon</span>
-              <div className="folder-icon-grid">
+              <div className="folder-icon-grid" aria-label="Sidebar icon">
                 {folderIconChoices.map((choice) => (
                   <button
                     className={currentIcon === choice.value ? "active" : ""}
                     type="button"
                     key={choice.value}
                     onClick={() => updateFolderDraft({ icon: choice.value })}
+                    title={choice.label}
+                    aria-label={choice.label}
                   >
                     <Icon name={choice.value} weight={currentIcon === choice.value ? "bold" : undefined} />
-                    <span>{choice.label}</span>
                   </button>
                 ))}
               </div>
@@ -959,23 +997,27 @@ export function SettingsView({
             <section className="folder-edit-section">
               <span className="settings-field-label">Visible in</span>
               <div className="folder-edit-visibility">
-                {folderVisibilityChoices.map((choice) => (
-                  <label key={choice.key}>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(folderDraft[choice.key])}
-                      onChange={(event) => updateFolderDraft({ [choice.key]: event.target.checked } as Partial<FolderSettingsDraft>)}
-                    />
-                    <span>{choice.label}</span>
-                  </label>
-                ))}
+                {folderVisibilityChoices.map((choice) => {
+                  const active = Boolean(folderDraft[choice.key]);
+                  return (
+                    <button
+                      className={active ? "active" : ""}
+                      type="button"
+                      key={choice.key}
+                      onClick={() => updateFolderDraft({ [choice.key]: !active } as Partial<FolderSettingsDraft>)}
+                      aria-pressed={active}
+                    >
+                      {choice.label}
+                    </button>
+                  );
+                })}
               </div>
             </section>
           </div>
 
           <footer className="folder-edit-footer">
             <button className="secondary" type="button" onClick={closeFolderSettings}>Cancel</button>
-            <button type="submit">Save settings</button>
+            <button type="submit" disabled={Boolean(roleConflict)}>Save settings</button>
           </footer>
         </form>
       </div>

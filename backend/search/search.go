@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/mapping"
@@ -472,16 +473,20 @@ func buildQuery(userID int64, queryText string, sortMode SortMode, opts SearchOp
 	} else {
 		parts = append(parts, textQuery(parsed.Text, parsed.TextQuoted))
 	}
+	mustNot := negatedTextQueries(parsed.NegatedText)
 	must := bleve.NewConjunctionQuery(parts...)
 	if sortMode != SortBest {
-		return must
+		if len(mustNot) == 0 {
+			return must
+		}
+		return blevequery.NewBooleanQuery([]blevequery.Query{must}, nil, mustNot)
 	}
 	should := recencyBoostQueries(time.Now().UTC())
 	should = append(should, senderBoostQueries(opts.SenderBoosts)...)
-	if len(should) == 0 {
+	if len(should) == 0 && len(mustNot) == 0 {
 		return must
 	}
-	return blevequery.NewBooleanQuery([]blevequery.Query{must}, should, nil)
+	return blevequery.NewBooleanQuery([]blevequery.Query{must}, should, mustNot)
 }
 
 func senderBoostQueries(boosts []SenderBoost) []blevequery.Query {
@@ -610,6 +615,41 @@ func textQuery(text string, quoted bool) blevequery.Query {
 				disjuncts = append(disjuncts, q)
 			}
 		}
+	}
+	if len(disjuncts) == 1 {
+		return disjuncts[0]
+	}
+	return bleve.NewDisjunctionQuery(disjuncts...)
+}
+
+func negatedTextQueries(terms []negatedTextTerm) []blevequery.Query {
+	out := make([]blevequery.Query, 0, len(terms))
+	for _, term := range terms {
+		if q := negatedTextQuery(term.Text, term.Quoted); q != nil {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
+func negatedTextQuery(text string, quoted bool) blevequery.Query {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if quoted || strings.ContainsAny(text, " \t\r\n") {
+		disjuncts := make([]blevequery.Query, 0, len(literalTextFields()))
+		for _, field := range literalTextFields() {
+			phrase := bleve.NewMatchPhraseQuery(text)
+			phrase.SetField(field)
+			disjuncts = append(disjuncts, phrase)
+		}
+		return bleve.NewDisjunctionQuery(disjuncts...)
+	}
+	disjuncts := []blevequery.Query{bleve.NewMatchQuery(text)}
+	normalized := normalizeSearchText(text)
+	if normalized != "" && normalized != strings.ToLower(strings.TrimSpace(text)) {
+		disjuncts = append(disjuncts, bleve.NewMatchQuery(normalized))
 	}
 	if len(disjuncts) == 1 {
 		return disjuncts[0]
@@ -1081,6 +1121,7 @@ func addDomainTerms(add func(string), domain string) {
 type parsedQuery struct {
 	Text          string
 	TextQuoted    bool
+	NegatedText   []negatedTextTerm
 	HasAttachment *bool
 	IsRead        *bool
 	IsStarred     *bool
@@ -1094,13 +1135,18 @@ type parsedQuery struct {
 	Before        time.Time
 }
 
+type negatedTextTerm struct {
+	Text   string
+	Quoted bool
+}
+
 var operatorRE = regexp.MustCompile(`(?i)(^|\s)(-?)(has:attachment|is:read|is:unread|is:starred|is:notstarred|lang:("[^"]+"|\S+)|filename:("[^"]+"|\S+)|from:("[^"]+"|\S+)|to:("[^"]+"|\S+)|cc:("[^"]+"|\S+)|subject:("[^"]+"|\S+)|after:("[^"]+"|\S+)|before:("[^"]+"|\S+)|year:("[^"]+"|\S+))`)
 
 // parseQuery extracts supported operators while preserving the remaining free text.
 // The parser is intentionally small and predictable rather than a full Gmail clone.
 func parseQuery(queryText string) parsedQuery {
-	text, quoted := parseQueryText(queryText)
-	out := parsedQuery{Text: text, TextQuoted: quoted}
+	text, quoted, negated := parseFreeText(queryText)
+	out := parsedQuery{Text: text, TextQuoted: quoted, NegatedText: negated}
 	matches := operatorRE.FindAllStringSubmatchIndex(queryText, -1)
 	if len(matches) == 0 {
 		return out
@@ -1159,8 +1205,70 @@ func parseQuery(queryText string) parsedQuery {
 	if last < len(queryText) {
 		cleaned.WriteString(queryText[last:])
 	}
-	out.Text, out.TextQuoted = parseQueryText(cleaned.String())
+	out.Text, out.TextQuoted, out.NegatedText = parseFreeText(cleaned.String())
 	return out
+}
+
+func parseFreeText(value string) (string, bool, []negatedTextTerm) {
+	tokens := scanFreeTextTokens(value)
+	positive := make([]string, 0, len(tokens))
+	var negated []negatedTextTerm
+	for _, token := range tokens {
+		if token.Negated {
+			text, quoted := parseQueryText(token.Text)
+			if text != "" {
+				negated = append(negated, negatedTextTerm{Text: text, Quoted: quoted})
+			}
+			continue
+		}
+		positive = append(positive, token.Text)
+	}
+	text, quoted := parseQueryText(strings.Join(positive, " "))
+	return text, quoted, negated
+}
+
+type freeTextToken struct {
+	Text    string
+	Negated bool
+}
+
+func scanFreeTextTokens(value string) []freeTextToken {
+	var tokens []freeTextToken
+	for i := 0; i < len(value); {
+		r, size := utf8.DecodeRuneInString(value[i:])
+		if unicode.IsSpace(r) {
+			i += size
+			continue
+		}
+		negated := false
+		if r == '-' {
+			next, _ := utf8.DecodeRuneInString(value[i+size:])
+			if next != utf8.RuneError && !unicode.IsSpace(next) {
+				negated = true
+				i += size
+			}
+		}
+		var b strings.Builder
+		inQuote := false
+		for i < len(value) {
+			r, size = utf8.DecodeRuneInString(value[i:])
+			if r == '"' {
+				inQuote = !inQuote
+				b.WriteRune(r)
+				i += size
+				continue
+			}
+			if unicode.IsSpace(r) && !inQuote {
+				break
+			}
+			b.WriteRune(r)
+			i += size
+		}
+		if text := strings.TrimSpace(b.String()); text != "" {
+			tokens = append(tokens, freeTextToken{Text: text, Negated: negated})
+		}
+	}
+	return tokens
 }
 
 func parseQueryText(value string) (string, bool) {
