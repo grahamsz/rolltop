@@ -74,6 +74,24 @@ func TestParseCleansIndexedCSSBraceResidue(t *testing.T) {
 	}
 }
 
+func TestParseCleansIndexedCSSNestedRuleWithoutPanic(t *testing.T) {
+	raw := strings.Join([]string{
+		"From: sender.test",
+		"To: archive.test",
+		"Subject: nested css",
+		"Content-Type: text/html; charset=utf-8",
+		"",
+		`<html><body><p>Before</p><style>notcss{` + strings.Repeat("x", 2100) + `.rule{color:red}}</style><p>After</p></body></html>`,
+	}, "\r\n")
+	parsed, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(parsed.Text, "Before") || !strings.Contains(parsed.Text, "After") {
+		t.Fatalf("text = %q", parsed.Text)
+	}
+}
+
 func TestParseDecodesISO2022JPSubjectAndBody(t *testing.T) {
 	body := "\x1b$B4|4V8BDj%]%$%s%H\x1b(B"
 	raw := strings.Join([]string{

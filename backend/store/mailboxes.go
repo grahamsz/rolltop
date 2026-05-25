@@ -605,3 +605,22 @@ func (s *Store) MessageExistsByUID(ctx context.Context, userID, accountID, mailb
 	}
 	return err == nil, err
 }
+
+// MessageUIDsForMailbox returns the local UID set for one user-owned account mailbox.
+func (s *Store) MessageUIDsForMailbox(ctx context.Context, userID, accountID, mailboxID int64) ([]uint32, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT uid FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ? ORDER BY uid`,
+		userID, accountID, mailboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	uids := []uint32{}
+	for rows.Next() {
+		var uid uint32
+		if err := rows.Scan(&uid); err != nil {
+			return nil, err
+		}
+		uids = append(uids, uid)
+	}
+	return uids, rows.Err()
+}

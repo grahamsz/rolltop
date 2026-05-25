@@ -267,18 +267,16 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			return run, err
 		}
 		s.recordMailboxStatus(ctx, userID, mailbox, planned.Status)
-		oldPending := planned.Pending
-		repairedPlan, resetCheckpoint, err := s.repairRequestedIncompleteMailboxCheckpoint(ctx, userID, mailbox, planned, requestedSet[strings.ToLower(mailboxName)])
+		repairedPlan, repaired, err := s.repairRequestedIncompleteMailbox(ctx, userID, account, mailbox, planned, requestedSet[strings.ToLower(mailboxName)], run.ID, &progress)
 		if err != nil {
 			status = "failed"
 			errText = err.Error()
 			return run, err
 		}
-		if resetCheckpoint {
+		if repaired {
 			planned = repairedPlan
 			mailboxLastUIDAtStart = planned.LastUID
 			lastUIDs[mailboxName] = planned.LastUID
-			progress.MessagesTotal += planned.Pending - oldPending
 			progress.CurrentUID = planned.LastUID
 			if err := s.updateSyncProgress(ctx, userID, run.ID, progress); err != nil {
 				status = "failed"
@@ -387,30 +385,158 @@ func requestedMailboxSet(names []string) map[string]bool {
 	return out
 }
 
-// repairRequestedIncompleteMailboxCheckpoint handles the explicit "Sync now" repair case.
-// If local rows are missing but the UID checkpoint says there are no newer messages,
-// a normal incremental sync cannot fill the gap. Resetting the checkpoint lets the
-// fetch stream revisit the folder and skip existing UIDs while storing missing ones.
-func (s *Service) repairRequestedIncompleteMailboxCheckpoint(ctx context.Context, userID int64, mailbox store.Mailbox, plan MailboxPlan, requested bool) (MailboxPlan, bool, error) {
-	if !requested || plan.LastUID == 0 || plan.Status.Messages == 0 || plan.Status.UIDNext <= 1 {
+type uidBatchFetcher interface {
+	FetchUIDs(ctx context.Context, account store.MailAccount, mailbox string, uids []uint32, handle func(FetchedMessage) error) error
+}
+
+// repairRequestedIncompleteMailbox handles the explicit "Sync now" repair case.
+// If local rows are missing but the UID checkpoint says there are no newer
+// messages, a normal incremental sync cannot fill the gap. Instead of resetting
+// the checkpoint and downloading every body again, this compares the remote UID
+// list to local UIDs and fetches only the missing bodies.
+func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox, plan MailboxPlan, requested bool, runID int64, progress *store.SyncProgress) (MailboxPlan, bool, error) {
+	if !requested || plan.Status.Messages == 0 {
 		return plan, false, nil
 	}
-	localCount, err := s.Store.CountMessagesForMailbox(ctx, userID, mailbox.ID)
+	localUIDs, err := s.Store.MessageUIDsForMailbox(ctx, userID, account.ID, mailbox.ID)
 	if err != nil {
 		return plan, false, err
 	}
 	remoteCount := int(plan.Status.Messages)
-	if localCount+plan.Pending >= remoteCount {
+	if remoteCount > 0 && len(localUIDs) >= remoteCount && plan.Pending == 0 {
 		return plan, false, nil
 	}
-	highestUID := plan.Status.UIDNext - 1
-	log.Printf("repair incomplete mailbox checkpoint user_id=%d account_id=%d mailbox=%s local=%d remote=%d last_uid=%d uidnext=%d", userID, mailbox.AccountID, mailbox.Name, localCount, remoteCount, plan.LastUID, plan.Status.UIDNext)
-	if err := s.Store.ResetMailboxLastUID(ctx, userID, mailbox.ID); err != nil {
+	remoteUIDs, err := s.Fetcher.UIDs(ctx, account, mailbox.Name)
+	if err != nil {
 		return plan, false, err
 	}
-	plan.LastUID = 0
-	plan.Pending = int(highestUID)
+	missing := missingRemoteUIDs(remoteUIDs, localUIDs)
+	highestRemoteUID := maxUID(remoteUIDs)
+	if progress != nil {
+		progress.MessagesTotal += len(missing) - plan.Pending
+		if progress.MessagesTotal < progress.MessagesSeen {
+			progress.MessagesTotal = progress.MessagesSeen
+		}
+		progress.CurrentMailbox = mailbox.Name
+		progress.CurrentUID = plan.LastUID
+		if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
+			return plan, false, err
+		}
+	}
+	if len(missing) == 0 {
+		if highestRemoteUID > plan.LastUID {
+			if err := s.Store.UpdateMailboxLastUID(ctx, userID, mailbox.ID, highestRemoteUID); err != nil {
+				return plan, false, err
+			}
+			plan.LastUID = highestRemoteUID
+		}
+		plan.Pending = 0
+		return plan, true, nil
+	}
+	log.Printf("repair incomplete mailbox user_id=%d account_id=%d mailbox=%s local=%d remote=%d missing=%d last_uid=%d uidnext=%d", userID, account.ID, mailbox.Name, len(localUIDs), len(remoteUIDs), len(missing), plan.LastUID, plan.Status.UIDNext)
+
+	searchBatch := newFetchedSearchIndexBatch(s)
+	handle := func(item FetchedMessage) error {
+		if item.Mailbox == "" {
+			item.Mailbox = mailbox.Name
+		}
+		if item.InternalDate.IsZero() {
+			item.InternalDate = time.Now().UTC()
+		}
+		if item.Size == 0 {
+			item.Size = int64(len(item.Raw))
+		}
+		if progress != nil {
+			progress.MessagesSeen++
+			progress.CurrentMailbox = item.Mailbox
+			progress.CurrentUID = item.UID
+		}
+		exists, err := s.Store.MessageExistsByUID(ctx, userID, account.ID, mailbox.ID, item.UID)
+		if err != nil {
+			return err
+		}
+		if exists {
+			if progress != nil {
+				progress.MessagesSkipped++
+				return s.updateSyncProgress(ctx, userID, runID, *progress)
+			}
+			return nil
+		}
+		msg, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item)
+		if err != nil {
+			return err
+		}
+		if err := searchBatch.Add(ctx, pendingIndex); err != nil {
+			return err
+		}
+		if progress != nil {
+			progress.MessagesStored++
+			if shouldNotifyNewMail(mailbox, plan.LastUID, item) {
+				progress.NewMessages++
+				progress.LatestNewFrom = msg.FromAddr
+				progress.LatestNewSubject = msg.Subject
+			}
+			if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if batchFetcher, ok := s.Fetcher.(uidBatchFetcher); ok {
+		if err := batchFetcher.FetchUIDs(ctx, account, mailbox.Name, missing, handle); err != nil {
+			return plan, false, err
+		}
+	} else {
+		for _, uid := range missing {
+			item, err := s.Fetcher.FetchMessage(ctx, account, mailbox.Name, uid)
+			if err != nil {
+				return plan, false, err
+			}
+			if err := handle(item); err != nil {
+				return plan, false, err
+			}
+		}
+	}
+	if err := searchBatch.Flush(ctx); err != nil {
+		return plan, false, err
+	}
+	if highestRemoteUID > plan.LastUID {
+		if err := s.Store.UpdateMailboxLastUID(ctx, userID, mailbox.ID, highestRemoteUID); err != nil {
+			return plan, false, err
+		}
+		plan.LastUID = highestRemoteUID
+	}
+	plan.Pending = 0
 	return plan, true, nil
+}
+
+func missingRemoteUIDs(remoteUIDs, localUIDs []uint32) []uint32 {
+	local := make(map[uint32]bool, len(localUIDs))
+	for _, uid := range localUIDs {
+		if uid != 0 {
+			local[uid] = true
+		}
+	}
+	seen := map[uint32]bool{}
+	out := make([]uint32, 0)
+	for _, uid := range remoteUIDs {
+		if uid == 0 || local[uid] || seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		out = append(out, uid)
+	}
+	return out
+}
+
+func maxUID(uids []uint32) uint32 {
+	var max uint32
+	for _, uid := range uids {
+		if uid > max {
+			max = uid
+		}
+	}
+	return max
 }
 
 // planMailboxes makes progress meaningful before the first message arrives.

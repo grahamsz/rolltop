@@ -19,8 +19,9 @@ import (
 )
 
 type fakeFetcher struct {
-	messages map[int64][]syncer.FetchedMessage
-	calls    []int64
+	messages      map[int64][]syncer.FetchedMessage
+	calls         []int64
+	fetchUIDCalls [][]uint32
 }
 
 type cancelingFetcher struct {
@@ -66,6 +67,22 @@ func (f *fakeFetcher) FetchMailbox(ctx context.Context, account store.MailAccoun
 	f.calls = append(f.calls, account.UserID)
 	for _, msg := range f.messages[account.UserID] {
 		if msg.Mailbox == mailbox && msg.UID > afterUID {
+			if err := handle(msg); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (f *fakeFetcher) FetchUIDs(ctx context.Context, account store.MailAccount, mailbox string, uids []uint32, handle func(syncer.FetchedMessage) error) error {
+	f.fetchUIDCalls = append(f.fetchUIDCalls, append([]uint32(nil), uids...))
+	wanted := map[uint32]bool{}
+	for _, uid := range uids {
+		wanted[uid] = true
+	}
+	for _, msg := range f.messages[account.UserID] {
+		if msg.Mailbox == mailbox && wanted[msg.UID] {
 			if err := handle(msg); err != nil {
 				return err
 			}
@@ -326,8 +343,11 @@ func TestRequestedMailboxSyncRepairsIncompleteCheckpoint(t *testing.T) {
 	if len(messages) != 3 {
 		t.Fatalf("messages after repair = %d", len(messages))
 	}
-	if run.MessagesStored != 2 || run.MessagesSkipped != 1 {
+	if run.MessagesStored != 2 || run.MessagesSkipped != 0 {
 		t.Fatalf("repair run progress = %+v", run)
+	}
+	if len(fetcher.fetchUIDCalls) != 1 || len(fetcher.fetchUIDCalls[0]) != 2 || fetcher.fetchUIDCalls[0][0] != 1 || fetcher.fetchUIDCalls[0][1] != 2 {
+		t.Fatalf("repair fetched UIDs = %+v", fetcher.fetchUIDCalls)
 	}
 }
 

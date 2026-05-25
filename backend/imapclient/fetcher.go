@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strings"
 	"time"
 
@@ -130,11 +131,6 @@ func (f *Fetcher) FetchMailbox(ctx context.Context, account store.MailAccount, m
 		return nil
 	}
 
-	batchSize := f.BatchSize
-	if batchSize == 0 {
-		batchSize = 10
-	}
-
 	criteria := imap.NewSearchCriteria()
 	criteria.Uid = new(imap.SeqSet)
 	criteria.Uid.AddRange(afterUID+1, 0)
@@ -142,10 +138,32 @@ func (f *Fetcher) FetchMailbox(ctx context.Context, account store.MailAccount, m
 	if err != nil {
 		return fmt.Errorf("search new UIDs in mailbox %q after UID %d: %w", mailbox, afterUID, err)
 	}
+	return f.fetchUIDs(ctx, c, mailbox, uids, handle)
+}
+
+// FetchUIDs fetches a known sparse UID set. Explicit folder repair uses this to
+// fill local holes without downloading every already-mirrored message body.
+func (f *Fetcher) FetchUIDs(ctx context.Context, account store.MailAccount, mailbox string, uids []uint32, handle func(syncer.FetchedMessage) error) error {
+	c, err := f.login(account)
+	if err != nil {
+		return err
+	}
+	defer c.Logout()
+	if _, err := c.Select(mailbox, true); err != nil {
+		return fmt.Errorf("select mailbox %q read-only: %w", mailbox, err)
+	}
+	return f.fetchUIDs(ctx, c, mailbox, uids, handle)
+}
+
+func (f *Fetcher) fetchUIDs(ctx context.Context, c *client.Client, mailbox string, uids []uint32, handle func(syncer.FetchedMessage) error) error {
+	uids = normalizeUIDList(uids)
 	if len(uids) == 0 {
 		return nil
 	}
-
+	batchSize := f.BatchSize
+	if batchSize == 0 {
+		batchSize = 10
+	}
 	section := &imap.BodySectionName{}
 	items := []imap.FetchItem{imap.FetchUid, imap.FetchInternalDate, imap.FetchRFC822Size, imap.FetchFlags, section.FetchItem()}
 	for i := 0; i < len(uids); i += int(batchSize) {
@@ -171,7 +189,7 @@ func (f *Fetcher) FetchMailbox(ctx context.Context, account store.MailAccount, m
 				return ctx.Err()
 			default:
 			}
-			if msg == nil || msg.Uid <= afterUID {
+			if msg == nil {
 				continue
 			}
 			body := msg.GetBody(section)
@@ -198,6 +216,25 @@ func (f *Fetcher) FetchMailbox(ctx context.Context, account store.MailAccount, m
 		}
 	}
 	return nil
+}
+
+func normalizeUIDList(uids []uint32) []uint32 {
+	if len(uids) == 0 {
+		return nil
+	}
+	out := append([]uint32(nil), uids...)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	n := 0
+	var prev uint32
+	for _, uid := range out {
+		if uid == 0 || (n > 0 && uid == prev) {
+			continue
+		}
+		out[n] = uid
+		n++
+		prev = uid
+	}
+	return out[:n]
 }
 
 // FetchMessage retrieves one raw message body for on-demand thread hydration or

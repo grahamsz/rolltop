@@ -493,7 +493,9 @@ func removeIndexedCSSRules(value string) string {
 		selector := strings.TrimSpace(value[start:open])
 		body := strings.TrimSpace(value[open+1 : close])
 		if looksLikeIndexedCSSRule(selector, body) {
-			b.WriteString(value[i:start])
+			if start > i {
+				b.WriteString(value[i:start])
+			}
 			b.WriteByte(' ')
 			i = close + 1
 			continue
@@ -532,7 +534,7 @@ func indexedCSSSelectorStart(value string, open int) int {
 		if r == utf8.RuneError && size == 0 {
 			break
 		}
-		if r == '}' || r == ';' || r == '\n' || r == '\r' {
+		if r == '{' || r == '}' || r == ';' || r == '\n' || r == '\r' {
 			break
 		}
 		start -= size
