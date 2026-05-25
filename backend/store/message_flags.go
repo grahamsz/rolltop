@@ -1,3 +1,5 @@
+// File overview: Read/star flag persistence and IMAP sync-pending tracking.
+
 package store
 
 import "context"

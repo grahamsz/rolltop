@@ -1,3 +1,5 @@
+// File overview: Language detection plugin support for message language indexing and filters. migration declarations. Plugin schema migration declarations and helper persistence.
+
 package language_search
 
 import (

@@ -1,3 +1,5 @@
+// File overview: Tests for server setup, ETags, storage stats, and route behavior.
+
 package web
 
 import (

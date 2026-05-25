@@ -1,3 +1,5 @@
+// File overview: Maintenance routines for backfilling thread keys and headers from stored blobs.
+
 package store
 
 import (

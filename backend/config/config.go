@@ -1,3 +1,5 @@
+// File overview: Environment-driven application configuration.
+
 package config
 
 import (

@@ -1,3 +1,5 @@
+// File overview: Post-schema seed logic for deriving SMTP accounts from IMAP account settings.
+
 package store
 
 import "context"

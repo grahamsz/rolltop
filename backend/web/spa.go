@@ -1,3 +1,5 @@
+// File overview: Static frontend and SPA fallback serving.
+
 package web
 
 import (

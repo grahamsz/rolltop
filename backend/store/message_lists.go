@@ -1,3 +1,5 @@
+// File overview: Mailbox, all-mail, search seed, sender stat, and date-window query helpers.
+
 package store
 
 import (

@@ -1,3 +1,5 @@
+// File overview: Contact CRUD, vCard import/export, and me-contact API handlers.
+
 package web
 
 import (

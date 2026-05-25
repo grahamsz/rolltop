@@ -1,3 +1,10 @@
+// File overview: Store construction and tenant database routing. OpenServer
+// opens only the system database; UserStore opens data/users/<id>/mailmirror.db
+// on demand and mirrors the system user row into it. Store methods that touch
+// user-owned mail/contact/blob/search hydration metadata should call dataDB or
+// mustDataDB so they automatically run against the per-user SQLite handle in
+// split mode while tests can still use one combined database via Open.
+
 package store
 
 import (
@@ -24,14 +31,21 @@ type Store struct {
 	userStores map[int64]*Store
 }
 
+// Open creates a combined store in one SQLite file. It is mostly used by tests
+// and small helpers that do not need the production system/user split.
 func Open(path string) (*Store, error) {
 	return open(path, "", false, schemaCombined, nil)
 }
 
+// OpenServer opens the production system store without progress reporting.
+// cmd/mailmirror usually calls OpenServerWithProgress instead.
 func OpenServer(path string, dataDir string) (*Store, error) {
 	return OpenServerWithProgress(path, dataDir, nil)
 }
 
+// OpenServerWithProgress opens the installation-level database only. Per-user
+// databases are opened lazily through UserStore so tenant-owned data remains in
+// data/users/<id>/mailmirror.db.
 func OpenServerWithProgress(path string, dataDir string, progress MigrationReporter) (*Store, error) {
 	return open(path, dataDir, true, schemaSystem, progress)
 }
@@ -56,6 +70,8 @@ func open(path string, dataDir string, split bool, schema schemaKind, progress M
 	return s, nil
 }
 
+// Close shuts down the root store and any cached per-user stores opened through
+// UserStore. The first close error is returned after all handles are attempted.
 func (s *Store) Close() error {
 	s.mu.Lock()
 	stores := make([]*Store, 0, len(s.userStores))
@@ -75,6 +91,8 @@ func (s *Store) Close() error {
 	return first
 }
 
+// UserDataDir returns the filesystem directory that owns one user's SQLite DB,
+// blobs, and search index. An empty dataDir means the store is combined.
 func (s *Store) UserDataDir(userID int64) string {
 	if s.dataDir == "" {
 		return ""
@@ -82,10 +100,15 @@ func (s *Store) UserDataDir(userID int64) string {
 	return filepath.Join(s.dataDir, "users", fmt.Sprintf("%d", userID))
 }
 
+// UserStore returns the per-user database handle for user-owned data. In split
+// mode this opens and migrates the user database lazily; in combined mode it
+// returns the receiver.
 func (s *Store) UserStore(ctx context.Context, userID int64) (*Store, error) {
 	return s.userStore(ctx, userID, nil)
 }
 
+// PrepareUserStores is called during process startup so existing users have
+// their schemas migrated before background sync or HTTP requests touch them.
 func (s *Store) PrepareUserStores(ctx context.Context, progress MigrationReporter) error {
 	if !s.split {
 		return nil
@@ -150,6 +173,8 @@ func (s *Store) UserDB(ctx context.Context, userID int64) (*sql.DB, error) {
 	return us.db, nil
 }
 
+// dataDB is the central tenant-routing helper. Any method that reads or writes
+// user-owned mail/contact/blob metadata should reach SQLite through this path.
 func (s *Store) dataDB(ctx context.Context, userID int64) (*sql.DB, error) {
 	if !s.split || userID == 0 {
 		return s.db, nil

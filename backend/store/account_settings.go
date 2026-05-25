@@ -1,3 +1,5 @@
+// File overview: CRUD and validation for IMAP accounts, SMTP servers, and outgoing identities.
+
 package store
 
 import (

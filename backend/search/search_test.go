@@ -1,3 +1,5 @@
+// File overview: Tests for search indexing, query behavior, tenant isolation, and highlighting.
+
 package search
 
 import (
@@ -436,6 +438,35 @@ func TestSearchMatchesFromDomain(t *testing.T) {
 		if len(ids) != 1 || ids[0] != 1 {
 			t.Fatalf("%q ids = %v", query, ids)
 		}
+	}
+}
+
+func TestSearchFromFullEmailRequiresLocalAndDomain(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	msgs := []store.MessageRecord{
+		{ID: 1, UserID: 1, Subject: "target", FromAddr: "Target <target.sender@example.com>", Date: time.Now()},
+		{ID: 2, UserID: 1, Subject: "same domain", FromAddr: "Other <other@example.com>", Date: time.Now()},
+		{ID: 3, UserID: 1, Subject: "same tld", FromAddr: "Dot Com <dot@example.com>", Date: time.Now()},
+		{ID: 4, UserID: 1, Subject: "same local", FromAddr: "Target <target.sender@example.net>", Date: time.Now()},
+	}
+	for _, msg := range msgs {
+		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ids, err := svc.Search(ctx, 1, "from:target.sender@example.com", SortBest, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("full email ids = %v", ids)
 	}
 }
 

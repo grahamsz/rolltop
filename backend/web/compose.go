@@ -1,3 +1,5 @@
+// File overview: Compose/reply MIME construction and recipient selection helpers.
+
 package web
 
 import (

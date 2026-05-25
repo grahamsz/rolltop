@@ -1,3 +1,5 @@
+// File overview: Message language and attachment indexing metadata persistence.
+
 package store
 
 import (

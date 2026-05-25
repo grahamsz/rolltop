@@ -1,3 +1,5 @@
+// File overview: Bleve search service. It owns per-user indexes, document mapping, query construction, result ranking, and highlighting metadata.
+
 package search
 
 import (
@@ -468,6 +470,9 @@ func senderBoostQueries(boosts []SenderBoost) []blevequery.Query {
 
 func fromQuery(text string) blevequery.Query {
 	text = strings.Trim(strings.TrimSpace(text), `"`)
+	if terms := emailAddressCompoundTerms(text); len(terms) > 0 {
+		return boostQuery(termConjunction("from_compound", terms), 16)
+	}
 	var disjuncts []blevequery.Query
 
 	domain := strings.TrimPrefix(strings.ToLower(text), "@")
@@ -944,7 +949,25 @@ func compoundSearchText(values ...string) string {
 	return b.String()
 }
 
+var emailAddressRE = regexp.MustCompile(`(?i)([a-z0-9._%+\-]+)@([a-z0-9.\-]+\.[a-z0-9\-]+)`)
 var emailDomainRE = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@([a-z0-9.\-]+\.[a-z0-9\-]+)`)
+
+func emailAddressQueryTerms(value string) []string {
+	value = strings.Trim(strings.TrimSpace(value), `"`)
+	match := emailAddressRE.FindStringSubmatch(value)
+	if len(match) != 3 {
+		return nil
+	}
+	return strings.Fields(normalizeSearchText(match[1] + " " + match[2]))
+}
+
+func emailAddressCompoundTerms(value string) []string {
+	terms := emailAddressQueryTerms(value)
+	if len(terms) < 2 {
+		return nil
+	}
+	return compactAdjacentTerms(terms)
+}
 
 func emailDomainTerms(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
@@ -969,6 +992,17 @@ func emailDomainTerms(value string) string {
 		addDomainTerms(add, strings.TrimPrefix(value, "@"))
 	}
 	return strings.Join(out, " ")
+}
+
+func compactAdjacentTerms(words []string) []string {
+	out := make([]string, 0, len(words)*2)
+	for i := 0; i < len(words)-1; i++ {
+		out = append(out, words[i]+words[i+1])
+		if i+2 < len(words) {
+			out = append(out, words[i]+words[i+1]+words[i+2])
+		}
+	}
+	return out
 }
 
 func addDomainTerms(add func(string), domain string) {

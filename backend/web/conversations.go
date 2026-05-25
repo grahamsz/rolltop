@@ -1,3 +1,5 @@
+// File overview: Conversation grouping, summary construction, search seed handling, and sender identity helpers.
+
 package web
 
 import (

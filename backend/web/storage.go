@@ -1,3 +1,5 @@
+// File overview: Per-user storage usage measurement and caching.
+
 package web
 
 import (

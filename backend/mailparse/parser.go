@@ -1,3 +1,5 @@
+// File overview: MIME parsing for message headers, bodies, attachments, and inline parts.
+
 package mailparse
 
 import (

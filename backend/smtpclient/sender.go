@@ -1,3 +1,5 @@
+// File overview: SMTP send implementation for composed messages.
+
 package smtpclient
 
 import (

@@ -1,3 +1,5 @@
+// File overview: Session token generation and hashing helpers.
+
 package auth
 
 import (

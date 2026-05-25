@@ -1,3 +1,5 @@
+// File overview: Plugin route registration and dispatch helpers.
+
 package web
 
 import (

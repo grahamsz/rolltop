@@ -1,3 +1,5 @@
+// File overview: Search indexing helpers used during sync.
+
 package syncer
 
 import (

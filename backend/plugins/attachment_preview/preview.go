@@ -1,3 +1,5 @@
+// File overview: Attachment preview plugin declaration.
+
 package attachment_preview
 
 import (

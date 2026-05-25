@@ -1,3 +1,5 @@
+// File overview: Gravatar hash, cache record, and sender icon lookup helpers.
+
 package gravatar_sender_icons
 
 import (

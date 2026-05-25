@@ -1,3 +1,5 @@
+// File overview: Top-level API dispatcher. It routes authenticated API requests to account, mail, message, contact, plugin, sync, and admin handlers.
+
 package web
 
 import (

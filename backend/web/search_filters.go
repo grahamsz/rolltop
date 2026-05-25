@@ -1,3 +1,5 @@
+// File overview: Search query filter parsing for dates, mailboxes, language, and flags.
+
 package web
 
 import (

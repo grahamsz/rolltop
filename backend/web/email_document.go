@@ -1,3 +1,5 @@
+// File overview: Email document rendering helpers for safe in-app message display.
+
 package web
 
 import (

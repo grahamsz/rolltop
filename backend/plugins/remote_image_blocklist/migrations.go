@@ -1,3 +1,5 @@
+// File overview: Admin-editable remote image blocklist plugin and default tracker patterns. migration declarations. Plugin schema migration declarations and helper persistence.
+
 package remote_image_blocklist
 
 import (

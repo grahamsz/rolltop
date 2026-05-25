@@ -1,3 +1,5 @@
+// File overview: Tests for password hashing and verification behavior.
+
 package auth
 
 import "testing"

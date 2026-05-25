@@ -1,3 +1,5 @@
+// File overview: Web-layer plugin integration helpers.
+
 package plugins
 
 import (

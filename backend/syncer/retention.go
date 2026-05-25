@@ -1,3 +1,5 @@
+// File overview: Local blob retention and message compaction maintenance.
+
 package syncer
 
 import (

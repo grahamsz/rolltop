@@ -1,3 +1,5 @@
+// File overview: Snippet cleaning, search term extraction, and context selection for list/search previews.
+
 package web
 
 import (

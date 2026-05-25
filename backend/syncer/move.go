@@ -1,3 +1,5 @@
+// File overview: Local mailbox-location refresh helpers for messages copied or moved remotely.
+
 package syncer
 
 import (

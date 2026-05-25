@@ -1,3 +1,5 @@
+// File overview: Message body retrieval and cached blob fallback helpers.
+
 package store
 
 import (

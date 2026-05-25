@@ -1,3 +1,5 @@
+// File overview: Tests for user-scoped blob path behavior.
+
 package blob
 
 import (

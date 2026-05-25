@@ -1,3 +1,5 @@
+// File overview: Password hashing and verification helpers.
+
 package auth
 
 import (

@@ -3,6 +3,8 @@
 .agents
 data/
 tmp/
+build-artifacts/
+test-results/
 node_modules/
 frontend/dist/
 *.db

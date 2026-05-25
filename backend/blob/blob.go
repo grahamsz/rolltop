@@ -1,3 +1,5 @@
+// File overview: User-scoped blob path construction, saving, opening, and deletion.
+
 package blob
 
 import (

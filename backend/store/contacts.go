@@ -1,3 +1,5 @@
+// File overview: Contact book, me-contact, contact email, identity, and icon persistence.
+
 package store
 
 import (

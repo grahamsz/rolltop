@@ -1,3 +1,5 @@
+// File overview: Store-level error helpers.
+
 package store
 
 import (

@@ -1,3 +1,5 @@
+// File overview: Tests for credential encryption and decryption.
+
 package crypto
 
 import (

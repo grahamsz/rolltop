@@ -1,3 +1,5 @@
+// File overview: Row scanning helpers for message query results.
+
 package store
 
 import "database/sql"

@@ -1,3 +1,5 @@
+// File overview: Tests for message detail assembly and metadata behavior.
+
 package web
 
 import (

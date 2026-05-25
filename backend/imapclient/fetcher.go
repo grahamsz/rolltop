@@ -1,3 +1,5 @@
+// File overview: IMAP fetching, mailbox listing, and mailbox watch implementation.
+
 package imapclient
 
 import (

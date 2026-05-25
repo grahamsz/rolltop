@@ -1,3 +1,5 @@
+// File overview: Compose, reply, forward, attachment upload, and send API handlers.
+
 package web
 
 import (

@@ -1,3 +1,5 @@
+// File overview: Sync reconciliation between local rows and remote IMAP mailbox state.
+
 package syncer
 
 import (

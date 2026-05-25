@@ -1,3 +1,5 @@
+// File overview: Login, logout, setup, CSRF, and session API handlers.
+
 package web
 
 import (

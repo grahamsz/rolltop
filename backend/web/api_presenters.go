@@ -1,3 +1,5 @@
+// File overview: Converters from store models into frontend API response shapes.
+
 package web
 
 import (

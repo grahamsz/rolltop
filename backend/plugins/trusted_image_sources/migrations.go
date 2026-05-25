@@ -1,3 +1,5 @@
+// File overview: Per-user trusted sender plugin for allowing remote message assets. migration declarations. Plugin schema migration declarations and helper persistence.
+
 package trusted_image_sources
 
 import (

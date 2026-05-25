@@ -1,3 +1,5 @@
+// File overview: Tests for quote clipping and forwarded-message display behavior.
+
 package web
 
 import (

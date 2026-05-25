@@ -1,3 +1,5 @@
+// File overview: Plugin registry persistence. It stores plugin enablement, records plugin migration checksums, and applies system-level plugin migrations.
+
 package store
 
 import (

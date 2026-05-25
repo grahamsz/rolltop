@@ -1,3 +1,5 @@
+// File overview: Mailbox listing, search, pagination, and message flag API handlers.
+
 package web
 
 import (

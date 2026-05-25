@@ -1,3 +1,5 @@
+// File overview: Mail account and mailbox persistence, defaults, hierarchy, and sync-mode helpers.
+
 package syncer
 
 import (

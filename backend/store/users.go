@@ -1,3 +1,5 @@
+// File overview: SQLite persistence layer for tenant-scoped MailMirror data.
+
 package store
 
 import (

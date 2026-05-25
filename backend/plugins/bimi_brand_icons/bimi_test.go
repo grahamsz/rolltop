@@ -1,3 +1,5 @@
+// File overview: Tests for BIMI plugin normalization and lookup behavior.
+
 package bimi_brand_icons
 
 import (

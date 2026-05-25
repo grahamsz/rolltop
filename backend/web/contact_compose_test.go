@@ -1,3 +1,5 @@
+// File overview: Tests for compose behavior that depends on contacts and identities.
+
 package web
 
 import (

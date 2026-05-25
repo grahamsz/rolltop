@@ -1,3 +1,5 @@
+// File overview: Admin API handlers for users, plugins, and remote image blocklist settings.
+
 package web
 
 import (

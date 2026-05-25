@@ -1,3 +1,5 @@
+// File overview: vCard import/export support for contacts.
+
 package web
 
 import (

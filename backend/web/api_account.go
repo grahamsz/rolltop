@@ -1,3 +1,5 @@
+// File overview: Account, SMTP server, identity, folder settings, and setup API handlers.
+
 package web
 
 import (

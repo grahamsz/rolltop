@@ -1,3 +1,5 @@
+// File overview: Tests for language detection behavior.
+
 package language_search
 
 import "testing"

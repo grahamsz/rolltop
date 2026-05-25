@@ -1,3 +1,5 @@
+// File overview: Tests for store schema, tenant isolation, threading, sync runs, preferences, onboarding, and identities.
+
 package store
 
 import (

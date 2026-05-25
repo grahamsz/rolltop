@@ -1,3 +1,5 @@
+// File overview: Tests for contact, identity, and icon persistence.
+
 package store
 
 import (

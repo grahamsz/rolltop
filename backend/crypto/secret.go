@@ -1,3 +1,5 @@
+// File overview: AES-GCM credential encryption and decryption.
+
 package crypto
 
 import (

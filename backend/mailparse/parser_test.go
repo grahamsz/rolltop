@@ -1,3 +1,5 @@
+// File overview: Tests for MIME parsing behavior.
+
 package mailparse
 
 import (

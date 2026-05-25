@@ -1,3 +1,5 @@
+// File overview: Language detection helpers.
+
 package language_search
 
 import (

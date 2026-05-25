@@ -1,3 +1,5 @@
+// File overview: RFC 8058 one-click unsubscribe plugin storage and send tracking helpers. migration declarations. Plugin schema migration declarations and helper persistence.
+
 package one_click_unsubscribe
 
 import (

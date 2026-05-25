@@ -1,3 +1,5 @@
+// File overview: Server-sent event helpers for sync and UI status updates.
+
 package web
 
 import "sync"

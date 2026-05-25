@@ -1,3 +1,5 @@
+// File overview: Message creation, lookup, update, and conversation-thread persistence helpers.
+
 package store
 
 import (

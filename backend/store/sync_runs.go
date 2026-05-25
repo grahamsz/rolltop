@@ -1,3 +1,5 @@
+// File overview: Sync-run lifecycle, progress tracking, interruption handling, and user account discovery.
+
 package store
 
 import "context"

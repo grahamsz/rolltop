@@ -1,3 +1,5 @@
+// File overview: Conversation body clipping, quote handling, and forwarded-message preservation.
+
 package web
 
 import (

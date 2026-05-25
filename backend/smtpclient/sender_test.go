@@ -1,3 +1,5 @@
+// File overview: Tests for SMTP send behavior.
+
 package smtpclient
 
 import (

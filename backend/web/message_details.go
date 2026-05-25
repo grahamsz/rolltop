@@ -1,3 +1,5 @@
+// File overview: Message-detail assembly, headers, body parts, attachments, and display metadata.
+
 package web
 
 import (

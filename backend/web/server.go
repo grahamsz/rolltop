@@ -1,3 +1,5 @@
+// File overview: HTTP server assembly. It wires store/search/sync dependencies, sessions, security headers, static assets, and route middleware into one handler.
+
 package web
 
 import (

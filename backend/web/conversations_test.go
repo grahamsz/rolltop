@@ -1,3 +1,5 @@
+// File overview: Tests for conversation grouping, search filtering, snippets, and summary behavior.
+
 package web
 
 import (

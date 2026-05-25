@@ -1,3 +1,5 @@
+// File overview: Plugin-specific API handlers and asset routes.
+
 package web
 
 import "net/http"

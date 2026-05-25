@@ -1,3 +1,5 @@
+// File overview: IMAP flag reconciliation helpers for read and starred state.
+
 package syncer
 
 import (

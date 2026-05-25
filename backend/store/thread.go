@@ -1,3 +1,5 @@
+// File overview: Thread-key normalization and derivation helpers.
+
 package store
 
 import (

@@ -1,3 +1,5 @@
+// File overview: Database records for user-scoped blob metadata.
+
 package store
 
 import "context"

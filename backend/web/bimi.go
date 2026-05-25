@@ -1,3 +1,5 @@
+// File overview: BIMI domain normalization, lookup records, and asset URL helpers.
+
 package web
 
 import (

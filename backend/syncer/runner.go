@@ -1,3 +1,5 @@
+// File overview: Serialized sync runner that queues normal and priority sync jobs.
+
 package syncer
 
 import (

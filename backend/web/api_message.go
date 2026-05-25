@@ -1,3 +1,5 @@
+// File overview: Message detail, attachment, remote image, unsubscribe, and metadata API handlers.
+
 package web
 
 import (

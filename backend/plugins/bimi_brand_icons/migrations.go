@@ -1,3 +1,5 @@
+// File overview: BIMI brand icon plugin storage, lookup, and asset URL helpers. migration declarations. Plugin schema migration declarations and helper persistence.
+
 package bimi_brand_icons
 
 import "mailmirror/backend/plugins"

@@ -1,3 +1,5 @@
+// File overview: Sync start, sync status, and sync event API handlers.
+
 package web
 
 import (

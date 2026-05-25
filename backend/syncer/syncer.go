@@ -1,3 +1,5 @@
+// File overview: Core IMAP sync service. It coordinates mailbox discovery, message fetch, blob storage, parsing, database writes, and search indexing.
+
 package syncer
 
 import (

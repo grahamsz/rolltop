@@ -1,3 +1,5 @@
+// File overview: Sanitization and presentation helpers for message bodies.
+
 package web
 
 import (

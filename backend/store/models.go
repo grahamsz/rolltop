@@ -1,3 +1,5 @@
+// File overview: Shared store model types. These structs describe users, accounts, mailboxes, messages, attachments, contacts, identities, sync runs, and blob records exchanged across backend packages.
+
 package store
 
 import "time"

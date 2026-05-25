@@ -1,3 +1,5 @@
+// File overview: Tenant isolation tests for sync, blobs, search, and message operations.
+
 package syncer_test
 
 import (

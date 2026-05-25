@@ -1,3 +1,5 @@
+// File overview: API response DTOs. These types define the JSON shapes returned to the Vite frontend.
+
 package web
 
 type apiUser struct {
