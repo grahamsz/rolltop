@@ -1,0 +1,138 @@
+package web
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"mailmirror/backend/store"
+)
+
+func (s *Server) apiSyncStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	var data viewData
+	s.loadMailboxChrome(r.Context(), cu.User.ID, &data)
+	writeJSONCached(w, r, map[string]any{
+		"running":          data.SyncRunning,
+		"latest":           apiSyncRunPtr(data.LatestSyncRun),
+		"active_sync_runs": apiSyncRuns(data.ActiveSyncRuns),
+	})
+}
+
+func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeAPIError(w, http.StatusInternalServerError, "event streaming is not available")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	ch, unsubscribe := s.events.Subscribe(cu.User.ID)
+	defer unsubscribe()
+
+	writeEvent := func() bool {
+		payload, err := s.syncEventPayload(r.Context(), cu.User.ID)
+		if err != nil {
+			return false
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "event: chrome\ndata: %s\n\n", raw); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+	if !writeEvent() {
+		return
+	}
+	heartbeat := time.NewTicker(30 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case _, ok := <-ch:
+			if !ok || !writeEvent() {
+				return
+			}
+		case <-heartbeat.C:
+			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Server) syncEventPayload(ctx context.Context, userID int64) (map[string]any, error) {
+	var data viewData
+	s.loadMailboxChrome(ctx, userID, &data)
+	return map[string]any{
+		"mailboxes":        apiMailboxes(data.Mailboxes),
+		"latest_sync_run":  apiSyncRunPtr(data.LatestSyncRun),
+		"active_sync_runs": apiSyncRuns(data.ActiveSyncRuns),
+		"sync_running":     data.SyncRunning,
+		"storage_retained": true,
+	}, nil
+}
+func (s *Server) apiStorage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	writeJSONCached(w, r, s.cachedStorageStats(cu.User.ID))
+}
+func (s *Server) apiSyncRun(w http.ResponseWriter, r *http.Request, rest string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(strings.Trim(rest, "/"), 10, 64)
+	if err != nil || id <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	run, err := s.store.GetSyncRunForUser(r.Context(), cu.User.ID, id)
+	if store.IsNotFound(err) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	writeJSONCached(w, r, map[string]any{"sync_run": apiSyncRunFrom(run)})
+}

@@ -13,7 +13,8 @@ export default defineConfig({
     proxy: {
       "/api": "http://127.0.0.1:8080",
       "/attachments": "http://127.0.0.1:8080",
-      "/blobs": "http://127.0.0.1:8080"
+      "/blobs": "http://127.0.0.1:8080",
+      "/plugins": "http://127.0.0.1:8080"
     }
   }
 });

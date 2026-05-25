@@ -1,0 +1,55 @@
+@use "mixins/components" as *;
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.list-toolbar {
+  margin-bottom: 0;
+}
+
+.pill {
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  text-decoration: none;
+  color: var(--muted);
+  background: var(--surface);
+
+  &.active {
+    background: var(--active);
+    color: var(--text);
+    border-color: var(--active-strong);
+    font-weight: 700;
+  }
+}
+
+.range-pager {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.range-pager-button {
+  @include icon-button(32px);
+  background: transparent;
+  color: var(--muted);
+
+  &:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--accent-strong);
+  }
+
+  &:disabled {
+    opacity: .38;
+  }
+}

@@ -1,0 +1,644 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"net/mail"
+	"strings"
+)
+
+func NormalizeContactEmail(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if addr, err := mail.ParseAddress(value); err == nil {
+		value = addr.Address
+	}
+	return strings.ToLower(strings.Trim(value, "<> \t\r\n"))
+}
+
+func (s *Store) CreateContact(ctx context.Context, userID int64, c Contact) (Contact, error) {
+	c = normalizeContactForSave(userID, c)
+	ts := nowUnix()
+	tx, err := s.mustDataDB(ctx, userID).BeginTx(ctx, nil)
+	if err != nil {
+		return Contact{}, err
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO contacts
+			(user_id, name_prefix, given_name, additional_name, family_name, name_suffix, display_name, nickname, organization, department, job_title, birthday, notes, categories, is_me, is_primary, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		userID, c.NamePrefix, c.GivenName, c.AdditionalName, c.FamilyName, c.NameSuffix, c.DisplayName, c.Nickname, c.Organization, c.Department, c.JobTitle, c.Birthday, c.Notes, c.Categories, boolInt(c.IsMe), boolInt(c.IsPrimary), ts, ts)
+	if err != nil {
+		_ = tx.Rollback()
+		return Contact{}, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		_ = tx.Rollback()
+		return Contact{}, err
+	}
+	if err := replaceContactChildren(ctx, tx, userID, id, c, ts); err != nil {
+		_ = tx.Rollback()
+		return Contact{}, err
+	}
+	if c.IsMe && c.IsPrimary {
+		if _, err := tx.ExecContext(ctx, `UPDATE contacts SET is_primary = 0, updated_at = ? WHERE user_id = ? AND id <> ? AND is_me = 1`, ts, userID, id); err != nil {
+			_ = tx.Rollback()
+			return Contact{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Contact{}, err
+	}
+	if err := s.ensurePrimaryMeContact(ctx, userID); err != nil {
+		return Contact{}, err
+	}
+	return s.GetContactForUser(ctx, userID, id)
+}
+
+func (s *Store) UpdateContact(ctx context.Context, userID, id int64, c Contact) (Contact, error) {
+	c = normalizeContactForSave(userID, c)
+	ts := nowUnix()
+	tx, err := s.mustDataDB(ctx, userID).BeginTx(ctx, nil)
+	if err != nil {
+		return Contact{}, err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE contacts SET
+			name_prefix = ?, given_name = ?, additional_name = ?, family_name = ?, name_suffix = ?, display_name = ?, nickname = ?, organization = ?, department = ?, job_title = ?, birthday = ?, notes = ?, categories = ?, is_me = ?, is_primary = ?, updated_at = ?
+		WHERE user_id = ? AND id = ?`,
+		c.NamePrefix, c.GivenName, c.AdditionalName, c.FamilyName, c.NameSuffix, c.DisplayName, c.Nickname, c.Organization, c.Department, c.JobTitle, c.Birthday, c.Notes, c.Categories, boolInt(c.IsMe), boolInt(c.IsPrimary), ts, userID, id)
+	if err != nil {
+		_ = tx.Rollback()
+		return Contact{}, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		_ = tx.Rollback()
+		return Contact{}, err
+	}
+	if n == 0 {
+		_ = tx.Rollback()
+		return Contact{}, ErrNotFound
+	}
+	if err := replaceContactChildren(ctx, tx, userID, id, c, ts); err != nil {
+		_ = tx.Rollback()
+		return Contact{}, err
+	}
+	if c.IsMe && c.IsPrimary {
+		if _, err := tx.ExecContext(ctx, `UPDATE contacts SET is_primary = 0, updated_at = ? WHERE user_id = ? AND id <> ? AND is_me = 1`, ts, userID, id); err != nil {
+			_ = tx.Rollback()
+			return Contact{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Contact{}, err
+	}
+	if err := s.ensurePrimaryMeContact(ctx, userID); err != nil {
+		return Contact{}, err
+	}
+	return s.GetContactForUser(ctx, userID, id)
+}
+
+func (s *Store) DeleteContactForUser(ctx context.Context, userID, id int64) error {
+	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `DELETE FROM contacts WHERE user_id = ? AND id = ?`, userID, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return s.ensurePrimaryMeContact(ctx, userID)
+}
+
+func (s *Store) GetContactForUser(ctx context.Context, userID, id int64) (Contact, error) {
+	row := s.mustDataDB(ctx, userID).QueryRowContext(ctx, contactSelectSQL()+` WHERE user_id = ? AND id = ?`, userID, id)
+	c, err := scanContact(row)
+	if err != nil {
+		return Contact{}, err
+	}
+	if err := s.loadContactDetails(ctx, userID, &c); err != nil {
+		return Contact{}, err
+	}
+	return c, nil
+}
+
+func (s *Store) GetContactByEmailForUser(ctx context.Context, userID int64, email string) (Contact, error) {
+	normalized := NormalizeContactEmail(email)
+	if normalized == "" {
+		return Contact{}, ErrNotFound
+	}
+	row := s.mustDataDB(ctx, userID).QueryRowContext(ctx, contactSelectSQL()+`
+		WHERE user_id = ? AND id = (
+			SELECT contact_id FROM contact_emails WHERE user_id = ? AND normalized_email = ? LIMIT 1
+		)`, userID, userID, normalized)
+	c, err := scanContact(row)
+	if err != nil {
+		return Contact{}, err
+	}
+	if err := s.loadContactDetails(ctx, userID, &c); err != nil {
+		return Contact{}, err
+	}
+	return c, nil
+}
+
+func (s *Store) EnsureMeContactForEmail(ctx context.Context, userID int64, email, displayName string) (Contact, error) {
+	email = strings.TrimSpace(email)
+	if NormalizeContactEmail(email) == "" {
+		return Contact{}, ErrNotFound
+	}
+	displayName = trimLimit(displayName, 240)
+	if displayName == "" {
+		displayName = email
+	}
+	hasMe, err := s.hasMeContact(ctx, userID)
+	if err != nil {
+		return Contact{}, err
+	}
+	contact, err := s.GetContactByEmailForUser(ctx, userID, email)
+	if err == nil {
+		contact.IsMe = true
+		if !hasMe {
+			contact.IsPrimary = true
+		}
+		if strings.TrimSpace(contact.DisplayName) == "" || strings.EqualFold(strings.TrimSpace(contact.DisplayName), strings.TrimSpace(email)) {
+			contact.DisplayName = displayName
+		}
+		updated, err := s.UpdateContact(ctx, userID, contact.ID, contact)
+		if err != nil {
+			return Contact{}, err
+		}
+		if err := s.SyncMailIdentitiesForMeContacts(ctx, userID); err != nil {
+			return Contact{}, err
+		}
+		return updated, nil
+	}
+	if !IsNotFound(err) {
+		return Contact{}, err
+	}
+	created, err := s.CreateContact(ctx, userID, Contact{
+		DisplayName: displayName,
+		IsMe:        true,
+		IsPrimary:   !hasMe,
+		Emails: []ContactEmail{{
+			Label:     "email",
+			Email:     email,
+			IsPrimary: true,
+		}},
+	})
+	if err != nil {
+		return Contact{}, err
+	}
+	if err := s.SyncMailIdentitiesForMeContacts(ctx, userID); err != nil {
+		return Contact{}, err
+	}
+	return created, nil
+}
+
+func (s *Store) hasMeContact(ctx context.Context, userID int64) (bool, error) {
+	var n int
+	if err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT count(*) FROM contacts WHERE user_id = ? AND is_me = 1`, userID).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func (s *Store) ListContactsForUser(ctx context.Context, userID int64, query string, limit int) ([]Contact, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	query = strings.TrimSpace(query)
+	var rows *sql.Rows
+	var err error
+	if query == "" {
+		rows, err = s.mustDataDB(ctx, userID).QueryContext(ctx, contactSelectSQL()+`
+			WHERE user_id = ?
+			ORDER BY lower(CASE WHEN display_name <> '' THEN display_name ELSE family_name || ' ' || given_name END), id
+			LIMIT ?`, userID, limit)
+	} else {
+		like := "%" + strings.ToLower(query) + "%"
+		rows, err = s.mustDataDB(ctx, userID).QueryContext(ctx, contactSelectSQL()+`
+			WHERE user_id = ? AND (
+				lower(display_name) LIKE ? OR lower(given_name) LIKE ? OR lower(family_name) LIKE ? OR lower(organization) LIKE ?
+				OR EXISTS (SELECT 1 FROM contact_emails WHERE contact_emails.user_id = contacts.user_id AND contact_emails.contact_id = contacts.id AND lower(email) LIKE ?)
+			)
+			ORDER BY lower(CASE WHEN display_name <> '' THEN display_name ELSE family_name || ' ' || given_name END), id
+			LIMIT ?`, userID, like, like, like, like, like, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	contacts, err := scanContacts(rows)
+	if err != nil {
+		return nil, err
+	}
+	for i := range contacts {
+		if err := s.loadContactDetails(ctx, userID, &contacts[i]); err != nil {
+			return nil, err
+		}
+	}
+	return contacts, nil
+}
+
+func (s *Store) AutocompleteContactsForUser(ctx context.Context, userID int64, query string, limit int) ([]ContactAutocomplete, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	query = strings.ToLower(strings.TrimSpace(query))
+	like := "%" + query + "%"
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT
+			c.id, c.display_name, c.given_name, c.family_name, e.email, e.label,
+			CASE WHEN ci.id IS NULL THEN '' ELSE '/contacts/' || c.id || '/icon' END AS icon_url
+		FROM contact_emails e
+		JOIN contacts c ON c.user_id = e.user_id AND c.id = e.contact_id
+		LEFT JOIN contact_icons ci ON ci.user_id = c.user_id AND ci.contact_id = c.id
+		WHERE e.user_id = ? AND (? = '' OR lower(e.email) LIKE ? OR lower(c.display_name) LIKE ? OR lower(c.given_name) LIKE ? OR lower(c.family_name) LIKE ? OR lower(c.organization) LIKE ?)
+		ORDER BY e.is_primary DESC, lower(CASE WHEN c.display_name <> '' THEN c.display_name ELSE c.given_name || ' ' || c.family_name END), lower(e.email)
+		LIMIT ?`, userID, query, like, like, like, like, like, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ContactAutocomplete
+	for rows.Next() {
+		var item ContactAutocomplete
+		var display, given, family string
+		if err := rows.Scan(&item.ContactID, &display, &given, &family, &item.Email, &item.Label, &item.IconURL); err != nil {
+			return nil, err
+		}
+		item.Name = contactName(display, given, family)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListMeContactsForUser(ctx context.Context, userID int64) ([]Contact, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, contactSelectSQL()+`
+		WHERE user_id = ? AND is_me = 1
+		ORDER BY is_primary DESC, lower(CASE WHEN display_name <> '' THEN display_name ELSE given_name || ' ' || family_name END), id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	contacts, err := scanContacts(rows)
+	if err != nil {
+		return nil, err
+	}
+	for i := range contacts {
+		if err := s.loadContactDetails(ctx, userID, &contacts[i]); err != nil {
+			return nil, err
+		}
+	}
+	return contacts, nil
+}
+
+func (s *Store) ListMeContactEmailsForUser(ctx context.Context, userID int64) ([]string, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT e.email
+		FROM contact_emails e
+		JOIN contacts c ON c.user_id = e.user_id AND c.id = e.contact_id
+		WHERE e.user_id = ? AND c.is_me = 1
+		ORDER BY c.is_primary DESC, e.is_primary DESC, e.id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(email) != "" {
+			out = append(out, email)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SetContactIcon(ctx context.Context, userID, contactID, blobID int64, contentType, filename string, size int64) (ContactIcon, error) {
+	if _, err := s.GetContactForUser(ctx, userID, contactID); err != nil {
+		return ContactIcon{}, err
+	}
+	blob, err := s.GetBlobForUser(ctx, userID, blobID)
+	if err != nil {
+		return ContactIcon{}, err
+	}
+	ts := nowUnix()
+	_, err = s.mustDataDB(ctx, userID).ExecContext(ctx, `INSERT INTO contact_icons (user_id, contact_id, blob_id, content_type, filename, size, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, contact_id) DO UPDATE SET blob_id = excluded.blob_id, content_type = excluded.content_type, filename = excluded.filename, size = excluded.size, updated_at = excluded.updated_at`,
+		userID, contactID, blob.ID, strings.TrimSpace(contentType), strings.TrimSpace(filename), size, ts, ts)
+	if err != nil {
+		return ContactIcon{}, err
+	}
+	return s.GetContactIconForUser(ctx, userID, contactID)
+}
+
+func (s *Store) GetContactIconForUser(ctx context.Context, userID, contactID int64) (ContactIcon, error) {
+	var icon ContactIcon
+	var created, updated int64
+	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT ci.id, ci.user_id, ci.contact_id, ci.blob_id, ci.content_type, ci.filename, ci.size, b.path, ci.created_at, ci.updated_at
+		FROM contact_icons ci
+		JOIN blobs b ON b.user_id = ci.user_id AND b.id = ci.blob_id
+		WHERE ci.user_id = ? AND ci.contact_id = ?`, userID, contactID).
+		Scan(&icon.ID, &icon.UserID, &icon.ContactID, &icon.BlobID, &icon.ContentType, &icon.Filename, &icon.Size, &icon.BlobPath, &created, &updated)
+	icon.CreatedAt = unixTime(created)
+	icon.UpdatedAt = unixTime(updated)
+	return icon, err
+}
+
+func (s *Store) GetContactIconByEmailForUser(ctx context.Context, userID int64, email string) (ContactIcon, error) {
+	normalized := NormalizeContactEmail(email)
+	if normalized == "" {
+		return ContactIcon{}, ErrNotFound
+	}
+	var contactID int64
+	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT e.contact_id
+		FROM contact_emails e
+		JOIN contact_icons ci ON ci.user_id = e.user_id AND ci.contact_id = e.contact_id
+		WHERE e.user_id = ? AND e.normalized_email = ?
+		LIMIT 1`, userID, normalized).Scan(&contactID)
+	if err != nil {
+		return ContactIcon{}, err
+	}
+	return s.GetContactIconForUser(ctx, userID, contactID)
+}
+
+func (s *Store) DeleteContactIconForUser(ctx context.Context, userID, contactID int64) error {
+	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `DELETE FROM contact_icons WHERE user_id = ? AND contact_id = ?`, userID, contactID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func contactSelectSQL() string {
+	return `SELECT id, user_id, name_prefix, given_name, additional_name, family_name, name_suffix, display_name, nickname, organization, department, job_title, birthday, notes, categories, is_me, is_primary, created_at, updated_at FROM contacts`
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanContact(row rowScanner) (Contact, error) {
+	var c Contact
+	var created, updated int64
+	var isMe, isPrimary int
+	err := row.Scan(&c.ID, &c.UserID, &c.NamePrefix, &c.GivenName, &c.AdditionalName, &c.FamilyName, &c.NameSuffix, &c.DisplayName, &c.Nickname, &c.Organization, &c.Department, &c.JobTitle, &c.Birthday, &c.Notes, &c.Categories, &isMe, &isPrimary, &created, &updated)
+	c.IsMe = isMe != 0
+	c.IsPrimary = isPrimary != 0
+	c.CreatedAt = unixTime(created)
+	c.UpdatedAt = unixTime(updated)
+	return c, err
+}
+
+func scanContacts(rows *sql.Rows) ([]Contact, error) {
+	var out []Contact
+	for rows.Next() {
+		c, err := scanContact(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) loadContactDetails(ctx context.Context, userID int64, c *Contact) error {
+	emails, err := s.listContactEmails(ctx, userID, c.ID)
+	if err != nil {
+		return err
+	}
+	phones, err := s.listContactPhones(ctx, userID, c.ID)
+	if err != nil {
+		return err
+	}
+	addresses, err := s.listContactAddresses(ctx, userID, c.ID)
+	if err != nil {
+		return err
+	}
+	urls, err := s.listContactURLs(ctx, userID, c.ID)
+	if err != nil {
+		return err
+	}
+	c.Emails = emails
+	c.Phones = phones
+	c.Addresses = addresses
+	c.URLs = urls
+	if icon, err := s.GetContactIconForUser(ctx, userID, c.ID); err == nil {
+		c.Icon = &icon
+	} else if err != nil && !IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+func replaceContactChildren(ctx context.Context, tx *sql.Tx, userID, contactID int64, c Contact, ts int64) error {
+	for _, table := range []string{"contact_emails", "contact_phones", "contact_addresses", "contact_urls"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE user_id = ? AND contact_id = ?`, userID, contactID); err != nil {
+			return err
+		}
+	}
+	for i, email := range c.Emails {
+		email.Email = strings.TrimSpace(email.Email)
+		email.NormalizedEmail = NormalizeContactEmail(email.Email)
+		if email.Email == "" || email.NormalizedEmail == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_emails (user_id, contact_id, label, email, normalized_email, is_primary, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, userID, contactID, strings.TrimSpace(email.Label), email.Email, email.NormalizedEmail, boolInt(email.IsPrimary || i == 0), ts, ts); err != nil {
+			return err
+		}
+	}
+	for i, phone := range c.Phones {
+		phone.Number = strings.TrimSpace(phone.Number)
+		if phone.Number == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_phones (user_id, contact_id, label, number, is_primary, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, userID, contactID, strings.TrimSpace(phone.Label), phone.Number, boolInt(phone.IsPrimary || i == 0), ts, ts); err != nil {
+			return err
+		}
+	}
+	for i, addr := range c.Addresses {
+		if strings.TrimSpace(addr.Street+addr.Locality+addr.Region+addr.PostalCode+addr.Country) == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_addresses (user_id, contact_id, label, street, locality, region, postal_code, country, is_primary, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, contactID, strings.TrimSpace(addr.Label), strings.TrimSpace(addr.Street), strings.TrimSpace(addr.Locality), strings.TrimSpace(addr.Region), strings.TrimSpace(addr.PostalCode), strings.TrimSpace(addr.Country), boolInt(addr.IsPrimary || i == 0), ts, ts); err != nil {
+			return err
+		}
+	}
+	for i, u := range c.URLs {
+		u.URL = strings.TrimSpace(u.URL)
+		if u.URL == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_urls (user_id, contact_id, label, url, is_primary, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, userID, contactID, strings.TrimSpace(u.Label), u.URL, boolInt(u.IsPrimary || i == 0), ts, ts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) listContactEmails(ctx context.Context, userID, contactID int64) ([]ContactEmail, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, contact_id, label, email, normalized_email, is_primary, created_at, updated_at
+		FROM contact_emails WHERE user_id = ? AND contact_id = ? ORDER BY is_primary DESC, id`, userID, contactID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ContactEmail
+	for rows.Next() {
+		var item ContactEmail
+		var created, updated int64
+		var primary int
+		if err := rows.Scan(&item.ID, &item.UserID, &item.ContactID, &item.Label, &item.Email, &item.NormalizedEmail, &primary, &created, &updated); err != nil {
+			return nil, err
+		}
+		item.IsPrimary = primary != 0
+		item.CreatedAt = unixTime(created)
+		item.UpdatedAt = unixTime(updated)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) listContactPhones(ctx context.Context, userID, contactID int64) ([]ContactPhone, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, contact_id, label, number, is_primary, created_at, updated_at
+		FROM contact_phones WHERE user_id = ? AND contact_id = ? ORDER BY is_primary DESC, id`, userID, contactID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ContactPhone
+	for rows.Next() {
+		var item ContactPhone
+		var created, updated int64
+		var primary int
+		if err := rows.Scan(&item.ID, &item.UserID, &item.ContactID, &item.Label, &item.Number, &primary, &created, &updated); err != nil {
+			return nil, err
+		}
+		item.IsPrimary = primary != 0
+		item.CreatedAt = unixTime(created)
+		item.UpdatedAt = unixTime(updated)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) listContactAddresses(ctx context.Context, userID, contactID int64) ([]ContactAddress, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, contact_id, label, street, locality, region, postal_code, country, is_primary, created_at, updated_at
+		FROM contact_addresses WHERE user_id = ? AND contact_id = ? ORDER BY is_primary DESC, id`, userID, contactID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ContactAddress
+	for rows.Next() {
+		var item ContactAddress
+		var created, updated int64
+		var primary int
+		if err := rows.Scan(&item.ID, &item.UserID, &item.ContactID, &item.Label, &item.Street, &item.Locality, &item.Region, &item.PostalCode, &item.Country, &primary, &created, &updated); err != nil {
+			return nil, err
+		}
+		item.IsPrimary = primary != 0
+		item.CreatedAt = unixTime(created)
+		item.UpdatedAt = unixTime(updated)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) listContactURLs(ctx context.Context, userID, contactID int64) ([]ContactURL, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, contact_id, label, url, is_primary, created_at, updated_at
+		FROM contact_urls WHERE user_id = ? AND contact_id = ? ORDER BY is_primary DESC, id`, userID, contactID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ContactURL
+	for rows.Next() {
+		var item ContactURL
+		var created, updated int64
+		var primary int
+		if err := rows.Scan(&item.ID, &item.UserID, &item.ContactID, &item.Label, &item.URL, &primary, &created, &updated); err != nil {
+			return nil, err
+		}
+		item.IsPrimary = primary != 0
+		item.CreatedAt = unixTime(created)
+		item.UpdatedAt = unixTime(updated)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func normalizeContactForSave(userID int64, c Contact) Contact {
+	c.UserID = userID
+	c.NamePrefix = trimLimit(c.NamePrefix, 80)
+	c.GivenName = trimLimit(c.GivenName, 160)
+	c.AdditionalName = trimLimit(c.AdditionalName, 160)
+	c.FamilyName = trimLimit(c.FamilyName, 160)
+	c.NameSuffix = trimLimit(c.NameSuffix, 80)
+	c.DisplayName = trimLimit(c.DisplayName, 240)
+	c.Nickname = trimLimit(c.Nickname, 160)
+	c.Organization = trimLimit(c.Organization, 240)
+	c.Department = trimLimit(c.Department, 160)
+	c.JobTitle = trimLimit(c.JobTitle, 160)
+	c.Birthday = trimLimit(c.Birthday, 32)
+	c.Notes = trimLimit(c.Notes, 12000)
+	c.Categories = trimLimit(c.Categories, 1000)
+	if c.DisplayName == "" {
+		c.DisplayName = contactName("", c.GivenName, c.FamilyName)
+	}
+	if c.DisplayName == "" && len(c.Emails) > 0 {
+		c.DisplayName = strings.TrimSpace(c.Emails[0].Email)
+	}
+	if c.DisplayName == "" {
+		c.DisplayName = strings.TrimSpace(c.Organization)
+	}
+	return c
+}
+
+func contactName(display, given, family string) string {
+	display = strings.TrimSpace(display)
+	if display != "" {
+		return display
+	}
+	return strings.TrimSpace(strings.Join(strings.Fields(strings.TrimSpace(given)+" "+strings.TrimSpace(family)), " "))
+}
+
+func trimLimit(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit > 0 && len(value) > limit {
+		value = value[:limit]
+	}
+	return value
+}
+
+func (s *Store) ensurePrimaryMeContact(ctx context.Context, userID int64) error {
+	var n int
+	if err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT count(*) FROM contacts WHERE user_id = ? AND is_me = 1 AND is_primary = 1`, userID).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE contacts SET is_primary = 1, updated_at = ? WHERE id = (
+		SELECT id FROM contacts WHERE user_id = ? AND is_me = 1 ORDER BY id LIMIT 1
+	)`, nowUnix(), userID)
+	return err
+}

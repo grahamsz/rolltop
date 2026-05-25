@@ -1,0 +1,265 @@
+package web
+
+type apiUser struct {
+	ID         int64  `json:"id"`
+	Email      string `json:"email"`
+	Name       string `json:"name"`
+	IsAdmin    bool   `json:"is_admin"`
+	DateLocale string `json:"date_locale"`
+	DateFormat string `json:"date_format"`
+	Theme      string `json:"theme"`
+}
+
+type apiMailbox struct {
+	ID                 int64  `json:"id"`
+	AccountID          int64  `json:"account_id"`
+	AccountEmail       string `json:"account_email"`
+	Name               string `json:"name"`
+	MessageCount       int    `json:"message_count"`
+	UnreadCount        int    `json:"unread_count"`
+	SyncMode           string `json:"sync_mode"`
+	Role               string `json:"role"`
+	Icon               string `json:"icon"`
+	ShowInSidebar      bool   `json:"show_in_sidebar"`
+	ShowInAllMail      bool   `json:"show_in_all_mail"`
+	IncludeInSearch    bool   `json:"include_in_search"`
+	LastUID            uint32 `json:"last_uid"`
+	RemoteMessageCount int    `json:"remote_message_count"`
+	RemoteUnreadCount  int    `json:"remote_unread_count"`
+	RemoteUIDNext      uint32 `json:"remote_uid_next"`
+	SyncPercent        int    `json:"sync_percent"`
+	LocalMessageCount  int    `json:"local_message_count"`
+	LocalSyncPercent   int    `json:"local_sync_percent"`
+	SearchIndexedCount *int   `json:"search_indexed_count,omitempty"`
+	SearchIndexTotal   *int   `json:"search_index_total,omitempty"`
+	SearchIndexPercent *int   `json:"search_index_percent,omitempty"`
+}
+
+type apiAccount struct {
+	ID                  int64  `json:"id"`
+	Email               string `json:"email"`
+	Label               string `json:"label"`
+	Host                string `json:"host"`
+	Port                int    `json:"port"`
+	Username            string `json:"username"`
+	UseTLS              bool   `json:"use_tls"`
+	SMTPHost            string `json:"smtp_host"`
+	SMTPPort            int    `json:"smtp_port"`
+	SMTPUsername        string `json:"smtp_username"`
+	SMTPUseTLS          bool   `json:"smtp_use_tls"`
+	SMTPSameAsIMAP      bool   `json:"smtp_same_as_imap"`
+	Mailbox             string `json:"mailbox"`
+	SyncIntervalMinutes int    `json:"sync_interval_minutes"`
+}
+
+type apiSMTPAccount struct {
+	ID       int64  `json:"id"`
+	Label    string `json:"label"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+	UseTLS   bool   `json:"use_tls"`
+}
+
+type apiMailIdentity struct {
+	ID             int64  `json:"id"`
+	ContactID      int64  `json:"contact_id"`
+	ContactEmailID int64  `json:"contact_email_id"`
+	SMTPAccountID  int64  `json:"smtp_account_id"`
+	Email          string `json:"email"`
+	DisplayName    string `json:"display_name"`
+	Signature      string `json:"signature"`
+	IsPrimary      bool   `json:"is_primary"`
+}
+
+type apiMessage struct {
+	ID             int64  `json:"id"`
+	MailboxID      int64  `json:"mailbox_id"`
+	Subject        string `json:"subject"`
+	FromAddr       string `json:"from_addr"`
+	ToAddr         string `json:"to_addr"`
+	CCAddr         string `json:"cc_addr"`
+	Date           string `json:"date"`
+	DateShort      string `json:"date_short"`
+	IsRead         bool   `json:"is_read"`
+	IsStarred      bool   `json:"is_starred"`
+	HasAttachments bool   `json:"has_attachments"`
+	Snippet        string `json:"snippet"`
+}
+
+type apiConversation struct {
+	Message                  apiMessage `json:"message"`
+	StarredMessageID         int64      `json:"starred_message_id"`
+	Participants             string     `json:"participants"`
+	Count                    int        `json:"count"`
+	IsRead                   bool       `json:"is_read"`
+	HasAttachments           bool       `json:"has_attachments"`
+	AttachmentNames          []string   `json:"attachment_names,omitempty"`
+	AttachmentMatches        []string   `json:"attachment_matches,omitempty"`
+	AttachmentContentMatched bool       `json:"attachment_content_matched,omitempty"`
+	Snippet                  string     `json:"snippet"`
+	MatchTerms               []string   `json:"match_terms,omitempty"`
+}
+
+type apiAttachment struct {
+	ID             int64                 `json:"id"`
+	Filename       string                `json:"filename"`
+	ContentType    string                `json:"content_type"`
+	Size           int64                 `json:"size"`
+	DownloadURL    string                `json:"download_url"`
+	Matched        bool                  `json:"matched,omitempty"`
+	ContentMatched bool                  `json:"content_matched,omitempty"`
+	Preview        *apiAttachmentPreview `json:"preview,omitempty"`
+}
+
+type apiAttachmentPreview struct {
+	Available bool   `json:"available"`
+	Kind      string `json:"kind"`
+	URL       string `json:"url"`
+	Status    string `json:"status"`
+	PluginID  string `json:"plugin_id"`
+}
+
+type apiSenderVisual struct {
+	PluginID string `json:"plugin_id"`
+	Kind     string `json:"kind"`
+	URL      string `json:"url"`
+}
+
+type apiContact struct {
+	ID             int64               `json:"id"`
+	NamePrefix     string              `json:"name_prefix"`
+	GivenName      string              `json:"given_name"`
+	AdditionalName string              `json:"additional_name"`
+	FamilyName     string              `json:"family_name"`
+	NameSuffix     string              `json:"name_suffix"`
+	DisplayName    string              `json:"display_name"`
+	Nickname       string              `json:"nickname"`
+	Organization   string              `json:"organization"`
+	Department     string              `json:"department"`
+	JobTitle       string              `json:"job_title"`
+	Birthday       string              `json:"birthday"`
+	Notes          string              `json:"notes"`
+	Categories     string              `json:"categories"`
+	IsMe           bool                `json:"is_me"`
+	IsPrimary      bool                `json:"is_primary"`
+	Emails         []apiContactEmail   `json:"emails"`
+	Phones         []apiContactPhone   `json:"phones"`
+	Addresses      []apiContactAddress `json:"addresses"`
+	URLs           []apiContactURL     `json:"urls"`
+	IconURL        string              `json:"icon_url"`
+}
+
+type apiContactEmail struct {
+	ID        int64  `json:"id,omitempty"`
+	Label     string `json:"label"`
+	Email     string `json:"email"`
+	IsPrimary bool   `json:"is_primary"`
+}
+
+type apiContactPhone struct {
+	ID        int64  `json:"id,omitempty"`
+	Label     string `json:"label"`
+	Number    string `json:"number"`
+	IsPrimary bool   `json:"is_primary"`
+}
+
+type apiContactAddress struct {
+	ID         int64  `json:"id,omitempty"`
+	Label      string `json:"label"`
+	Street     string `json:"street"`
+	Locality   string `json:"locality"`
+	Region     string `json:"region"`
+	PostalCode string `json:"postal_code"`
+	Country    string `json:"country"`
+	IsPrimary  bool   `json:"is_primary"`
+}
+
+type apiContactURL struct {
+	ID        int64  `json:"id,omitempty"`
+	Label     string `json:"label"`
+	URL       string `json:"url"`
+	IsPrimary bool   `json:"is_primary"`
+}
+
+type apiContactAutocomplete struct {
+	ContactID int64  `json:"contact_id"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
+	Label     string `json:"label"`
+	IconURL   string `json:"icon_url"`
+}
+
+type apiComposeIdentity struct {
+	ID        int64  `json:"id"`
+	Label     string `json:"label"`
+	Email     string `json:"email"`
+	Header    string `json:"header"`
+	IconURL   string `json:"icon_url"`
+	IsPrimary bool   `json:"is_primary"`
+}
+
+type apiThreadMessage struct {
+	Message         apiMessage       `json:"message"`
+	Attachments     []apiAttachment  `json:"attachments"`
+	HeaderDetails   []apiHeaderItem  `json:"header_details"`
+	OneClickUnsub   bool             `json:"one_click_unsubscribe"`
+	OneClickSentAt  string           `json:"one_click_unsubscribe_sent_at"`
+	SenderName      string           `json:"sender_name"`
+	SenderEmail     string           `json:"sender_email"`
+	SenderInitial   string           `json:"sender_initial"`
+	SenderVisual    *apiSenderVisual `json:"sender_visual,omitempty"`
+	RecipientLine   string           `json:"recipient_line"`
+	Snippet         string           `json:"snippet"`
+	BodyDoc         string           `json:"body_doc"`
+	FullBodyDoc     string           `json:"full_body_doc"`
+	HasHiddenQuoted bool             `json:"has_hidden_quoted"`
+	HasDisplayBody  bool             `json:"has_display_body"`
+	BodyPreviewOnly bool             `json:"body_preview_only"`
+	HasRemoteImages bool             `json:"has_remote_images"`
+	ImagesAllowed   bool             `json:"images_allowed"`
+	Expanded        bool             `json:"expanded"`
+	ReplySubject    string           `json:"reply_subject"`
+}
+
+type apiHeaderItem struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+type apiSyncRun struct {
+	ID               int64  `json:"id"`
+	AccountID        int64  `json:"account_id"`
+	Status           string `json:"status"`
+	StartedAt        string `json:"started_at"`
+	FinishedAt       string `json:"finished_at"`
+	UpdatedAt        string `json:"updated_at"`
+	MessagesSeen     int    `json:"messages_seen"`
+	MessagesStored   int    `json:"messages_stored"`
+	MessagesSkipped  int    `json:"messages_skipped"`
+	NewMessages      int    `json:"new_messages"`
+	LatestNewFrom    string `json:"latest_new_from"`
+	LatestNewSubject string `json:"latest_new_subject"`
+	MessagesTotal    int    `json:"messages_total"`
+	MailboxesDone    int    `json:"mailboxes_done"`
+	MailboxesTotal   int    `json:"mailboxes_total"`
+	CurrentMailbox   string `json:"current_mailbox"`
+	CurrentUID       uint32 `json:"current_uid"`
+	Error            string `json:"error"`
+}
+
+type apiSyncFolder struct {
+	Mailbox    apiMailbox  `json:"mailbox"`
+	IsRunning  bool        `json:"is_running"`
+	LastRun    *apiSyncRun `json:"last_run"`
+	CanSyncNow bool        `json:"can_sync_now"`
+}
+
+type apiPluginSetting struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	Enabled          bool   `json:"enabled"`
+	EnabledByDefault bool   `json:"enabled_by_default"`
+	Heavy            bool   `json:"heavy"`
+}

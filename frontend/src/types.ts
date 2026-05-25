@@ -5,7 +5,7 @@ export type User = {
   is_admin: boolean;
   date_locale: string;
   date_format: "mdy" | "dmy" | "ymd" | "locale" | string;
-  theme: "classic" | "modern" | string;
+  theme: "classic" | "classic_dark" | "matrix" | string;
 };
 
 export type Mailbox = {
@@ -26,6 +26,11 @@ export type Mailbox = {
   remote_unread_count: number;
   remote_uid_next: number;
   sync_percent: number;
+  local_message_count?: number;
+  local_sync_percent?: number;
+  search_indexed_count?: number;
+  search_index_total?: number;
+  search_index_percent?: number;
 };
 
 export type Message = {
@@ -65,6 +70,15 @@ export type Attachment = {
   download_url: string;
   matched?: boolean;
   content_matched?: boolean;
+  preview?: AttachmentPreview;
+};
+
+export type AttachmentPreview = {
+  available: boolean;
+  kind: string;
+  url: string;
+  status: string;
+  plugin_id: string;
 };
 
 export type HeaderDetail = {
@@ -81,6 +95,7 @@ export type ThreadMessage = {
   sender_name: string;
   sender_email: string;
   sender_initial: string;
+  sender_visual?: SenderVisual;
   recipient_line: string;
   snippet: string;
   body_doc: string;
@@ -94,8 +109,97 @@ export type ThreadMessage = {
   reply_subject: string;
 };
 
+export type SenderVisual = {
+  plugin_id: string;
+  kind: string;
+  url: string;
+};
+
+export type ContactEmail = {
+  id?: number;
+  label: string;
+  email: string;
+  is_primary: boolean;
+};
+
+export type ContactPhone = {
+  id?: number;
+  label: string;
+  number: string;
+  is_primary: boolean;
+};
+
+export type ContactAddress = {
+  id?: number;
+  label: string;
+  street: string;
+  locality: string;
+  region: string;
+  postal_code: string;
+  country: string;
+  is_primary: boolean;
+};
+
+export type ContactURL = {
+  id?: number;
+  label: string;
+  url: string;
+  is_primary: boolean;
+};
+
+export type Contact = {
+  id: number;
+  name_prefix: string;
+  given_name: string;
+  additional_name: string;
+  family_name: string;
+  name_suffix: string;
+  display_name: string;
+  nickname: string;
+  organization: string;
+  department: string;
+  job_title: string;
+  birthday: string;
+  notes: string;
+  categories: string;
+  is_me: boolean;
+  is_primary: boolean;
+  emails: ContactEmail[];
+  phones: ContactPhone[];
+  addresses: ContactAddress[];
+  urls: ContactURL[];
+  icon_url: string;
+};
+
+export type ContactAutocomplete = {
+  contact_id: number;
+  name: string;
+  email: string;
+  label: string;
+  icon_url: string;
+};
+
+export type ComposeIdentity = {
+  id: number;
+  label: string;
+  email: string;
+  header: string;
+  icon_url: string;
+  is_primary: boolean;
+};
+
+export type PluginSetting = {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  enabled_by_default: boolean;
+  heavy: boolean;
+};
+
 export type SyncRun = {
   id: number;
+  account_id: number;
   status: string;
   started_at: string;
   finished_at: string;
@@ -104,6 +208,8 @@ export type SyncRun = {
   messages_stored: number;
   messages_skipped: number;
   new_messages: number;
+  latest_new_from: string;
+  latest_new_subject: string;
   messages_total: number;
   mailboxes_done: number;
   mailboxes_total: number;
@@ -131,6 +237,7 @@ export type Bootstrap = {
   sync_running?: boolean;
   account_needs_password?: boolean;
   account_notice?: string;
+  enabled_plugins?: string[];
 };
 
 export type ChromeEvent = {
@@ -138,6 +245,16 @@ export type ChromeEvent = {
   latest_sync_run: SyncRun | null;
   active_sync_runs: SyncRun[];
   sync_running: boolean;
+};
+
+export type ComposeAttachmentUpload = {
+  field: string;
+  filename: string;
+  content_type: string;
+  content_id: string;
+  inline: boolean;
+  size: number;
+  file: File;
 };
 
 export type ComposeForm = {
@@ -148,11 +265,13 @@ export type ComposeForm = {
   body: string;
   body_html: string;
   in_reply_to_id: number;
+  from_identity_id: number;
 };
 
 export type Account = {
   id: number;
   email: string;
+  label: string;
   host: string;
   port: number;
   username: string;
@@ -164,4 +283,24 @@ export type Account = {
   smtp_same_as_imap: boolean;
   mailbox: string;
   sync_interval_minutes: number;
+};
+
+export type SMTPAccount = {
+  id: number;
+  label: string;
+  host: string;
+  port: number;
+  username: string;
+  use_tls: boolean;
+};
+
+export type MailIdentity = {
+  id: number;
+  contact_id: number;
+  contact_email_id: number;
+  smtp_account_id: number;
+  email: string;
+  display_name: string;
+  signature: string;
+  is_primary: boolean;
 };

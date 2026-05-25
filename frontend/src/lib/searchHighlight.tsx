@@ -1,0 +1,139 @@
+export function searchHighlightTerms(query: string, extraTerms: string[] = []): string[] {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  const add = (raw: string) => {
+    const value = raw.trim().replace(/^[`"'~*()[\]{}<>.,;:]+|[`"'~*()[\]{}<>.,;:]+$/g, "");
+    if (!value) return;
+    const lower = value.toLocaleLowerCase();
+    if (["and", "or", "not"].includes(lower) || seen.has(lower)) return;
+    seen.add(lower);
+    terms.push(value);
+  };
+
+  for (const token of searchQueryTokens(query)) {
+    const fieldIndex = token.indexOf(":");
+    let value = token;
+    if (fieldIndex > 0) {
+      const field = token.slice(0, fieldIndex).trim().toLocaleLowerCase();
+      if (["after", "before", "newer", "older", "year", "in", "has", "is", "lang"].includes(field)) continue;
+      value = token.slice(fieldIndex + 1);
+    }
+    add(value);
+    value.split(/[^\p{L}\p{N}]+/u).forEach((word) => {
+      if ([...word].length >= 3) add(word);
+    });
+  }
+  extraTerms.forEach(add);
+  return terms.sort((a, b) => [...b].length - [...a].length).slice(0, 16);
+}
+
+function searchQueryTokens(query: string): string[] {
+  const tokens: string[] = [];
+  let index = 0;
+  while (index < query.length) {
+    while (index < query.length && /\s/u.test(query[index])) index++;
+    if (index >= query.length) break;
+    let token = "";
+    let quote = "";
+    while (index < query.length) {
+      const char = query[index];
+      if (quote) {
+        if (char === quote) {
+          quote = "";
+        } else {
+          token += char;
+        }
+        index++;
+        continue;
+      }
+      if (char === "\"" || char === "'") {
+        quote = char;
+        index++;
+        continue;
+      }
+      if (/\s/u.test(char)) break;
+      token += char;
+      index++;
+    }
+    if (token.trim()) tokens.push(token.trim());
+  }
+  return tokens;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function highlightRegExp(query: string, extraTerms: string[] = []): RegExp | null {
+  const terms = searchHighlightTerms(query, extraTerms);
+  if (terms.length === 0) return null;
+  try {
+    return new RegExp(`(${terms.map(escapeRegExp).join("|")})`, "giu");
+  } catch {
+    return null;
+  }
+}
+
+export function HighlightedText({ text, query, terms = [] }: { text: string; query: string; terms?: string[] }) {
+  const pattern = highlightRegExp(query, terms);
+  if (!pattern || !text) return <>{text}</>;
+  const parts = text.split(pattern);
+  return (
+    <>
+      {parts.map((part, index) =>
+        part === "" ? null : index % 2 === 1 ? (
+          <mark className="search-hit" key={`${part}-${index}`}>
+            {part}
+          </mark>
+        ) : (
+          <span key={`${part}-${index}`}>{part}</span>
+        )
+      )}
+    </>
+  );
+}
+
+export function highlightEmailDocument(doc: Document | null | undefined, query: string, terms: string[] = []) {
+  if (!doc || (!query.trim() && terms.length === 0)) return;
+  const body = doc.body;
+  if (!body) return;
+  const pattern = highlightRegExp(query, terms);
+  if (!pattern) return;
+  if (!doc.head.querySelector("[data-mailmirror-highlight-style]")) {
+    const style = doc.createElement("style");
+    style.setAttribute("data-mailmirror-highlight-style", "true");
+    style.textContent = "mark.mailmirror-search-hit{background:rgba(229,169,40,.26);color:#202426;border-radius:3px;padding:0 1px;box-shadow:none}html[data-mailmirror-theme=\"classic_dark\"] mark.mailmirror-search-hit,html[data-mailmirror-theme=\"matrix\"] mark.mailmirror-search-hit{background:rgba(224,182,77,.28);color:#f5fff8}";
+    doc.head.appendChild(style);
+  }
+  const blocked = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "TEXTAREA", "MARK"]);
+  const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || blocked.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+      if (!node.nodeValue || !pattern.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+      pattern.lastIndex = 0;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  const nodes: Text[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    nodes.push(node as Text);
+  }
+  for (const node of nodes) {
+    const value = node.nodeValue || "";
+    pattern.lastIndex = 0;
+    const fragment = doc.createDocumentFragment();
+    let lastIndex = 0;
+    for (const match of value.matchAll(pattern)) {
+      const index = match.index ?? 0;
+      if (index > lastIndex) fragment.appendChild(doc.createTextNode(value.slice(lastIndex, index)));
+      const mark = doc.createElement("mark");
+      mark.className = "mailmirror-search-hit";
+      mark.textContent = match[0];
+      fragment.appendChild(mark);
+      lastIndex = index + match[0].length;
+    }
+    if (lastIndex < value.length) fragment.appendChild(doc.createTextNode(value.slice(lastIndex)));
+    node.parentNode?.replaceChild(fragment, node);
+  }
+}

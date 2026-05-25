@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import type { Bootstrap, ChromeEvent } from "./types";
+import type { Bootstrap, ChromeEvent, SyncRun } from "./types";
 import type { LocationState, MoveTarget, Toast } from "./appTypes";
 import { ToastStack } from "./components/common";
 import { SetupPage, LoginPage } from "./features/auth/AuthPages";
@@ -9,6 +9,22 @@ import { ComposeOverlay } from "./features/compose/ComposeViews";
 import { RouteView } from "./RouteView";
 import { messageFromError } from "./lib/errors";
 import { currentLocation } from "./lib/routes";
+
+
+function displayNotificationSender(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const angle = trimmed.match(/^(.+?)\s*<[^>]+>$/);
+  const value = (angle ? angle[1] : trimmed).replace(/^"|"$/g, "").trim();
+  if (!value.includes("@")) return truncateNotificationText(value, 64);
+  return truncateNotificationText(value.split("@")[0] || value, 64);
+}
+
+function truncateNotificationText(value: string, max: number) {
+  const trimmed = value.trim().replace(/\s+/g, " ");
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
+}
 
 export default function App() {
   const [location, setLocation] = useState<LocationState>(() => currentLocation());
@@ -53,7 +69,8 @@ export default function App() {
   }, [refreshBootstrap]);
 
   useEffect(() => {
-    const theme = bootstrap?.user?.theme === "modern" ? "modern" : "classic";
+    const savedTheme = bootstrap?.user?.theme;
+    const theme = savedTheme === "classic_dark" || savedTheme === "matrix" ? savedTheme : "classic";
     document.documentElement.dataset.theme = theme;
   }, [bootstrap?.user?.theme]);
 
@@ -98,10 +115,17 @@ export default function App() {
     [removeToast]
   );
 
-  const notifyNewMail = useCallback((count: number) => {
+  const notifyNewMail = useCallback((count: number, run: SyncRun | null) => {
     if (!("Notification" in window) || Notification.permission !== "granted" || count <= 0) return;
-    new Notification("MailMirror", {
-      body: count === 1 ? "1 new message synced." : `${count} new messages synced.`,
+    const sender = displayNotificationSender(run?.latest_new_from || "");
+    const subject = truncateNotificationText(run?.latest_new_subject || "", 110);
+    const title = sender ? `MailMirror - ${sender}` : "MailMirror";
+    const fallback = count === 1 ? "1 new message synced." : `${count} new messages synced.`;
+    const body = subject
+      ? count === 1 ? subject : `${count} new messages synced. Latest: ${subject}`
+      : fallback;
+    new Notification(title, {
+      body,
       tag: "mailmirror-new-mail"
     });
   }, []);
@@ -123,7 +147,7 @@ export default function App() {
           const previous = lastNotify.current;
           const newMessages = chrome.latest_sync_run.new_messages || 0;
           if (previous && previous.id === chrome.latest_sync_run.id && newMessages > previous.stored) {
-            notifyNewMail(newMessages - previous.stored);
+            notifyNewMail(newMessages - previous.stored, chrome.latest_sync_run);
           }
           lastNotify.current = { id: chrome.latest_sync_run.id, stored: newMessages };
         }
@@ -182,7 +206,7 @@ export default function App() {
   if (!bootstrap) {
     return (
       <div className="auth-page">
-        <div className="auth-brand">MailMirror</div>
+        <div className="auth-brand">mailmirror</div>
         {bootError ? <div className="error">{bootError}</div> : <div className="panel muted">Loading mail...</div>}
         <ToastStack toasts={toasts} onDismiss={removeToast} />
       </div>
@@ -213,6 +237,7 @@ export default function App() {
         syncRunning={Boolean(bootstrap.sync_running)}
         accountNeedsPassword={Boolean(bootstrap.account_needs_password)}
         accountNotice={bootstrap.account_notice || ""}
+        enabledPlugins={bootstrap.enabled_plugins || []}
         location={location}
         navigate={navigate}
         logout={logout}
@@ -227,6 +252,7 @@ export default function App() {
           mailboxes={bootstrap.mailboxes || []}
           latestSyncRun={bootstrap.latest_sync_run || null}
           activeSyncRuns={bootstrap.active_sync_runs || []}
+          enabledPlugins={bootstrap.enabled_plugins || []}
           location={location}
           navigate={navigate}
           hiddenMessageIDs={hiddenMessageIDs}

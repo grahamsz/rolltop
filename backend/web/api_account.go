@@ -1,0 +1,562 @@
+package web
+
+import (
+	"context"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	mmcrypto "mailmirror/backend/crypto"
+	"mailmirror/backend/store"
+)
+
+type accountSettingsInput struct {
+	ID                  int64  `json:"id"`
+	Email               string `json:"email"`
+	Label               string `json:"label"`
+	Host                string `json:"host"`
+	Port                int    `json:"port"`
+	Username            string `json:"username"`
+	Password            string `json:"password"`
+	UseTLS              bool   `json:"use_tls"`
+	SMTPHost            string `json:"smtp_host"`
+	SMTPPort            int    `json:"smtp_port"`
+	SMTPUsername        string `json:"smtp_username"`
+	SMTPPassword        string `json:"smtp_password"`
+	SMTPUseTLS          bool   `json:"smtp_use_tls"`
+	SMTPSameAsIMAP      bool   `json:"smtp_same_as_imap"`
+	Mailbox             string `json:"mailbox"`
+	SyncIntervalMinutes int    `json:"sync_interval_minutes"`
+}
+
+func (s *Server) apiAccount(w http.ResponseWriter, r *http.Request) {
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		accounts, err := s.store.ListMailAccountsForUser(r.Context(), cu.User.ID)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+		if len(accounts) > 0 && s.syncer != nil && s.syncer.Fetcher != nil {
+			s.refreshMailboxStatusesAsync(cu.User.ID)
+		}
+		smtpAccounts, err := s.store.ListSMTPAccountsForUser(r.Context(), cu.User.ID)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+		identities, err := s.store.ListMailIdentitiesForUser(r.Context(), cu.User.ID)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+		meContacts, err := s.store.ListMeContactsForUser(r.Context(), cu.User.ID)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+		runs, err := s.store.ListSyncRunsForUser(r.Context(), cu.User.ID, 20)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+		var accountOut any
+		if len(accounts) > 0 {
+			accountOut = apiAccountFromStore(accounts[0])
+		}
+		needsPassword, notice := s.accountCredentialNotice(r.Context(), cu.User.ID)
+		writeJSONCached(w, r, map[string]any{
+			"account":                accountOut,
+			"imap_accounts":          apiAccountsFromStore(accounts),
+			"smtp_accounts":          apiSMTPAccountsFromStore(smtpAccounts),
+			"identities":             apiMailIdentitiesFromStore(identities),
+			"me_contacts":            apiContactsFromStore(meContacts),
+			"sync_runs":              apiSyncRuns(runs),
+			"sync_folders":           apiSyncFolders(s.syncFolderViews(r.Context(), cu.User.ID, runs)),
+			"notice":                 notice,
+			"account_needs_password": needsPassword,
+		})
+	case http.MethodPost:
+		if !s.verifyCSRF(w, r) {
+			return
+		}
+		var in accountSettingsInput
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+		account, msg, err := s.saveMailAccountFromInput(r.Context(), cu.User.ID, in, false)
+		if err != nil {
+			if msg != "" {
+				writeAPIError(w, http.StatusBadRequest, msg)
+			} else {
+				writeAPIError(w, http.StatusBadRequest, "Could not save account settings.")
+			}
+			return
+		}
+		if err := s.ensureMailAccountOnboarding(r.Context(), cu.User, account); err != nil {
+			s.serverError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (s *Server) apiIMAPAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	var in accountSettingsInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	account, msg, err := s.saveMailAccountFromInput(r.Context(), cu.User.ID, in, true)
+	if err != nil {
+		if msg != "" {
+			writeAPIError(w, http.StatusBadRequest, msg)
+			return
+		}
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, "Could not save IMAP account.")
+		return
+	}
+	if err := s.ensureMailAccountOnboarding(r.Context(), cu.User, account); err != nil {
+		s.serverError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "account": apiAccountFromStore(account)})
+}
+
+func (s *Server) saveMailAccountFromInput(ctx context.Context, userID int64, in accountSettingsInput, explicit bool) (store.MailAccount, string, error) {
+	in.Email = strings.TrimSpace(in.Email)
+	in.Label = strings.TrimSpace(in.Label)
+	in.Host = strings.TrimSpace(in.Host)
+	in.Username = strings.TrimSpace(in.Username)
+	in.Mailbox = strings.TrimSpace(in.Mailbox)
+	if in.Username == "" {
+		in.Username = in.Email
+	}
+	if in.Label == "" {
+		in.Label = firstNonEmpty(in.Email, in.Username, in.Host)
+	}
+	if in.Mailbox == "" {
+		in.Mailbox = store.DefaultMailboxPattern
+	}
+	if in.SMTPSameAsIMAP && in.SMTPPort == 0 {
+		in.SMTPPort = 587
+	}
+	if in.SMTPPort == 0 {
+		in.SMTPPort = 587
+	}
+	if in.Port <= 0 || in.Port > 65535 || in.SMTPPort <= 0 || in.SMTPPort > 65535 {
+		return store.MailAccount{}, "Ports must be valid TCP ports.", store.ErrNotFound
+	}
+	var existing store.MailAccount
+	existingErr := store.ErrNotFound
+	if in.ID > 0 {
+		existing, existingErr = s.store.GetMailAccountForUser(ctx, userID, in.ID)
+	} else if !explicit {
+		existing, existingErr = s.store.GetMailAccount(ctx, userID)
+		if existingErr == nil {
+			in.ID = existing.ID
+		}
+	}
+	if existingErr != nil && !store.IsNotFound(existingErr) {
+		return store.MailAccount{}, "", existingErr
+	}
+	encrypted := ""
+	if in.Password == "" && existingErr == nil {
+		if _, err := mmcrypto.DecryptString(s.masterKey, existing.EncryptedPassword); err != nil {
+			return store.MailAccount{}, "Saved IMAP password cannot be decrypted with the current master key. Re-enter the IMAP password.", err
+		}
+		encrypted = existing.EncryptedPassword
+	} else if in.Password != "" {
+		var err error
+		encrypted, err = mmcrypto.EncryptString(s.masterKey, in.Password)
+		if err != nil {
+			return store.MailAccount{}, "", err
+		}
+	} else {
+		return store.MailAccount{}, "IMAP password is required for a new account.", store.ErrNotFound
+	}
+	encryptedSMTP := ""
+	if in.SMTPPassword == "" && existingErr == nil {
+		encryptedSMTP = existing.EncryptedSMTPPassword
+	}
+	if encryptedSMTP == "" && in.SMTPPassword == "" {
+		encryptedSMTP = encrypted
+	}
+	if in.SMTPPassword != "" {
+		var err error
+		encryptedSMTP, err = mmcrypto.EncryptString(s.masterKey, in.SMTPPassword)
+		if err != nil {
+			return store.MailAccount{}, "", err
+		}
+	}
+	if in.SMTPSameAsIMAP {
+		in.SMTPHost = in.Host
+		in.SMTPUsername = in.Username
+		in.SMTPUseTLS = in.UseTLS
+		encryptedSMTP = encrypted
+		if in.SMTPPort <= 0 {
+			in.SMTPPort = 587
+		}
+	}
+	account := store.MailAccount{
+		ID:                    in.ID,
+		UserID:                userID,
+		Email:                 in.Email,
+		Label:                 in.Label,
+		Host:                  in.Host,
+		Port:                  in.Port,
+		Username:              in.Username,
+		EncryptedPassword:     encrypted,
+		UseTLS:                in.UseTLS,
+		SMTPHost:              in.SMTPHost,
+		SMTPPort:              in.SMTPPort,
+		SMTPUsername:          in.SMTPUsername,
+		EncryptedSMTPPassword: encryptedSMTP,
+		SMTPUseTLS:            in.SMTPUseTLS,
+		Mailbox:               in.Mailbox,
+		SyncIntervalMinutes:   in.SyncIntervalMinutes,
+	}
+	if explicit && in.ID == 0 {
+		saved, err := s.store.CreateMailAccount(ctx, account)
+		return saved, "", err
+	}
+	saved, err := s.store.UpsertMailAccount(ctx, account)
+	return saved, "", err
+}
+
+func (s *Server) ensureMailAccountOnboarding(ctx context.Context, user store.User, account store.MailAccount) error {
+	smtpAccounts, err := s.store.ListSMTPAccountsForUser(ctx, user.ID)
+	if err != nil {
+		return err
+	}
+	if len(smtpAccounts) == 0 {
+		password := account.EncryptedSMTPPassword
+		if strings.TrimSpace(password) == "" {
+			password = account.EncryptedPassword
+		}
+		if strings.TrimSpace(password) != "" {
+			if _, err := s.store.CreateSMTPAccount(ctx, store.SMTPAccount{
+				UserID:            user.ID,
+				Label:             firstNonEmpty(account.Label, account.Email, account.Username),
+				Host:              inferredSMTPHost(account),
+				Port:              firstPositive(account.SMTPPort, 587),
+				Username:          firstNonEmpty(account.SMTPUsername, account.Username, account.Email),
+				EncryptedPassword: password,
+				UseTLS:            account.SMTPUseTLS,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := s.store.EnsureMeContactForEmail(ctx, user.ID, account.Email, firstNonEmpty(user.Name, account.Label, account.Email)); err != nil && !store.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+func inferredSMTPHost(account store.MailAccount) string {
+	host := strings.TrimSpace(account.SMTPHost)
+	if host == "" || strings.EqualFold(host, strings.TrimSpace(account.Host)) {
+		if inferred := inferSMTPHostFromIMAP(strings.TrimSpace(account.Host)); inferred != "" {
+			return inferred
+		}
+	}
+	return host
+}
+
+func inferSMTPHostFromIMAP(host string) string {
+	lower := strings.ToLower(strings.TrimSpace(host))
+	if strings.HasPrefix(lower, "imap.") && len(host) > len("imap.") {
+		return "smtp." + host[len("imap."):]
+	}
+	return strings.TrimSpace(host)
+}
+
+func firstPositive(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func (s *Server) apiSMTPAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	var in struct {
+		ID       int64  `json:"id"`
+		Label    string `json:"label"`
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		UseTLS   bool   `json:"use_tls"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if in.Port <= 0 || in.Port > 65535 {
+		writeAPIError(w, http.StatusBadRequest, "Port must be a valid TCP port.")
+		return
+	}
+	encrypted := ""
+	if in.ID > 0 {
+		existing, err := s.store.GetSMTPAccountForUser(r.Context(), cu.User.ID, in.ID)
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+		encrypted = existing.EncryptedPassword
+	}
+	if in.Password != "" {
+		var err error
+		encrypted, err = mmcrypto.EncryptString(s.masterKey, in.Password)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+	}
+	account, err := s.store.UpsertSMTPAccount(r.Context(), store.SMTPAccount{
+		ID:                in.ID,
+		UserID:            cu.User.ID,
+		Label:             in.Label,
+		Host:              in.Host,
+		Port:              in.Port,
+		Username:          in.Username,
+		EncryptedPassword: encrypted,
+		UseTLS:            in.UseTLS,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "Could not save SMTP account.")
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "smtp_account": apiSMTPAccountFromStore(account)})
+}
+
+func (s *Server) apiMailIdentity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	var in apiMailIdentity
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	identity, err := s.store.UpdateMailIdentityForUser(r.Context(), cu.User.ID, store.MailIdentity{
+		ID:            in.ID,
+		SMTPAccountID: in.SMTPAccountID,
+		DisplayName:   in.DisplayName,
+		Signature:     in.Signature,
+		IsPrimary:     in.IsPrimary,
+	})
+	if store.IsNotFound(err) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "Could not save identity.")
+		return
+	}
+	identities, err := s.store.ListMailIdentitiesForUser(r.Context(), cu.User.ID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "identity": apiMailIdentityFromStore(identity), "identities": apiMailIdentitiesFromStore(identities)})
+}
+
+func (s *Server) apiAccountSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	if s.syncRunner == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "Sync is not configured.")
+		return
+	}
+	if !s.syncRunner.Start(cu.User.ID) {
+		writeAPIError(w, http.StatusConflict, "Sync is already running for this account.")
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) < 2 {
+		http.NotFound(w, r)
+		return
+	}
+	mailboxID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || mailboxID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	mb, err := s.store.GetMailboxForUser(r.Context(), cu.User.ID, mailboxID)
+	if store.IsNotFound(err) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	action := parts[1]
+	if len(parts) == 3 && parts[1] == "search-index" && parts[2] == "rebuild" {
+		action = "rebuild-search-index"
+	} else if len(parts) != 2 {
+		http.NotFound(w, r)
+		return
+	}
+	switch action {
+	case "mode":
+		var in struct {
+			SyncMode string `json:"sync_mode"`
+		}
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+		if err := s.store.UpdateMailboxSyncMode(r.Context(), cu.User.ID, mailboxID, in.SyncMode); err != nil {
+			s.serverError(w, err)
+			return
+		}
+		s.events.Notify(cu.User.ID)
+		writeJSON(w, map[string]any{"ok": true})
+	case "settings":
+		var in struct {
+			SyncMode        string `json:"sync_mode"`
+			Role            string `json:"role"`
+			Icon            string `json:"icon"`
+			ShowInSidebar   bool   `json:"show_in_sidebar"`
+			ShowInAllMail   bool   `json:"show_in_all_mail"`
+			IncludeInSearch bool   `json:"include_in_search"`
+		}
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+		previousInclude := mb.IncludeInSearch
+		if err := s.store.UpdateMailboxSettings(r.Context(), cu.User.ID, mailboxID, store.MailboxSettings{
+			SyncMode:        in.SyncMode,
+			Role:            in.Role,
+			Icon:            in.Icon,
+			ShowInSidebar:   in.ShowInSidebar,
+			ShowInAllMail:   in.ShowInAllMail,
+			IncludeInSearch: in.IncludeInSearch,
+		}); err != nil {
+			s.serverError(w, err)
+			return
+		}
+		if previousInclude != in.IncludeInSearch && s.syncer != nil {
+			go func(userID, mailboxID int64, include bool) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				if err := s.syncer.ReconcileMailboxSearchIndex(ctx, userID, mailboxID, include); err != nil {
+					log.Printf("reconcile mailbox search index user_id=%d mailbox_id=%d include=%t: %v", userID, mailboxID, include, err)
+				}
+				s.events.Notify(userID)
+			}(cu.User.ID, mailboxID, in.IncludeInSearch)
+		}
+		s.events.Notify(cu.User.ID)
+		writeJSON(w, map[string]any{"ok": true})
+	case "sync":
+		effectiveMode := mb.SyncMode
+		if effectiveMode == "inherit" {
+			if mode, err := s.store.EffectiveMailboxSyncMode(r.Context(), cu.User.ID, mb.AccountID, mb); err == nil {
+				effectiveMode = mode
+			}
+		}
+		if strings.EqualFold(effectiveMode, "never") {
+			writeAPIError(w, http.StatusBadRequest, "That folder is set to never sync.")
+			return
+		}
+		if s.syncRunner == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "Sync is not configured.")
+			return
+		}
+		if !s.syncRunner.StartAccountMailboxes(cu.User.ID, mb.AccountID, []string{mb.Name}) {
+			writeAPIError(w, http.StatusConflict, "Sync is already running for this folder.")
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	case "rebuild-search-index":
+		if s.syncer == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "Search indexing is not configured.")
+			return
+		}
+		run, err := s.syncer.StartRebuildMailboxSearchIndex(r.Context(), cu.User.ID, mb.ID, func() {
+			s.events.Notify(cu.User.ID)
+		})
+		if err != nil {
+			if store.IsNotFound(err) {
+				http.NotFound(w, r)
+				return
+			}
+			writeAPIError(w, http.StatusBadGateway, "could not start index rebuild")
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "run_id": run.ID})
+	default:
+		http.NotFound(w, r)
+	}
+}

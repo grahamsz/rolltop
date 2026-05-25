@@ -1,0 +1,141 @@
+package web
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"strings"
+)
+
+func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/"), "/")
+	switch {
+	case path == "bootstrap":
+		s.apiBootstrap(w, r)
+	case path == "setup":
+		s.apiSetup(w, r)
+	case path == "login":
+		s.apiLogin(w, r)
+	case path == "logout":
+		s.apiLogout(w, r)
+	case path == "profile":
+		s.apiProfile(w, r)
+	case path == "mail":
+		s.apiMail(w, r)
+	case path == "search":
+		s.apiSearch(w, r)
+	case path == "compose":
+		s.apiCompose(w, r)
+	case path == "sync/status":
+		s.apiSyncStatus(w, r)
+	case path == "events":
+		s.apiEvents(w, r)
+	case path == "storage":
+		s.apiStorage(w, r)
+	case path == "plugins":
+		s.apiPlugins(w, r)
+	case path == "contacts":
+		s.apiContacts(w, r)
+	case strings.HasPrefix(path, "contacts/"):
+		s.apiContactPath(w, r, strings.TrimPrefix(path, "contacts/"))
+	case path == "brand-icons":
+		s.apiBrandIcons(w, r)
+	case path == "account":
+		s.apiAccount(w, r)
+	case path == "account/imap":
+		s.apiIMAPAccount(w, r)
+	case path == "account/smtp":
+		s.apiSMTPAccount(w, r)
+	case path == "account/identities":
+		s.apiMailIdentity(w, r)
+	case path == "account/sync":
+		s.apiAccountSync(w, r)
+	case strings.HasPrefix(path, "account/folders/"):
+		s.apiAccountFolder(w, r, strings.TrimPrefix(path, "account/folders/"))
+	case path == "admin/users":
+		s.apiAdminUsers(w, r)
+	case path == "admin/plugins":
+		s.apiAdminPlugins(w, r)
+	case strings.HasPrefix(path, "admin/plugins/"):
+		s.apiAdminPlugin(w, r, strings.TrimPrefix(path, "admin/plugins/"))
+	case path == "admin/remote-image-blocklist":
+		s.apiAdminRemoteImageBlocklist(w, r)
+	case path == "messages/bulk-move":
+		s.apiBulkMoveMessages(w, r)
+	case strings.HasPrefix(path, "messages/"):
+		s.apiMessagePath(w, r, strings.TrimPrefix(path, "messages/"))
+	case strings.HasPrefix(path, "sync-runs/"):
+		s.apiSyncRun(w, r, strings.TrimPrefix(path, "sync-runs/"))
+	default:
+		http.NotFound(w, r)
+	}
+}
+func (s *Server) requireAPIAuth(w http.ResponseWriter, r *http.Request) (currentUser, bool) {
+	cu, ok := current(r)
+	if !ok {
+		writeAPIError(w, http.StatusUnauthorized, "login required")
+		return currentUser{}, false
+	}
+	return cu, true
+}
+
+func (s *Server) requireAPIAdmin(w http.ResponseWriter, r *http.Request) (currentUser, bool) {
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return currentUser{}, false
+	}
+	if !cu.User.IsAdmin {
+		writeAPIError(w, http.StatusForbidden, "forbidden")
+		return currentUser{}, false
+	}
+	return cu, true
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
+	defer r.Body.Close()
+	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid JSON")
+		return false
+	}
+	return true
+}
+
+func writeJSON(w http.ResponseWriter, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeJSONCached(w http.ResponseWriter, r *http.Request, value any) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "failed to encode response")
+		return
+	}
+	sum := sha256.Sum256(raw)
+	etag := `"` + hex.EncodeToString(sum[:]) + `"`
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	w.Header().Set("ETag", etag)
+	if r.Method == http.MethodGet && etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	_, _ = w.Write(append(raw, '\n'))
+}
+
+func etagMatches(header string, etag string) bool {
+	for _, part := range strings.Split(header, ",") {
+		candidate := strings.TrimSpace(part)
+		if candidate == "*" || candidate == etag {
+			return true
+		}
+	}
+	return false
+}
+
+func writeAPIError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": message})
+}

@@ -1,0 +1,153 @@
+package gravatar_sender_icons
+
+import (
+	"context"
+	"crypto/md5"
+	"database/sql"
+	"encoding/hex"
+	"strings"
+	"time"
+
+	"mailmirror/backend/plugins"
+)
+
+const MaxImageBytes = 512 * 1024
+
+type Image struct {
+	ID          int64
+	UserID      int64
+	EmailHash   string
+	ContentType string
+	Image       []byte
+	Status      string
+	Error       string
+	FetchedAt   time.Time
+	ExpiresAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func Migrations() []plugins.Migration {
+	return []plugins.Migration{{
+		PluginID: plugins.GravatarSenderIcons,
+		ID:       "001_create_cache",
+		Statements: []string{
+			`CREATE TABLE IF NOT EXISTS plugin_gravatar_cache (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				email_hash TEXT NOT NULL,
+				content_type TEXT NOT NULL DEFAULT '',
+				image BLOB,
+				status TEXT NOT NULL DEFAULT '',
+				error TEXT NOT NULL DEFAULT '',
+				fetched_at INTEGER NOT NULL DEFAULT 0,
+				expires_at INTEGER NOT NULL DEFAULT 0,
+				updated_at INTEGER NOT NULL DEFAULT 0,
+				UNIQUE(user_id, email_hash)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_plugin_gravatar_cache_user_hash ON plugin_gravatar_cache(user_id, email_hash)`,
+		},
+	}}
+}
+
+func Hash(email string) string {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return ""
+	}
+	sum := md5.Sum([]byte(email))
+	return hex.EncodeToString(sum[:])
+}
+
+func NormalizeHash(value string) string {
+	value = strings.Trim(strings.TrimSpace(value), "/")
+	if i := strings.IndexByte(value, '/'); i >= 0 {
+		value = value[:i]
+	}
+	value = strings.ToLower(value)
+	if len(value) != 32 {
+		return ""
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return ""
+		}
+	}
+	return value
+}
+
+func AssetURL(hash string) string {
+	hash = NormalizeHash(hash)
+	if hash == "" {
+		return ""
+	}
+	return "/plugins/gravatar_sender_icons/avatar/" + hash
+}
+
+func FetchURL(hash string) string {
+	hash = NormalizeHash(hash)
+	if hash == "" {
+		return ""
+	}
+	return "https://www.gravatar.com/avatar/" + hash + "?d=404&s=96"
+}
+
+func ErrorTTL(now time.Time) time.Time {
+	return now.Add(12 * time.Hour)
+}
+
+func MissingTTL(now time.Time) time.Time {
+	return now.Add(7 * 24 * time.Hour)
+}
+
+func PositiveTTL(now time.Time) time.Time {
+	return now.Add(30 * 24 * time.Hour)
+}
+
+func GetImage(ctx context.Context, db *sql.DB, userID int64, emailHash string) (Image, error) {
+	var image Image
+	var fetchedAt, expiresAt, updatedAt int64
+	err := db.QueryRowContext(ctx, `SELECT id, user_id, email_hash, content_type, image, status, error, fetched_at, expires_at, updated_at
+		FROM plugin_gravatar_cache WHERE user_id = ? AND email_hash = ?`, userID, NormalizeHash(emailHash)).
+		Scan(&image.ID, &image.UserID, &image.EmailHash, &image.ContentType, &image.Image, &image.Status, &image.Error, &fetchedAt, &expiresAt, &updatedAt)
+	if err != nil {
+		return Image{}, err
+	}
+	image.FetchedAt = unixTime(fetchedAt)
+	image.ExpiresAt = unixTime(expiresAt)
+	image.UpdatedAt = unixTime(updatedAt)
+	return image, nil
+}
+
+func UpsertImage(ctx context.Context, db *sql.DB, image Image) error {
+	emailHash := NormalizeHash(image.EmailHash)
+	if image.UserID == 0 || emailHash == "" {
+		return nil
+	}
+	if image.FetchedAt.IsZero() {
+		image.FetchedAt = time.Now().UTC()
+	}
+	if image.UpdatedAt.IsZero() {
+		image.UpdatedAt = image.FetchedAt
+	}
+	_, err := db.ExecContext(ctx, `INSERT INTO plugin_gravatar_cache
+			(user_id, email_hash, content_type, image, status, error, fetched_at, expires_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, email_hash) DO UPDATE SET
+			content_type = excluded.content_type,
+			image = excluded.image,
+			status = excluded.status,
+			error = excluded.error,
+			fetched_at = excluded.fetched_at,
+			expires_at = excluded.expires_at,
+			updated_at = excluded.updated_at`,
+		image.UserID, emailHash, image.ContentType, image.Image, image.Status, image.Error,
+		image.FetchedAt.UTC().Unix(), image.ExpiresAt.UTC().Unix(), image.UpdatedAt.UTC().Unix())
+	return err
+}
+
+func unixTime(v int64) time.Time {
+	if v == 0 {
+		return time.Time{}
+	}
+	return time.Unix(v, 0).UTC()
+}

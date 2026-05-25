@@ -1,0 +1,25 @@
+@mixin truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@mixin icon-button($size: 28px, $radius: 6px) {
+  min-width: $size;
+  min-height: $size;
+  width: $size;
+  height: $size;
+  border: 0;
+  border-radius: $radius;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@mixin panel-surface($radius: 8px) {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: $radius;
+}

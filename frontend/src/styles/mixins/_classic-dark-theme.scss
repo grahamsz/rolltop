@@ -1,0 +1,150 @@
+@mixin theme {
+  color-scheme: dark;
+  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-brand: var(--font-display);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --bg: radial-gradient(circle at 16% -10%, rgba(72, 182, 168, .13), transparent 34rem), linear-gradient(180deg, #111816 0%, #0b1110 100%);
+  --surface: #151f1c;
+  --surface-subtle: #1b2823;
+  --surface-ink: #26382f;
+  --text: #e6eee9;
+  --muted: #94a49d;
+  --border: rgba(174, 190, 183, .24);
+  --border-strong: rgba(174, 190, 183, .44);
+  --hover: rgba(72, 182, 168, .12);
+  --active: rgba(72, 182, 168, .18);
+  --active-strong: rgba(123, 196, 182, .54);
+  --accent: #48b6a8;
+  --accent-strong: #8bd4c8;
+  --accent-soft: rgba(72, 182, 168, .16);
+  --accent-warm: #e07a5f;
+  --accent-warm-strong: #f1a08b;
+  --accent-sun: #e0b64d;
+  --danger: #e67b68;
+  --ok: #5ec7a7;
+  --button-text: #061210;
+  --focus: #e07a5f;
+  --button-hover-border: rgba(224, 122, 95, .48);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .38), 0 14px 34px rgba(0, 0, 0, .26);
+}
+
+@mixin polish {
+  body {
+    background-attachment: fixed;
+  }
+
+  .topbar {
+    background: rgba(18, 27, 24, .94);
+    box-shadow: inset 0 -3px 0 rgba(224, 122, 95, .44), 0 12px 28px rgba(0, 0, 0, .22);
+    backdrop-filter: blur(14px);
+  }
+
+  .sidebar {
+    background: linear-gradient(180deg, rgba(18, 27, 24, .94), rgba(12, 18, 16, .96));
+  }
+
+  .top-search input,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="number"],
+  textarea,
+  select {
+    background: rgba(10, 16, 14, .82);
+    border-color: var(--border);
+  }
+
+  button.secondary,
+  .button.secondary,
+  button.ghost,
+  .button.ghost {
+    background: rgba(27, 40, 35, .82);
+    color: var(--text);
+  }
+
+  .panel,
+  .message-table,
+  .thread-shell,
+  .thread-card,
+  .thread-body,
+  .compose-window,
+  .inline-reply,
+  .inline-reply-row,
+  .confirm-dialog,
+  .toast {
+    background: rgba(21, 31, 28, .94);
+    border-color: var(--border);
+  }
+
+  .message-row {
+    background: transparent;
+    border-bottom-color: rgba(174, 190, 183, .16);
+  }
+
+  .message-row.read {
+    background: rgba(11, 17, 16, .44);
+    color: var(--muted);
+  }
+
+  .message-row.unread {
+    background: rgba(72, 182, 168, .075);
+    color: var(--text);
+  }
+
+  .message-row:hover,
+  .thread-card.collapsed:hover,
+  .message-row.selected {
+    background: rgba(72, 182, 168, .14);
+    box-shadow: inset 3px 0 0 var(--accent-warm), 0 1px 0 rgba(72, 182, 168, .16);
+  }
+
+  .date-preview,
+  .stat-card,
+  .message-menu-panel,
+  .search-autocomplete,
+  .folder-sync-notice,
+  .sidebar-sync,
+  .sync-run-list,
+  .sync-run-mini,
+  .body-notice,
+  .image-notice,
+  .compose-format,
+  th {
+    background: rgba(11, 17, 16, .72);
+    border-color: var(--border);
+  }
+
+  .avatar,
+  .inline-reply-avatar {
+    background: var(--surface-ink);
+    color: #eef8f3;
+    box-shadow: inset 0 -3px 0 var(--accent-warm);
+  }
+
+  .email-frame {
+    background: var(--surface);
+  }
+
+  .search-hit,
+  mark {
+    background: rgba(224, 182, 77, .24);
+    color: var(--text);
+  }
+
+  .skeleton-block {
+    background: linear-gradient(90deg, rgba(174, 190, 183, .08) 0%, rgba(174, 190, 183, .18) 45%, rgba(174, 190, 183, .08) 90%);
+  }
+
+  .progress,
+  .folder-sync-progress,
+  .sync-percent > div {
+    background: rgba(174, 190, 183, .16);
+  }
+
+  .progress div,
+  .folder-sync-progress div,
+  .sync-percent > div span {
+    background: var(--accent);
+  }
+}

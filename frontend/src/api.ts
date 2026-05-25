@@ -1,8 +1,15 @@
 import type {
   Account,
   Bootstrap,
+  Contact,
+  ContactAutocomplete,
+  ComposeAttachmentUpload,
   ComposeForm,
+  ComposeIdentity,
   Conversation,
+  MailIdentity,
+  PluginSetting,
+  SMTPAccount,
   StorageStats,
   SyncFolder,
   SyncRun,
@@ -38,8 +45,19 @@ async function parse<T>(res: Response): Promise<T> {
   return data as T;
 }
 
+const getCache = new Map<string, { etag: string; data: unknown }>();
+
 export async function getJSON<T>(url: string): Promise<T> {
-  return parse<T>(await fetch(url, { headers: { Accept: "application/json" } }));
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const cached = getCache.get(url);
+  if (cached?.etag) headers["If-None-Match"] = cached.etag;
+  const res = await fetch(url, { headers });
+  if (res.status === 304 && cached) return cached.data as T;
+  const data = await parse<T>(res);
+  const etag = res.headers.get("ETag") || "";
+  if (etag) getCache.set(url, { etag, data });
+  else getCache.delete(url);
+  return data;
 }
 
 export async function postJSON<T>(url: string, csrf: string, body: unknown = {}): Promise<T> {
@@ -52,6 +70,45 @@ export async function postJSON<T>(url: string, csrf: string, body: unknown = {})
         "X-CSRF-Token": csrf
       },
       body: JSON.stringify(body)
+    })
+  );
+}
+
+export async function putJSON<T>(url: string, csrf: string, body: unknown = {}): Promise<T> {
+  return parse<T>(
+    await fetch(url, {
+      method: "PUT",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf
+      },
+      body: JSON.stringify(body)
+    })
+  );
+}
+
+export async function deleteJSON<T>(url: string, csrf: string): Promise<T> {
+  return parse<T>(
+    await fetch(url, {
+      method: "DELETE",
+      headers: {
+        Accept: "application/json",
+        "X-CSRF-Token": csrf
+      }
+    })
+  );
+}
+
+export async function postForm<T>(url: string, csrf: string, body: FormData): Promise<T> {
+  return parse<T>(
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "X-CSRF-Token": csrf
+      },
+      body
     })
   );
 }
@@ -87,10 +144,20 @@ export const api = {
       message: { id: number; subject: string; mailbox_id: number };
       thread: ThreadMessage[];
       compose_from: string;
+      from_identities: ComposeIdentity[];
       mailbox_id: number;
       conversation: number;
     }>(`/api/messages/${id}${q}`);
   },
+  messageLoadStatus: (id: string) =>
+    getJSON<{
+      conversation: number;
+      imap_fetch_count: number;
+      local_blob_count: number;
+      indexed_count: number;
+      unavailable_count: number;
+      source: "imap" | "local_blob" | "local" | "indexed" | "preview" | string;
+    }>(`/api/messages/${id}/load-status`),
   trustImages: (csrf: string, id: number) => postJSON<{ ok: boolean }>(`/api/messages/${id}/images/trust`, csrf),
   unsubscribe: (csrf: string, id: number) =>
     postJSON<{ ok: boolean; already_sent: boolean; sent_at: string }>(`/api/messages/${id}/unsubscribe`, csrf),
@@ -104,12 +171,56 @@ export const api = {
       mailbox_id: mailboxID
     }),
   compose: (query: string) =>
-    getJSON<{ compose: ComposeForm; compose_from: string }>(`/api/compose${query ? `?${query}` : ""}`),
-  send: (csrf: string, form: ComposeForm) => postJSON<{ ok: boolean; message_id: number }>("/api/compose", csrf, form),
+    getJSON<{ compose: ComposeForm; compose_from: string; from_identities: ComposeIdentity[] }>(`/api/compose${query ? `?${query}` : ""}`),
+  send: (csrf: string, form: ComposeForm, attachments: ComposeAttachmentUpload[] = []) => {
+    if (attachments.length === 0) {
+      return postJSON<{ ok: boolean; message_id: number }>("/api/compose", csrf, form);
+    }
+    const body = new FormData();
+    body.append("payload", JSON.stringify({
+      ...form,
+      attachments: attachments.map((attachment) => ({
+        field: attachment.field,
+        filename: attachment.filename,
+        content_type: attachment.content_type,
+        content_id: attachment.content_id,
+        inline: attachment.inline,
+        size: attachment.size
+      }))
+    }));
+    attachments.forEach((attachment) => body.append(attachment.field, attachment.file, attachment.filename));
+    return postForm<{ ok: boolean; message_id: number }>("/api/compose", csrf, body);
+  },
+  contacts: (query = "") => {
+    const q = query.trim() ? `?${new URLSearchParams({ q: query.trim() })}` : "";
+    return getJSON<{ contacts: Contact[] }>(`/api/contacts${q}`);
+  },
+  contactAutocomplete: (query: string) =>
+    getJSON<{ contacts: ContactAutocomplete[] }>(`/api/contacts/autocomplete?${new URLSearchParams({ q: query })}`),
+  createContact: (csrf: string, contact: Contact) => postJSON<{ contact: Contact }>("/api/contacts", csrf, contact),
+  updateContact: (csrf: string, contact: Contact) => putJSON<{ contact: Contact }>(`/api/contacts/${contact.id}`, csrf, contact),
+  deleteContact: (csrf: string, id: number) => deleteJSON<{ ok: boolean }>(`/api/contacts/${id}`, csrf),
+  uploadContactIcon: (csrf: string, id: number, file: File) => {
+    const form = new FormData();
+    form.append("icon", file);
+    return postForm<{ contact: Contact }>(`/api/contacts/${id}/icon`, csrf, form);
+  },
+  deleteContactIcon: (csrf: string, id: number) => deleteJSON<{ contact: Contact }>(`/api/contacts/${id}/icon`, csrf),
+  importContacts: (csrf: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return postForm<{ ok: boolean; imported: number; updated: number }>("/api/contacts/import", csrf, form);
+  },
+  addSenderContact: (csrf: string, id: number) =>
+    postJSON<{ contact: Contact; created: boolean }>(`/api/messages/${id}/contacts/add-sender`, csrf),
   syncStatus: () => getJSON<{ running: boolean; latest: SyncRun | null }>("/api/sync/status"),
   account: () =>
     getJSON<{
       account: Account | null;
+      imap_accounts: Account[];
+      smtp_accounts: SMTPAccount[];
+      identities: MailIdentity[];
+      me_contacts: Contact[];
       sync_runs: SyncRun[];
       sync_folders: SyncFolder[];
       storage?: StorageStats;
@@ -117,9 +228,16 @@ export const api = {
       account_needs_password?: boolean;
     }>("/api/account"),
   storage: () => getJSON<StorageStats>("/api/storage"),
+  plugins: () => getJSON<{ enabled: string[] }>("/api/plugins"),
   saveProfile: (csrf: string, profile: { date_locale: string; date_format: string; theme: string }) =>
     postJSON<{ user: User }>("/api/profile", csrf, profile),
   saveAccount: (csrf: string, account: Record<string, unknown>) => postJSON<{ ok: boolean }>("/api/account", csrf, account),
+  saveIMAPAccount: (csrf: string, account: Record<string, unknown>) =>
+    postJSON<{ ok: boolean; account: Account }>("/api/account/imap", csrf, account),
+  saveSMTPAccount: (csrf: string, account: Record<string, unknown>) =>
+    postJSON<{ ok: boolean; smtp_account: SMTPAccount }>("/api/account/smtp", csrf, account),
+  saveMailIdentity: (csrf: string, identity: Record<string, unknown>) =>
+    postJSON<{ ok: boolean; identity: MailIdentity; identities: MailIdentity[] }>("/api/account/identities", csrf, identity),
   syncAccount: (csrf: string) => postJSON<{ ok: boolean }>("/api/account/sync", csrf),
   setFolderMode: (csrf: string, id: number, syncMode: string) =>
     postJSON<{ ok: boolean }>(`/api/account/folders/${id}/mode`, csrf, { sync_mode: syncMode }),
@@ -131,6 +249,9 @@ export const api = {
   users: () => getJSON<{ users: User[] }>("/api/admin/users"),
   createUser: (csrf: string, body: { email: string; name: string; password: string; is_admin: boolean }) =>
     postJSON<{ ok: boolean }>("/api/admin/users", csrf, body),
+  adminPlugins: () => getJSON<{ plugins: PluginSetting[] }>("/api/admin/plugins"),
+  setAdminPlugin: (csrf: string, id: string, enabled: boolean) =>
+    postJSON<{ ok: boolean; plugins: PluginSetting[] }>(`/api/admin/plugins/${encodeURIComponent(id)}`, csrf, { enabled }),
   remoteImageBlocklist: () => getJSON<{ patterns: string[] }>("/api/admin/remote-image-blocklist"),
   saveRemoteImageBlocklist: (csrf: string, patterns: string[]) =>
     postJSON<{ ok: boolean; patterns: string[] }>("/api/admin/remote-image-blocklist", csrf, { patterns }),

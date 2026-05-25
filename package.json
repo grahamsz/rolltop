@@ -8,6 +8,8 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@embedpdf/pdfium": "^2.14.3",
+    "@embedpdf/react-pdf-viewer": "^2.14.3",
     "@fontsource/fraunces": "^5.2.9",
     "@phosphor-icons/react": "^2.1.10",
     "@vitejs/plugin-react": "^4.3.4",
