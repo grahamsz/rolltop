@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    name: Test, Build, And Report
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out
+        uses: actions/checkout@v4
+
+      - name: Set Up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set Up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Build Frontend
+        run: |
+          mkdir -p test-results build-artifacts
+          set +e
+          npm run build 2>&1 | tee test-results/frontend-build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "### Frontend Build"
+            echo
+            if [ "$status" -eq 0 ]; then
+              echo "Status: pass"
+            else
+              echo "Status: fail"
+            fi
+            echo
+            echo "Build log: \`test-results/frontend-build.log\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Upload Frontend Build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          if-no-files-found: error
+
+      - name: Run Go Tests
+        run: |
+          mkdir -p test-results
+          set +e
+          go test -json ./... 2>&1 | tee test-results/go-test.json
+          status=${PIPESTATUS[0]}
+          set -e
+
+          node .github/scripts/go-test-report.mjs test-results/go-test.json test-results
+
+          if [ "$status" -eq 0 ]; then
+            set +e
+            go test -covermode=atomic -coverprofile=test-results/go-coverage.out ./... > test-results/go-coverage-run.log 2>&1
+            coverage_status=$?
+            set -e
+            if [ "$coverage_status" -eq 0 ] && [ -s test-results/go-coverage.out ]; then
+              go tool cover -func=test-results/go-coverage.out > test-results/go-coverage.txt
+              go tool cover -html=test-results/go-coverage.out -o test-results/go-coverage.html
+            else
+              {
+                echo "Go coverage generation failed with exit status $coverage_status."
+                echo
+                cat test-results/go-coverage-run.log
+              } > test-results/go-coverage-error.log
+            fi
+          else
+            echo "Go coverage skipped because tests failed." > test-results/go-coverage-run.log
+          fi
+
+          cat test-results/go-test-report.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -s test-results/go-coverage.txt ]; then
+            {
+              echo
+              echo "### Go Coverage"
+              echo
+              echo "\`\`\`"
+              tail -n 1 test-results/go-coverage.txt
+              echo "\`\`\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          exit "$status"
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results
+          if-no-files-found: error
+
+      - name: Build Backend Binary
+        run: |
+          mkdir -p build-artifacts
+          CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o build-artifacts/mailmirror-linux-amd64 ./cmd/mailmirror
+
+      - name: Upload Backend Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mailmirror-linux-amd64
+          path: build-artifacts/mailmirror-linux-amd64
+          if-no-files-found: error
