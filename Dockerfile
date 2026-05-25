@@ -1,4 +1,4 @@
-FROM node:20-bookworm AS frontend
+FROM node:20-alpine AS frontend
 
 WORKDIR /src
 COPY package.json package-lock.json ./
@@ -7,7 +7,8 @@ COPY tsconfig.json vite.config.ts ./
 COPY frontend ./frontend
 RUN npm run build
 
-FROM golang:1.25-bookworm AS build
+FROM golang:1.25-alpine AS build
+RUN apk add --no-cache build-base
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -15,13 +16,11 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mailmirror ./cmd/mailmirror
 
-FROM debian:bookworm-slim
+FROM alpine:3.22
 
-RUN apt-get update \
-	&& apt-get install -y --no-install-recommends ca-certificates tzdata \
-	&& rm -rf /var/lib/apt/lists/* \
-	&& groupadd --system --gid 10001 mailmirror \
-	&& useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin mailmirror \
+RUN apk add --no-cache ca-certificates tzdata \
+	&& addgroup -S -g 10001 mailmirror \
+	&& adduser -S -D -H -u 10001 -G mailmirror -s /sbin/nologin mailmirror \
 	&& mkdir -p /data \
 	&& chown -R mailmirror:mailmirror /data
 
