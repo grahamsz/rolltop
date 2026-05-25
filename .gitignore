@@ -10,5 +10,5 @@ frontend/dist/
 *.db
 *.db-*
 coverage.out
-mailmirror
+/mailmirror
 tsconfig.tsbuildinfo
