@@ -158,7 +158,124 @@ func composeSMTPAttachments(items []composeAttachment) []smtpclient.Attachment {
 	return attachments
 }
 
+func composeUploadedAttachmentBytes(items []composeAttachment) int64 {
+	var total int64
+	for _, item := range items {
+		if item.Size > 0 {
+			total += item.Size
+			continue
+		}
+		total += int64(len(item.Data))
+	}
+	return total
+}
+
+func composeExistingAttachmentIDs(items []composeExistingAttachment) []int64 {
+	ids := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.ID > 0 {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
+func (s *Server) composeExistingAttachmentsForMessage(ctx context.Context, userID, messageID int64) ([]composeExistingAttachment, error) {
+	attachments, err := s.store.ListAttachmentsForMessage(ctx, userID, messageID)
+	if err != nil {
+		return nil, err
+	}
+	attachments = visibleAttachments(attachments)
+	out := make([]composeExistingAttachment, 0, len(attachments))
+	for _, att := range attachments {
+		out = append(out, composeExistingAttachment{
+			ID:          att.ID,
+			Filename:    attachmentDisplayName(att),
+			ContentType: att.ContentType,
+			Size:        att.Size,
+			DownloadURL: fmt.Sprintf("/attachments/%d/download", att.ID),
+		})
+	}
+	return out, nil
+}
+
+func (s *Server) composeSMTPExistingAttachments(ctx context.Context, userID int64, ids []int64, remaining int64) ([]smtpclient.Attachment, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if remaining <= 0 {
+		return nil, fmt.Errorf("attachments exceed compose limit")
+	}
+	seen := map[int64]bool{}
+	attachments := make([]smtpclient.Attachment, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		att, err := s.store.GetAttachmentForUser(ctx, userID, id)
+		if err != nil {
+			return nil, err
+		}
+		if !isDisplayAttachment(att) {
+			continue
+		}
+		if remaining <= 0 {
+			return nil, fmt.Errorf("attachments exceed compose limit")
+		}
+		data, contentType, err := s.attachmentContentBytes(ctx, userID, att, remaining)
+		if err != nil {
+			return nil, fmt.Errorf("load attachment %s: %w", attachmentDisplayName(att), err)
+		}
+		remaining -= int64(len(data))
+		if remaining < 0 {
+			return nil, fmt.Errorf("attachments exceed compose limit")
+		}
+		filename := attachmentDisplayName(att)
+		if filename == "" {
+			filename = "attachment"
+		}
+		contentType = strings.TrimSpace(contentType)
+		if contentType == "" {
+			contentType = strings.TrimSpace(att.ContentType)
+		}
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		attachments = append(attachments, smtpclient.Attachment{
+			Filename:    filename,
+			ContentType: contentType,
+			Inline:      false,
+			Data:        data,
+		})
+	}
+	return attachments, nil
+}
+
 func (s *Server) composeFormForRequest(r *http.Request) (composeForm, error) {
+	if raw := strings.TrimSpace(r.URL.Query().Get("reply_all")); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			return composeForm{}, store.ErrNotFound
+		}
+		cu, _ := current(r)
+		msg, err := s.store.GetMessageForUser(r.Context(), cu.User.ID, id)
+		if err != nil {
+			return composeForm{}, err
+		}
+		thread, err := s.store.ListThreadMessagesForUser(r.Context(), cu.User.ID, msg)
+		if err != nil {
+			return composeForm{}, err
+		}
+		form := replyAllComposeForm(msg, thread, s.ownAddresses(r.Context(), cu.User))
+		form.FromIdentityID = s.replyFromIdentityID(r.Context(), cu, msg, thread)
+		attachments, err := s.composeExistingAttachmentsForMessage(r.Context(), cu.User.ID, msg.ID)
+		if err != nil {
+			return composeForm{}, err
+		}
+		form.AvailableAttachments = attachments
+		return form, nil
+	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("reply")); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || id <= 0 {
@@ -175,6 +292,11 @@ func (s *Server) composeFormForRequest(r *http.Request) (composeForm, error) {
 		}
 		form := replyComposeForm(msg, thread, s.ownAddresses(r.Context(), cu.User))
 		form.FromIdentityID = s.replyFromIdentityID(r.Context(), cu, msg, thread)
+		attachments, err := s.composeExistingAttachmentsForMessage(r.Context(), cu.User.ID, msg.ID)
+		if err != nil {
+			return composeForm{}, err
+		}
+		form.AvailableAttachments = attachments
 		return form, nil
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("forward")); raw != "" {
@@ -187,7 +309,14 @@ func (s *Server) composeFormForRequest(r *http.Request) (composeForm, error) {
 		if err != nil {
 			return composeForm{}, err
 		}
-		return forwardComposeForm(msg), nil
+		form := forwardComposeForm(msg)
+		attachments, err := s.composeExistingAttachmentsForMessage(r.Context(), cu.User.ID, msg.ID)
+		if err != nil {
+			return composeForm{}, err
+		}
+		form.AvailableAttachments = attachments
+		form.IncludeAttachmentIDs = composeExistingAttachmentIDs(attachments)
+		return form, nil
 	}
 	return composeForm{}, nil
 }
@@ -204,6 +333,12 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 	if err != nil {
 		return store.MessageRecord{}, err
 	}
+	uploadedAttachments := composeSMTPAttachments(form.Attachments)
+	existingAttachments, err := s.composeSMTPExistingAttachments(ctx, cu.User.ID, form.IncludeAttachmentIDs, composeMaxUploadBytes-composeUploadedAttachmentBytes(form.Attachments))
+	if err != nil {
+		return store.MessageRecord{}, err
+	}
+	attachments := append(uploadedAttachments, existingAttachments...)
 	msg := smtpclient.Message{
 		From:        identity.Header,
 		To:          []string{form.To},
@@ -214,7 +349,7 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 		BodyHTML:    form.BodyHTML,
 		MessageID:   smtpclient.NewMessageID(identity.Email),
 		Date:        time.Now(),
-		Attachments: composeSMTPAttachments(form.Attachments),
+		Attachments: attachments,
 	}
 	if form.InReplyToID > 0 {
 		reply, err := s.store.GetMessageForUser(ctx, cu.User.ID, form.InReplyToID)

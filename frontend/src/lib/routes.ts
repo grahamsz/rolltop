@@ -1,9 +1,14 @@
+// File overview: Client-side route parser and URL builder. It owns the friendly mailbox/search
+// slugs and preserves safe return URLs for message-detail back navigation.
+
 import type { LocationState } from "../appTypes";
 
+/** Read the browser URL into the tiny route state object used by App. */
 export function currentLocation(): LocationState {
   return { path: window.location.pathname, search: window.location.search };
 }
 
+/** routeWithSearch preserves a path plus query string as a safe return URL candidate. */
 export function routeWithSearch(path: string, search = ""): string {
   return `${path}${search}`;
 }
@@ -23,6 +28,7 @@ function decodePathSegment(value = ""): string {
   }
 }
 
+/** Parse /mail, /mail/pN, /mailbox/:id, and /mailbox/:id/pN into list state. */
 export function mailRoute(path: string): { mailboxID: string | null; page: number } {
   const parts = path.split("/").filter(Boolean);
   if (parts[0] === "mailbox") {
@@ -32,11 +38,13 @@ export function mailRoute(path: string): { mailboxID: string | null; page: numbe
   return { mailboxID: null, page: parts[0] === "mail" ? positiveInt(parts[1], 1) : 1 };
 }
 
+/** mailURL builds the friendly mailbox/all-mail list URL for a page. */
 export function mailURL(mailboxID: string | number | null, page = 1): string {
   const suffix = page > 1 ? `/p${page}` : "";
   return mailboxID ? `/mailbox/${mailboxID}${suffix}` : `/mail${suffix}`;
 }
 
+/** Parse /search/q/:query/pN slugs into search state; sort is currently always best. */
 export function searchRoute(path: string): { query: string; sort: string; page: number } {
   const parts = path.split("/").filter(Boolean);
   if (parts[0] === "search" && parts[1]?.startsWith("p")) {
@@ -51,6 +59,7 @@ export function searchRoute(path: string): { query: string; sort: string; page: 
   return { query, sort: "best", page };
 }
 
+/** searchURL builds the friendly best-match search URL for a query/page pair. */
 export function searchURL(query: string, page = 1): string {
   const trimmed = query.trim();
   if (!trimmed) return page > 1 ? `/search/p${page}` : "/search";
@@ -58,6 +67,7 @@ export function searchURL(query: string, page = 1): string {
   return `/search/q/${encodeURIComponent(trimmed)}${pagePart}`;
 }
 
+/** Keep back links internal before they are reflected into message URLs. */
 export function safeInternalURL(value: string | null | undefined, fallback = "/mail"): string {
   if (!value) return fallback;
   try {
@@ -69,10 +79,12 @@ export function safeInternalURL(value: string | null | undefined, fallback = "/m
   }
 }
 
+/** messageBackURL extracts the safe return target from a message-detail URL. */
 export function messageBackURL(location: LocationState): string {
   return safeInternalURL(new URLSearchParams(location.search).get("back"), "/mail");
 }
 
+/** messageURL builds a message-detail URL with search highlight terms and back target. */
 export function messageURL(messageID: number, searchQuery = "", matchTerms: string[] = [], backURL = ""): string {
   const query = searchQuery.trim();
   if (!query && matchTerms.length === 0 && !backURL) return `/messages/${messageID}`;
@@ -85,11 +97,13 @@ export function messageURL(messageID: number, searchQuery = "", matchTerms: stri
   return `/messages/${messageID}?${params}`;
 }
 
+/** messageHighlightQuery returns the raw query used to highlight message-detail text. */
 export function messageHighlightQuery(location: LocationState): string {
   const params = new URLSearchParams(location.search);
   return params.get("q") || params.get("highlight") || "";
 }
 
+/** messageHighlightTerms returns explicit Bleve-reported terms carried by a message URL. */
 export function messageHighlightTerms(location: LocationState): string[] {
   return new URLSearchParams(location.search).getAll("term");
 }

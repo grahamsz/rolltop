@@ -1,5 +1,9 @@
+// File overview: Date, time, count, and byte formatting helpers. They apply per-user localization
+// preferences while keeping list and thread rendering consistent.
+
 import type { DatePrefs } from "../appTypes";
 
+/** formatBytes renders unknown byte counts as compact human-readable storage text. */
 export function formatBytes(value: unknown): string {
   const bytes = typeof value === "number" ? value : Number(value || 0);
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -53,6 +57,7 @@ function numericDate(date: Date, prefs?: DatePrefs): string {
   }
 }
 
+/** displayTime formats list/thread dates according to user preferences and message age. */
 export function displayTime(value: string, prefs?: DatePrefs): string {
   if (!value) return "";
   const date = new Date(value);
@@ -68,6 +73,7 @@ export function displayTime(value: string, prefs?: DatePrefs): string {
   return date.toLocaleDateString(locale, { month: "short", day: "numeric" });
 }
 
+/** displayDateTime renders a full localized date/time for details and settings history. */
 export function displayDateTime(value: string, prefs?: DatePrefs): string {
   if (!value) return "";
   const date = new Date(value);

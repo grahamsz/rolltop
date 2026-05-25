@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// CreateMessage is the insert payload for a mirrored message and its mailbox location.
 type CreateMessage struct {
 	UserID           int64
 	AccountID        int64
@@ -34,6 +35,7 @@ type CreateMessage struct {
 	HasAttachments   bool
 }
 
+// CreateMessage inserts or updates a mirrored message row and its mailbox location.
 func (s *Store) CreateMessage(ctx context.Context, m CreateMessage) (MessageRecord, error) {
 	db, err := s.dataDB(ctx, m.UserID)
 	if err != nil {
@@ -64,6 +66,7 @@ func (s *Store) CreateMessage(ctx context.Context, m CreateMessage) (MessageReco
 	return s.GetMessageForUser(ctx, m.UserID, id)
 }
 
+// GetMessageByUID loads one message by account/mailbox UID inside a user scope.
 func (s *Store) GetMessageByUID(ctx context.Context, userID, accountID, mailboxID int64, uid uint32) (MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -84,6 +87,7 @@ func (s *Store) GetMessageByUID(ctx context.Context, userID, accountID, mailboxI
 	return m, err
 }
 
+// CreateLocation records that a message appears in a mailbox at a specific UID.
 func (s *Store) CreateLocation(ctx context.Context, userID, messageID, mailboxID int64, uid uint32) error {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -94,6 +98,7 @@ func (s *Store) CreateLocation(ctx context.Context, userID, messageID, mailboxID
 	return err
 }
 
+// GetMessageForUser loads one message by local ID inside a user scope.
 func (s *Store) GetMessageForUser(ctx context.Context, userID, id int64) (MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -114,6 +119,7 @@ func (s *Store) GetMessageForUser(ctx context.Context, userID, id int64) (Messag
 	return m, err
 }
 
+// GetMessageByBlobIDForUser finds the message that owns a blob record for one user.
 func (s *Store) GetMessageByBlobIDForUser(ctx context.Context, userID, blobID int64) (MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -134,6 +140,7 @@ func (s *Store) GetMessageByBlobIDForUser(ctx context.Context, userID, blobID in
 	return m, err
 }
 
+// DeleteMessageForUser removes one local message row and dependent data for a user.
 func (s *Store) DeleteMessageForUser(ctx context.Context, userID, id int64) error {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -153,6 +160,7 @@ func (s *Store) DeleteMessageForUser(ctx context.Context, userID, id int64) erro
 	return nil
 }
 
+// DeleteMessagesMissingUIDs removes local messages no longer present in a remote mailbox UID set.
 func (s *Store) DeleteMessagesMissingUIDs(ctx context.Context, userID, accountID, mailboxID int64, remoteUIDs []uint32) ([]MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {

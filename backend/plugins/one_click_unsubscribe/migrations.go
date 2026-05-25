@@ -13,6 +13,7 @@ import (
 	"mailmirror/backend/plugins"
 )
 
+// Migrations returns schema changes for one-click unsubscribe send history.
 func Migrations() []plugins.Migration {
 	return []plugins.Migration{{
 		PluginID: plugins.OneClickUnsubscribe,
@@ -34,6 +35,7 @@ func Migrations() []plugins.Migration {
 	}}
 }
 
+// Send records one recent RFC8058 unsubscribe attempt for UI display and duplicate suppression.
 type Send struct {
 	ID             int64
 	UserID         int64
@@ -44,6 +46,7 @@ type Send struct {
 	CreatedAt      time.Time
 }
 
+// RecordSend stores an RFC8058 unsubscribe attempt so the UI can show recent unsubscribe state.
 func RecordSend(ctx context.Context, db *sql.DB, userID, messageID int64, sender, unsubscribeURL string, sentAt time.Time) error {
 	sender = SenderIdentity(sender)
 	unsubscribeURL = strings.TrimSpace(unsubscribeURL)
@@ -64,6 +67,7 @@ func RecordSend(ctx context.Context, db *sql.DB, userID, messageID int64, sender
 	return err
 }
 
+// LatestSend finds the most recent unsubscribe attempt for a message/URL within a caller-supplied window.
 func LatestSend(ctx context.Context, db *sql.DB, userID, messageID int64, unsubscribeURL string, since time.Time) (Send, error) {
 	unsubscribeURL = strings.TrimSpace(unsubscribeURL)
 	if userID == 0 || (messageID == 0 && unsubscribeURL == "") {
@@ -86,6 +90,7 @@ func LatestSend(ctx context.Context, db *sql.DB, userID, messageID int64, unsubs
 	return send, nil
 }
 
+// SenderIdentity normalizes sender text for unsubscribe history grouping.
 func SenderIdentity(from string) string {
 	from = strings.TrimSpace(from)
 	if from == "" {

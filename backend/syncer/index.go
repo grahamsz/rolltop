@@ -140,6 +140,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 	return msg, nil
 }
 
+// IndexPendingAttachmentsForUser indexes attachment text from raw message bodies for pending messages.
 func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int64, limit int) (int, error) {
 	messages, err := s.Store.ListMessagesNeedingAttachmentIndex(ctx, userID, limit)
 	if err != nil {
@@ -153,6 +154,7 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 	return len(messages), nil
 }
 
+// IndexAttachmentsForMessage reparses one raw message, indexes its attachment text, and updates message metadata.
 func (s *Service) IndexAttachmentsForMessage(ctx context.Context, msg store.MessageRecord) error {
 	if s.Search == nil {
 		return nil
@@ -228,6 +230,7 @@ func (s *Service) IndexAttachmentsForMessage(ctx context.Context, msg store.Mess
 	return s.Store.MarkMessageAttachmentIndexed(ctx, msg.UserID, msg.ID, visibleAttachmentCount > 0)
 }
 
+// ReconcileMailboxSearchIndex adds or removes documents when a mailbox search-visibility setting changes.
 func (s *Service) ReconcileMailboxSearchIndex(ctx context.Context, userID, mailboxID int64, include bool) error {
 	if s.Search == nil {
 		return nil
@@ -256,6 +259,7 @@ func (s *Service) ReconcileMailboxSearchIndex(ctx context.Context, userID, mailb
 	}
 }
 
+// StartRebuildMailboxSearchIndex launches a background rebuild job for one mailbox's search documents.
 func (s *Service) StartRebuildMailboxSearchIndex(ctx context.Context, userID, mailboxID int64, onDone func()) (store.SyncRun, error) {
 	if s.Search == nil {
 		return store.SyncRun{}, errors.New("search is not configured")

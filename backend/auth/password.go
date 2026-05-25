@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
+// Argon2idParams holds the tunable password-hashing parameters used by HashPasswordWithParams.
 type Argon2idParams struct {
 	Memory      uint32
 	Iterations  uint32
@@ -31,10 +32,12 @@ var DefaultArgon2idParams = Argon2idParams{
 	KeyLength:   32,
 }
 
+// HashPassword derives a password hash using the default interactive parameters for local MailMirror users.
 func HashPassword(password string) (string, error) {
 	return HashPasswordWithParams(password, DefaultArgon2idParams)
 }
 
+// HashPasswordWithParams exists for tests and migrations that need deterministic or lower-cost password hashing parameters.
 func HashPasswordWithParams(password string, p Argon2idParams) (string, error) {
 	if password == "" {
 		return "", errors.New("password cannot be empty")
@@ -49,6 +52,7 @@ func HashPasswordWithParams(password string, p Argon2idParams) (string, error) {
 		p.Memory, p.Iterations, p.Parallelism, enc.EncodeToString(salt), enc.EncodeToString(hash)), nil
 }
 
+// VerifyPassword checks a candidate password against the stored hash format used by HashPassword.
 func VerifyPassword(encoded, password string) (bool, error) {
 	p, salt, expected, err := decodeHash(encoded)
 	if err != nil {

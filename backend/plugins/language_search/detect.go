@@ -37,6 +37,7 @@ func DetectCode(subject, body string) string {
 	return NormalizeCode(lang.IsoCode639_1().String())
 }
 
+// NormalizeCode canonicalizes language codes before they are stored or queried in the search index.
 func NormalizeCode(code string) string {
 	code = strings.ToLower(strings.TrimSpace(code))
 	if code == "" || len(code) != 2 {

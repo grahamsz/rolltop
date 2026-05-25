@@ -12,6 +12,7 @@ import (
 	"strings"
 )
 
+// BackfillThreadKeys computes missing thread keys for existing message rows in batches.
 func (s *Store) BackfillThreadKeys(ctx context.Context, limit int) (int, error) {
 	if limit <= 0 || limit > 10000 {
 		limit = 10000
@@ -76,6 +77,7 @@ func (s *Store) BackfillThreadKeys(ctx context.Context, limit int) (int, error) 
 	return len(pending), nil
 }
 
+// BackfillThreadHeadersFromBlobs repairs thread headers by reading local raw message blobs.
 func (s *Store) BackfillThreadHeadersFromBlobs(ctx context.Context, dataDir string, limit int) (int, int, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
@@ -187,6 +189,7 @@ func readThreadHeaders(path string) (string, string, string, error) {
 	return strings.TrimSpace(headers.Get("Message-Id")), strings.TrimSpace(headers.Get("In-Reply-To")), strings.TrimSpace(headers.Get("References")), nil
 }
 
+// ListReadSenderStatsForUser returns sender-history boosts derived from messages the user has read.
 func (s *Store) ListReadSenderStatsForUser(ctx context.Context, userID int64, limit int) ([]SenderReadStat, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 40

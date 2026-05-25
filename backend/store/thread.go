@@ -12,6 +12,7 @@ import (
 
 var messageIDRE = regexp.MustCompile(`<([^<>]+)>`)
 
+// ThreadKey derives the conversation grouping key from message headers and normalized subject fallback.
 func ThreadKey(messageID, inReplyTo, referencesHeader, subject string) string {
 	if ids := messageIDs(referencesHeader); len(ids) > 0 {
 		return "msgid:" + ids[0]
@@ -28,6 +29,7 @@ func ThreadKey(messageID, inReplyTo, referencesHeader, subject string) string {
 	return ""
 }
 
+// NormalizedThreadSubject strips common reply/forward prefixes for thread grouping fallback.
 func NormalizedThreadSubject(subject string) string {
 	return normalizedThreadSubject(subject)
 }
@@ -80,6 +82,7 @@ func normalizedThreadSubject(subject string) string {
 	return strings.TrimSpace(b.String())
 }
 
+// SenderIdentity canonicalizes sender strings for contact matching, read-sender stats, and trust keys.
 func SenderIdentity(from string) string {
 	from = strings.TrimSpace(from)
 	if from == "" {

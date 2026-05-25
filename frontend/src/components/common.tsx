@@ -1,7 +1,11 @@
+// File overview: Small reusable UI primitives shared by feature views, including labeled fields,
+// summary stats, list headers, and toast rendering.
+
 import type { ReactNode } from "react";
 import type { Toast } from "../appTypes";
 import { Icon } from "./Icon";
 
+/** RangePagerProps describes pager state for mailbox and search result lists. */
 export type RangePagerProps = {
   page: number;
   pageSize: number;
@@ -14,6 +18,7 @@ export type RangePagerProps = {
   ariaLabel: string;
 };
 
+/** ListHeader renders a view title with optional actions and right-aligned range paging. */
 export function ListHeader({
   title,
   titleClassName = "",
@@ -36,6 +41,7 @@ export function ListHeader({
   );
 }
 
+/** RangePager renders compact previous/next controls plus the visible item range. */
 export function RangePager({
   page,
   pageSize,
@@ -67,6 +73,7 @@ export function RangePager({
   );
 }
 
+/** Field renders a labeled text input used by settings and contact forms. */
 export function Field({
   label,
   value,
@@ -92,6 +99,7 @@ export function Field({
   );
 }
 
+/** Stat renders one storage/settings statistic with optional detail text. */
 export function Stat({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return (
     <div className="stat-card">
@@ -102,6 +110,7 @@ export function Stat({ label, value, detail }: { label: string; value: string; d
   );
 }
 
+/** ToastStack renders global toasts and exposes dismiss controls. */
 export function ToastStack({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
   return (
     <div className="toast-stack">

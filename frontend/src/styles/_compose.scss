@@ -301,6 +301,14 @@
   gap: 6px;
 }
 
+.compose-existing-attachment-link {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-inline: 2px 6px;
+}
+
 .compose-attachment {
   min-height: 44px;
   display: grid;
@@ -335,6 +343,11 @@
     height: 30px;
     padding: 0;
   }
+}
+
+.compose-attachment-existing {
+  border-color: rgba(27, 112, 105, .28);
+  background: rgba(225, 244, 239, .45);
 }
 
 .compose-attachment-warning {

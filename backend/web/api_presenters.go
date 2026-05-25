@@ -266,6 +266,7 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 			ImagesAllowed:   view.ImagesAllowed,
 			Expanded:        view.Expanded,
 			ReplySubject:    replySubject(view.Message.Subject),
+			CanReplyAll:     view.CanReplyAll,
 		})
 	}
 	return out

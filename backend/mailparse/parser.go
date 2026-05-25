@@ -28,6 +28,7 @@ import (
 
 var htmlTextNoiseBlockRE = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<head\b[^>]*>.*?</head>|<title\b[^>]*>.*?</title>|<!--.*?-->`)
 
+// Attachment is a decoded MIME part that may be indexed, displayed, or downloaded.
 type Attachment struct {
 	Filename    string
 	ContentType string
@@ -36,6 +37,9 @@ type Attachment struct {
 	Data        []byte
 }
 
+// SearchableText extracts bounded text from attachments that are safe and useful
+// to index. Binary files return an empty string so attachment bodies are not kept
+// as separate blobs just for search.
 func (a Attachment) SearchableText() string {
 	mediaType, _, err := mime.ParseMediaType(a.ContentType)
 	if err != nil {
@@ -52,6 +56,7 @@ func (a Attachment) SearchableText() string {
 	return ""
 }
 
+// ParsedMessage is the normalized output from parsing a raw RFC822 message.
 type ParsedMessage struct {
 	MessageID  string
 	InReplyTo  string
@@ -66,6 +71,9 @@ type ParsedMessage struct {
 	Files      []Attachment
 }
 
+// Parse is the indexing/parser entrypoint. It decodes headers, walks MIME parts,
+// collects text/html bodies and attachment metadata/data, and normalizes indexed
+// text so CSS-heavy marketing mail does not poison snippets or search.
 func Parse(raw []byte) (ParsedMessage, error) {
 	msg, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
@@ -96,6 +104,8 @@ func Parse(raw []byte) (ParsedMessage, error) {
 	return parsed, nil
 }
 
+// ParseDisplayBody is the lighter display path used when a raw message is loaded
+// on demand. It skips attachment bodies and returns body text/html only.
 func ParseDisplayBody(r io.Reader) (string, string, error) {
 	msg, err := mail.ReadMessage(r)
 	if err != nil {
@@ -111,6 +121,9 @@ func ParseDisplayBody(r io.Reader) (string, string, error) {
 	return normalizeDisplayText(parsed.Text), parsed.HTML, nil
 }
 
+// parsePart recursively walks the MIME tree for indexing. Attachments keep their
+// decoded data long enough for search extraction; text/html parts feed the message
+// body fields used for search and previews.
 func parsePart(header textproto.MIMEHeader, body io.Reader, parsed *ParsedMessage) error {
 	contentType := header.Get("Content-Type")
 	mediaType, params, err := mime.ParseMediaType(contentType)
@@ -195,6 +208,8 @@ func isInlineMIMEFile(disposition, mediaType, contentID string) bool {
 	return contentID != "" && strings.HasPrefix(mediaType, "image/")
 }
 
+// parseDisplayPart mirrors parsePart but discards attachment streams immediately,
+// avoiding unnecessary memory use when the caller only needs renderable body text.
 func parseDisplayPart(header textproto.MIMEHeader, body io.Reader, parsed *ParsedMessage) error {
 	contentType := header.Get("Content-Type")
 	mediaType, params, err := mime.ParseMediaType(contentType)
@@ -312,6 +327,7 @@ func decodedHeader(value string) string {
 	return out
 }
 
+// DecodeTextBytes exposes MIME charset decoding for callers that need consistent text handling outside full parsing.
 func DecodeTextBytes(data []byte, charset string) string {
 	return decodeTextBytes(data, charset)
 }
@@ -331,6 +347,9 @@ func charsetReader(charset string, input io.Reader) (io.Reader, error) {
 	return transform.NewReader(input, enc.NewDecoder()), nil
 }
 
+// decodeTextBytes prefers the declared MIME charset, then handles common older
+// Japanese escape sequences, and finally falls back to UTF-8/raw bytes so bad mail
+// still produces some display/index text.
 func decodeTextBytes(data []byte, charset string) string {
 	if strings.TrimSpace(charset) != "" {
 		if text, ok := decodeBytesAsCharset(data, charset); ok {
@@ -400,6 +419,8 @@ func normalizeDisplayText(value string) string {
 	return strings.Join(lines, "\n")
 }
 
+// cleanIndexedText removes CSS-looking debris before body text is stored/indexed;
+// display-time rendering should not be responsible for fixing indexed snippets.
 func cleanIndexedText(value string) string {
 	value = removeIndexedCSSRules(value)
 	value = trimIndexedTextJunk(value)

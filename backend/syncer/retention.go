@@ -19,11 +19,13 @@ import (
 
 const OnDemandBlobCacheRetention = 7 * 24 * time.Hour
 
+// RetentionStats reports how many bodies/blobs were compacted or pruned by retention maintenance.
 type RetentionStats struct {
 	CompactedMessages int
 	PrunedBlobs       int
 }
 
+// ApplyStorageRetention prunes old raw blobs while preserving recent sync-window data and searchable previews.
 func (s *Service) ApplyStorageRetention(ctx context.Context, retention time.Duration, batch int) (RetentionStats, error) {
 	var stats RetentionStats
 	if retention <= 0 {
@@ -78,11 +80,13 @@ func (s *Service) pruneMessageBlobs(ctx context.Context, messages []store.Messag
 	return pruned, nil
 }
 
+// FetchRawMessageForMessage returns raw bytes from local blob cache or IMAP without necessarily caching them.
 func (s *Service) FetchRawMessageForMessage(ctx context.Context, userID int64, msg store.MessageRecord) ([]byte, error) {
 	raw, _, _, err := s.fetchRawMessageForMessage(ctx, userID, msg)
 	return raw, err
 }
 
+// FetchAndCacheRawMessageForMessage hydrates a message body and stores a temporary raw blob for reuse.
 func (s *Service) FetchAndCacheRawMessageForMessage(ctx context.Context, userID int64, msg store.MessageRecord) ([]byte, error) {
 	raw, account, mailbox, err := s.fetchRawMessageForMessage(ctx, userID, msg)
 	if err != nil {

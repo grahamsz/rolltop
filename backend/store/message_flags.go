@@ -4,6 +4,7 @@ package store
 
 import "context"
 
+// UpdateMessageReadByUID updates local read state for a UID discovered during IMAP flag reconciliation.
 func (s *Store) UpdateMessageReadByUID(ctx context.Context, userID, accountID, mailboxID int64, uid uint32, isRead bool, pending bool) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET is_read = ?, read_sync_pending = ?, updated_at = ?
 		WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND uid = ?`,
@@ -11,30 +12,35 @@ func (s *Store) UpdateMessageReadByUID(ctx context.Context, userID, accountID, m
 	return err
 }
 
+// MarkMessageReadForUser changes local read state and optionally marks it for IMAP push.
 func (s *Store) MarkMessageReadForUser(ctx context.Context, userID, messageID int64, isRead bool, pending bool) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET is_read = ?, read_sync_pending = ?, updated_at = ?
 		WHERE user_id = ? AND id = ?`, boolInt(isRead), boolInt(pending), nowUnix(), userID, messageID)
 	return err
 }
 
+// ClearReadSyncPending clears the pending read-state push flag after IMAP accepts it.
 func (s *Store) ClearReadSyncPending(ctx context.Context, userID, messageID int64) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET read_sync_pending = 0, updated_at = ? WHERE user_id = ? AND id = ?`,
 		nowUnix(), userID, messageID)
 	return err
 }
 
+// MarkMessageStarredForUser changes local star state and optionally marks it for IMAP push.
 func (s *Store) MarkMessageStarredForUser(ctx context.Context, userID, messageID int64, isStarred bool, pending bool) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET is_starred = ?, star_sync_pending = ?, updated_at = ?
 		WHERE user_id = ? AND id = ?`, boolInt(isStarred), boolInt(pending), nowUnix(), userID, messageID)
 	return err
 }
 
+// ClearStarSyncPending clears the pending star-state push flag after IMAP accepts it.
 func (s *Store) ClearStarSyncPending(ctx context.Context, userID, messageID int64) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET star_sync_pending = 0, updated_at = ? WHERE user_id = ? AND id = ?`,
 		nowUnix(), userID, messageID)
 	return err
 }
 
+// UpdateMailboxStarFlags reconciles local star state from the remote set of flagged UIDs.
 func (s *Store) UpdateMailboxStarFlags(ctx context.Context, userID, accountID, mailboxID int64, flaggedUIDs []uint32) ([]int64, error) {
 	flagged := make(map[uint32]bool, len(flaggedUIDs))
 	for _, uid := range flaggedUIDs {
@@ -91,6 +97,7 @@ func (s *Store) UpdateMailboxStarFlags(ctx context.Context, userID, accountID, m
 	return changed, nil
 }
 
+// UpdateMailboxReadFlags reconciles local read state from the remote set of seen UIDs.
 func (s *Store) UpdateMailboxReadFlags(ctx context.Context, userID, accountID, mailboxID int64, seenUIDs []uint32) ([]int64, error) {
 	seen := make(map[uint32]bool, len(seenUIDs))
 	for _, uid := range seenUIDs {

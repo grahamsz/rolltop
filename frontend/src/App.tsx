@@ -1,3 +1,6 @@
+// File overview: Root React coordinator for bootstrap, session routing, global chrome state,
+// toast lifecycle, server-sent events, browser-history navigation, and the compose overlay.
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import type { Bootstrap, ChromeEvent, SyncRun } from "./types";
@@ -11,6 +14,8 @@ import { messageFromError } from "./lib/errors";
 import { currentLocation } from "./lib/routes";
 
 
+// Push notifications should identify the human sender when possible. This helper
+// strips RFC5322 angle-address syntax and falls back to the email local part.
 function displayNotificationSender(raw: string) {
   const trimmed = raw.trim();
   if (!trimmed) return "";
@@ -26,6 +31,14 @@ function truncateNotificationText(value: string, max: number) {
   return `${trimmed.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
 }
 
+const allMailWakePrefetchAfterMS = 3 * 60 * 1000;
+
+/**
+ * App owns process-wide browser state: bootstrap/session data, current URL,
+ * top-level toasts, SSE chrome refreshes, optimistic message hiding, and the
+ * compose overlay. Feature views stay below RouteView so they can be remounted
+ * by URL changes without taking the shell state with them.
+ */
 export default function App() {
   const [location, setLocation] = useState<LocationState>(() => currentLocation());
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
@@ -35,7 +48,11 @@ export default function App() {
   const [composeOverlayQuery, setComposeOverlayQuery] = useState<string | null>(null);
   const toastSeq = useRef(1);
   const lastNotify = useRef<{ id: number; stored: number } | null>(null);
+  const lastMouseActivityAt = useRef(Date.now());
+  const lastAllMailWakePrefetchAt = useRef(0);
 
+  // Navigation is intentionally tiny and local: Go serves every SPA route, so
+  // the client only needs to update history and reparse LocationState.
   const replaceRoute = useCallback((url: string) => {
     window.history.replaceState({}, "", url);
     setLocation(currentLocation());
@@ -52,6 +69,8 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  // Bootstrap is the shared chrome contract: auth state, CSRF token, folder
+  // counts, active sync runs, enabled plugins, and account warnings.
   const refreshBootstrap = useCallback(async () => {
     try {
       const data = await api.bootstrap();
@@ -74,6 +93,8 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
   }, [bootstrap?.user?.theme]);
 
+  // Once bootstrap is known, normalize the unauthenticated/authenticated routes
+  // so setup/login/mail all share one source of truth.
   useEffect(() => {
     if (!bootstrap) return;
     if (!bootstrap.users_exist && location.path !== "/setup") {
@@ -130,6 +151,24 @@ export default function App() {
     });
   }, []);
 
+  // When someone returns to an idle tab, warm All Mail before they click it.
+  useEffect(() => {
+    if (!bootstrap?.user) return;
+    function onMouseMove() {
+      const now = Date.now();
+      const inactiveFor = now - lastMouseActivityAt.current;
+      lastMouseActivityAt.current = now;
+      if (inactiveFor < allMailWakePrefetchAfterMS) return;
+      if (now - lastAllMailWakePrefetchAt.current < allMailWakePrefetchAfterMS) return;
+      lastAllMailWakePrefetchAt.current = now;
+      api.prefetchMail(null, 1);
+    }
+    window.addEventListener("mousemove", onMouseMove, { passive: true });
+    return () => window.removeEventListener("mousemove", onMouseMove);
+  }, [bootstrap?.user]);
+
+  // The event stream keeps chrome data hot without each view polling for folder
+  // counts or sync progress. Malformed events are ignored so cached views remain usable.
   useEffect(() => {
     if (!bootstrap?.user) return;
     const events = new EventSource("/api/events");
@@ -160,6 +199,8 @@ export default function App() {
     };
   }, [bootstrap?.user, notifyNewMail]);
 
+  // Folder drag/drop hides rows optimistically and reverts only if the backend
+  // rejects the move request. The backend remains the authority for follow-up sync.
   const moveMessages = useCallback(
     async (messageIDs: number[], mailbox: MoveTarget) => {
       if (!bootstrap?.csrf) return;

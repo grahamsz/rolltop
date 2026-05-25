@@ -1,3 +1,6 @@
+// File overview: Search-box suggestion hook and popover. It combines route-aware search input state
+// with plugin-provided language suggestions and folder shortcuts.
+
 import { useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from "react";
 import { api } from "../../api";
@@ -38,6 +41,7 @@ const operatorSuggestions = [
 const stateValues = ["read", "unread", "starred", "notstarred"];
 const currentYear = new Date().getFullYear();
 
+/** useSearchAutocomplete builds keyboard-navigable suggestions for the global search input. */
 export function useSearchAutocomplete({
   query,
   focused,
@@ -119,6 +123,7 @@ export function useSearchAutocomplete({
   return { activeIndex, items, choose, onKeyDown };
 }
 
+/** SearchAutocomplete renders the suggestion popover under the topbar search field. */
 export function SearchAutocomplete({
   items,
   activeIndex,

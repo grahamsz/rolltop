@@ -40,6 +40,7 @@ const (
 	mailboxStatusRefreshFailureBackoff = 5 * time.Minute
 )
 
+// Options wires concrete dependencies and runtime values into a new HTTP Server.
 type Options struct {
 	Store        *store.Store
 	Blobs        *blob.Store
@@ -56,6 +57,7 @@ type Options struct {
 	WebhookToken string
 }
 
+// Server owns HTTP handlers, shared services, session settings, event fanout, and lightweight caches.
 type Server struct {
 	store                     *store.Store
 	blobs                     *blob.Store
@@ -121,6 +123,7 @@ type threadMessageView struct {
 	ImagesAllowed            bool
 	ImageBlockRules          []string
 	Expanded                 bool
+	CanReplyAll              bool
 }
 
 type conversationView struct {
@@ -136,18 +139,29 @@ type conversationView struct {
 	Snippet                  string
 	MatchTerms               []string
 	MatchFields              []string
+	CanReplyAll              bool
 }
 
 type composeForm struct {
-	To             string              `json:"to"`
-	Cc             string              `json:"cc"`
-	Bcc            string              `json:"bcc"`
-	Subject        string              `json:"subject"`
-	Body           string              `json:"body"`
-	BodyHTML       string              `json:"body_html"`
-	InReplyToID    int64               `json:"in_reply_to_id"`
-	FromIdentityID int64               `json:"from_identity_id"`
-	Attachments    []composeAttachment `json:"attachments,omitempty"`
+	To                   string                      `json:"to"`
+	Cc                   string                      `json:"cc"`
+	Bcc                  string                      `json:"bcc"`
+	Subject              string                      `json:"subject"`
+	Body                 string                      `json:"body"`
+	BodyHTML             string                      `json:"body_html"`
+	InReplyToID          int64                       `json:"in_reply_to_id"`
+	FromIdentityID       int64                       `json:"from_identity_id"`
+	AvailableAttachments []composeExistingAttachment `json:"available_attachments,omitempty"`
+	IncludeAttachmentIDs []int64                     `json:"include_attachment_ids,omitempty"`
+	Attachments          []composeAttachment         `json:"attachments,omitempty"`
+}
+
+type composeExistingAttachment struct {
+	ID          int64  `json:"id"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
+	DownloadURL string `json:"download_url"`
 }
 
 type composeAttachment struct {
@@ -167,6 +181,9 @@ type syncFolderView struct {
 	CanSyncNow bool
 }
 
+// New wires the HTTP server dependency graph. It also installs default session
+// TTL, sync runner, and SMTP sender so tests can pass only the collaborators they
+// care about.
 func New(opts Options) (*Server, error) {
 	if opts.SessionTTL == 0 {
 		opts.SessionTTL = 30 * 24 * time.Hour
@@ -203,6 +220,9 @@ func New(opts Options) (*Server, error) {
 	return srv, nil
 }
 
+// Handler defines the browser/API/static route surface, then wraps it with session
+// lookup and security headers. SPA routes intentionally point at handleApp so a
+// hard reload keeps the client-side URL.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHome)
@@ -243,6 +263,8 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// withCurrentUser resolves the signed session cookie into currentUser context.
+// Normal browser/API routes derive user_id only here, never from request params.
 func (s *Server) withCurrentUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookie)
@@ -333,6 +355,9 @@ func (s *Server) validWebhookToken(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.webhookToken)) == 1
 }
 
+// handleAttachment serves a tenant-scoped attachment. If no standalone attachment
+// blob exists, it falls back to the parent raw message blob or IMAP hydration and
+// extracts the matching MIME part just in time.
 func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -402,6 +427,9 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(file.Data)
 }
 
+// handleBlob serves a raw blob record for the signed-in user. Message blobs can be
+// regenerated from IMAP/local hydration when retention has pruned the file but the
+// metadata still points at a fetchable message.
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -460,6 +488,8 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, file)
 }
 
+// matchingAttachment reconciles stored attachment metadata with freshly parsed MIME
+// parts. Content-ID wins for inline media, then filename/size, then type/size.
 func matchingAttachment(target store.Attachment, files []mailparse.Attachment) (mailparse.Attachment, bool) {
 	targetName := strings.TrimSpace(target.Filename)
 	targetCID := strings.Trim(target.ContentID, "<>")
@@ -487,6 +517,9 @@ func matchingAttachment(target store.Attachment, files []mailparse.Attachment) (
 	return mailparse.Attachment{}, false
 }
 
+// loadMailboxChrome assembles the shared folder/sync state used by API presenters
+// and the React chrome. It may kick off a cheap background STATUS refresh when remote
+// counters are stale.
 func (s *Server) loadMailboxChrome(ctx context.Context, userID int64, data *viewData) {
 	if data == nil {
 		return
@@ -527,6 +560,9 @@ func (s *Server) maybeRefreshMailboxStatuses(userID int64, boxes []store.Mailbox
 	s.refreshMailboxStatusesAsync(userID)
 }
 
+// refreshMailboxStatusesAsync deduplicates and rate-limits background STATUS
+// refreshes so opening settings or the sidebar does not start overlapping IMAP
+// probes for the same user.
 func (s *Server) refreshMailboxStatusesAsync(userID int64) {
 	if s.syncer == nil || s.syncer.Fetcher == nil {
 		return
@@ -568,6 +604,8 @@ func (s *Server) refreshMailboxStatusesAsync(userID int64) {
 	}()
 }
 
+// syncFolderViews joins mailbox summaries with recent sync runs and search index
+// counts for the settings folder-sync UI.
 func (s *Server) syncFolderViews(ctx context.Context, userID int64, runs []store.SyncRun) []syncFolderView {
 	boxes, err := s.store.ListMailboxesForUser(ctx, userID)
 	if err != nil {
@@ -627,7 +665,7 @@ func (s *Server) populateMailboxSearchIndexStats(ctx context.Context, userID int
 
 func boundedPercent(done, total int) int {
 	if total <= 0 {
-		return 100
+		return 0
 	}
 	if done < 0 {
 		done = 0

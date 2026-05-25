@@ -12,12 +12,14 @@ import (
 
 const MaxBytes = 25 * 1024 * 1024
 
+// Attachment is the minimal attachment metadata the preview plugin needs to classify a file.
 type Attachment struct {
 	ID          int64
 	Filename    string
 	ContentType string
 }
 
+// Preview describes a frontend-renderable attachment preview option.
 type Preview struct {
 	Available bool
 	Kind      string
@@ -26,6 +28,7 @@ type Preview struct {
 	PluginID  string
 }
 
+// Migrations returns plugin schema changes for attachment preview metadata.
 func Migrations() []plugins.Migration {
 	return []plugins.Migration{{
 		PluginID:   plugins.AttachmentPreview,
@@ -34,6 +37,7 @@ func Migrations() []plugins.Migration {
 	}}
 }
 
+// ForAttachment returns the preview descriptor for an attachment when its type can be rendered in-browser.
 func ForAttachment(att Attachment) (Preview, bool) {
 	kind := Kind(att)
 	if kind == "" {
@@ -48,6 +52,7 @@ func ForAttachment(att Attachment) (Preview, bool) {
 	}, true
 }
 
+// Kind classifies an attachment into the frontend preview kind understood by the plugin slot.
 func Kind(att Attachment) string {
 	contentType := CleanContentType(att.ContentType)
 	filename := strings.ToLower(strings.TrimSpace(att.Filename))
@@ -63,10 +68,12 @@ func Kind(att Attachment) string {
 	}
 }
 
+// CleanContentType strips MIME parameters so type checks compare only the media type.
 func CleanContentType(contentType string) string {
 	return strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 }
 
+// SupportedImageType reports whether an image MIME type is safe for direct preview rendering.
 func SupportedImageType(contentType string) bool {
 	switch CleanContentType(contentType) {
 	case "image/png", "image/jpeg", "image/gif", "image/webp":
@@ -76,6 +83,7 @@ func SupportedImageType(contentType string) bool {
 	}
 }
 
+// ImageTypeFromName infers previewable image type from a filename when MIME metadata is missing.
 func ImageTypeFromName(filename string) string {
 	filename = strings.ToLower(strings.TrimSpace(filename))
 	switch {
@@ -92,6 +100,7 @@ func ImageTypeFromName(filename string) string {
 	}
 }
 
+// ReadLimited reads a preview body with a hard byte limit to avoid loading oversized attachments into memory.
 func ReadLimited(r io.Reader, maxBytes int64) ([]byte, error) {
 	if maxBytes <= 0 {
 		maxBytes = MaxBytes

@@ -1,5 +1,9 @@
+// File overview: Form adapters for account settings. They isolate UI defaults and account-to-form
+// conversion from the large settings component.
+
 import type { Account } from "../types";
 
+/** emptyAccountForm returns UI defaults for a new IMAP account form. */
 export function emptyAccountForm() {
   return {
     email: "",
@@ -20,6 +24,7 @@ export function emptyAccountForm() {
   };
 }
 
+/** accountToForm adapts an API account row into editable string/boolean form state. */
 export function accountToForm(account: Account | null) {
   if (!account) return emptyAccountForm();
   return {

@@ -185,6 +185,16 @@
   display: grid;
 }
 
+.sidebar-license {
+  @include truncate;
+  flex: none;
+  margin: 6px 8px 0;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
 .sync-run-list {
   gap: 9px;
 }

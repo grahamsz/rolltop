@@ -15,6 +15,7 @@ import (
 	remoteimageblocklist "mailmirror/backend/plugins/remote_image_blocklist"
 )
 
+// PluginSetting is the persisted admin enablement state for one plugin definition.
 type PluginSetting struct {
 	ID               string
 	Name             string
@@ -75,6 +76,7 @@ func (s *Store) seedPluginSettings(ctx context.Context) error {
 	return nil
 }
 
+// ListPluginSettings returns admin-visible plugin enablement rows.
 func (s *Store) ListPluginSettings(ctx context.Context) ([]PluginSetting, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, description, enabled, enabled_by_default, heavy, created_at, updated_at
 		FROM plugin_settings ORDER BY name`)
@@ -97,6 +99,7 @@ func (s *Store) ListPluginSettings(ctx context.Context) ([]PluginSetting, error)
 	return out, rows.Err()
 }
 
+// PluginEnabled reports whether a plugin is currently active.
 func (s *Store) PluginEnabled(ctx context.Context, id string) (bool, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -114,6 +117,7 @@ func (s *Store) PluginEnabled(ctx context.Context, id string) (bool, error) {
 	return enabled != 0, err
 }
 
+// SetPluginEnabled updates plugin enablement and records the change time.
 func (s *Store) SetPluginEnabled(ctx context.Context, id string, enabled bool) error {
 	def, ok := plugins.Lookup(strings.TrimSpace(id))
 	if !ok {
@@ -139,6 +143,7 @@ func (s *Store) SetPluginEnabled(ctx context.Context, id string, enabled bool) e
 	return err
 }
 
+// ApplyEnabledPluginMigrations applies migrations for every enabled plugin at startup.
 func (s *Store) ApplyEnabledPluginMigrations(ctx context.Context) error {
 	settings, err := s.ListPluginSettings(ctx)
 	if err != nil {
@@ -155,6 +160,7 @@ func (s *Store) ApplyEnabledPluginMigrations(ctx context.Context) error {
 	return nil
 }
 
+// ApplyPluginMigrations applies migrations for one plugin after it is enabled.
 func (s *Store) ApplyPluginMigrations(ctx context.Context, pluginID string) error {
 	pluginID = strings.TrimSpace(pluginID)
 	if _, ok := plugins.Lookup(pluginID); !ok {

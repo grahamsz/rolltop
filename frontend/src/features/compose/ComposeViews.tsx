@@ -1,8 +1,11 @@
+// File overview: Compose, reply, and forward UI. It owns the editable body, recipient fields,
+// identity choice, file uploads, inline media CIDs, and optional client-side photo resizing.
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ClipboardEvent, DragEvent, FormEvent } from "react";
 import { api } from "../../api";
 import type { LocationState, Toast } from "../../appTypes";
-import type { ContactAutocomplete, ComposeAttachmentUpload, ComposeForm, ComposeIdentity } from "../../types";
+import type { ContactAutocomplete, ComposeAttachmentUpload, ComposeExistingAttachment, ComposeForm, ComposeIdentity } from "../../types";
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { textToHTML } from "../../lib/html";
@@ -16,6 +19,7 @@ type ComposeAttachment = ComposeAttachmentUpload & {
   objectURL?: string;
 };
 
+/** Floating compose dialog used by the shell for new mail, replies, and forwards. */
 export function ComposeOverlay({
   csrf,
   query,
@@ -80,6 +84,7 @@ export function ComposeOverlay({
   );
 }
 
+/** Full-page compose route, mainly useful for direct links or narrow layouts. */
 export function ComposePage({
   csrf,
   location,
@@ -134,6 +139,10 @@ export function ComposePage({
   );
 }
 
+/**
+ * ComposeBox owns the mutable compose draft: contenteditable HTML, plain-text
+ * fallback, From identity, recipient fields, files, inline media, and send state.
+ */
 export function ComposeBox({
   csrf,
   composeFrom,
@@ -164,7 +173,18 @@ export function ComposeBox({
   const inlineMediaInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsRef = useRef<ComposeAttachment[]>([]);
   const primaryIdentity = useMemo(() => identities.find((identity) => identity.is_primary) || identities[0] || null, [identities]);
-  const totalAttachmentBytes = useMemo(() => attachments.reduce((total, attachment) => total + attachment.size, 0), [attachments]);
+  const availableExistingAttachments = form.available_attachments || [];
+  const includedExistingAttachmentIDs = form.include_attachment_ids || [];
+  const includedExistingAttachments = useMemo(() => {
+    const ids = new Set(includedExistingAttachmentIDs);
+    return availableExistingAttachments.filter((attachment) => ids.has(attachment.id));
+  }, [availableExistingAttachments, includedExistingAttachmentIDs]);
+  const remainingExistingAttachmentCount = Math.max(0, availableExistingAttachments.length - includedExistingAttachments.length);
+  const totalAttachmentBytes = useMemo(() => {
+    const uploadBytes = attachments.reduce((total, attachment) => total + attachment.size, 0);
+    const existingBytes = includedExistingAttachments.reduce((total, attachment) => total + attachment.size, 0);
+    return uploadBytes + existingBytes;
+  }, [attachments, includedExistingAttachments]);
   const hasAttachmentWarning = totalAttachmentBytes > ATTACHMENT_WARNING_BYTES;
   const canResizePhotos = attachments.some((attachment) => isResizablePhoto(attachment.file));
 
@@ -199,6 +219,8 @@ export function ComposeBox({
     document.execCommand(command, false, value);
   }
 
+  // Attachments are kept as File objects until submit. Inline media also gets an
+  // object URL immediately so the editor can render it before it becomes a CID.
   function addFiles(fileList: FileList | File[], inline = false) {
     const files = Array.from(fileList).filter((file) => file.size > 0 || file.name);
     if (files.length === 0) return;
@@ -250,6 +272,21 @@ export function ComposeBox({
     removeInlineAttachmentElement(editorRef.current, id);
   }
 
+  function includeExistingAttachments() {
+    setForm((current) => {
+      const ids = new Set(current.include_attachment_ids || []);
+      (current.available_attachments || []).forEach((attachment) => ids.add(attachment.id));
+      return { ...current, include_attachment_ids: Array.from(ids) };
+    });
+  }
+
+  function removeExistingAttachment(id: number) {
+    setForm((current) => ({
+      ...current,
+      include_attachment_ids: (current.include_attachment_ids || []).filter((attachmentID) => attachmentID !== id)
+    }));
+  }
+
   async function resizePhotos() {
     if (resizing || !canResizePhotos) return;
     setResizing(true);
@@ -290,6 +327,8 @@ export function ComposeBox({
     addFiles(files, false);
   }
 
+  // Before sending, replace inline object URLs with cid: URLs and only upload
+  // inline files that are still referenced in the edited body.
   async function submit(event: FormEvent) {
     event.preventDefault();
     const editor = editorRef.current;
@@ -422,10 +461,28 @@ export function ComposeBox({
           suppressContentEditableWarning
         />
       </div>
-      {attachments.length > 0 || hasAttachmentWarning ? (
+      {attachments.length > 0 || includedExistingAttachments.length > 0 || remainingExistingAttachmentCount > 0 || hasAttachmentWarning ? (
         <div className="compose-attachments" aria-live="polite">
-          {attachments.length > 0 ? (
+          {remainingExistingAttachmentCount > 0 ? (
+            <button className="compose-existing-attachment-link ghost text-link" type="button" onClick={includeExistingAttachments}>
+              <Icon name="attach_file" />
+              Include previous {remainingExistingAttachmentCount === 1 ? "attachment" : "attachments"}
+            </button>
+          ) : null}
+          {includedExistingAttachments.length > 0 || attachments.length > 0 ? (
             <div className="compose-attachment-list">
+              {includedExistingAttachments.map((attachment) => (
+                <div className="compose-attachment compose-attachment-existing" key={`existing-${attachment.id}`}>
+                  <Icon name="attach_file" />
+                  <span>
+                    <strong>{composeExistingAttachmentName(attachment)}</strong>
+                    <small>Previous attachment - {formatBytes(attachment.size)}</small>
+                  </span>
+                  <button className="ghost" type="button" title="Remove attachment" onClick={() => removeExistingAttachment(attachment.id)}>
+                    <Icon name="close" />
+                  </button>
+                </div>
+              ))}
               {attachments.map((attachment) => (
                 <div className="compose-attachment" key={attachment.id}>
                   <Icon name={attachment.inline ? "image" : "attach_file"} />
@@ -511,6 +568,10 @@ export function ComposeBox({
   );
 }
 
+function composeExistingAttachmentName(attachment: ComposeExistingAttachment): string {
+  return attachment.filename || attachment.content_type || "Attachment";
+}
+
 function createComposeAttachment(file: File, inline: boolean): ComposeAttachment {
   const id = randomAttachmentID();
   const safeID = id.replace(/[^a-zA-Z0-9]/g, "_");
@@ -534,6 +595,8 @@ function randomAttachmentID(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// Convert editor-only inline media markers into MIME Content-ID references that
+// the backend can package into the outgoing message.
 function prepareComposeHTML(html: string, attachments: ComposeAttachment[]): { html: string; inlineIDs: Set<string> } {
   const template = document.createElement("template");
   template.innerHTML = html;
@@ -589,6 +652,8 @@ function isResizablePhoto(file: File): boolean {
   return file.type === "image/jpeg" || file.type === "image/png" || file.type === "image/webp";
 }
 
+// Client-side photo resizing is opportunistic: if the resized JPEG is not
+// smaller, keep the original file so image quality is not degraded for no gain.
 async function resizePhotoFile(file: File): Promise<File | null> {
   if (!isResizablePhoto(file)) return null;
   const image = await loadImage(file);

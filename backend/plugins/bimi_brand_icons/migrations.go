@@ -4,6 +4,7 @@ package bimi_brand_icons
 
 import "mailmirror/backend/plugins"
 
+// Migrations returns schema changes for the BIMI icon cache.
 func Migrations() []plugins.Migration {
 	return []plugins.Migration{{
 		PluginID: plugins.BIMIBrandIcons,
@@ -27,6 +28,7 @@ func Migrations() []plugins.Migration {
 	}}
 }
 
+// AssetURL builds the local URL where the frontend can request a cached BIMI asset by domain.
 func AssetURL(domain string) string {
 	return "/plugins/bimi_brand_icons/brand-icons/" + NormalizeDomain(domain) + ".svg"
 }

@@ -1,3 +1,6 @@
+// File overview: Authenticated application chrome: top bar, search entry, folder sidebar, mobile
+// drawer, drag-to-folder handling, sync status, and the mobile compose affordance.
+
 import { useMemo, useState, useEffect, useRef } from "react";
 import type { DragEvent, FormEvent, MouseEvent, ReactNode } from "react";
 import { api } from "../../api";
@@ -9,6 +12,11 @@ import { mailRoute, mailURL, searchRoute, searchURL, currentLocation } from "../
 import { createPluginSet } from "../../plugins/registry";
 import { SearchAutocomplete, useSearchAutocomplete } from "./SearchAutocomplete";
 
+/**
+ * AppShell renders everything that survives route changes after login: topbar,
+ * folder navigation, sync widget, account warnings, mobile drawer state, and the
+ * floating compose action. Children supply only the current content view.
+ */
 export function AppShell({
   user,
   csrf,
@@ -78,6 +86,8 @@ export function AppShell({
   );
 }
 
+// This banner is intentionally high in the shell so a broken master key or
+// undecryptable IMAP password is visible on every authenticated page.
 function AccountCredentialBanner({ notice, navigate }: { notice: string; navigate: (url: string) => void }) {
   return (
     <section className="account-alert" role="alert">
@@ -91,6 +101,8 @@ function AccountCredentialBanner({ notice, navigate }: { notice: string; navigat
   );
 }
 
+// Topbar owns the search input because search is global navigation, not part of
+// a specific mailbox or message view.
 function Topbar({
   user,
   mailboxes,
@@ -198,6 +210,8 @@ function Topbar({
   );
 }
 
+// Sidebar turns flat mailbox summaries into a tree, supports folder navigation,
+// and accepts dragged message IDs from the message list.
 function Sidebar({
   mailboxes,
   csrf,
@@ -363,6 +377,9 @@ function Sidebar({
         </a>
       </div>
       <SidebarSync csrf={csrf} latest={latestSyncRun} activeRuns={activeSyncRuns} running={syncRunning} refreshChrome={refreshChrome} />
+      <div className="sidebar-license">
+        GNU AGPLv3-or-later
+      </div>
     </aside>
   );
 }
@@ -413,6 +430,7 @@ function SidebarSync({
   );
 }
 
+/** Render compact sync progress using message progress when available, falling back to folder progress. */
 export function SyncRunMini({ run }: { run: SyncRun }) {
   const totalMessages = run.messages_total || 0;
   const totalFolders = run.mailboxes_total || 0;

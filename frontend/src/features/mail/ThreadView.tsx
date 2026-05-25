@@ -1,3 +1,6 @@
+// File overview: Conversation detail view. It loads thread bodies, shows IMAP/blob fetch status,
+// renders message headers/actions, handles inline replies, image trust, and search highlights.
+
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { Star } from "@phosphor-icons/react";
@@ -9,7 +12,6 @@ import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime } from "../../lib/format";
 import { HighlightedText, highlightEmailDocument } from "../../lib/searchHighlight";
 import { messageBackURL, messageHighlightQuery, messageHighlightTerms } from "../../lib/routes";
-import { emptyCompose } from "../../lib/composeDefaults";
 import { ComposeBox } from "../compose/ComposeViews";
 import { AttachmentPreviewSlot } from "../../plugins/attachmentPreview";
 import { brandDomainKeyForThread, loadBrandIconsForDomains } from "../../plugins/bimiBrandIcons";
@@ -18,46 +20,6 @@ import { RemoteImageNotice } from "../../plugins/remoteImageBlocklist/RemoteImag
 import { createPluginSet } from "../../plugins/registry";
 import { senderVisualURL } from "../../plugins/senderVisuals";
 import { TrustImageSourceAction } from "../../plugins/trustedImageSources/TrustImageSourceAction";
-
-type ParsedAddress = {
-  label: string;
-  email: string;
-};
-
-function normalizeEmail(value: string): string {
-  return value.trim().toLowerCase().replace(/^mailto:/, "");
-}
-
-function extractAddresses(value: string): ParsedAddress[] {
-  const input = String(value || "");
-  const out: ParsedAddress[] = [];
-  const seen = new Set<string>();
-  const add = (label: string, email: string) => {
-    const normalized = normalizeEmail(email);
-    if (!normalized || seen.has(normalized)) return;
-    seen.add(normalized);
-    const cleanLabel = label.trim().replace(/^(to|cc|bcc)\s+/i, "");
-    out.push({ label: cleanLabel || email.trim(), email: normalized });
-  };
-  input.replace(/([^,;<>]*<\s*([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\s*>)/gi, (_match, label: string, email: string) => {
-    add(label, email);
-    return "";
-  });
-  input.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, (email) => {
-    add(email, email);
-    return "";
-  });
-  return out;
-}
-
-function firstExternalAddress(values: string[], selfEmails: Set<string>): string {
-  for (const value of values) {
-    for (const address of extractAddresses(value)) {
-      if (!selfEmails.has(address.email)) return address.label;
-    }
-  }
-  return "";
-}
 
 type MessageLoadStatus = {
   conversation: number;
@@ -97,6 +59,8 @@ function loadStatusDetail(status: MessageLoadStatus): string {
   return "Using local message data; no IMAP fetch is needed.";
 }
 
+// MessageDetailsToggle keeps the Gmail-style compact recipient line but exposes
+// full message headers without leaving the conversation view.
 function MessageDetailsToggle({
   summary,
   details,
@@ -222,6 +186,11 @@ function RangePager({
   );
 }
 
+/**
+ * ThreadView loads a full conversation, requests status before slow IMAP/blob
+ * hydration, renders plugin actions, maintains expanded/collapsed cards, and
+ * prepares inline replies with the correct identity and recipient.
+ */
 export function ThreadView({
   csrf,
   datePrefs,
@@ -264,49 +233,11 @@ export function ThreadView({
   const mailbox = mailboxID ? mailboxes.find((item) => item.id === mailboxID) : null;
   const backURL = messageBackURL(location);
   const composeInitial = (composeFrom.match(/[A-Za-z0-9]/)?.[0] || "M").toUpperCase();
-  const selfEmails = new Set([
-    ...extractAddresses(composeFrom).map((address) => address.email),
-    ...fromIdentities.map((identity) => normalizeEmail(identity.email)).filter(Boolean)
-  ]);
-  const isSentLikeMailbox = (mailboxID: number) => {
-    const name = (mailboxes.find((item) => item.id === mailboxID)?.name || "").trim().toLowerCase();
-    return name === "sent" || name.endsWith("/sent") || name.endsWith(".sent") || name.includes("[gmail]/sent");
-  };
-  const isOwnThreadMessage = (item: ThreadMessage) => {
-    const senderAddresses = extractAddresses(`${item.sender_email} ${item.message.from_addr}`);
-    return senderAddresses.some((address) => selfEmails.has(address.email)) || isSentLikeMailbox(item.message.mailbox_id);
-  };
-  const replyRecipientForItem = (item: ThreadMessage) => {
-    if (isOwnThreadMessage(item)) {
-      const recipient = firstExternalAddress([item.message.to_addr, item.message.cc_addr, item.recipient_line], selfEmails);
-      if (recipient) return recipient;
-      for (const candidate of [...thread].reverse()) {
-        if (candidate.message.id === item.message.id || isOwnThreadMessage(candidate)) continue;
-        const sender = firstExternalAddress([candidate.sender_email, candidate.message.from_addr], selfEmails);
-        if (sender) return sender;
-      }
-    }
-    return firstExternalAddress([item.sender_email, item.message.from_addr], new Set<string>()) || item.sender_email || item.message.from_addr;
-  };
-  const identityIDForAddresses = (values: string[]) => {
-    const ids = new Map(fromIdentities.map((identity) => [normalizeEmail(identity.email), identity.id]));
-    for (const value of values) {
-      for (const address of extractAddresses(value)) {
-        const id = ids.get(address.email);
-        if (id) return id;
-      }
-    }
-    return 0;
-  };
-  const replyFromIdentityIDForItem = (item: ThreadMessage) => {
-    if (isOwnThreadMessage(item)) {
-      return identityIDForAddresses([item.message.from_addr, item.sender_email, item.message.to_addr, item.message.cc_addr]);
-    }
-    return identityIDForAddresses([item.message.to_addr, item.message.cc_addr, item.recipient_line]);
-  };
   const brandDomainKey = useMemo(() => brandDomainKeyForThread(thread, pluginSet), [thread, pluginSet]);
   const [brandIcons, setBrandIcons] = useState<Record<string, string>>({});
 
+  // Loading is split into a quick status probe and the actual message request.
+  // The status dialog is delayed slightly to avoid flashing for local conversations.
   const load = useCallback(
     async (images: boolean) => {
       setLoading(true);
@@ -415,15 +346,18 @@ export function ThreadView({
     return `Unsubscribed on ${displayDateTime(item.one_click_unsubscribe_sent_at, datePrefs)}`;
   }
 
-  function beginReply(item: ThreadMessage) {
+  // Reply setup asks the backend for recipients, identity, threading headers, and
+  // reusable attachment metadata so reply/reply-all behavior stays consistent.
+  async function beginReply(item: ThreadMessage, replyAll = false) {
     setExpanded((current) => new Set(current).add(item.message.id));
-    setInlineReply({
-      ...emptyCompose,
-      to: replyRecipientForItem(item),
-      subject: item.reply_subject || `Re: ${item.message.subject}`,
-      in_reply_to_id: item.message.id,
-      from_identity_id: replyFromIdentityIDForItem(item)
-    });
+    try {
+      const data = await api.compose(`${replyAll ? "reply_all" : "reply"}=${item.message.id}`);
+      setComposeFrom(data.compose_from);
+      setFromIdentities(data.from_identities || []);
+      setInlineReply(data.compose);
+    } catch (err) {
+      addToast(messageFromError(err), "error");
+    }
   }
 
   function toggleMessage(messageID: number) {
@@ -561,10 +495,16 @@ export function ThreadView({
                         <Icon name="more_vert" />
                       </summary>
                       <div className="message-menu-panel">
-                        <button type="button" onClick={() => beginReply(item)}>
+                        <button type="button" onClick={() => void beginReply(item)}>
                           <Icon name="reply" />
                           Reply
                         </button>
+                        {item.can_reply_all ? (
+                          <button type="button" onClick={() => void beginReply(item, true)}>
+                            <Icon name="reply_all" />
+                            Reply all
+                          </button>
+                        ) : null}
                         <button type="button" onClick={() => openCompose(`forward=${item.message.id}`)}>
                           <Icon name="forward" />
                           Forward
@@ -631,10 +571,16 @@ export function ThreadView({
                 ) : null}
                 {index === thread.length - 1 && inlineReply?.in_reply_to_id !== item.message.id ? (
                   <div className="thread-actions">
-                    <button className="thread-action" type="button" onClick={() => beginReply(item)}>
+                    <button className="thread-action" type="button" onClick={() => void beginReply(item)}>
                       <Icon name="reply" weight="bold" />
                       Reply
                     </button>
+                    {item.can_reply_all ? (
+                      <button className="thread-action" type="button" onClick={() => void beginReply(item, true)}>
+                        <Icon name="reply_all" weight="bold" />
+                        Reply all
+                      </button>
+                    ) : null}
                     <button
                       className="thread-action"
                       type="button"
@@ -673,6 +619,8 @@ export function ThreadView({
   );
 }
 
+// QuotedDetails lazy-renders the full body iframe only after the user asks for
+// hidden quoted text, avoiding extra iframe work during initial thread paint.
 function QuotedDetails({
   srcDoc,
   highlightQuery,
@@ -713,6 +661,9 @@ function applyEmailDocumentTheme(doc: Document | null | undefined) {
   doc.documentElement.setAttribute("data-mailmirror-theme", theme);
 }
 
+// EmailFrame isolates message HTML in a sandboxed iframe, applies the active
+// MailMirror theme, highlights search terms inside the iframe document, and
+// repeatedly measures height because images/fonts can settle after load.
 function EmailFrame({
   srcDoc,
   highlightQuery = "",

@@ -1,3 +1,6 @@
+// File overview: Mailbox and search result lists. These components fetch paged conversations,
+// surface sync clues, keep selection state stable, and link rows back to their source page.
+
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import { Star } from "@phosphor-icons/react";
@@ -13,6 +16,11 @@ import { HighlightedText } from "../../lib/searchHighlight";
 import { mailPageSize } from "../../lib/constants";
 import { mailRoute, mailURL, messageURL, routeWithSearch, searchRoute, searchURL } from "../../lib/routes";
 
+/**
+ * MailView fetches one page of mailbox/all-mail conversations. It clears stale
+ * rows when the URL changes, animates newly delivered messages on the first page,
+ * and shows a folder-level sync clue when the selected mailbox is manual or off.
+ */
 export function MailView({
   csrf,
   datePrefs,
@@ -64,6 +72,8 @@ export function MailView({
     };
   }, []);
 
+  // Route changes should feel immediate: clear the old page before the server
+  // responds so the user is not looking at stale rows for another folder.
   useEffect(() => {
     let cancelled = false;
     const isNewList = previousListKey.current !== listKey;
@@ -97,6 +107,7 @@ export function MailView({
         setConversations(data.conversations);
         setHasPrev(data.has_prev);
         setHasNext(data.has_next);
+        if (data.has_next) api.prefetchMail(mailboxID, page + 1);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -194,6 +205,8 @@ export function MailView({
   );
 }
 
+// FolderSyncNotice is shown only when the selected folder is known to be
+// excluded from automatic sync or behind the remote mailbox.
 function FolderSyncNotice({
   mailbox,
   effectiveMode,
@@ -232,6 +245,10 @@ function FolderSyncNotice({
   );
 }
 
+/**
+ * SearchView is always best-match search. The URL carries the query and page so
+ * opening a result can preserve a precise back target to the same result page.
+ */
 export function SearchView({
   csrf,
   location,
@@ -274,6 +291,7 @@ export function SearchView({
         setConversations(data.conversations);
         setHasPrev(data.has_prev);
         setHasNext(data.has_next);
+        if (data.has_next) api.prefetchSearch(query, "best", page + 1);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -355,6 +373,8 @@ function MessageListSkeleton({ label }: { label: string }) {
   );
 }
 
+// MessageList is shared by mailbox and search pages. It owns local row selection,
+// shift-select ranges, drag payloads, optimistic star updates, and message links.
 function MessageList({
   csrf,
   conversations,

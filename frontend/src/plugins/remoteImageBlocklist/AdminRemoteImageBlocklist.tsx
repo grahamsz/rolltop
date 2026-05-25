@@ -1,9 +1,12 @@
+// File overview: Admin editor for remote image blocklist regexes seeded by the backend plugin.
+
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../api";
 import type { AddToast } from "../../appTypes";
 import { messageFromError } from "../../lib/errors";
 
+/** AdminRemoteImageBlocklist lets admins view and replace remote-image blocking regexes. */
 export function AdminRemoteImageBlocklist({
   csrf,
   addToast,

@@ -239,13 +239,30 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	if err := searchSvc.IndexMessage(ctx, first, nil); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Empty"); err != nil {
+		t.Fatal(err)
+	}
 
 	server := &Server{store: db, search: searchSvc}
 	views := server.syncFolderViews(ctx, user.ID, nil)
-	if len(views) != 1 {
+	if len(views) != 2 {
 		t.Fatalf("views = %d", len(views))
 	}
-	box := views[0].Mailbox
+	var box, emptyBox store.MailboxSummary
+	var foundBox, foundEmpty bool
+	for _, view := range views {
+		switch view.Mailbox.Name {
+		case "INBOX":
+			box = view.Mailbox
+			foundBox = true
+		case "Empty":
+			emptyBox = view.Mailbox
+			foundEmpty = true
+		}
+	}
+	if !foundBox || !foundEmpty {
+		t.Fatalf("missing expected mailbox views: inbox=%t empty=%t", foundBox, foundEmpty)
+	}
 	if box.LocalMessageCount != 2 {
 		t.Fatalf("local message count = %d", box.LocalMessageCount)
 	}
@@ -257,6 +274,9 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	}
 	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 50 {
 		t.Fatalf("search index percent = %v", box.SearchIndexPercent)
+	}
+	if emptyBox.SearchIndexPercent == nil || *emptyBox.SearchIndexPercent != 0 {
+		t.Fatalf("empty search index percent = %v", emptyBox.SearchIndexPercent)
 	}
 }
 

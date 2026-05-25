@@ -46,6 +46,7 @@ func prepareMailAccount(a MailAccount) (MailAccount, error) {
 	return a, nil
 }
 
+// CreateMailAccount inserts a new IMAP account for a user and applies account defaults.
 func (s *Store) CreateMailAccount(ctx context.Context, a MailAccount) (MailAccount, error) {
 	a, err := prepareMailAccount(a)
 	if err != nil {
@@ -68,14 +69,10 @@ func (s *Store) CreateMailAccount(ctx context.Context, a MailAccount) (MailAccou
 	return s.GetMailAccountForUser(ctx, a.UserID, id)
 }
 
+// UpsertMailAccount creates a new IMAP account when ID is zero, or updates the
+// explicitly selected account when ID is present. Callers must choose the target
+// account instead of relying on a hidden "first account" update.
 func (s *Store) UpsertMailAccount(ctx context.Context, a MailAccount) (MailAccount, error) {
-	if a.ID == 0 {
-		if existing, err := s.GetMailAccount(ctx, a.UserID); err == nil {
-			a.ID = existing.ID
-		} else if !IsNotFound(err) {
-			return MailAccount{}, err
-		}
-	}
 	if a.ID == 0 {
 		return s.CreateMailAccount(ctx, a)
 	}
@@ -105,10 +102,12 @@ func (s *Store) updateMailAccount(ctx context.Context, a MailAccount) (MailAccou
 	return s.GetMailAccountForUser(ctx, a.UserID, a.ID)
 }
 
+// GetMailAccount returns the first configured IMAP account for user-level defaults.
 func (s *Store) GetMailAccount(ctx context.Context, userID int64) (MailAccount, error) {
 	return scanMailAccount(s.mustDataDB(ctx, userID).QueryRowContext(ctx, mailAccountSelectSQL()+` WHERE user_id = ? ORDER BY id LIMIT 1`, userID))
 }
 
+// GetMailAccountForUser loads one IMAP account scoped to the signed-in user.
 func (s *Store) GetMailAccountForUser(ctx context.Context, userID, accountID int64) (MailAccount, error) {
 	if accountID <= 0 {
 		return MailAccount{}, ErrNotFound
@@ -116,6 +115,7 @@ func (s *Store) GetMailAccountForUser(ctx context.Context, userID, accountID int
 	return scanMailAccount(s.mustDataDB(ctx, userID).QueryRowContext(ctx, mailAccountSelectSQL()+` WHERE user_id = ? AND id = ?`, userID, accountID))
 }
 
+// ListMailAccountsForUser returns every IMAP account configured by one user.
 func (s *Store) ListMailAccountsForUser(ctx context.Context, userID int64) ([]MailAccount, error) {
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, mailAccountSelectSQL()+` WHERE user_id = ? ORDER BY id`, userID)
 	if err != nil {
@@ -125,6 +125,7 @@ func (s *Store) ListMailAccountsForUser(ctx context.Context, userID int64) ([]Ma
 	return scanMailAccounts(rows)
 }
 
+// ListAccounts returns all IMAP accounts across users for startup/background scheduling only.
 func (s *Store) ListAccounts(ctx context.Context) ([]MailAccount, error) {
 	if s.split {
 		users, err := s.ListUsers(ctx)
@@ -190,6 +191,7 @@ func (a *MailAccount) applySMTPDefaults() {
 	}
 }
 
+// GetOrCreateMailbox returns the local mailbox row for an account/name pair, creating it when discovery finds a new folder.
 func (s *Store) GetOrCreateMailbox(ctx context.Context, userID, accountID int64, name string) (Mailbox, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -209,6 +211,7 @@ func (s *Store) GetOrCreateMailbox(ctx context.Context, userID, accountID int64,
 	return s.GetMailbox(ctx, userID, accountID, name)
 }
 
+// NextUIDForMailbox returns the next UID that should be fetched after the mailbox's last stored UID.
 func (s *Store) NextUIDForMailbox(ctx context.Context, userID, mailboxID int64) (uint32, error) {
 	var next uint32
 	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT COALESCE(MAX(uid), 0) + 1 FROM messages WHERE user_id = ? AND mailbox_id = ?`, userID, mailboxID).Scan(&next)
@@ -218,6 +221,7 @@ func (s *Store) NextUIDForMailbox(ctx context.Context, userID, mailboxID int64) 
 	return next, err
 }
 
+// GetMailbox loads a mailbox by account and remote name inside one user scope.
 func (s *Store) GetMailbox(ctx context.Context, userID, accountID int64, name string) (Mailbox, error) {
 	var m Mailbox
 	var created, updated, statusChecked int64
@@ -235,6 +239,7 @@ func (s *Store) GetMailbox(ctx context.Context, userID, accountID int64, name st
 	return m, err
 }
 
+// GetMailboxForUser loads a mailbox by local ID inside one user scope.
 func (s *Store) GetMailboxForUser(ctx context.Context, userID, mailboxID int64) (Mailbox, error) {
 	var m Mailbox
 	var created, updated, statusChecked int64
@@ -252,6 +257,7 @@ func (s *Store) GetMailboxForUser(ctx context.Context, userID, mailboxID int64) 
 	return m, err
 }
 
+// ListMailboxesForUser returns folder summaries with local, remote, and indexing counters for chrome/settings.
 func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]MailboxSummary, error) {
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT mb.id, mb.user_id, mb.account_id, mb.name, mb.sync_mode, mb.role, mb.icon,
 			mb.show_in_sidebar, mb.show_in_all_mail, mb.include_in_search, mb.uidvalidity, mb.last_uid, mb.created_at, mb.updated_at,
@@ -299,6 +305,7 @@ func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]Mailb
 	return out, rows.Err()
 }
 
+// LastUIDs returns the per-mailbox UID checkpoints used by incremental sync planning.
 func (s *Store) LastUIDs(ctx context.Context, userID, accountID int64) (map[string]uint32, error) {
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT name, last_uid FROM mailboxes WHERE user_id = ? AND account_id = ?`, userID, accountID)
 	if err != nil {
@@ -317,6 +324,7 @@ func (s *Store) LastUIDs(ctx context.Context, userID, accountID int64) (map[stri
 	return out, rows.Err()
 }
 
+// UpdateMailboxSyncMode updates only the folder sync mode for quick UI toggles.
 func (s *Store) UpdateMailboxSyncMode(ctx context.Context, userID, mailboxID int64, mode string) error {
 	mode = normalizeSyncMode(mode)
 	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE mailboxes SET sync_mode = ?, updated_at = ? WHERE user_id = ? AND id = ?`, mode, nowUnix(), userID, mailboxID)
@@ -333,6 +341,7 @@ func (s *Store) UpdateMailboxSyncMode(ctx context.Context, userID, mailboxID int
 	return nil
 }
 
+// UpdateMailboxSettings updates sync mode, role, icon, and visibility flags for one folder.
 func (s *Store) UpdateMailboxSettings(ctx context.Context, userID, mailboxID int64, settings MailboxSettings) error {
 	settings.SyncMode = normalizeSyncMode(settings.SyncMode)
 	settings.Role = normalizeMailboxRole(settings.Role)
@@ -369,6 +378,7 @@ func (s *Store) UpdateMailboxSettings(ctx context.Context, userID, mailboxID int
 	return tx.Commit()
 }
 
+// EffectiveMailboxSyncMode resolves inherit/auto/manual/never for a mailbox under its account defaults.
 func (s *Store) EffectiveMailboxSyncMode(ctx context.Context, userID, accountID int64, mailbox Mailbox) (string, error) {
 	mode := normalizeSyncMode(mailbox.SyncMode)
 	if mode != "inherit" {
@@ -390,6 +400,7 @@ func (s *Store) EffectiveMailboxSyncMode(ctx context.Context, userID, accountID 
 	return "auto", nil
 }
 
+// ListMessagesForMailboxIndex pages through messages used to rebuild or remove one mailbox's search documents.
 func (s *Store) ListMessagesForMailboxIndex(ctx context.Context, userID, mailboxID int64, limit int, afterID int64) ([]MessageRecord, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
@@ -526,12 +537,14 @@ func mailboxParentNames(name string) []string {
 	return parents
 }
 
+// UpdateMailboxLastUID advances the incremental sync checkpoint after a message UID is handled.
 func (s *Store) UpdateMailboxLastUID(ctx context.Context, userID, mailboxID int64, uid uint32) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE mailboxes SET last_uid = CASE WHEN last_uid < ? THEN ? ELSE last_uid END, updated_at = ?
 		WHERE id = ? AND user_id = ?`, uid, uid, nowUnix(), mailboxID, userID)
 	return err
 }
 
+// UpdateMailboxRemoteStatus stores IMAP STATUS counters separately from local mirrored counts.
 func (s *Store) UpdateMailboxRemoteStatus(ctx context.Context, userID, mailboxID int64, messageCount, unreadCount int, uidNext uint32, uidValidity uint32) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE mailboxes
 		SET remote_message_count = ?, remote_unread_count = ?, remote_uid_next = ?, uidvalidity = ?, status_checked_at = ?, updated_at = ?
@@ -540,6 +553,7 @@ func (s *Store) UpdateMailboxRemoteStatus(ctx context.Context, userID, mailboxID
 	return err
 }
 
+// MessageExistsByUID checks whether a UID has already been mirrored for an account mailbox.
 func (s *Store) MessageExistsByUID(ctx context.Context, userID, accountID, mailboxID int64, uid uint32) (bool, error) {
 	var id int64
 	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT id FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND uid = ?`,

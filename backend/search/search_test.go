@@ -383,6 +383,34 @@ func TestSearchDoesNotSplitShortCompactWordIntoFuzzyFragments(t *testing.T) {
 	}
 }
 
+func TestSearchDoesNotSplitCompactWordIntoThreeLetterFragments(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	now := time.Now()
+	msgs := []store.MessageRecord{
+		{ID: 1, UserID: 1, Subject: "Housing update", BodyText: "Housing application status", Date: now},
+		{ID: 2, UserID: 1, Subject: "Suffix fragment", BodyText: "ing", Date: now.Add(time.Hour)},
+		{ID: 3, UserID: 1, Subject: "Split fragment", BodyText: "hous ing", Date: now.Add(2 * time.Hour)},
+	}
+	for _, msg := range msgs {
+		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids, err := svc.Search(ctx, 1, "housing", SortBest, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("ids = %v", ids)
+	}
+}
+
 func TestQuotedCompactWordDoesNotSplitOrFuzzyMatch(t *testing.T) {
 	ctx := context.Background()
 	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))

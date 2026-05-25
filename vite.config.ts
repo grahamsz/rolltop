@@ -1,3 +1,5 @@
+// File overview: Vite build configuration for the React frontend bundle that the Go server serves.
+
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 

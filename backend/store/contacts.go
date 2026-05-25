@@ -9,6 +9,7 @@ import (
 	"strings"
 )
 
+// NormalizeContactEmail canonicalizes email addresses for contact matching and Me identity lookup.
 func NormalizeContactEmail(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -20,6 +21,7 @@ func NormalizeContactEmail(value string) string {
 	return strings.ToLower(strings.Trim(value, "<> \t\r\n"))
 }
 
+// CreateContact inserts a user-owned contact plus its child email/phone/address/URL rows.
 func (s *Store) CreateContact(ctx context.Context, userID int64, c Contact) (Contact, error) {
 	c = normalizeContactForSave(userID, c)
 	ts := nowUnix()
@@ -59,6 +61,7 @@ func (s *Store) CreateContact(ctx context.Context, userID int64, c Contact) (Con
 	return s.GetContactForUser(ctx, userID, id)
 }
 
+// UpdateContact replaces a user-owned contact and synchronizes child detail rows.
 func (s *Store) UpdateContact(ctx context.Context, userID, id int64, c Contact) (Contact, error) {
 	c = normalizeContactForSave(userID, c)
 	ts := nowUnix()
@@ -102,6 +105,7 @@ func (s *Store) UpdateContact(ctx context.Context, userID, id int64, c Contact) 
 	return s.GetContactForUser(ctx, userID, id)
 }
 
+// DeleteContactForUser removes one contact and dependent detail rows inside the user database.
 func (s *Store) DeleteContactForUser(ctx context.Context, userID, id int64) error {
 	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `DELETE FROM contacts WHERE user_id = ? AND id = ?`, userID, id)
 	if err != nil {
@@ -117,6 +121,7 @@ func (s *Store) DeleteContactForUser(ctx context.Context, userID, id int64) erro
 	return s.ensurePrimaryMeContact(ctx, userID)
 }
 
+// GetContactForUser loads a contact and its detail rows for one user.
 func (s *Store) GetContactForUser(ctx context.Context, userID, id int64) (Contact, error) {
 	row := s.mustDataDB(ctx, userID).QueryRowContext(ctx, contactSelectSQL()+` WHERE user_id = ? AND id = ?`, userID, id)
 	c, err := scanContact(row)
@@ -129,6 +134,7 @@ func (s *Store) GetContactForUser(ctx context.Context, userID, id int64) (Contac
 	return c, nil
 }
 
+// GetContactByEmailForUser finds a contact by normalized email inside one user's address book.
 func (s *Store) GetContactByEmailForUser(ctx context.Context, userID int64, email string) (Contact, error) {
 	normalized := NormalizeContactEmail(email)
 	if normalized == "" {
@@ -148,6 +154,7 @@ func (s *Store) GetContactByEmailForUser(ctx context.Context, userID int64, emai
 	return c, nil
 }
 
+// EnsureMeContactForEmail creates or updates the Me contact used for compose identities and reply targeting.
 func (s *Store) EnsureMeContactForEmail(ctx context.Context, userID int64, email, displayName string) (Contact, error) {
 	email = strings.TrimSpace(email)
 	if NormalizeContactEmail(email) == "" {
@@ -209,6 +216,7 @@ func (s *Store) hasMeContact(ctx context.Context, userID int64) (bool, error) {
 	return n > 0, nil
 }
 
+// ListContactsForUser returns contacts matching the optional address-book query.
 func (s *Store) ListContactsForUser(ctx context.Context, userID int64, query string, limit int) ([]Contact, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
@@ -247,6 +255,7 @@ func (s *Store) ListContactsForUser(ctx context.Context, userID int64, query str
 	return contacts, nil
 }
 
+// AutocompleteContactsForUser returns flattened contact email choices for compose recipient entry.
 func (s *Store) AutocompleteContactsForUser(ctx context.Context, userID int64, query string, limit int) ([]ContactAutocomplete, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 10
@@ -279,6 +288,7 @@ func (s *Store) AutocompleteContactsForUser(ctx context.Context, userID int64, q
 	return out, rows.Err()
 }
 
+// ListMeContactsForUser returns contacts marked as the signed-in user's own identities.
 func (s *Store) ListMeContactsForUser(ctx context.Context, userID int64) ([]Contact, error) {
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, contactSelectSQL()+`
 		WHERE user_id = ? AND is_me = 1
@@ -299,6 +309,7 @@ func (s *Store) ListMeContactsForUser(ctx context.Context, userID int64) ([]Cont
 	return contacts, nil
 }
 
+// ListMeContactEmailsForUser returns normalized Me email addresses for reply and sender detection.
 func (s *Store) ListMeContactEmailsForUser(ctx context.Context, userID int64) ([]string, error) {
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT e.email
 		FROM contact_emails e
@@ -322,6 +333,7 @@ func (s *Store) ListMeContactEmailsForUser(ctx context.Context, userID int64) ([
 	return out, rows.Err()
 }
 
+// SetContactIcon records a contact icon blob for one user-owned contact.
 func (s *Store) SetContactIcon(ctx context.Context, userID, contactID, blobID int64, contentType, filename string, size int64) (ContactIcon, error) {
 	if _, err := s.GetContactForUser(ctx, userID, contactID); err != nil {
 		return ContactIcon{}, err
@@ -341,6 +353,7 @@ func (s *Store) SetContactIcon(ctx context.Context, userID, contactID, blobID in
 	return s.GetContactIconForUser(ctx, userID, contactID)
 }
 
+// GetContactIconForUser loads icon metadata for one user-owned contact.
 func (s *Store) GetContactIconForUser(ctx context.Context, userID, contactID int64) (ContactIcon, error) {
 	var icon ContactIcon
 	var created, updated int64
@@ -354,6 +367,7 @@ func (s *Store) GetContactIconForUser(ctx context.Context, userID, contactID int
 	return icon, err
 }
 
+// GetContactIconByEmailForUser loads icon metadata by matching a contact email.
 func (s *Store) GetContactIconByEmailForUser(ctx context.Context, userID int64, email string) (ContactIcon, error) {
 	normalized := NormalizeContactEmail(email)
 	if normalized == "" {
@@ -371,6 +385,7 @@ func (s *Store) GetContactIconByEmailForUser(ctx context.Context, userID int64, 
 	return s.GetContactIconForUser(ctx, userID, contactID)
 }
 
+// DeleteContactIconForUser removes icon metadata from a user-owned contact.
 func (s *Store) DeleteContactIconForUser(ctx context.Context, userID, contactID int64) error {
 	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `DELETE FROM contact_icons WHERE user_id = ? AND contact_id = ?`, userID, contactID)
 	if err != nil {

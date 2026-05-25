@@ -1,11 +1,16 @@
+// File overview: Folder tree helpers. They turn flat mailbox rows into nested sidebar/settings
+// nodes without changing the backend mailbox identifiers.
+
 import type { Mailbox } from "../types";
 
+/** FolderNode is one mailbox plus nested child folders for sidebar/settings tree rendering. */
 export type FolderNode = {
   mailbox: Mailbox;
   label: string;
   children: FolderNode[];
 };
 
+/** folderTree converts flat mailbox names into a nested tree while preserving mailbox IDs. */
 export function folderTree(mailboxes: Mailbox[]): FolderNode[] {
   const visible = mailboxes.filter((mailbox) => mailbox.show_in_sidebar !== false);
   const byName = new Map(visible.map((mailbox) => [mailbox.name, mailbox]));
@@ -46,6 +51,7 @@ function closestVisibleParent(name: string, byName: Map<string, Mailbox>): Mailb
   return null;
 }
 
+/** folderParentNames returns the implied parent paths for a mailbox name. */
 export function folderParentNames(name: string): string[] {
   const out: string[] = [];
   for (let i = name.length - 1; i > 0; i--) {
@@ -54,18 +60,21 @@ export function folderParentNames(name: string): string[] {
   return out;
 }
 
+/** folderLabel returns the display label for a mailbox relative to an optional parent path. */
 export function folderLabel(name: string, parent = ""): string {
   if (!parent) return name;
   const next = name.slice(parent.length);
   return next.replace(/^[./\\]+/, "") || name;
 }
 
+/** folderSortKey gives inbox/system folders predictable order before alphabetical folders. */
 export function folderSortKey(mailbox: Mailbox): string {
   if (mailbox.role === "inbox" || mailbox.name.toLowerCase() === "inbox") return "00";
   if (mailbox.role === "trash") return `90:${mailbox.name}`;
   return `10:${mailbox.name}`;
 }
 
+/** nodeContainsMailbox checks whether a tree node contains the active mailbox ID. */
 export function nodeContainsMailbox(node: FolderNode, id: string | null): boolean {
   if (!id) return false;
   return String(node.mailbox.id) === id || node.children.some((child) => nodeContainsMailbox(child, id));

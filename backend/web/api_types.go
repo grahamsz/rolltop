@@ -222,6 +222,7 @@ type apiThreadMessage struct {
 	ImagesAllowed   bool             `json:"images_allowed"`
 	Expanded        bool             `json:"expanded"`
 	ReplySubject    string           `json:"reply_subject"`
+	CanReplyAll     bool             `json:"can_reply_all"`
 }
 
 type apiHeaderItem struct {

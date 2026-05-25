@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// ListMessagesNeedingAttachmentIndex returns messages whose raw bodies still need attachment text extraction.
 func (s *Store) ListMessagesNeedingAttachmentIndex(ctx context.Context, userID int64, limit int) ([]MessageRecord, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
@@ -21,6 +22,7 @@ func (s *Store) ListMessagesNeedingAttachmentIndex(ctx context.Context, userID i
 	return scanMessages(rows)
 }
 
+// ListMessagesWithReadSyncPending returns locally changed read-state rows waiting for IMAP sync.
 func (s *Store) ListMessagesWithReadSyncPending(ctx context.Context, userID int64, limit int) ([]MessageRecord, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
@@ -35,6 +37,7 @@ func (s *Store) ListMessagesWithReadSyncPending(ctx context.Context, userID int6
 	return scanMessages(rows)
 }
 
+// ListMessagesWithStarSyncPending returns locally changed star-state rows waiting for IMAP sync.
 func (s *Store) ListMessagesWithStarSyncPending(ctx context.Context, userID int64, limit int) ([]MessageRecord, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
@@ -49,12 +52,14 @@ func (s *Store) ListMessagesWithStarSyncPending(ctx context.Context, userID int6
 	return scanMessages(rows)
 }
 
+// MarkMessageAttachmentIndexed records that attachment text extraction ran for a message.
 func (s *Store) MarkMessageAttachmentIndexed(ctx context.Context, userID, messageID int64, hasAttachments bool) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET has_attachments = ?, attachment_indexed_at = ?, updated_at = ?
 		WHERE user_id = ? AND id = ?`, boolInt(hasAttachments), nowUnix(), nowUnix(), userID, messageID)
 	return err
 }
 
+// UpdateMessageLanguage stores plugin-detected language metadata for search filtering.
 func (s *Store) UpdateMessageLanguage(ctx context.Context, userID, messageID int64, languageCode string) error {
 	languageCode = strings.ToLower(strings.TrimSpace(languageCode))
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET language_code = ?, updated_at = ?

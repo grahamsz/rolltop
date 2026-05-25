@@ -19,6 +19,9 @@ import (
 	"mailmirror/backend/store"
 )
 
+// apiMessagePath is the subrouter for /api/messages/:id. It keeps per-message
+// actions in one place while each action still performs auth, CSRF, and user-scoped
+// store checks independently.
 func (s *Server) apiMessagePath(w http.ResponseWriter, r *http.Request, rest string) {
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
@@ -69,6 +72,9 @@ func (s *Server) apiMessagePath(w http.ResponseWriter, r *http.Request, rest str
 	http.NotFound(w, r)
 }
 
+// apiMessage returns the full thread around one message. threadViewsForMessage may
+// hydrate pruned bodies from local blobs or IMAP before this method serializes the
+// render-ready body docs for React.
 func (s *Server) apiMessage(w http.ResponseWriter, r *http.Request, id int64) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -104,6 +110,9 @@ func (s *Server) apiMessage(w http.ResponseWriter, r *http.Request, id int64) {
 	})
 }
 
+// apiMessageLoadStatus is a cheap preflight used by ThreadView to decide whether
+// to show the "fetching from IMAP/local blob" dialog before the heavier message
+// request finishes.
 func (s *Server) apiMessageLoadStatus(w http.ResponseWriter, r *http.Request, id int64) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -164,6 +173,8 @@ func (s *Server) apiMessageLoadStatus(w http.ResponseWriter, r *http.Request, id
 	})
 }
 
+// messageDisplayLoadSource classifies the cheapest available source for one
+// message body: already indexed HTML, existing blob, IMAP fetch, or preview only.
 func (s *Server) messageDisplayLoadSource(userID int64, msg store.MessageRecord) string {
 	if strings.TrimSpace(msg.BodyHTML) != "" {
 		return "indexed"
@@ -181,6 +192,8 @@ func (s *Server) messageDisplayLoadSource(userID int64, msg store.MessageRecord)
 	return "preview"
 }
 
+// apiMoveMessage moves one message through the syncer and then schedules mailbox
+// refreshes so local state catches up with the remote IMAP server.
 func (s *Server) apiMoveMessage(w http.ResponseWriter, r *http.Request, id int64) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -270,6 +283,8 @@ func (s *Server) moveRefreshMailboxNames(ctx context.Context, userID int64, mess
 	return names, nil
 }
 
+// apiBulkMoveMessages does small batches inline and large batches as background
+// syncer jobs so drag/drop remains responsive for bulk selections.
 func (s *Server) apiBulkMoveMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -474,6 +489,7 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 	}
 	threadViews := make([]threadMessageView, 0, len(threadMessages))
 	previousBodies := make([]string, 0, len(threadMessages))
+	own := s.ownAddresses(ctx, cu.User)
 	remoteImageBlockingEnabled := s.pluginEnabled(ctx, plugins.RemoteImageBlocklist)
 	trustedImageSourcesEnabled := s.pluginEnabled(ctx, plugins.TrustedImageSources)
 	trustedDB, trustedDBErr := s.store.UserDB(ctx, cu.User.ID)
@@ -548,6 +564,7 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 			ImagesAllowed:            imagesAllowed,
 			ImageBlockRules:          imageBlockRules,
 			Expanded:                 idx == len(threadMessages)-1 || threadMsg.ID == msg.ID || len(threadMessages) == 1,
+			CanReplyAll:              canReplyAll(threadMsg, threadMessages, own),
 		})
 		previousBodies = append(previousBodies, sourceText)
 		if threadMsg.ID == msg.ID {

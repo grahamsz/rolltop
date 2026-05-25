@@ -4,6 +4,7 @@ package store
 
 import "context"
 
+// CreateSyncRun starts a sync progress row for one user/account.
 func (s *Store) CreateSyncRun(ctx context.Context, userID, accountID int64) (SyncRun, error) {
 	started := nowUnix()
 	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `INSERT INTO sync_runs (user_id, account_id, status, started_at, updated_at) VALUES (?, ?, 'running', ?, ?)`, userID, accountID, started, started)
@@ -17,6 +18,7 @@ func (s *Store) CreateSyncRun(ctx context.Context, userID, accountID int64) (Syn
 	return s.GetSyncRunForUser(ctx, userID, id)
 }
 
+// MarkRunningSyncRunsInterrupted marks stale running jobs interrupted during startup recovery.
 func (s *Store) MarkRunningSyncRunsInterrupted(ctx context.Context) (int64, error) {
 	if s.split {
 		users, err := s.ListUsers(ctx)
@@ -47,6 +49,7 @@ func (s *Store) MarkRunningSyncRunsInterrupted(ctx context.Context) (int64, erro
 	return res.RowsAffected()
 }
 
+// SyncProgress is the mutable progress snapshot copied into sync_runs during long operations.
 type SyncProgress struct {
 	MessagesSeen     int
 	MessagesStored   int
@@ -61,6 +64,7 @@ type SyncProgress struct {
 	CurrentUID       uint32
 }
 
+// UpdateSyncRunProgress stores the latest mailbox/message progress snapshot for a sync run.
 func (s *Store) UpdateSyncRunProgress(ctx context.Context, userID, id int64, p SyncProgress) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE sync_runs
 		SET updated_at = ?, messages_seen = ?, messages_stored = ?, messages_skipped = ?, new_messages = ?, latest_new_from = ?, latest_new_subject = ?, messages_total = ?, mailboxes_done = ?, mailboxes_total = ?, current_mailbox = ?, current_uid = ?
@@ -69,6 +73,7 @@ func (s *Store) UpdateSyncRunProgress(ctx context.Context, userID, id int64, p S
 	return err
 }
 
+// FinishSyncRun finalizes a sync run with status, progress, and optional error text.
 func (s *Store) FinishSyncRun(ctx context.Context, userID, id int64, status string, p SyncProgress, errText string) error {
 	if len(errText) > 1000 {
 		errText = errText[:1000]
@@ -83,6 +88,7 @@ func (s *Store) FinishSyncRun(ctx context.Context, userID, id int64, status stri
 	return err
 }
 
+// GetSyncRunForUser loads one sync run scoped to the signed-in user.
 func (s *Store) GetSyncRunForUser(ctx context.Context, userID, id int64) (SyncRun, error) {
 	var r SyncRun
 	var started, finished, updated int64
@@ -97,6 +103,7 @@ func (s *Store) GetSyncRunForUser(ctx context.Context, userID, id int64) (SyncRu
 	return r, err
 }
 
+// ListSyncRunsForUser returns recent sync runs for status widgets and settings history.
 func (s *Store) ListSyncRunsForUser(ctx context.Context, userID int64, limit int) ([]SyncRun, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -124,6 +131,7 @@ func (s *Store) ListSyncRunsForUser(ctx context.Context, userID int64, limit int
 	return out, rows.Err()
 }
 
+// ListUserIDsWithAccounts returns user IDs that have IMAP accounts for background scheduling.
 func (s *Store) ListUserIDsWithAccounts(ctx context.Context) ([]int64, error) {
 	if s.split {
 		users, err := s.ListUsers(ctx)

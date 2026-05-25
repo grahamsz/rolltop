@@ -12,6 +12,9 @@ import (
 	"mailmirror/backend/store"
 )
 
+// apiMail returns a paged conversation list for All Mail or one mailbox. It asks
+// SQLite for extra rows because conversation grouping can collapse several message
+// rows into one visible thread.
 func (s *Server) apiMail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -72,6 +75,9 @@ func (s *Server) apiMail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// apiSearch combines URL query parsing, optional mailbox filtering, sender-history
+// boosts, Bleve search hits, and SQLite conversation hydration into the search
+// result payload consumed by SearchView.
 func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)

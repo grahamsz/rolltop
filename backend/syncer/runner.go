@@ -6,10 +6,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 )
 
+// Runner serializes sync work per user/mailbox and launches background indexing follow-ups.
 type Runner struct {
 	Service *Service
 	ctx     context.Context
@@ -20,10 +22,15 @@ type Runner struct {
 	mailboxPending map[string]bool
 }
 
+// NewRunner builds a process-lifetime scheduler using a background context. The
+// main package uses NewRunnerWithContext so shutdown can interrupt running jobs.
 func NewRunner(service *Service) *Runner {
 	return NewRunnerWithContext(context.Background(), service)
 }
 
+// NewRunnerWithContext wires cancellation into all future jobs. When startup or
+// shutdown cancels ctx, new sync jobs are refused and active jobs report
+// interruption through syncAccount's deferred finish.
 func NewRunnerWithContext(ctx context.Context, service *Service) *Runner {
 	if ctx == nil {
 		ctx = context.Background()
@@ -44,6 +51,9 @@ func (r *Runner) context() context.Context {
 	return r.ctx
 }
 
+// Start begins an account-wide sync for one user if one is not already running.
+// It plans folders first, then runs them serially as mailbox jobs so per-folder
+// progress and priority reruns stay visible.
 func (r *Runner) Start(userID int64) bool {
 	ctx := r.context()
 	if ctx.Err() != nil {
@@ -84,6 +94,8 @@ func (r *Runner) Start(userID int64) bool {
 	return true
 }
 
+// StartMailboxes schedules named folders across all accounts for a user. It is
+// used after operations that should refresh source/destination mailboxes.
 func (r *Runner) StartMailboxes(userID int64, mailboxes []string) bool {
 	if r.context().Err() != nil {
 		return false
@@ -103,6 +115,8 @@ func (r *Runner) StartMailboxes(userID int64, mailboxes []string) bool {
 	return true
 }
 
+// StartAccountMailboxes reserves account-qualified folder keys so identical
+// mailbox names on different IMAP servers do not block each other unnecessarily.
 func (r *Runner) StartAccountMailboxes(userID, accountID int64, mailboxes []string) bool {
 	if r.context().Err() != nil {
 		return false
@@ -122,6 +136,8 @@ func (r *Runner) StartAccountMailboxes(userID, accountID int64, mailboxes []stri
 	return true
 }
 
+// StartPriorityMailboxes records a pending rerun when the folder is already busy.
+// The active job will launch one follow-up pass after releasing its reservation.
 func (r *Runner) StartPriorityMailboxes(userID int64, mailboxes []string) bool {
 	if r.context().Err() != nil {
 		return false
@@ -154,12 +170,15 @@ func (r *Runner) runMailboxes(userID int64, mailboxes []string) bool {
 	return true
 }
 
+// reserveMailboxes is the concurrency gate for user-level folder jobs. It claims
+// a broad user/mailbox key and also checks account-qualified keys, because this
+// job will sync the requested mailbox name across every account for the user.
 func (r *Runner) reserveMailboxes(userID int64, mailboxes []string) ([]string, bool) {
 	keys := mailboxKeys(userID, mailboxes)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, key := range keys {
-		if r.mailboxRunning[key] {
+	for _, mailbox := range mailboxes {
+		if r.mailboxReservedByAnyAccountLocked(userID, mailbox) {
 			return nil, false
 		}
 	}
@@ -173,8 +192,8 @@ func (r *Runner) reserveAccountMailboxes(userID, accountID int64, mailboxes []st
 	keys := accountMailboxKeys(userID, accountID, mailboxes)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, key := range keys {
-		if r.mailboxRunning[key] {
+	for _, mailbox := range mailboxes {
+		if r.accountMailboxReservedLocked(userID, accountID, mailbox) {
 			return nil, false
 		}
 	}
@@ -193,6 +212,8 @@ func (r *Runner) markPending(userID int64, mailboxes []string) {
 	}
 }
 
+// runReservedMailboxes performs the already-reserved sync and then checks for
+// priority reruns that arrived while it was busy.
 func (r *Runner) runReservedMailboxes(userID int64, mailboxes []string, keys []string) {
 	defer func() {
 		r.mu.Lock()
@@ -226,11 +247,10 @@ func (r *Runner) runReservedMailboxes(userID int64, mailboxes []string, keys []s
 
 func (r *Runner) runReservedAccountMailboxes(userID, accountID int64, mailboxes []string, keys []string) {
 	defer func() {
-		r.mu.Lock()
-		for _, key := range keys {
-			delete(r.mailboxRunning, key)
+		rerun := r.releaseAccountMailboxReservations(userID, mailboxes, keys)
+		if len(rerun) > 0 && r.context().Err() == nil {
+			r.StartPriorityMailboxes(userID, rerun)
 		}
-		r.mu.Unlock()
 	}()
 	ctx := r.context()
 	if ctx.Err() != nil {
@@ -241,6 +261,32 @@ func (r *Runner) runReservedAccountMailboxes(userID, accountID int64, mailboxes 
 	}
 }
 
+func (r *Runner) releaseAccountMailboxReservations(userID int64, mailboxes []string, keys []string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, key := range keys {
+		delete(r.mailboxRunning, key)
+	}
+	var rerun []string
+	seen := map[string]bool{}
+	for _, mailbox := range mailboxes {
+		key := mailboxKey(userID, mailbox)
+		if !r.mailboxPending[key] {
+			continue
+		}
+		delete(r.mailboxPending, key)
+		name := strings.TrimSpace(mailbox)
+		lower := strings.ToLower(name)
+		if lower != "" && !seen[lower] {
+			seen[lower] = true
+			rerun = append(rerun, name)
+		}
+	}
+	return rerun
+}
+
+// StartAttachmentIndex runs after message sync so newly fetched raw .eml data can
+// be mined for attachment text and then discarded according to retention rules.
 func (r *Runner) StartAttachmentIndex(userID int64) bool {
 	if r.context().Err() != nil {
 		return false
@@ -275,6 +321,8 @@ func (r *Runner) StartAttachmentIndex(userID int64) bool {
 	return true
 }
 
+// IsRunning reports foreground sync activity for the user, excluding the private
+// attachment-index sentinel so the chrome does not look stuck after mail fetches.
 func (r *Runner) IsRunning(userID int64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -293,16 +341,20 @@ func (r *Runner) IsRunning(userID int64) bool {
 	return false
 }
 
+// IsMailboxRunning reports whether any user-level or account-qualified mailbox
+// sync reservation is active for this folder name.
 func (r *Runner) IsMailboxRunning(userID int64, mailbox string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.mailboxRunning[mailboxKey(userID, mailbox)]
+	return r.mailboxReservedByAnyAccountLocked(userID, mailbox)
 }
 
+// IsAccountMailboxRunning reports whether a broad user-level reservation or the
+// exact account/mailbox reservation is active.
 func (r *Runner) IsAccountMailboxRunning(userID, accountID int64, mailbox string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.mailboxRunning[accountMailboxKey(userID, accountID, mailbox)] || r.mailboxRunning[mailboxKey(userID, mailbox)]
+	return r.accountMailboxReservedLocked(userID, accountID, mailbox)
 }
 
 func uniqueMailboxes(mailboxes []string) []string {
@@ -317,6 +369,42 @@ func uniqueMailboxes(mailboxes []string) []string {
 		}
 	}
 	return out
+}
+
+func (r *Runner) mailboxReservedByAnyAccountLocked(userID int64, mailbox string) bool {
+	for key := range r.mailboxRunning {
+		if reservationKeyMatchesMailbox(key, userID, mailbox) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) accountMailboxReservedLocked(userID, accountID int64, mailbox string) bool {
+	return r.mailboxRunning[mailboxKey(userID, mailbox)] || r.mailboxRunning[accountMailboxKey(userID, accountID, mailbox)]
+}
+
+func reservationKeyMatchesMailbox(key string, userID int64, mailbox string) bool {
+	mailbox = strings.ToLower(strings.TrimSpace(mailbox))
+	if mailbox == "" {
+		return false
+	}
+	if key == mailboxKey(userID, mailbox) {
+		return true
+	}
+	prefix := fmt.Sprintf("%d:", userID)
+	if !strings.HasPrefix(key, prefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(key, prefix)
+	parts := strings.SplitN(rest, ":", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	if _, err := strconv.ParseInt(parts[0], 10, 64); err != nil {
+		return false
+	}
+	return parts[1] == mailbox
 }
 
 func mailboxKey(userID int64, mailbox string) string {

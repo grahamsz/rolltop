@@ -15,6 +15,9 @@ type normalizedLine struct {
 	original int
 }
 
+// clippedEmailBody chooses the visible body for a thread card. It clips ordinary
+// quoted replies, preserves forwarded-message content, and can prefer text over
+// HTML when clipped HTML would show only an attribution stub.
 func clippedEmailBody(bodyHTML, bodyText string, previousBodies []string) (string, string, bool) {
 	displayText, textHidden := clipTextQuote(bodyText, previousBodies)
 	displayHTML, htmlHidden := clipHTMLQuote(bodyHTML)
@@ -68,6 +71,9 @@ func isAttributionOnlyPreview(value string) bool {
 	return strings.HasSuffix(lower, " wrote:") && len([]rune(lower)) <= 180
 }
 
+// clipHTMLQuote removes common HTML quote containers only when there is enough
+// original content before the cut and the surrounding content does not look like a
+// forwarded message that should remain visible.
 func clipHTMLQuote(bodyHTML string) (string, bool) {
 	bodyHTML = strings.ReplaceAll(bodyHTML, "\x00", "")
 	if strings.TrimSpace(bodyHTML) == "" {
@@ -143,6 +149,9 @@ func htmlContainsForwardedMessage(lowerHTML string) bool {
 	return strings.Contains(lowerHTML, "forwarded message") || strings.Contains(lowerHTML, "begin forwarded message")
 }
 
+// clipTextQuote combines rule-based quote markers with adaptive previous-body
+// matching. The adaptive pass catches replies where clients inline old content
+// without a standard quote container.
 func clipTextQuote(bodyText string, previousBodies []string) (string, bool) {
 	lines := splitBodyLines(bodyText)
 	if len(lines) == 0 {
@@ -298,6 +307,9 @@ func hasInlineContentAfterQuoteBlock(lines []string, quoteIndex int) bool {
 	return end > quoteIndex && hasSubstantialUnquotedPrefix(lines[end:])
 }
 
+// standardQuoteCutLine finds the first conventional reply boundary after visible
+// user-authored content, while skipping forwarded-message headers and inline
+// comments that appear after quote blocks.
 func standardQuoteCutLine(lines []string) int {
 	seenContent := false
 	for i, line := range lines {
@@ -343,6 +355,8 @@ func standardQuoteCutLine(lines []string) int {
 	return -1
 }
 
+// adaptiveQuoteCutLine compares normalized current lines against earlier thread
+// bodies and cuts when a repeated suffix is clearly old conversation text.
 func adaptiveQuoteCutLine(lines []string, previousBodies []string) int {
 	current := normalizedBodyLines(strings.Join(lines, "\n"))
 	if len(current) < 2 || len(previousBodies) == 0 {

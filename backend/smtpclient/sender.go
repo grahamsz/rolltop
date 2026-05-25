@@ -24,6 +24,7 @@ import (
 	"mailmirror/backend/store"
 )
 
+// Attachment is an outgoing MIME attachment or inline part prepared by compose.
 type Attachment struct {
 	Filename    string
 	ContentType string
@@ -32,6 +33,7 @@ type Attachment struct {
 	Data        []byte
 }
 
+// Message is the normalized outbound compose payload passed to the SMTP sender.
 type Message struct {
 	From        string
 	To          []string
@@ -47,11 +49,13 @@ type Message struct {
 	Attachments []Attachment
 }
 
+// Sender sends compose messages through an encrypted MailMirror SMTP account.
 type Sender struct {
 	MasterKey []byte
 	Timeout   time.Duration
 }
 
+// Send builds a MIME message from the compose form and sends it through the configured SMTP account.
 func (s *Sender) Send(ctx context.Context, account store.MailAccount, msg Message) ([]byte, error) {
 	raw, recipients, err := BuildRaw(msg)
 	if err != nil {
@@ -63,6 +67,7 @@ func (s *Sender) Send(ctx context.Context, account store.MailAccount, msg Messag
 	return raw, nil
 }
 
+// SendRaw sends an already-built RFC822 payload to all recipients using the configured SMTP account.
 func (s *Sender) SendRaw(ctx context.Context, account store.MailAccount, recipients []string, raw []byte) error {
 	if len(recipients) == 0 {
 		return errors.New("message has no recipients")
@@ -137,6 +142,7 @@ func (s *Sender) SendRaw(ctx context.Context, account store.MailAccount, recipie
 	return c.Quit()
 }
 
+// BuildRaw constructs the RFC822 message, including text/html alternatives, headers, and attachments.
 func BuildRaw(msg Message) ([]byte, []string, error) {
 	if msg.Date.IsZero() {
 		msg.Date = time.Now()
@@ -346,6 +352,7 @@ func sanitizeAttachmentFilename(filename string) string {
 	return filename
 }
 
+// NewMessageID creates a local Message-ID suitable for outbound composed mail.
 func NewMessageID(fromAddress string) string {
 	domain := "mailmirror.local"
 	if _, host, ok := strings.Cut(fromAddress, "@"); ok && strings.TrimSpace(host) != "" {

@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 )
 
+// MessageBodyPreview returns a bounded UTF-8-safe prefix for body previews and compound search fields.
 func MessageBodyPreview(value string, limit int) string {
 	if limit <= 0 {
 		limit = DefaultMessageBodyPreviewBytes
@@ -28,6 +29,7 @@ func MessageBodyPreview(value string, limit int) string {
 	return strings.TrimSpace(preview[:cut]) + suffix
 }
 
+// CompactMessageBodiesBefore replaces old full bodies with previews after raw blobs age out.
 func (s *Store) CompactMessageBodiesBefore(ctx context.Context, cutoff time.Time, previewLimit, limit int) (int, error) {
 	if previewLimit <= 0 {
 		previewLimit = DefaultMessageBodyPreviewBytes
@@ -114,6 +116,7 @@ func (s *Store) CompactMessageBodiesBefore(ctx context.Context, cutoff time.Time
 	return len(pending), nil
 }
 
+// ListMessagesWithPrunableBlobs finds old message blobs eligible for retention pruning.
 func (s *Store) ListMessagesWithPrunableBlobs(ctx context.Context, cutoff time.Time, limit int) ([]MessageRecord, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500
@@ -150,6 +153,7 @@ func (s *Store) ListMessagesWithPrunableBlobs(ctx context.Context, cutoff time.T
 	return scanMessages(rows)
 }
 
+// ListMessagesWithExpiredCachedBlobs finds temporary on-demand blobs past their cache window.
 func (s *Store) ListMessagesWithExpiredCachedBlobs(ctx context.Context, cutoff time.Time, limit int) ([]MessageRecord, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500
@@ -189,6 +193,7 @@ func (s *Store) ListMessagesWithExpiredCachedBlobs(ctx context.Context, cutoff t
 	return scanMessages(rows)
 }
 
+// CacheMessageBlob attaches a freshly fetched temporary raw blob to an existing message row.
 func (s *Store) CacheMessageBlob(ctx context.Context, userID, messageID int64, blob BlobRecord) (MessageRecord, error) {
 	blob.UserID = userID
 	blob.Kind = "message-cache"
@@ -211,6 +216,7 @@ func (s *Store) CacheMessageBlob(ctx context.Context, userID, messageID int64, b
 	return s.GetMessageForUser(ctx, userID, messageID)
 }
 
+// MarkMessageBlobPruned clears a message's blob link after the corresponding raw file is removed.
 func (s *Store) MarkMessageBlobPruned(ctx context.Context, userID, messageID, blobID int64) error {
 	tx, err := s.mustDataDB(ctx, userID).BeginTx(ctx, nil)
 	if err != nil {

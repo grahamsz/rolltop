@@ -1,8 +1,11 @@
+// File overview: Remote-image warning wrapper shown when a message has blocked external images.
+
 import type { ReactNode } from "react";
 import { Icon } from "../../components/Icon";
 import type { ThreadMessage } from "../../types";
 import { pluginEnabled, pluginIDs, type PluginSet } from "../registry";
 
+/** RemoteImageNotice wraps message content with a prompt when remote images are blocked. */
 export function RemoteImageNotice({
   item,
   plugins,

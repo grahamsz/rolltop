@@ -1,3 +1,11 @@
+// File overview: Search highlighting helpers for both React text nodes and sandboxed email iframes.
+// They combine the original query with Bleve-reported match terms from the API.
+
+/**
+ * Turn a user query plus Bleve-reported terms into safe highlight needles.
+ * Operators that filter rather than match text are skipped, and longer terms are
+ * sorted first to keep compound matches from being split by shorter words.
+ */
 export function searchHighlightTerms(query: string, extraTerms: string[] = []): string[] {
   const seen = new Set<string>();
   const terms: string[] = [];
@@ -64,6 +72,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** highlightRegExp compiles query and match terms into one safe global regex. */
 export function highlightRegExp(query: string, extraTerms: string[] = []): RegExp | null {
   const terms = searchHighlightTerms(query, extraTerms);
   if (terms.length === 0) return null;
@@ -74,6 +83,7 @@ export function highlightRegExp(query: string, extraTerms: string[] = []): RegEx
   }
 }
 
+/** HighlightedText wraps matching text fragments in themed mark elements for React-rendered strings. */
 export function HighlightedText({ text, query, terms = [] }: { text: string; query: string; terms?: string[] }) {
   const pattern = highlightRegExp(query, terms);
   if (!pattern || !text) return <>{text}</>;
@@ -93,6 +103,7 @@ export function HighlightedText({ text, query, terms = [] }: { text: string; que
   );
 }
 
+/** Highlight search terms inside a sandboxed email iframe after it has loaded. */
 export function highlightEmailDocument(doc: Document | null | undefined, query: string, terms: string[] = []) {
   if (!doc || (!query.trim() && terms.length === 0)) return;
   const body = doc.body;

@@ -13,6 +13,7 @@ func newEventHub() *eventHub {
 	return &eventHub{subscribers: map[int64]map[chan struct{}]struct{}{}}
 }
 
+// Subscribe registers an SSE listener for one user and returns a cleanup function for disconnects.
 func (h *eventHub) Subscribe(userID int64) (<-chan struct{}, func()) {
 	ch := make(chan struct{}, 1)
 	h.mu.Lock()

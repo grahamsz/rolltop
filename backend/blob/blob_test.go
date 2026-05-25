@@ -26,13 +26,13 @@ func TestSaveRawMessageUsesUserDataDirectoryLayout(t *testing.T) {
 	}
 }
 
-func TestOpenUserBlobRejectsLegacyUserPath(t *testing.T) {
-	legacy := "blobs/users/9/accounts/1/mailboxes/INBOX/uid-1.eml"
-	if userBlobPathAllowed(9, legacy) {
-		t.Fatalf("legacy path was allowed: %s", legacy)
+func TestOpenUserBlobRejectsOldLayoutUserPath(t *testing.T) {
+	oldPath := "blobs/users/9/accounts/1/mailboxes/INBOX/uid-1.eml"
+	if userBlobPathAllowed(9, oldPath) {
+		t.Fatalf("old layout path was allowed: %s", oldPath)
 	}
 	store := New(t.TempDir())
-	if _, err := store.OpenUserBlob(9, legacy); err == nil {
-		t.Fatalf("opened legacy path: %s", legacy)
+	if _, err := store.OpenUserBlob(9, oldPath); err == nil {
+		t.Fatalf("opened old layout path: %s", oldPath)
 	}
 }

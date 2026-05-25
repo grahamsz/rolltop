@@ -18,6 +18,7 @@ const (
 	OneClickUnsubscribe  = "one_click_unsubscribe"
 )
 
+// Definition describes a compiled plugin and how it should appear in admin settings.
 type Definition struct {
 	ID               string
 	Name             string
@@ -26,6 +27,7 @@ type Definition struct {
 	Heavy            bool
 }
 
+// Migration describes one plugin-owned schema change and checksum source.
 type Migration struct {
 	PluginID   string
 	ID         string
@@ -33,6 +35,7 @@ type Migration struct {
 	Apply      func(context.Context, *sql.Tx) error
 }
 
+// All returns every compiled plugin definition in display order for admin settings and migration seeding.
 func All() []Definition {
 	return []Definition{
 		{
@@ -80,6 +83,7 @@ func All() []Definition {
 	}
 }
 
+// Lookup returns one plugin definition by ID for enablement checks and plugin-specific routes.
 func Lookup(id string) (Definition, bool) {
 	id = strings.TrimSpace(id)
 	for _, def := range All() {

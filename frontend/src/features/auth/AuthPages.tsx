@@ -1,9 +1,13 @@
+// File overview: Setup and login screens. These are the only unauthenticated React views and they
+// hand control back to App by refreshing bootstrap state after success.
+
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../api";
 import type { Bootstrap } from "../../types";
 import { messageFromError } from "../../lib/errors";
 
+/** SetupPage creates the first local user and then asks App to refresh bootstrap state. */
 export function SetupPage({
   csrf,
   onReady,
@@ -68,6 +72,7 @@ export function SetupPage({
   );
 }
 
+/** LoginPage signs an existing user in and then asks App to refresh bootstrap state. */
 export function LoginPage({
   csrf,
   onReady,

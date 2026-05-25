@@ -23,6 +23,7 @@ var ErrNotFound = sql.ErrNoRows
 
 const DefaultMessageBodyPreviewBytes = 4096
 
+// Store is the SQLite access layer; in production the root store opens the system DB and caches per-user stores.
 type Store struct {
 	db         *sql.DB
 	dataDir    string
@@ -50,6 +51,10 @@ func OpenServerWithProgress(path string, dataDir string, progress MigrationRepor
 	return open(path, dataDir, true, schemaSystem, progress)
 }
 
+// open is the shared constructor behind all Store entrypoints. It creates the
+// SQLite parent directory, opens the connection with foreign keys and a busy
+// timeout, installs the right migration set, and configures split-mode user-store
+// caching only for the production system database.
 func open(path string, dataDir string, split bool, schema schemaKind, progress MigrationReporter) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -127,6 +132,10 @@ func (s *Store) PrepareUserStores(ctx context.Context, progress MigrationReporte
 	return nil
 }
 
+// userStore resolves the SQLite handle for one tenant. The root store owns the
+// cache and the system users table; each child store owns only the user's DB.
+// The double-check around open avoids creating duplicate handles when concurrent
+// requests touch a user for the first time.
 func (s *Store) userStore(ctx context.Context, userID int64, progress MigrationReporter) (*Store, error) {
 	if !s.split || userID == 0 {
 		return s, nil
@@ -165,6 +174,9 @@ func (s *Store) userStore(ctx context.Context, userID int64, progress MigrationR
 	return us, nil
 }
 
+// UserDB exposes the concrete per-user database for plugin code that needs to
+// run its own SQL. Normal store methods should prefer dataDB so tests and split
+// mode keep the same call shape.
 func (s *Store) UserDB(ctx context.Context, userID int64) (*sql.DB, error) {
 	us, err := s.UserStore(ctx, userID)
 	if err != nil {
@@ -182,6 +194,8 @@ func (s *Store) dataDB(ctx context.Context, userID int64) (*sql.DB, error) {
 	return s.UserDB(ctx, userID)
 }
 
+// mustDataDB is used only in helpers that must satisfy database/sql callback
+// shapes and cannot return an error at the point they resolve the tenant DB.
 func (s *Store) mustDataDB(ctx context.Context, userID int64) *sql.DB {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -190,6 +204,9 @@ func (s *Store) mustDataDB(ctx context.Context, userID int64) *sql.DB {
 	return db
 }
 
+// mirrorUser copies installation-level identity/display fields into the user DB.
+// This lets older query helpers join against users locally without putting mail
+// rows back into the high-level system database.
 func (s *Store) mirrorUser(ctx context.Context, user User) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO users
 			(id, email, name, password_hash, is_admin, date_locale, date_format, theme, created_at, updated_at)
@@ -207,10 +224,14 @@ func (s *Store) mirrorUser(ctx context.Context, user User) error {
 	return err
 }
 
+// DB returns the receiver's SQLite handle. On the root production store this is
+// the system DB; callers that need mail data should pass through UserDB/dataDB.
 func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
+// Vacuum compacts the receiver's database only. In split mode callers must run
+// it on the system store and any user store they explicitly want to compact.
 func (s *Store) Vacuum(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `VACUUM`)
 	return err

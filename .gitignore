@@ -1,6 +1,7 @@
 .beads
 .codex
 .agents
+.env.mailmirror
 data/
 tmp/
 build-artifacts/

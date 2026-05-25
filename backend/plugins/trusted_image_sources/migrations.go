@@ -13,6 +13,7 @@ import (
 	"mailmirror/backend/plugins"
 )
 
+// Migrations returns schema changes for trusted remote-image senders.
 func Migrations() []plugins.Migration {
 	return []plugins.Migration{{
 		PluginID: plugins.TrustedImageSources,
@@ -28,6 +29,7 @@ func Migrations() []plugins.Migration {
 	}}
 }
 
+// TrustSender records that a user allowed remote images for a normalized sender.
 func TrustSender(ctx context.Context, db *sql.DB, userID int64, sender string) error {
 	sender = SenderIdentity(sender)
 	if userID == 0 || sender == "" {
@@ -39,6 +41,7 @@ func TrustSender(ctx context.Context, db *sql.DB, userID int64, sender string) e
 	return err
 }
 
+// IsSenderTrusted checks whether a user has allowed remote images for a normalized sender.
 func IsSenderTrusted(ctx context.Context, db *sql.DB, userID int64, sender string) (bool, error) {
 	sender = SenderIdentity(sender)
 	if userID == 0 || sender == "" {
@@ -52,6 +55,7 @@ func IsSenderTrusted(ctx context.Context, db *sql.DB, userID int64, sender strin
 	return err == nil, err
 }
 
+// SenderIdentity normalizes sender text before it is used as a trust key.
 func SenderIdentity(from string) string {
 	from = strings.TrimSpace(from)
 	if from == "" {

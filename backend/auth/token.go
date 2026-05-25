@@ -8,6 +8,7 @@ import (
 	"io"
 )
 
+// NewOpaqueToken returns a cryptographically random URL-safe token for sessions and CSRF-style secrets.
 func NewOpaqueToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {

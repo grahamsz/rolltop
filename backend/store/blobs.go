@@ -4,6 +4,7 @@ package store
 
 import "context"
 
+// CreateBlob records blob metadata in the user database after the file has been written to the user blob directory.
 func (s *Store) CreateBlob(ctx context.Context, b BlobRecord) (BlobRecord, error) {
 	ts := nowUnix()
 	_, err := s.mustDataDB(ctx, b.UserID).ExecContext(ctx, `INSERT INTO blobs (user_id, kind, path, sha256, size, created_at) VALUES (?, ?, ?, ?, ?, ?)
@@ -19,6 +20,7 @@ func (s *Store) CreateBlob(ctx context.Context, b BlobRecord) (BlobRecord, error
 	return s.GetBlobByPathForUser(ctx, b.UserID, b.Path)
 }
 
+// GetBlobForUser loads blob metadata by ID only when it belongs to the requested user.
 func (s *Store) GetBlobForUser(ctx context.Context, userID, id int64) (BlobRecord, error) {
 	var b BlobRecord
 	var created int64
@@ -28,6 +30,7 @@ func (s *Store) GetBlobForUser(ctx context.Context, userID, id int64) (BlobRecor
 	return b, err
 }
 
+// GetBlobByPathForUser loads blob metadata by path only inside the requested user scope.
 func (s *Store) GetBlobByPathForUser(ctx context.Context, userID int64, blobPath string) (BlobRecord, error) {
 	var b BlobRecord
 	var created int64
@@ -37,6 +40,7 @@ func (s *Store) GetBlobByPathForUser(ctx context.Context, userID int64, blobPath
 	return b, err
 }
 
+// DeleteBlobForUser removes blob metadata for one user; filesystem deletion is handled by the blob store.
 func (s *Store) DeleteBlobForUser(ctx context.Context, userID, id int64) error {
 	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `DELETE FROM blobs WHERE user_id = ? AND id = ?`, userID, id)
 	if err != nil {
@@ -52,6 +56,7 @@ func (s *Store) DeleteBlobForUser(ctx context.Context, userID, id int64) error {
 	return nil
 }
 
+// CreateAttachment records attachment metadata for a stored message.
 func (s *Store) CreateAttachment(ctx context.Context, a Attachment) (Attachment, error) {
 	ts := nowUnix()
 	res, err := s.mustDataDB(ctx, a.UserID).ExecContext(ctx, `INSERT INTO attachments (user_id, message_id, blob_id, filename, content_type, content_id, is_inline, size, blob_path, created_at)
@@ -66,11 +71,13 @@ func (s *Store) CreateAttachment(ctx context.Context, a Attachment) (Attachment,
 	return s.GetAttachmentForUser(ctx, a.UserID, id)
 }
 
+// DeleteAttachmentsForMessage removes attachment rows when a message is replaced or deleted.
 func (s *Store) DeleteAttachmentsForMessage(ctx context.Context, userID, messageID int64) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `DELETE FROM attachments WHERE user_id = ? AND message_id = ?`, userID, messageID)
 	return err
 }
 
+// GetAttachmentForUser loads one attachment through its message ownership boundary.
 func (s *Store) GetAttachmentForUser(ctx context.Context, userID, id int64) (Attachment, error) {
 	var a Attachment
 	var created int64
@@ -83,6 +90,7 @@ func (s *Store) GetAttachmentForUser(ctx context.Context, userID, id int64) (Att
 	return a, err
 }
 
+// ListAttachmentsForMessage returns attachment metadata for a user-owned message.
 func (s *Store) ListAttachmentsForMessage(ctx context.Context, userID, messageID int64) ([]Attachment, error) {
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, message_id, blob_id, filename, content_type, content_id, is_inline, size, blob_path, created_at
 		FROM attachments WHERE user_id = ? AND message_id = ? ORDER BY id`, userID, messageID)

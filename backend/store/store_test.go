@@ -143,7 +143,7 @@ func TestThreadMessagesForUserUsesReferencesAndSubjectFallback(t *testing.T) {
 	}
 }
 
-func TestBackfillThreadHeadersFromBlobsRepairsLegacyRows(t *testing.T) {
+func TestBackfillThreadHeadersFromBlobsRepairsRowsMissingThreadHeaders(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
@@ -159,7 +159,7 @@ func TestBackfillThreadHeadersFromBlobsRepairsLegacyRows(t *testing.T) {
 		MailboxID:       mailbox.ID,
 		BlobID:          blob.ID,
 		MessageIDHeader: "<root@example.test>",
-		Subject:         "Legacy Thread",
+		Subject:         "Recovered Thread",
 		Date:            time.Now().Add(-time.Hour),
 		UID:             1,
 		BlobPath:        blob.Path,
@@ -178,7 +178,7 @@ func TestBackfillThreadHeadersFromBlobsRepairsLegacyRows(t *testing.T) {
 		MailboxID:       mailbox.ID,
 		BlobID:          replyBlob.ID,
 		MessageIDHeader: "<reply@example.test>",
-		Subject:         "Re: Legacy Thread",
+		Subject:         "Re: Recovered Thread",
 		Date:            time.Now(),
 		UID:             2,
 		BlobPath:        replyPath,
@@ -189,10 +189,10 @@ func TestBackfillThreadHeadersFromBlobsRepairsLegacyRows(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(dataDir, replyPath)), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dataDir, replyPath), []byte("From sender@example.test Sat Jan 01 00:00:00 2026\r\nMessage-ID: <reply@example.test>\r\nIn-Reply-To: <root@example.test>\r\nReferences: <root@example.test>\r\nSubject: Re: Legacy Thread\r\n\r\nbody is ignored\r\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dataDir, replyPath), []byte("From sender@example.test Sat Jan 01 00:00:00 2026\r\nMessage-ID: <reply@example.test>\r\nIn-Reply-To: <root@example.test>\r\nReferences: <root@example.test>\r\nSubject: Re: Recovered Thread\r\n\r\nbody is ignored\r\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.DB().ExecContext(ctx, `UPDATE messages SET in_reply_to = '', references_header = '', thread_key = ?, thread_headers_checked_at = 0 WHERE id = ?`, ThreadKey("<reply@example.test>", "", "", "Re: Legacy Thread"), reply.ID); err != nil {
+	if _, err := db.DB().ExecContext(ctx, `UPDATE messages SET in_reply_to = '', references_header = '', thread_key = ?, thread_headers_checked_at = 0 WHERE id = ?`, ThreadKey("<reply@example.test>", "", "", "Re: Recovered Thread"), reply.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -467,14 +467,21 @@ func TestEnsureMeContactForEmailSeedsIdentityAndDefaultSMTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.EnsureMeContactForEmail(ctx, user.ID, user.Email, user.Name); err != nil {
+	contact, err := db.EnsureMeContactForEmail(ctx, user.ID, user.Email, user.Name)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !contact.IsMe || !contact.IsPrimary {
+		t.Fatalf("onboarding contact flags = me %t primary %t, want true/true", contact.IsMe, contact.IsPrimary)
+	}
+	if len(contact.Emails) != 1 || !contact.Emails[0].IsPrimary {
+		t.Fatalf("onboarding contact emails = %+v, want one primary email", contact.Emails)
 	}
 	identities, err := db.ListMailIdentitiesForUser(ctx, user.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(identities) != 1 || identities[0].Email != user.Email || identities[0].SMTPAccountID != 0 {
+	if len(identities) != 1 || identities[0].Email != user.Email || identities[0].SMTPAccountID != 0 || !identities[0].IsPrimary {
 		t.Fatalf("identities before smtp = %+v", identities)
 	}
 	smtp, err := db.CreateSMTPAccount(ctx, SMTPAccount{UserID: user.ID, Label: "Owner", Host: "smtp.example.test", Port: 587, Username: user.Email, EncryptedPassword: "secret", UseTLS: true})

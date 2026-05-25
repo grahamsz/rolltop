@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+// StorageStats is the per-user disk usage summary shown on the settings page.
 type StorageStats struct {
 	DatabasePath  string
 	DatabaseBytes int64

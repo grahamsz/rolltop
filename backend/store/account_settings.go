@@ -21,6 +21,7 @@ func prepareSMTPAccount(a SMTPAccount) (SMTPAccount, error) {
 	return a, nil
 }
 
+// CreateSMTPAccount inserts a new outgoing server for one user.
 func (s *Store) CreateSMTPAccount(ctx context.Context, a SMTPAccount) (SMTPAccount, error) {
 	a, err := prepareSMTPAccount(a)
 	if err != nil {
@@ -39,6 +40,7 @@ func (s *Store) CreateSMTPAccount(ctx context.Context, a SMTPAccount) (SMTPAccou
 	return s.GetSMTPAccountForUser(ctx, a.UserID, id)
 }
 
+// UpsertSMTPAccount creates or updates an outgoing server while preserving user ownership.
 func (s *Store) UpsertSMTPAccount(ctx context.Context, a SMTPAccount) (SMTPAccount, error) {
 	if a.ID == 0 {
 		return s.CreateSMTPAccount(ctx, a)
@@ -62,6 +64,7 @@ func (s *Store) UpsertSMTPAccount(ctx context.Context, a SMTPAccount) (SMTPAccou
 	return s.GetSMTPAccountForUser(ctx, a.UserID, a.ID)
 }
 
+// GetSMTPAccountForUser loads one outgoing server scoped to the signed-in user.
 func (s *Store) GetSMTPAccountForUser(ctx context.Context, userID, id int64) (SMTPAccount, error) {
 	if id <= 0 {
 		return SMTPAccount{}, ErrNotFound
@@ -69,6 +72,7 @@ func (s *Store) GetSMTPAccountForUser(ctx context.Context, userID, id int64) (SM
 	return scanSMTPAccount(s.mustDataDB(ctx, userID).QueryRowContext(ctx, smtpAccountSelectSQL()+` WHERE user_id = ? AND id = ?`, userID, id))
 }
 
+// ListSMTPAccountsForUser returns all outgoing servers available to one user.
 func (s *Store) ListSMTPAccountsForUser(ctx context.Context, userID int64) ([]SMTPAccount, error) {
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, smtpAccountSelectSQL()+` WHERE user_id = ? ORDER BY id`, userID)
 	if err != nil {
@@ -107,6 +111,7 @@ func scanSMTPAccount(row rowScanner) (SMTPAccount, error) {
 	return a, err
 }
 
+// SyncMailIdentitiesForMeContacts keeps outgoing identity rows aligned with the user's Me contact emails.
 func (s *Store) SyncMailIdentitiesForMeContacts(ctx context.Context, userID int64) error {
 	contacts, err := s.ListMeContactsForUser(ctx, userID)
 	if err != nil {
@@ -147,6 +152,7 @@ func (s *Store) SyncMailIdentitiesForMeContacts(ctx context.Context, userID int6
 	return s.ensurePrimaryMailIdentity(ctx, userID)
 }
 
+// ListMailIdentitiesForUser returns identity rows joined with Me contact emails for settings and compose.
 func (s *Store) ListMailIdentitiesForUser(ctx context.Context, userID int64) ([]MailIdentity, error) {
 	if err := s.SyncMailIdentitiesForMeContacts(ctx, userID); err != nil {
 		return nil, err
@@ -167,6 +173,7 @@ func (s *Store) ListMailIdentitiesForUser(ctx context.Context, userID int64) ([]
 	return out, rows.Err()
 }
 
+// UpdateMailIdentityForUser updates SMTP assignment, display name, signature, and primary state for one identity.
 func (s *Store) UpdateMailIdentityForUser(ctx context.Context, userID int64, in MailIdentity) (MailIdentity, error) {
 	if in.ID <= 0 {
 		return MailIdentity{}, ErrNotFound
@@ -235,6 +242,7 @@ func (s *Store) UpdateMailIdentityForUser(ctx context.Context, userID int64, in 
 	return s.GetMailIdentityForUser(ctx, userID, current.ID)
 }
 
+// GetMailIdentityForUser loads one outgoing identity scoped to the signed-in user.
 func (s *Store) GetMailIdentityForUser(ctx context.Context, userID, id int64) (MailIdentity, error) {
 	return scanMailIdentity(s.mustDataDB(ctx, userID).QueryRowContext(ctx, mailIdentitySelectSQL()+` WHERE user_id = ? AND id = ?`, userID, id))
 }

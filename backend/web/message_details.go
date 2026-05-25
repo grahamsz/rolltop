@@ -28,6 +28,9 @@ type messageHeaderDetail struct {
 	Value string
 }
 
+// messageHeaderDetails builds the expandable header popover. Stored fields are
+// used first, while raw headers fill in reply-to, DKIM, return-path, and date
+// details when the original message is available.
 func (s *Server) messageHeaderDetails(ctx context.Context, userID int64, msg store.MessageRecord) []messageHeaderDetail {
 	header := s.rawMessageHeader(ctx, userID, msg)
 	var details []messageHeaderDetail
@@ -63,6 +66,8 @@ func (s *Server) hasOneClickUnsubscribe(ctx context.Context, userID int64, msg s
 	return ok
 }
 
+// oneClickUnsubscribeTarget accepts only RFC8058-style messages: the header must
+// opt into one-click POST and provide an HTTPS List-Unsubscribe URL.
 func (s *Server) oneClickUnsubscribeTarget(ctx context.Context, userID int64, msg store.MessageRecord) (*url.URL, bool) {
 	target, ok := oneClickUnsubscribeURL(s.rawMessageHeader(ctx, userID, msg))
 	if !ok {
@@ -83,6 +88,9 @@ func (s *Server) recentOneClickUnsubscribeSentAt(ctx context.Context, userID int
 	return send.SentAt
 }
 
+// performOneClickUnsubscribe sends the RFC8058 POST after outbound URL validation.
+// Redirects are limited and revalidated so unsubscribe cannot pivot into local
+// network addresses.
 func (s *Server) performOneClickUnsubscribe(ctx context.Context, target *url.URL) error {
 	if target == nil {
 		return errOneClickUnavailable

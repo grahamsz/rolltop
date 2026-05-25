@@ -34,3 +34,52 @@ func TestForwardComposePrefersSanitizedHTML(t *testing.T) {
 		t.Fatalf("forward text missing visible body: %q", form.Body)
 	}
 }
+
+func TestReplyAllRecipientsExcludeOwnAddress(t *testing.T) {
+	own := map[string]bool{"me@example.test": true}
+	msg := store.MessageRecord{
+		FromAddr: `"Sender" <sender@example.test>`,
+		ToAddr:   `"Graham" <me@example.test>`,
+		CCAddr:   `"Project" <project@example.test>, me@example.test`,
+		Subject:  "Plan",
+	}
+	form := replyAllComposeForm(msg, []store.MessageRecord{msg}, own)
+	if form.To != `"Sender" <sender@example.test>` {
+		t.Fatalf("reply-all To = %q", form.To)
+	}
+	if form.Cc != `"Project" <project@example.test>` {
+		t.Fatalf("reply-all Cc = %q", form.Cc)
+	}
+	if !canReplyAll(msg, []store.MessageRecord{msg}, own) {
+		t.Fatalf("expected reply-all to be available when an external cc recipient exists")
+	}
+}
+
+func TestReplyAllFromOwnMessageTargetsExternalRecipients(t *testing.T) {
+	own := map[string]bool{"me@example.test": true}
+	msg := store.MessageRecord{
+		FromAddr: `"Graham" <me@example.test>`,
+		ToAddr:   `"Charity" <charity@example.test>`,
+		CCAddr:   `"Project" <project@example.test>, me@example.test`,
+		Subject:  "Plan",
+	}
+	form := replyAllComposeForm(msg, []store.MessageRecord{msg}, own)
+	if form.To != `"Charity" <charity@example.test>` {
+		t.Fatalf("reply-all To = %q", form.To)
+	}
+	if form.Cc != `"Project" <project@example.test>` {
+		t.Fatalf("reply-all Cc = %q", form.Cc)
+	}
+}
+
+func TestCanReplyAllFalseForSingleExternalSender(t *testing.T) {
+	own := map[string]bool{"me@example.test": true}
+	msg := store.MessageRecord{
+		FromAddr: `sender@example.test`,
+		ToAddr:   `me@example.test`,
+		Subject:  "Plan",
+	}
+	if canReplyAll(msg, []store.MessageRecord{msg}, own) {
+		t.Fatalf("reply-all should be hidden when reply would only address one external sender")
+	}
+}

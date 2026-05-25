@@ -1,9 +1,13 @@
+// File overview: Admin-only plugin switchboard. It keeps plugin enablement edits separate from the
+// main settings form while returning the updated server-side plugin list.
+
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../../api";
 import type { AddToast } from "../../../appTypes";
 import type { PluginSetting } from "../../../types";
 import { messageFromError } from "../../../lib/errors";
 
+/** PluginTogglePanel renders admin plugin enablement toggles and saves them through the API. */
 export function PluginTogglePanel({
   csrf,
   addToast,

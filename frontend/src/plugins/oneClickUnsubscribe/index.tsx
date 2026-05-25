@@ -1,3 +1,6 @@
+// File overview: One-click unsubscribe UI hooks. They render inline/menu actions only when both the
+// plugin and the current message expose RFC8058 metadata.
+
 import { Icon } from "../../components/Icon";
 import type { ThreadMessage } from "../../types";
 import { pluginEnabled, pluginIDs, type PluginSet } from "../registry";
@@ -14,6 +17,7 @@ function enabled(item: ThreadMessage, plugins: PluginSet) {
   return pluginEnabled(plugins, pluginIDs.oneClickUnsubscribe) && item.one_click_unsubscribe;
 }
 
+/** OneClickUnsubscribeInlineAction renders the compact unsubscribe affordance beside sender details. */
 export function OneClickUnsubscribeInlineAction({
   item,
   plugins,
@@ -38,6 +42,7 @@ export function OneClickUnsubscribeInlineAction({
   );
 }
 
+/** OneClickUnsubscribeMenuAction renders the unsubscribe command inside the per-message action menu. */
 export function OneClickUnsubscribeMenuAction({
   item,
   plugins,

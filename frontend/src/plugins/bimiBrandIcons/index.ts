@@ -1,7 +1,11 @@
+// File overview: BIMI brand-icon frontend helper. It batches domains from a thread and asks the
+// backend for cached or resolvable brand assets used only in message view.
+
 import { api } from "../../api";
 import type { ThreadMessage } from "../../types";
 import { pluginEnabled, pluginIDs, type PluginSet } from "../registry";
 
+/** senderDomain extracts a normalized sender domain from a name/address string. */
 export function senderDomain(value: string): string {
   const match = String(value || "").match(/@([^>\s,;]+)/);
   if (!match) return "";
@@ -12,6 +16,7 @@ export function senderDomain(value: string): string {
     .shift() || "";
 }
 
+/** brandDomainKeyForThread collects BIMI domains from a thread when the plugin is enabled. */
 export function brandDomainKeyForThread(thread: ThreadMessage[], plugins: PluginSet): string {
   if (!pluginEnabled(plugins, pluginIDs.bimiBrandIcons)) return "";
   return thread
@@ -28,6 +33,7 @@ export async function loadBrandIconsForDomains(domainKey: string): Promise<Recor
   return data.icons || {};
 }
 
+/** bimiSenderVisualURL returns the cached BIMI image URL for a thread message sender domain. */
 export function bimiSenderVisualURL(
   item: ThreadMessage,
   brandIcons: Record<string, string>,

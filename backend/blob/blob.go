@@ -13,20 +13,24 @@ import (
 	"strings"
 )
 
+// Store owns the filesystem root for user-scoped blob files.
 type Store struct {
 	Root string
 }
 
+// Saved is the file metadata returned after a blob body is written.
 type Saved struct {
 	Path   string
 	SHA256 string
 	Size   int64
 }
 
+// New opens the filesystem blob store rooted at dataDir and creates the directory if needed.
 func New(root string) *Store {
 	return &Store{Root: root}
 }
 
+// SaveRawMessage writes a raw RFC822 message under the owning user path and returns metadata for SQLite.
 func (s *Store) SaveRawMessage(userID, accountID int64, mailbox string, uid uint32, raw []byte) (Saved, error) {
 	sum := sha256.Sum256(raw)
 	hash := hex.EncodeToString(sum[:])
@@ -40,6 +44,7 @@ func (s *Store) SaveRawMessage(userID, accountID int64, mailbox string, uid uint
 	return s.save(parts, raw, hash)
 }
 
+// SaveAttachment writes a standalone attachment body for the owning user when retention rules allow it.
 func (s *Store) SaveAttachment(userID, messageID int64, index int, filename string, data []byte) (Saved, error) {
 	sum := sha256.Sum256(data)
 	hash := hex.EncodeToString(sum[:])
@@ -55,6 +60,7 @@ func (s *Store) SaveAttachment(userID, messageID int64, index int, filename stri
 	return s.save(parts, data, hash)
 }
 
+// SaveContactIcon stores a contact avatar/icon blob under the owning user path.
 func (s *Store) SaveContactIcon(userID, contactID int64, filename string, data []byte) (Saved, error) {
 	sum := sha256.Sum256(data)
 	hash := hex.EncodeToString(sum[:])
@@ -85,6 +91,7 @@ func (s *Store) save(parts []string, data []byte, hash string) (Saved, error) {
 	return Saved{Path: rel, SHA256: hash, Size: int64(len(data))}, nil
 }
 
+// OpenUserBlob opens a previously recorded blob path only inside the requested user directory.
 func (s *Store) OpenUserBlob(userID int64, rel string) (*os.File, error) {
 	clean := filepath.Clean(rel)
 	if !userBlobPathAllowed(userID, clean) {
@@ -93,6 +100,7 @@ func (s *Store) OpenUserBlob(userID int64, rel string) (*os.File, error) {
 	return os.Open(filepath.Join(s.Root, clean))
 }
 
+// DeleteUserBlob removes a blob path from the requested user directory and ignores already-missing files.
 func (s *Store) DeleteUserBlob(userID int64, rel string) error {
 	clean := filepath.Clean(rel)
 	if !userBlobPathAllowed(userID, clean) {

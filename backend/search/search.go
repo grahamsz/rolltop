@@ -24,6 +24,7 @@ import (
 	"mailmirror/backend/store"
 )
 
+// Service owns Bleve indexes and query construction for either combined-test or per-user production mode.
 type Service struct {
 	index   bleve.Index
 	root    string
@@ -32,12 +33,14 @@ type Service struct {
 	indexes map[int64]bleve.Index
 }
 
+// AttachmentDoc is transient attachment text passed to IndexMessage after raw message parsing.
 type AttachmentDoc struct {
 	Filename    string
 	ContentType string
 	Text        string
 }
 
+// SortMode selects between best-match ranking and strict recent-date ordering.
 type SortMode string
 
 const (
@@ -46,22 +49,28 @@ const (
 )
 
 const maxCompoundFieldBytes = 128 * 1024
+const minSplitFragmentLength = 4
 
+// SearchOptions carries ranking hints supplied by callers outside the raw query text.
 type SearchOptions struct {
 	SenderBoosts []SenderBoost
 }
 
+// Hit is a search result with the terms/fields Bleve reported for highlighting.
 type Hit struct {
 	ID     int64
 	Terms  []string
 	Fields []string
 }
 
+// SenderBoost increases rank for senders the user historically reads.
 type SenderBoost struct {
 	Sender string
 	Boost  float64
 }
 
+// Open creates or opens a single combined Bleve index. Tests use this mode; the
+// production server uses OpenPerUser so message IDs can overlap safely by user.
 func Open(path string) (*Service, error) {
 	index, err := openIndex(path)
 	if err != nil {
@@ -70,6 +79,9 @@ func Open(path string) (*Service, error) {
 	return &Service{index: index}, nil
 }
 
+// OpenPerUser creates a lazy per-user index service. Each tenant gets
+// data/users/<id>/bleve, keeping search documents and index locks scoped to the
+// same boundary as user SQLite and blob data.
 func OpenPerUser(root string) (*Service, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
@@ -77,6 +89,9 @@ func OpenPerUser(root string) (*Service, error) {
 	return &Service{root: root, perUser: true, indexes: make(map[int64]bleve.Index)}, nil
 }
 
+// openIndex either opens an existing Bleve index or creates the MailMirror mapping.
+// Most fields are not stored in Bleve because SQLite remains the source of truth;
+// the index stores only enough term data to find and rank message IDs.
 func openIndex(path string) (bleve.Index, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -130,6 +145,7 @@ func dateField() *mapping.FieldMapping {
 	return field
 }
 
+// Close releases the combined index and all lazily opened per-user indexes.
 func (s *Service) Close() error {
 	var first error
 	if s.index != nil {
@@ -152,6 +168,9 @@ func (s *Service) Close() error {
 	return first
 }
 
+// indexForUser resolves the correct Bleve handle. In per-user mode it lazily opens
+// and caches one index per tenant, with a double-check to avoid duplicate handles
+// during concurrent searches or sync writes.
 func (s *Service) indexForUser(userID int64) (bleve.Index, error) {
 	if !s.perUser {
 		if s.index == nil {
@@ -184,6 +203,9 @@ func (s *Service) indexForUser(userID int64) (bleve.Index, error) {
 	return index, nil
 }
 
+// IndexMessage turns a stored message into a Bleve document. SQLite keeps the full
+// message metadata/body; Bleve receives searchable text, normalized compound terms,
+// filter fields, attachment text extracted from raw .eml, and plugin language data.
 func (s *Service) IndexMessage(ctx context.Context, msg store.MessageRecord, attachments []AttachmentDoc) error {
 	select {
 	case <-ctx.Done():
@@ -241,6 +263,7 @@ func (s *Service) IndexMessage(ctx context.Context, msg store.MessageRecord, att
 	return index.Index(strconv.FormatInt(msg.ID, 10), doc)
 }
 
+// DeleteMessage removes one tenant-scoped message document from the appropriate Bleve index.
 func (s *Service) DeleteMessage(ctx context.Context, userID, messageID int64) error {
 	select {
 	case <-ctx.Done():
@@ -254,6 +277,7 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, messageID int64) er
 	return index.Delete(strconv.FormatInt(messageID, 10))
 }
 
+// CountMailboxMessages counts indexed documents for a mailbox so settings can show search-index progress.
 func (s *Service) CountMailboxMessages(ctx context.Context, userID, mailboxID int64) (int, error) {
 	select {
 	case <-ctx.Done():
@@ -279,10 +303,13 @@ func (s *Service) CountMailboxMessages(ctx context.Context, userID, mailboxID in
 	return int(res.Total), nil
 }
 
+// Search runs a query and returns matching message IDs with default options.
 func (s *Service) Search(ctx context.Context, userID int64, queryText string, sortMode SortMode, limit, offset int) ([]int64, error) {
 	return s.SearchWithOptions(ctx, userID, queryText, sortMode, limit, offset, SearchOptions{})
 }
 
+// SearchWithOptions returns only IDs for list-building callers that will hydrate
+// full conversations from SQLite.
 func (s *Service) SearchWithOptions(ctx context.Context, userID int64, queryText string, sortMode SortMode, limit, offset int, opts SearchOptions) ([]int64, error) {
 	res, err := s.search(ctx, userID, queryText, sortMode, limit, offset, opts, false)
 	if err != nil {
@@ -299,6 +326,8 @@ func (s *Service) SearchWithOptions(ctx context.Context, userID int64, queryText
 	return ids, nil
 }
 
+// SearchHitsWithOptions asks Bleve for term locations so the UI can show what
+// matched in snippets, attachments, and the message-detail iframe.
 func (s *Service) SearchHitsWithOptions(ctx context.Context, userID int64, queryText string, sortMode SortMode, limit, offset int, opts SearchOptions) ([]Hit, error) {
 	res, err := s.search(ctx, userID, queryText, sortMode, limit, offset, opts, true)
 	if err != nil {
@@ -315,6 +344,9 @@ func (s *Service) SearchHitsWithOptions(ctx context.Context, userID int64, query
 	return hits, nil
 }
 
+// MatchMessage re-runs the current search against one document. Thread rendering
+// uses it to highlight matching terms even when the user opens a whole conversation
+// from a single search result.
 func (s *Service) MatchMessage(ctx context.Context, userID, messageID int64, queryText string) (Hit, bool, error) {
 	select {
 	case <-ctx.Done():
@@ -345,6 +377,8 @@ func (s *Service) MatchMessage(ctx context.Context, userID, messageID int64, que
 	return Hit{ID: messageID, Terms: hitMatchTerms(queryText, hit.Locations), Fields: hitMatchFields(hit.Locations)}, true, nil
 }
 
+// search applies pagination bounds, builds the tenant-scoped query, optionally
+// asks for term locations, and leaves result hydration to web/store layers.
 func (s *Service) search(ctx context.Context, userID int64, queryText string, sortMode SortMode, limit, offset int, opts SearchOptions, includeLocations bool) (*bleve.SearchResult, error) {
 	select {
 	case <-ctx.Done():
@@ -370,6 +404,9 @@ func (s *Service) search(ctx context.Context, userID int64, queryText string, so
 	return index.Search(req)
 }
 
+// buildQuery is the high-level search grammar bridge. It turns Gmail-like filters
+// into required clauses, text into fuzzy/compound matching clauses, and best-match
+// mode into a Boolean query with recency and sender-history boosts.
 func buildQuery(userID int64, queryText string, sortMode SortMode, opts SearchOptions) blevequery.Query {
 	parsed := parseQuery(queryText)
 	parts := []blevequery.Query{}
@@ -468,10 +505,13 @@ func senderBoostQueries(boosts []SenderBoost) []blevequery.Query {
 	return out
 }
 
+// fromQuery gives full email/domain searches stricter treatment than general text
+// so queries like from:example.com or from:user@example.com do not devolve into
+// loose body-word matches.
 func fromQuery(text string) blevequery.Query {
 	text = strings.Trim(strings.TrimSpace(text), `"`)
-	if terms := emailAddressCompoundTerms(text); len(terms) > 0 {
-		return boostQuery(termConjunction("from_compound", terms), 16)
+	if q := emailAddressQuery(text); q != nil {
+		return boostQuery(q, 16)
 	}
 	var disjuncts []blevequery.Query
 
@@ -499,6 +539,9 @@ func fromQuery(text string) blevequery.Query {
 	return bleve.NewDisjunctionQuery(disjuncts...)
 }
 
+// textQuery implements the user-facing search feel. Quoted text is literal and
+// avoids fuzzy word breakdown; unquoted text can use all-term matching, compact
+// phrase boosts, domain matching, and controlled fuzziness for typos.
 func textQuery(text string, quoted bool) blevequery.Query {
 	var disjuncts []blevequery.Query
 	normalized := normalizeSearchText(text)
@@ -545,15 +588,17 @@ func textQuery(text string, quoted bool) blevequery.Query {
 		if joined != normalized {
 			disjuncts = append(disjuncts, boostQuery(bleve.NewQueryStringQuery(joined), 0.8))
 		}
-		disjuncts = append(disjuncts, exactCompactQueries(joined)...)
-		disjuncts = append(disjuncts, splitPhraseQueries(joined)...)
-		disjuncts = append(disjuncts, splitWordQueries(joined)...)
-		if len(joined) >= 5 {
-			fq := bleve.NewFuzzyQuery(joined)
-			fq.SetField("compound")
-			fq.SetFuzziness(fuzzinessFor(joined))
-			fq.SetBoost(0.6)
-			disjuncts = append(disjuncts, fq)
+		if joined != normalized || canSplitCompactTerm(joined) {
+			disjuncts = append(disjuncts, exactCompactQueries(joined)...)
+			disjuncts = append(disjuncts, splitPhraseQueries(joined)...)
+			disjuncts = append(disjuncts, splitWordQueries(joined)...)
+			if len(joined) >= 5 {
+				fq := bleve.NewFuzzyQuery(joined)
+				fq.SetField("compound")
+				fq.SetFuzziness(fuzzinessFor(joined))
+				fq.SetBoost(0.6)
+				disjuncts = append(disjuncts, fq)
+			}
 		}
 	}
 	if len(terms) <= 1 {
@@ -601,6 +646,8 @@ func textTermQuery(term string) blevequery.Query {
 	return bleve.NewDisjunctionQuery(queries...)
 }
 
+// hitMatchTerms filters Bleve's raw location map down to user-meaningful terms,
+// excluding implementation fields and terms unrelated to the original query.
 func hitMatchTerms(queryText string, locations blevesearch.FieldTermLocationMap) []string {
 	if len(locations) == 0 {
 		return nil
@@ -664,6 +711,8 @@ type queryNeedle struct {
 	MaxDistance int
 }
 
+// queryNeedles records the literal words/compounds the user typed so fuzzy Bleve
+// matches can still be judged against the intended query before highlighting.
 func queryNeedles(parsed parsedQuery) []queryNeedle {
 	seen := map[string]bool{}
 	var needles []queryNeedle
@@ -707,7 +756,7 @@ func termRelevantToQuery(term string, needles []queryNeedle) bool {
 		if term == needle.Term {
 			return true
 		}
-		if len(term) >= 3 && len(needle.Term) >= 3 && (strings.Contains(term, needle.Term) || strings.Contains(needle.Term, term)) {
+		if len(term) >= minSplitFragmentLength && len(needle.Term) >= minSplitFragmentLength && (strings.Contains(term, needle.Term) || strings.Contains(needle.Term, term)) {
 			return true
 		}
 		if needle.MaxDistance > 0 && boundedEditDistance(term, needle.Term, needle.MaxDistance) <= needle.MaxDistance {
@@ -835,11 +884,11 @@ func exactCompactQueries(joined string) []blevequery.Query {
 }
 
 func splitPhraseQueries(term string) []blevequery.Query {
-	if strings.Contains(term, " ") || len(term) < 6 || len(term) > 40 {
+	if strings.Contains(term, " ") || !canSplitCompactTerm(term) || len(term) > 40 {
 		return nil
 	}
 	var out []blevequery.Query
-	for split := 3; split <= len(term)-3; split++ {
+	for split := minSplitFragmentLength; split <= len(term)-minSplitFragmentLength; split++ {
 		phrase := term[:split] + " " + term[split:]
 		out = append(out, boostedPhrase("subject", phrase, 35))
 		out = append(out, boostedPhrase("body", phrase, 42))
@@ -850,11 +899,11 @@ func splitPhraseQueries(term string) []blevequery.Query {
 }
 
 func splitWordQueries(term string) []blevequery.Query {
-	if strings.Contains(term, " ") || len(term) < 6 || len(term) > 40 {
+	if strings.Contains(term, " ") || !canSplitCompactTerm(term) || len(term) > 40 {
 		return nil
 	}
 	var out []blevequery.Query
-	for split := 3; split <= len(term)-3; split++ {
+	for split := minSplitFragmentLength; split <= len(term)-minSplitFragmentLength; split++ {
 		out = append(out, boostQuery(bleve.NewConjunctionQuery(splitTermQuery(term[:split]), splitTermQuery(term[split:])), 0.2))
 	}
 	return out
@@ -869,6 +918,10 @@ func splitTermQuery(term string) blevequery.Query {
 		queries = append(queries, q)
 	}
 	return bleve.NewDisjunctionQuery(queries...)
+}
+
+func canSplitCompactTerm(term string) bool {
+	return len(term) >= minSplitFragmentLength*2
 }
 
 func boostedMatch(field, text string, boost float64) blevequery.Query {
@@ -937,12 +990,16 @@ func compoundSearchText(values ...string) string {
 		return true
 	}
 	for i := 0; i < len(words)-1; i++ {
-		if !appendTerm(words[i] + words[i+1]) {
-			return b.String()
+		if len(words[i]) >= minSplitFragmentLength && len(words[i+1]) >= minSplitFragmentLength {
+			if !appendTerm(words[i] + words[i+1]) {
+				return b.String()
+			}
 		}
 		if i+2 < len(words) {
-			if !appendTerm(words[i] + words[i+1] + words[i+2]) {
-				return b.String()
+			if len(words[i]) >= minSplitFragmentLength && len(words[i+1]) >= minSplitFragmentLength && len(words[i+2]) >= minSplitFragmentLength {
+				if !appendTerm(words[i] + words[i+1] + words[i+2]) {
+					return b.String()
+				}
 			}
 		}
 	}
@@ -952,21 +1009,22 @@ func compoundSearchText(values ...string) string {
 var emailAddressRE = regexp.MustCompile(`(?i)([a-z0-9._%+\-]+)@([a-z0-9.\-]+\.[a-z0-9\-]+)`)
 var emailDomainRE = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@([a-z0-9.\-]+\.[a-z0-9\-]+)`)
 
-func emailAddressQueryTerms(value string) []string {
+func emailAddressQuery(value string) blevequery.Query {
 	value = strings.Trim(strings.TrimSpace(value), `"`)
 	match := emailAddressRE.FindStringSubmatch(value)
 	if len(match) != 3 {
 		return nil
 	}
-	return strings.Fields(normalizeSearchText(match[1] + " " + match[2]))
-}
-
-func emailAddressCompoundTerms(value string) []string {
-	terms := emailAddressQueryTerms(value)
-	if len(terms) < 2 {
+	localTerms := strings.Fields(normalizeSearchText(match[1]))
+	domainTerms := domainQueryTerms(match[2])
+	if len(localTerms) == 0 || len(domainTerms) == 0 {
 		return nil
 	}
-	return compactAdjacentTerms(terms)
+	localQuery := termConjunction("from", localTerms)
+	if len(localTerms) > 1 {
+		localQuery = bleve.NewDisjunctionQuery(localQuery, termConjunction("from_compound", compactAdjacentTerms(localTerms)))
+	}
+	return bleve.NewConjunctionQuery(localQuery, termConjunction("from_domain", domainTerms))
 }
 
 func emailDomainTerms(value string) string {
@@ -1038,6 +1096,8 @@ type parsedQuery struct {
 
 var operatorRE = regexp.MustCompile(`(?i)(^|\s)(-?)(has:attachment|is:read|is:unread|is:starred|is:notstarred|lang:("[^"]+"|\S+)|filename:("[^"]+"|\S+)|from:("[^"]+"|\S+)|to:("[^"]+"|\S+)|cc:("[^"]+"|\S+)|subject:("[^"]+"|\S+)|after:("[^"]+"|\S+)|before:("[^"]+"|\S+)|year:("[^"]+"|\S+))`)
 
+// parseQuery extracts supported operators while preserving the remaining free text.
+// The parser is intentionally small and predictable rather than a full Gmail clone.
 func parseQuery(queryText string) parsedQuery {
 	text, quoted := parseQueryText(queryText)
 	out := parsedQuery{Text: text, TextQuoted: quoted}

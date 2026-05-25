@@ -1,3 +1,6 @@
+// File overview: Typed browser API client. It centralizes JSON parsing, CSRF-bearing writes,
+// ETag-aware GET caching, multipart compose uploads, and endpoint shapes used by views.
+
 import type {
   Account,
   Bootstrap,
@@ -17,6 +20,7 @@ import type {
   User
 } from "./types";
 
+/** Error thrown for non-2xx API responses after the JSON error payload is decoded. */
 export class ApiError extends Error {
   status: number;
 
@@ -26,6 +30,8 @@ export class ApiError extends Error {
   }
 }
 
+// All API helpers flow through parse so callers see typed payloads on success
+// and a consistent ApiError on backend validation/session failures.
 async function parse<T>(res: Response): Promise<T> {
   const text = await res.text();
   let data: Record<string, unknown> = {};
@@ -46,20 +52,39 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 const getCache = new Map<string, { etag: string; data: unknown }>();
+const getInflight = new Map<string, Promise<unknown>>();
 
+/**
+ * GET JSON with lightweight ETag revalidation. The cache is process-local and
+ * keyed by URL, so it only avoids repainting unchanged mailbox/search/settings
+ * payloads during the current tab session.
+ */
 export async function getJSON<T>(url: string): Promise<T> {
-  const headers: Record<string, string> = { Accept: "application/json" };
-  const cached = getCache.get(url);
-  if (cached?.etag) headers["If-None-Match"] = cached.etag;
-  const res = await fetch(url, { headers });
-  if (res.status === 304 && cached) return cached.data as T;
-  const data = await parse<T>(res);
-  const etag = res.headers.get("ETag") || "";
-  if (etag) getCache.set(url, { etag, data });
-  else getCache.delete(url);
-  return data;
+  const inflight = getInflight.get(url);
+  if (inflight) return inflight as Promise<T>;
+
+  const request = (async () => {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    const cached = getCache.get(url);
+    if (cached?.etag) headers["If-None-Match"] = cached.etag;
+    const res = await fetch(url, { headers });
+    if (res.status === 304 && cached) return cached.data as T;
+    const data = await parse<T>(res);
+    const etag = res.headers.get("ETag") || "";
+    if (etag) getCache.set(url, { etag, data });
+    else getCache.delete(url);
+    return data;
+  })();
+
+  getInflight.set(url, request);
+  try {
+    return await request;
+  } finally {
+    if (getInflight.get(url) === request) getInflight.delete(url);
+  }
 }
 
+/** POST JSON to a mutating endpoint with the current CSRF token. */
 export async function postJSON<T>(url: string, csrf: string, body: unknown = {}): Promise<T> {
   return parse<T>(
     await fetch(url, {
@@ -74,6 +99,7 @@ export async function postJSON<T>(url: string, csrf: string, body: unknown = {})
   );
 }
 
+/** PUT JSON to a mutating endpoint with the current CSRF token. */
 export async function putJSON<T>(url: string, csrf: string, body: unknown = {}): Promise<T> {
   return parse<T>(
     await fetch(url, {
@@ -88,6 +114,7 @@ export async function putJSON<T>(url: string, csrf: string, body: unknown = {}):
   );
 }
 
+/** DELETE JSON from a mutating endpoint with the current CSRF token. */
 export async function deleteJSON<T>(url: string, csrf: string): Promise<T> {
   return parse<T>(
     await fetch(url, {
@@ -100,6 +127,7 @@ export async function deleteJSON<T>(url: string, csrf: string): Promise<T> {
   );
 }
 
+/** POST multipart form data without forcing a Content-Type boundary. */
 export async function postForm<T>(url: string, csrf: string, body: FormData): Promise<T> {
   return parse<T>(
     await fetch(url, {
@@ -113,23 +141,43 @@ export async function postForm<T>(url: string, csrf: string, body: FormData): Pr
   );
 }
 
+function composeSendPayload(form: ComposeForm): ComposeForm {
+  const { available_attachments: _availableAttachments, ...payload } = form;
+  return payload;
+}
+
+function mailListURL(mailboxID: string | null, page: number) {
+  const q = new URLSearchParams({ page: String(page) });
+  if (mailboxID) q.set("mailbox", mailboxID);
+  return `/api/mail?${q}`;
+}
+
+function searchListURL(query: string, sort: string, page: number) {
+  const q = new URLSearchParams({ q: query, sort, page: String(page) });
+  return `/api/search?${q}`;
+}
+
+function prefetchJSON<T>(url: string) {
+  void getJSON<T>(url).catch(() => undefined);
+}
+
+// The api object is deliberately explicit rather than generated: it documents
+// the route surface used by the current frontend and keeps response shapes close
+// to the call sites that depend on them.
 export const api = {
   bootstrap: () => getJSON<Bootstrap>("/api/bootstrap"),
   setup: (csrf: string, body: { email: string; name: string; password: string }) =>
     postJSON<{ ok: boolean }>("/api/setup", csrf, body),
   login: (csrf: string, body: { email: string; password: string }) => postJSON<{ ok: boolean }>("/api/login", csrf, body),
   logout: (csrf: string) => postJSON<{ ok: boolean }>("/api/logout", csrf),
-  mail: (mailboxID: string | null, page: number) => {
-    const q = new URLSearchParams({ page: String(page) });
-    if (mailboxID) q.set("mailbox", mailboxID);
-    return getJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(`/api/mail?${q}`);
-  },
-  search: (query: string, sort: string, page: number) => {
-    const q = new URLSearchParams({ q: query, sort, page: String(page) });
-    return getJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(
-      `/api/search?${q}`
-    );
-  },
+  mail: (mailboxID: string | null, page: number) =>
+    getJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(mailListURL(mailboxID, page)),
+  prefetchMail: (mailboxID: string | null, page: number) =>
+    prefetchJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(mailListURL(mailboxID, page)),
+  search: (query: string, sort: string, page: number) =>
+    getJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(searchListURL(query, sort, page)),
+  prefetchSearch: (query: string, sort: string, page: number) =>
+    prefetchJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(searchListURL(query, sort, page)),
   brandIcons: (domains: string[]) => {
     const q = new URLSearchParams();
     domains.slice(0, 40).forEach((domain) => q.append("domain", domain));
@@ -172,13 +220,17 @@ export const api = {
     }),
   compose: (query: string) =>
     getJSON<{ compose: ComposeForm; compose_from: string; from_identities: ComposeIdentity[] }>(`/api/compose${query ? `?${query}` : ""}`),
+  // Compose sends pure JSON when possible, then switches to multipart only when
+  // there are file bodies. Inline files are represented in the JSON payload by
+  // stable form field names and Content-ID metadata.
   send: (csrf: string, form: ComposeForm, attachments: ComposeAttachmentUpload[] = []) => {
+    const payload = composeSendPayload(form);
     if (attachments.length === 0) {
-      return postJSON<{ ok: boolean; message_id: number }>("/api/compose", csrf, form);
+      return postJSON<{ ok: boolean; message_id: number }>("/api/compose", csrf, payload);
     }
     const body = new FormData();
     body.append("payload", JSON.stringify({
-      ...form,
+      ...payload,
       attachments: attachments.map((attachment) => ({
         field: attachment.field,
         filename: attachment.filename,
@@ -216,7 +268,6 @@ export const api = {
   syncStatus: () => getJSON<{ running: boolean; latest: SyncRun | null }>("/api/sync/status"),
   account: () =>
     getJSON<{
-      account: Account | null;
       imap_accounts: Account[];
       smtp_accounts: SMTPAccount[];
       identities: MailIdentity[];
@@ -231,7 +282,6 @@ export const api = {
   plugins: () => getJSON<{ enabled: string[] }>("/api/plugins"),
   saveProfile: (csrf: string, profile: { date_locale: string; date_format: string; theme: string }) =>
     postJSON<{ user: User }>("/api/profile", csrf, profile),
-  saveAccount: (csrf: string, account: Record<string, unknown>) => postJSON<{ ok: boolean }>("/api/account", csrf, account),
   saveIMAPAccount: (csrf: string, account: Record<string, unknown>) =>
     postJSON<{ ok: boolean; account: Account }>("/api/account/imap", csrf, account),
   saveSMTPAccount: (csrf: string, account: Record<string, unknown>) =>

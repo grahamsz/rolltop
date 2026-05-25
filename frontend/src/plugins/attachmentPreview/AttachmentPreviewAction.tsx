@@ -1,3 +1,6 @@
+// File overview: Attachment preview launcher. It renders preview actions for files that have a
+// supported frontend preview kind.
+
 import { lazy, Suspense, useEffect, useState } from "react";
 import type { Attachment } from "../../types";
 import { Icon } from "../../components/Icon";
@@ -6,6 +9,7 @@ const LazyPdfAttachmentViewer = lazy(() =>
   import("./PdfAttachmentViewer").then((module) => ({ default: module.PdfAttachmentViewer }))
 );
 
+/** AttachmentPreviewAction opens the available preview for a supported attachment. */
 export function AttachmentPreviewAction({ attachment }: { attachment: Attachment }) {
   const [open, setOpen] = useState(false);
   if (!attachment.preview?.available || !attachment.preview.url) return null;

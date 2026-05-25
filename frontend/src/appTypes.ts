@@ -1,28 +1,39 @@
+// File overview: View-only TypeScript types shared inside the React app, separate from API response
+// types so navigation, toasts, and shell callbacks do not leak into backend contracts.
+
 import type { ReactNode } from "react";
 import type { Bootstrap, Mailbox, User } from "./types";
 
+/** LocationState is the minimal browser URL state App passes through the manual router. */
 export type LocationState = {
   path: string;
   search: string;
 };
 
+/** Toast is a transient global notification rendered by the root ToastStack. */
 export type Toast = {
   id: number;
   kind: "loading" | "success" | "error";
   message: string;
 };
 
+/** MoveTarget identifies the destination mailbox for drag/drop message moves. */
 export type MoveTarget = {
   id: number;
   name: string;
 };
 
+/** DatePrefs is the subset of user preferences required by date-formatting helpers. */
 export type DatePrefs = Pick<User, "date_locale" | "date_format">;
 
+/** Navigate pushes a client-side URL without reloading the Go-served SPA. */
 export type Navigate = (url: string) => void;
+/** AddToast enqueues a global toast and returns its generated ID. */
 export type AddToast = (message: string, kind?: Toast["kind"]) => number;
+/** RefreshChrome reloads bootstrap/chrome state after mutations. */
 export type RefreshChrome = () => Promise<Bootstrap | null>;
 
+/** AppShellProps collects authenticated chrome state and shell callbacks shared across views. */
 export type AppShellProps = {
   user: User;
   csrf: string;

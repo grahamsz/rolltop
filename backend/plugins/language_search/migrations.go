@@ -9,6 +9,7 @@ import (
 	"mailmirror/backend/plugins"
 )
 
+// Migrations returns schema changes for per-message language detection metadata.
 func Migrations() []plugins.Migration {
 	return []plugins.Migration{{
 		PluginID: plugins.LanguageSearch,

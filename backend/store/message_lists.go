@@ -9,6 +9,7 @@ import (
 	"strings"
 )
 
+// ListMessagesForUser returns recent messages across visible mailboxes for one user.
 func (s *Store) ListMessagesForUser(ctx context.Context, userID int64, limit, offset int) ([]MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -27,6 +28,7 @@ func (s *Store) ListMessagesForUser(ctx context.Context, userID int64, limit, of
 	return scanMessages(rows)
 }
 
+// ListMessagesForMailbox returns recent messages from one user-owned mailbox.
 func (s *Store) ListMessagesForMailbox(ctx context.Context, userID, mailboxID int64, limit, offset int) ([]MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -45,6 +47,7 @@ func (s *Store) ListMessagesForMailbox(ctx context.Context, userID, mailboxID in
 	return scanMessages(rows)
 }
 
+// CountMessagesForMailbox counts local mirrored messages in one user-owned mailbox.
 func (s *Store) CountMessagesForMailbox(ctx context.Context, userID, mailboxID int64) (int, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -55,6 +58,7 @@ func (s *Store) CountMessagesForMailbox(ctx context.Context, userID, mailboxID i
 	return n, err
 }
 
+// ListLatestThreadMessagesForUser returns one latest message per thread for all-mail list rendering.
 func (s *Store) ListLatestThreadMessagesForUser(ctx context.Context, userID int64, limit, offset int) ([]MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -85,6 +89,7 @@ func (s *Store) ListLatestThreadMessagesForUser(ctx context.Context, userID int6
 	return scanMessages(rows)
 }
 
+// ListLatestThreadMessagesForMailbox returns one latest message per thread within a mailbox.
 func (s *Store) ListLatestThreadMessagesForMailbox(ctx context.Context, userID, mailboxID int64, limit, offset int) ([]MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -113,6 +118,7 @@ func (s *Store) ListLatestThreadMessagesForMailbox(ctx context.Context, userID, 
 	return scanMessages(rows)
 }
 
+// ListMessagesByIDsForUser bulk-loads messages by ID while preserving user ownership checks.
 func (s *Store) ListMessagesByIDsForUser(ctx context.Context, userID int64, ids []int64) ([]MessageRecord, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -131,6 +137,7 @@ func (s *Store) ListMessagesByIDsForUser(ctx context.Context, userID int64, ids 
 	return messages, nil
 }
 
+// ListThreadMessagesForUser loads all messages in the selected message's conversation.
 func (s *Store) ListThreadMessagesForUser(ctx context.Context, userID int64, msg MessageRecord) ([]MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
@@ -153,6 +160,7 @@ func (s *Store) ListThreadMessagesForUser(ctx context.Context, userID int64, msg
 	return scanMessages(rows)
 }
 
+// ListThreadMessagesByKeysForUser groups messages by thread keys for conversation hydration.
 func (s *Store) ListThreadMessagesByKeysForUser(ctx context.Context, userID int64, keys []string) (map[string][]MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {

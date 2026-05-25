@@ -22,6 +22,7 @@ const (
 	maxSVGBytes = 256 * 1024
 )
 
+// Result is the cacheable outcome of a BIMI DNS/logo lookup.
 type Result struct {
 	Domain    string
 	LogoURL   string
@@ -32,6 +33,7 @@ type Result struct {
 	ExpiresAt time.Time
 }
 
+// Icon is the stored BIMI icon cache row for one user/domain pair.
 type Icon struct {
 	ID        int64
 	UserID    int64
@@ -45,6 +47,7 @@ type Icon struct {
 	UpdatedAt time.Time
 }
 
+// GetIcon loads one cached BIMI icon row for a user/domain pair.
 func GetIcon(ctx context.Context, db *sql.DB, userID int64, domain string) (Icon, error) {
 	var icon Icon
 	var fetchedAt, expiresAt, updatedAt int64
@@ -60,6 +63,7 @@ func GetIcon(ctx context.Context, db *sql.DB, userID int64, domain string) (Icon
 	return icon, nil
 }
 
+// UpsertIcon records a BIMI lookup result, including negative or error states with retry timing.
 func UpsertIcon(ctx context.Context, db *sql.DB, icon Icon) error {
 	domain := NormalizeDomain(icon.Domain)
 	if icon.UserID == 0 || domain == "" {
@@ -94,12 +98,14 @@ func unixTime(v int64) time.Time {
 	return time.Unix(v, 0).UTC()
 }
 
+// Resolver performs BIMI TXT lookup, logo URL validation, SVG fetch, and retry timing.
 type Resolver struct {
 	DNS        *net.Resolver
 	HTTPClient *http.Client
 	Now        func() time.Time
 }
 
+// DomainFromAddress extracts the normalized sender domain used as the BIMI cache key.
 func DomainFromAddress(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -114,6 +120,7 @@ func DomainFromAddress(value string) string {
 	return ""
 }
 
+// NormalizeDomain canonicalizes domains before DNS lookup or cache access.
 func NormalizeDomain(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.Trim(value, "<>.,;:()[]{}\"'")
@@ -137,6 +144,7 @@ func NormalizeDomain(value string) string {
 	return value
 }
 
+// Fetch resolves and validates BIMI metadata for one domain and returns a cacheable result.
 func (r Resolver) Fetch(ctx context.Context, domain string) Result {
 	now := r.now()
 	result := Result{

@@ -14,10 +14,12 @@ import (
 	"mailmirror/backend/store"
 )
 
+// MailboxInfo is the minimal mailbox discovery record returned by a Fetcher.
 type MailboxInfo struct {
 	Name string
 }
 
+// MailboxStatus mirrors IMAP STATUS counters used for planning and UI progress.
 type MailboxStatus struct {
 	Messages    uint32
 	Unseen      uint32
@@ -25,6 +27,7 @@ type MailboxStatus struct {
 	UIDValidity uint32
 }
 
+// MailboxPlan combines a mailbox name, remote status, last local UID, and estimated pending work.
 type MailboxPlan struct {
 	Name    string
 	Status  MailboxStatus
@@ -32,6 +35,7 @@ type MailboxPlan struct {
 	Pending int
 }
 
+// FetchedMessage is a raw message body plus IMAP metadata streamed from Fetcher to Service.
 type FetchedMessage struct {
 	Mailbox      string
 	UID          uint32
@@ -41,6 +45,9 @@ type FetchedMessage struct {
 	Raw          []byte
 }
 
+// Fetcher is the narrow IMAP boundary used by sync. Keeping this interface here
+// lets tests substitute fake servers while the real imapclient package handles
+// protocol details and password decryption.
 type Fetcher interface {
 	ListMailboxes(ctx context.Context, account store.MailAccount) ([]MailboxInfo, error)
 	MailboxStatus(ctx context.Context, account store.MailAccount, mailbox string) (MailboxStatus, error)
@@ -54,6 +61,9 @@ type Fetcher interface {
 	MoveMessage(ctx context.Context, account store.MailAccount, sourceMailbox string, destMailbox string, uid uint32) error
 }
 
+// Service is the sync orchestrator. It owns no goroutine scheduling itself; the
+// Runner decides when work starts, then Service performs one account/mailbox sync
+// against Store, Blob, Search, and Fetcher dependencies.
 type Service struct {
 	Store   *store.Store
 	Blobs   *blob.Store
@@ -66,14 +76,22 @@ type Service struct {
 
 const inlineMetadataSyncLimit = 10000
 
+// SyncUser syncs every configured account for a user using each account's auto
+// mailbox plan. Runner normally decomposes this into mailbox jobs, but tests and
+// direct callers can still use this whole-account entrypoint.
 func (s *Service) SyncUser(ctx context.Context, userID int64) (store.SyncRun, error) {
 	return s.syncUser(ctx, userID, nil)
 }
 
+// SyncUserMailboxes applies the same requested folder names to every account on
+// the user. It is used for global priority jobs like refreshing INBOX after a
+// webhook.
 func (s *Service) SyncUserMailboxes(ctx context.Context, userID int64, mailboxNames []string) (store.SyncRun, error) {
 	return s.syncUser(ctx, userID, mailboxNames)
 }
 
+// SyncUserAccountMailboxes targets one IMAP server, which avoids ambiguous folder
+// names when multiple accounts contain the same mailbox path.
 func (s *Service) SyncUserAccountMailboxes(ctx context.Context, userID, accountID int64, mailboxNames []string) (store.SyncRun, error) {
 	if s.Fetcher == nil {
 		return store.SyncRun{}, errors.New("sync fetcher is not configured")
@@ -85,6 +103,9 @@ func (s *Service) SyncUserAccountMailboxes(ctx context.Context, userID, accountI
 	return s.syncAccount(ctx, userID, account, mailboxNames)
 }
 
+// DiscoverMailboxes refreshes local mailbox rows and remote STATUS counters
+// without fetching message bodies. The UI uses this for folder lists and stale
+// sync clues even when a full sync is not running.
 func (s *Service) DiscoverMailboxes(ctx context.Context, userID int64) (int, error) {
 	if s.Fetcher == nil {
 		return 0, errors.New("sync fetcher is not configured")
@@ -120,6 +141,9 @@ func (s *Service) DiscoverMailboxes(ctx context.Context, userID int64) (int, err
 	return count, nil
 }
 
+// AutoMailboxNames returns the effective set of folders that an account-wide sync
+// should visit. It respects per-folder sync modes and prioritizes inbox-like
+// names so fresh mail is mirrored before archival folders.
 func (s *Service) AutoMailboxNames(ctx context.Context, userID int64) ([]string, error) {
 	accounts, err := s.Store.ListMailAccountsForUser(ctx, userID)
 	if err != nil {
@@ -143,6 +167,9 @@ func (s *Service) AutoMailboxNames(ctx context.Context, userID int64) ([]string,
 	return prioritizeInbox(out), nil
 }
 
+// syncUser is the common multi-account loop. It returns the first run record so
+// callers have something stable to display even when the user owns several IMAP
+// accounts.
 func (s *Service) syncUser(ctx context.Context, userID int64, requestedMailboxes []string) (store.SyncRun, error) {
 	if s.Fetcher == nil {
 		return store.SyncRun{}, errors.New("sync fetcher is not configured")
@@ -167,6 +194,14 @@ func (s *Service) syncUser(ctx context.Context, userID int64, requestedMailboxes
 	return first, nil
 }
 
+// syncAccount is the main incremental sync pipeline:
+// 1. create a sync_runs row for UI progress,
+// 2. plan folders from IMAP STATUS and last stored UID,
+// 3. push pending local Seen/Flagged changes,
+// 4. fetch only UIDs newer than each mailbox's last UID,
+// 5. store blobs/message rows/attachments/search documents, and
+// 6. reconcile lightweight metadata for small folders.
+// The defer marks interrupted runs when the process context is cancelled.
 func (s *Service) syncAccount(ctx context.Context, userID int64, account store.MailAccount, requestedMailboxes []string) (store.SyncRun, error) {
 	run, err := s.Store.CreateSyncRun(ctx, userID, account.ID)
 	if err != nil {
@@ -330,6 +365,8 @@ func (s *Service) planMailboxes(ctx context.Context, account store.MailAccount, 
 	return plans
 }
 
+// updateSyncProgress persists a progress snapshot and immediately notifies the
+// event hub, which is what drives the sidebar and settings sync indicators.
 func (s *Service) updateSyncProgress(ctx context.Context, userID, runID int64, progress store.SyncProgress) error {
 	if err := s.Store.UpdateSyncRunProgress(ctx, userID, runID, progress); err != nil {
 		return err
@@ -338,6 +375,8 @@ func (s *Service) updateSyncProgress(ctx context.Context, userID, runID int64, p
 	return nil
 }
 
+// recordMailboxStatus keeps remote counters separate from local/indexed counters
+// so the UI can tell "known remotely" from "mirrored locally".
 func (s *Service) recordMailboxStatus(ctx context.Context, userID int64, mailbox store.Mailbox, status MailboxStatus) {
 	if status.UIDNext == 0 && status.Messages == 0 && status.Unseen == 0 && status.UIDValidity == 0 {
 		return
@@ -347,6 +386,8 @@ func (s *Service) recordMailboxStatus(ctx context.Context, userID int64, mailbox
 	}
 }
 
+// shouldSyncInlineMetadata avoids expensive full-mailbox flag and UID searches on
+// very large folders; those folders still get new-message fetches incrementally.
 func (s *Service) shouldSyncInlineMetadata(plan MailboxPlan) bool {
 	return plan.Status.Messages == 0 || plan.Status.Messages <= inlineMetadataSyncLimit
 }

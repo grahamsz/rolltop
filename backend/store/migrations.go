@@ -48,7 +48,7 @@ const (
 // migrationSet is deliberately coarse-grained for this pre-deployment app:
 // one checksum-protected migration owns the system DB schema, and one owns the
 // per-user DB schema. Future migrations should append new versions here rather
-// than reviving ad hoc compatibility logic in Store.Open.
+// than reviving ad hoc open-time schema fixes in Store.Open.
 type migrationSet struct {
 	Scope      string
 	Version    string

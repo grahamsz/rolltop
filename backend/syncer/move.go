@@ -24,6 +24,7 @@ func uniqueMessageIDs(ids []int64) []int64 {
 	return out
 }
 
+// MoveMessages moves several local messages through IMAP and updates local metadata when each move succeeds.
 func (s *Service) MoveMessages(ctx context.Context, userID int64, messageIDs []int64, destMailboxID int64) (int, error) {
 	ids := uniqueMessageIDs(messageIDs)
 	if len(ids) == 0 {
@@ -39,6 +40,7 @@ func (s *Service) MoveMessages(ctx context.Context, userID int64, messageIDs []i
 	return moved, nil
 }
 
+// StartMoveMessages runs a large move as a background sync run so the HTTP request can return quickly.
 func (s *Service) StartMoveMessages(ctx context.Context, userID int64, messageIDs []int64, destMailboxID int64, onDone func()) (store.SyncRun, error) {
 	if s.Fetcher == nil {
 		return store.SyncRun{}, errors.New("sync fetcher is not configured")
@@ -113,6 +115,7 @@ func (s *Service) runMoveMessages(ctx context.Context, userID int64, ids []int64
 	}
 }
 
+// MoveMessage moves one message through IMAP using its account, source mailbox, destination mailbox, and UID.
 func (s *Service) MoveMessage(ctx context.Context, userID, messageID, destMailboxID int64) error {
 	if s.Fetcher == nil {
 		return errors.New("sync fetcher is not configured")

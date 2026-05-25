@@ -5,6 +5,7 @@ package imapclient
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,12 +20,22 @@ import (
 	"mailmirror/backend/syncer"
 )
 
+const (
+	idleCycleDuration = 29 * time.Minute
+	idleStopGrace     = 5 * time.Second
+)
+
+var errIdleStopTimeout = errors.New("IDLE session did not stop cleanly")
+
+// Fetcher implements syncer.Fetcher using go-imap and encrypted MailMirror account credentials.
 type Fetcher struct {
 	MasterKey []byte
 	Timeout   time.Duration
 	BatchSize uint32
 }
 
+// ListMailboxes logs in, lists selectable folders, and returns only names. It does
+// not create local rows; sync.Service decides which folders belong to the user DB.
 func (f *Fetcher) ListMailboxes(ctx context.Context, account store.MailAccount) ([]syncer.MailboxInfo, error) {
 	c, err := f.login(account)
 	if err != nil {
@@ -56,6 +67,8 @@ func (f *Fetcher) ListMailboxes(ctx context.Context, account store.MailAccount) 
 	return out, nil
 }
 
+// MailboxStatus uses IMAP STATUS instead of SELECT where possible so folder counts
+// and UIDNEXT can be refreshed cheaply for progress planning and UI hints.
 func (f *Fetcher) MailboxStatus(ctx context.Context, account store.MailAccount, mailbox string) (syncer.MailboxStatus, error) {
 	select {
 	case <-ctx.Done():
@@ -74,6 +87,7 @@ func (f *Fetcher) MailboxStatus(ctx context.Context, account store.MailAccount, 
 	return syncer.MailboxStatus{Messages: status.Messages, Unseen: status.Unseen, UIDNext: status.UidNext, UIDValidity: status.UidValidity}, nil
 }
 
+// UIDs returns every UID currently present in a mailbox for local deletion/reconciliation checks.
 func (f *Fetcher) UIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error) {
 	select {
 	case <-ctx.Done():
@@ -98,6 +112,9 @@ func (f *Fetcher) UIDs(ctx context.Context, account store.MailAccount, mailbox s
 	return uids, nil
 }
 
+// FetchMailbox is the incremental body fetch path. It selects read-only, searches
+// for UIDs greater than afterUID, fetches RFC822 bodies in batches, and streams each
+// result to the syncer callback instead of accumulating a mailbox in memory.
 func (f *Fetcher) FetchMailbox(ctx context.Context, account store.MailAccount, mailbox string, afterUID uint32, handle func(syncer.FetchedMessage) error) error {
 	c, err := f.login(account)
 	if err != nil {
@@ -183,6 +200,8 @@ func (f *Fetcher) FetchMailbox(ctx context.Context, account store.MailAccount, m
 	return nil
 }
 
+// FetchMessage retrieves one raw message body for on-demand thread hydration or
+// attachment download when the local blob has been pruned.
 func (f *Fetcher) FetchMessage(ctx context.Context, account store.MailAccount, mailbox string, uid uint32) (syncer.FetchedMessage, error) {
 	select {
 	case <-ctx.Done():
@@ -247,6 +266,8 @@ func (f *Fetcher) FetchMessage(ctx context.Context, account store.MailAccount, m
 	return out, nil
 }
 
+// SetSeen is the one remote read-state mutation MailMirror intentionally allows:
+// it toggles only the IMAP \Seen flag for a single UID.
 func (f *Fetcher) SetSeen(ctx context.Context, account store.MailAccount, mailbox string, uid uint32, seen bool) error {
 	select {
 	case <-ctx.Done():
@@ -274,6 +295,8 @@ func (f *Fetcher) SetSeen(ctx context.Context, account store.MailAccount, mailbo
 	return nil
 }
 
+// SeenUIDs returns the remote set of read messages so local read state can be
+// reconciled after another client changes flags.
 func (f *Fetcher) SeenUIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error) {
 	select {
 	case <-ctx.Done():
@@ -297,6 +320,7 @@ func (f *Fetcher) SeenUIDs(ctx context.Context, account store.MailAccount, mailb
 	return uids, nil
 }
 
+// SetFlagged toggles the IMAP \Flagged flag for one UID so local star changes can be pushed upstream.
 func (f *Fetcher) SetFlagged(ctx context.Context, account store.MailAccount, mailbox string, uid uint32, flagged bool) error {
 	select {
 	case <-ctx.Done():
@@ -324,6 +348,8 @@ func (f *Fetcher) SetFlagged(ctx context.Context, account store.MailAccount, mai
 	return nil
 }
 
+// FlaggedUIDs returns the remote starred set. The syncer stores this locally so
+// MailMirror reflects stars added by another IMAP client.
 func (f *Fetcher) FlaggedUIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error) {
 	select {
 	case <-ctx.Done():
@@ -347,6 +373,7 @@ func (f *Fetcher) FlaggedUIDs(ctx context.Context, account store.MailAccount, ma
 	return uids, nil
 }
 
+// MoveMessage uses IMAP MOVE for one UID and refuses to emulate move with copy/delete when the server lacks support.
 func (f *Fetcher) MoveMessage(ctx context.Context, account store.MailAccount, sourceMailbox string, destMailbox string, uid uint32) error {
 	select {
 	case <-ctx.Done():
@@ -381,6 +408,8 @@ func (f *Fetcher) MoveMessage(ctx context.Context, account store.MailAccount, so
 	return nil
 }
 
+// WatchMailbox keeps an IMAP IDLE session open for one folder and invokes onChange
+// when the server reports message/mailbox updates. The runner decides what to sync.
 func (f *Fetcher) WatchMailbox(ctx context.Context, account store.MailAccount, mailbox string, onChange func()) error {
 	if strings.TrimSpace(mailbox) == "" {
 		return fmt.Errorf("watch mailbox requires a mailbox name")
@@ -405,20 +434,18 @@ func (f *Fetcher) WatchMailbox(ctx context.Context, account store.MailAccount, m
 	}
 }
 
+// idleMailboxOnce runs one bounded IDLE cycle. It exits on update, timeout, or
+// context cancellation so callers can restart cleanly without a stuck connection.
 func (f *Fetcher) idleMailboxOnce(ctx context.Context, c *client.Client, updates <-chan client.Update, mailbox string, onChange func()) error {
 	stop := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- c.Idle(stop, nil)
+		done <- c.Idle(stop, &client.IdleOptions{LogoutTimeout: -1})
 	}()
 	stopIdle := func() {
-		close(stop)
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-		}
+		_ = stopIdleSession(stop, done, c.Terminate, idleStopGrace)
 	}
-	timer := time.NewTimer(29 * time.Minute)
+	timer := time.NewTimer(idleCycleDuration)
 	defer timer.Stop()
 	for {
 		select {
@@ -432,7 +459,9 @@ func (f *Fetcher) idleMailboxOnce(ctx context.Context, c *client.Client, updates
 			return nil
 		case update, ok := <-updates:
 			if !ok {
-				stopIdle()
+				if err := stopIdleSession(stop, done, c.Terminate, idleStopGrace); err != nil {
+					return fmt.Errorf("IDLE mailbox %q: %w", mailbox, err)
+				}
 				return fmt.Errorf("IDLE mailbox %q updates channel closed", mailbox)
 			}
 			switch update.(type) {
@@ -441,15 +470,51 @@ func (f *Fetcher) idleMailboxOnce(ctx context.Context, c *client.Client, updates
 					onChange()
 				}
 			}
-			stopIdle()
+			if err := stopIdleSession(stop, done, c.Terminate, idleStopGrace); err != nil {
+				return fmt.Errorf("IDLE mailbox %q: %w", mailbox, err)
+			}
 			return nil
 		case <-timer.C:
-			stopIdle()
+			if err := stopIdleSession(stop, done, c.Terminate, idleStopGrace); err != nil {
+				return fmt.Errorf("IDLE mailbox %q: %w", mailbox, err)
+			}
 			return nil
 		}
 	}
 }
 
+func stopIdleSession(stop chan struct{}, done <-chan error, terminate func() error, grace time.Duration) error {
+	close(stop)
+	if grace <= 0 {
+		grace = idleStopGrace
+	}
+	timer := time.NewTimer(grace)
+	select {
+	case err := <-done:
+		timer.Stop()
+		return err
+	case <-timer.C:
+	}
+	if terminate != nil {
+		if err := terminate(); err != nil {
+			return fmt.Errorf("%w: terminate connection: %v", errIdleStopTimeout, err)
+		}
+	}
+	timer = time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("%w: %v", errIdleStopTimeout, err)
+		}
+		return errIdleStopTimeout
+	case <-timer.C:
+		return errIdleStopTimeout
+	}
+}
+
+// login decrypts the IMAP password at the last possible moment, opens TLS/plain
+// transport according to account settings, and returns an authenticated client.
 func (f *Fetcher) login(account store.MailAccount) (*client.Client, error) {
 	password, err := mmcrypto.DecryptString(f.MasterKey, account.EncryptedPassword)
 	if err != nil {

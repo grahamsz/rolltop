@@ -15,6 +15,7 @@ import (
 
 const MaxImageBytes = 512 * 1024
 
+// Image is the cached Gravatar result for one user/email hash pair.
 type Image struct {
 	ID          int64
 	UserID      int64
@@ -28,6 +29,7 @@ type Image struct {
 	UpdatedAt   time.Time
 }
 
+// Migrations returns schema changes for the Gravatar sender-icon cache.
 func Migrations() []plugins.Migration {
 	return []plugins.Migration{{
 		PluginID: plugins.GravatarSenderIcons,
@@ -51,6 +53,7 @@ func Migrations() []plugins.Migration {
 	}}
 }
 
+// Hash normalizes an email address and returns the MD5 digest required by Gravatar URLs.
 func Hash(email string) string {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" {
@@ -60,6 +63,7 @@ func Hash(email string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// NormalizeHash validates and canonicalizes a stored Gravatar hash.
 func NormalizeHash(value string) string {
 	value = strings.Trim(strings.TrimSpace(value), "/")
 	if i := strings.IndexByte(value, '/'); i >= 0 {
@@ -77,6 +81,7 @@ func NormalizeHash(value string) string {
 	return value
 }
 
+// AssetURL builds the local URL where the frontend can request a cached Gravatar image.
 func AssetURL(hash string) string {
 	hash = NormalizeHash(hash)
 	if hash == "" {
@@ -85,6 +90,7 @@ func AssetURL(hash string) string {
 	return "/plugins/gravatar_sender_icons/avatar/" + hash
 }
 
+// FetchURL builds the remote Gravatar URL used by the refresh worker.
 func FetchURL(hash string) string {
 	hash = NormalizeHash(hash)
 	if hash == "" {
@@ -93,18 +99,22 @@ func FetchURL(hash string) string {
 	return "https://www.gravatar.com/avatar/" + hash + "?d=404&s=96"
 }
 
+// ErrorTTL returns the retry deadline after transient Gravatar failures.
 func ErrorTTL(now time.Time) time.Time {
 	return now.Add(12 * time.Hour)
 }
 
+// MissingTTL returns the retry deadline after Gravatar reports no image.
 func MissingTTL(now time.Time) time.Time {
 	return now.Add(7 * 24 * time.Hour)
 }
 
+// PositiveTTL returns the refresh deadline for a successfully cached Gravatar image.
 func PositiveTTL(now time.Time) time.Time {
 	return now.Add(30 * 24 * time.Hour)
 }
 
+// GetImage loads one cached Gravatar image row scoped by user and email hash.
 func GetImage(ctx context.Context, db *sql.DB, userID int64, emailHash string) (Image, error) {
 	var image Image
 	var fetchedAt, expiresAt, updatedAt int64
@@ -120,6 +130,7 @@ func GetImage(ctx context.Context, db *sql.DB, userID int64, emailHash string) (
 	return image, nil
 }
 
+// UpsertImage records the latest Gravatar lookup result and local asset metadata.
 func UpsertImage(ctx context.Context, db *sql.DB, image Image) error {
 	emailHash := NormalizeHash(image.EmailHash)
 	if image.UserID == 0 || emailHash == "" {

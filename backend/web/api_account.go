@@ -33,84 +33,61 @@ type accountSettingsInput struct {
 	SyncIntervalMinutes int    `json:"sync_interval_minutes"`
 }
 
+// apiAccount is the settings dashboard endpoint. It returns the account graph
+// needed by the React settings page; writes happen through the IMAP/SMTP/identity
+// endpoints so account-server editing stays explicit.
 func (s *Server) apiAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
 	cu, ok := s.requireAPIAuth(w, r)
 	if !ok {
 		return
 	}
-	switch r.Method {
-	case http.MethodGet:
-		accounts, err := s.store.ListMailAccountsForUser(r.Context(), cu.User.ID)
-		if err != nil {
-			s.serverError(w, err)
-			return
-		}
-		if len(accounts) > 0 && s.syncer != nil && s.syncer.Fetcher != nil {
-			s.refreshMailboxStatusesAsync(cu.User.ID)
-		}
-		smtpAccounts, err := s.store.ListSMTPAccountsForUser(r.Context(), cu.User.ID)
-		if err != nil {
-			s.serverError(w, err)
-			return
-		}
-		identities, err := s.store.ListMailIdentitiesForUser(r.Context(), cu.User.ID)
-		if err != nil {
-			s.serverError(w, err)
-			return
-		}
-		meContacts, err := s.store.ListMeContactsForUser(r.Context(), cu.User.ID)
-		if err != nil {
-			s.serverError(w, err)
-			return
-		}
-		runs, err := s.store.ListSyncRunsForUser(r.Context(), cu.User.ID, 20)
-		if err != nil {
-			s.serverError(w, err)
-			return
-		}
-		var accountOut any
-		if len(accounts) > 0 {
-			accountOut = apiAccountFromStore(accounts[0])
-		}
-		needsPassword, notice := s.accountCredentialNotice(r.Context(), cu.User.ID)
-		writeJSONCached(w, r, map[string]any{
-			"account":                accountOut,
-			"imap_accounts":          apiAccountsFromStore(accounts),
-			"smtp_accounts":          apiSMTPAccountsFromStore(smtpAccounts),
-			"identities":             apiMailIdentitiesFromStore(identities),
-			"me_contacts":            apiContactsFromStore(meContacts),
-			"sync_runs":              apiSyncRuns(runs),
-			"sync_folders":           apiSyncFolders(s.syncFolderViews(r.Context(), cu.User.ID, runs)),
-			"notice":                 notice,
-			"account_needs_password": needsPassword,
-		})
-	case http.MethodPost:
-		if !s.verifyCSRF(w, r) {
-			return
-		}
-		var in accountSettingsInput
-		if !decodeJSON(w, r, &in) {
-			return
-		}
-		account, msg, err := s.saveMailAccountFromInput(r.Context(), cu.User.ID, in, false)
-		if err != nil {
-			if msg != "" {
-				writeAPIError(w, http.StatusBadRequest, msg)
-			} else {
-				writeAPIError(w, http.StatusBadRequest, "Could not save account settings.")
-			}
-			return
-		}
-		if err := s.ensureMailAccountOnboarding(r.Context(), cu.User, account); err != nil {
-			s.serverError(w, err)
-			return
-		}
-		writeJSON(w, map[string]any{"ok": true})
-	default:
-		methodNotAllowed(w)
+	accounts, err := s.store.ListMailAccountsForUser(r.Context(), cu.User.ID)
+	if err != nil {
+		s.serverError(w, err)
+		return
 	}
+	if len(accounts) > 0 && s.syncer != nil && s.syncer.Fetcher != nil {
+		s.refreshMailboxStatusesAsync(cu.User.ID)
+	}
+	smtpAccounts, err := s.store.ListSMTPAccountsForUser(r.Context(), cu.User.ID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	identities, err := s.store.ListMailIdentitiesForUser(r.Context(), cu.User.ID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	meContacts, err := s.store.ListMeContactsForUser(r.Context(), cu.User.ID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	runs, err := s.store.ListSyncRunsForUser(r.Context(), cu.User.ID, 20)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	needsPassword, notice := s.accountCredentialNotice(r.Context(), cu.User.ID)
+	writeJSONCached(w, r, map[string]any{
+		"imap_accounts":          apiAccountsFromStore(accounts),
+		"smtp_accounts":          apiSMTPAccountsFromStore(smtpAccounts),
+		"identities":             apiMailIdentitiesFromStore(identities),
+		"me_contacts":            apiContactsFromStore(meContacts),
+		"sync_runs":              apiSyncRuns(runs),
+		"sync_folders":           apiSyncFolders(s.syncFolderViews(r.Context(), cu.User.ID, runs)),
+		"notice":                 notice,
+		"account_needs_password": needsPassword,
+	})
 }
 
+// apiIMAPAccount saves one explicit IMAP server page. It validates ownership via
+// user-scoped store lookups and then runs onboarding so SMTP/identity records exist.
 func (s *Server) apiIMAPAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -127,7 +104,7 @@ func (s *Server) apiIMAPAccount(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	account, msg, err := s.saveMailAccountFromInput(r.Context(), cu.User.ID, in, true)
+	account, msg, err := s.saveMailAccountFromInput(r.Context(), cu.User.ID, in)
 	if err != nil {
 		if msg != "" {
 			writeAPIError(w, http.StatusBadRequest, msg)
@@ -147,7 +124,10 @@ func (s *Server) apiIMAPAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "account": apiAccountFromStore(account)})
 }
 
-func (s *Server) saveMailAccountFromInput(ctx context.Context, userID int64, in accountSettingsInput, explicit bool) (store.MailAccount, string, error) {
+// saveMailAccountFromInput normalizes account form data, preserves encrypted
+// passwords when the user leaves password fields blank, and returns friendly
+// validation text when the current master key cannot decrypt a saved password.
+func (s *Server) saveMailAccountFromInput(ctx context.Context, userID int64, in accountSettingsInput) (store.MailAccount, string, error) {
 	in.Email = strings.TrimSpace(in.Email)
 	in.Label = strings.TrimSpace(in.Label)
 	in.Host = strings.TrimSpace(in.Host)
@@ -175,11 +155,6 @@ func (s *Server) saveMailAccountFromInput(ctx context.Context, userID int64, in 
 	existingErr := store.ErrNotFound
 	if in.ID > 0 {
 		existing, existingErr = s.store.GetMailAccountForUser(ctx, userID, in.ID)
-	} else if !explicit {
-		existing, existingErr = s.store.GetMailAccount(ctx, userID)
-		if existingErr == nil {
-			in.ID = existing.ID
-		}
 	}
 	if existingErr != nil && !store.IsNotFound(existingErr) {
 		return store.MailAccount{}, "", existingErr
@@ -240,7 +215,7 @@ func (s *Server) saveMailAccountFromInput(ctx context.Context, userID int64, in 
 		Mailbox:               in.Mailbox,
 		SyncIntervalMinutes:   in.SyncIntervalMinutes,
 	}
-	if explicit && in.ID == 0 {
+	if in.ID == 0 {
 		saved, err := s.store.CreateMailAccount(ctx, account)
 		return saved, "", err
 	}
@@ -248,6 +223,9 @@ func (s *Server) saveMailAccountFromInput(ctx context.Context, userID int64, in 
 	return saved, "", err
 }
 
+// ensureMailAccountOnboarding fills in the expected single-address startup graph:
+// a matching SMTP server when none exists, a Me contact for the account email, and
+// downstream identity rows through store-level sync helpers.
 func (s *Server) ensureMailAccountOnboarding(ctx context.Context, user store.User, account store.MailAccount) error {
 	smtpAccounts, err := s.store.ListSMTPAccountsForUser(ctx, user.ID)
 	if err != nil {
@@ -278,6 +256,8 @@ func (s *Server) ensureMailAccountOnboarding(ctx context.Context, user store.Use
 	return nil
 }
 
+// inferredSMTPHost converts common imap.example.com hosts to smtp.example.com
+// during onboarding unless the user provided a distinct SMTP host.
 func inferredSMTPHost(account store.MailAccount) string {
 	host := strings.TrimSpace(account.SMTPHost)
 	if host == "" || strings.EqualFold(host, strings.TrimSpace(account.Host)) {
@@ -305,6 +285,8 @@ func firstPositive(values ...int) int {
 	return 0
 }
 
+// apiSMTPAccount saves an outgoing server. Identities are managed separately so
+// multiple Me addresses can point at the same SMTP account.
 func (s *Server) apiSMTPAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -371,6 +353,8 @@ func (s *Server) apiSMTPAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "smtp_account": apiSMTPAccountFromStore(account)})
 }
 
+// apiMailIdentity updates a Me-contact-backed outgoing identity: SMTP server,
+// display name, primary flag, and signature line.
 func (s *Server) apiMailIdentity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -433,6 +417,9 @@ func (s *Server) apiAccountSync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
+// apiAccountFolder handles small folder-setting actions from the settings page.
+// It keeps each mailbox user-scoped, and when search visibility changes it starts
+// an asynchronous index reconcile rather than blocking the request.
 func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)

@@ -1,3 +1,5 @@
+// File overview: React entrypoint. It mounts the root App component into the static shell served by Go.
+
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource/fraunces/latin-700.css";

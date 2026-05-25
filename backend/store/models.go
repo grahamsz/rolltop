@@ -4,6 +4,7 @@ package store
 
 import "time"
 
+// User is the system-level local account record mirrored into each user database for joins/preferences.
 type User struct {
 	ID           int64
 	Email        string
@@ -17,6 +18,7 @@ type User struct {
 	UpdatedAt    time.Time
 }
 
+// Session is a hashed browser login token with an expiry time.
 type Session struct {
 	ID         int64
 	UserID     int64
@@ -26,6 +28,7 @@ type Session struct {
 	LastSeenAt time.Time
 }
 
+// MailAccount is one IMAP server account plus cached SMTP defaults for a user.
 type MailAccount struct {
 	ID                    int64
 	UserID                int64
@@ -47,6 +50,7 @@ type MailAccount struct {
 	UpdatedAt             time.Time
 }
 
+// SMTPAccount is one outgoing server that identities can use for composed mail.
 type SMTPAccount struct {
 	ID                int64
 	UserID            int64
@@ -60,6 +64,7 @@ type SMTPAccount struct {
 	UpdatedAt         time.Time
 }
 
+// MailIdentity links a Me contact email to an SMTP server, display name, and signature.
 type MailIdentity struct {
 	ID             int64
 	UserID         int64
@@ -74,6 +79,7 @@ type MailIdentity struct {
 	UpdatedAt      time.Time
 }
 
+// Mailbox is the local representation of one remote IMAP folder and its sync/search settings.
 type Mailbox struct {
 	ID                 int64
 	UserID             int64
@@ -95,6 +101,7 @@ type Mailbox struct {
 	UpdatedAt          time.Time
 }
 
+// MailboxSummary is the mailbox plus derived counters used by chrome and settings UI.
 type MailboxSummary struct {
 	Mailbox
 	AccountEmail       string
@@ -108,6 +115,7 @@ type MailboxSummary struct {
 	SearchIndexPercent *int
 }
 
+// MailboxSettings is the editable subset of mailbox configuration saved from settings.
 type MailboxSettings struct {
 	SyncMode        string
 	Role            string
@@ -117,6 +125,7 @@ type MailboxSettings struct {
 	IncludeInSearch bool
 }
 
+// MessageRecord is the canonical local metadata/body row for one mirrored message.
 type MessageRecord struct {
 	ID                  int64
 	UserID              int64
@@ -149,6 +158,7 @@ type MessageRecord struct {
 	UpdatedAt           time.Time
 }
 
+// SenderReadStat is a ranking hint derived from senders whose messages the user reads.
 type SenderReadStat struct {
 	Sender     string
 	ReadCount  int
@@ -156,6 +166,7 @@ type SenderReadStat struct {
 	Boost      float64
 }
 
+// Attachment is stored metadata for a MIME file part associated with a message.
 type Attachment struct {
 	ID          int64
 	UserID      int64
@@ -170,6 +181,7 @@ type Attachment struct {
 	CreatedAt   time.Time
 }
 
+// BlobRecord is SQLite metadata for a file in the user-scoped blob store.
 type BlobRecord struct {
 	ID        int64
 	UserID    int64
@@ -180,6 +192,7 @@ type BlobRecord struct {
 	CreatedAt time.Time
 }
 
+// Contact is a user-owned address-book entry with nested email/phone/address/URL details.
 type Contact struct {
 	ID             int64
 	UserID         int64
@@ -207,6 +220,7 @@ type Contact struct {
 	UpdatedAt      time.Time
 }
 
+// ContactEmail is one email address attached to a contact and optionally marked primary.
 type ContactEmail struct {
 	ID              int64
 	UserID          int64
@@ -219,6 +233,7 @@ type ContactEmail struct {
 	UpdatedAt       time.Time
 }
 
+// ContactPhone is one phone number attached to a contact.
 type ContactPhone struct {
 	ID        int64
 	UserID    int64
@@ -230,6 +245,7 @@ type ContactPhone struct {
 	UpdatedAt time.Time
 }
 
+// ContactAddress is one postal address attached to a contact.
 type ContactAddress struct {
 	ID         int64
 	UserID     int64
@@ -245,6 +261,7 @@ type ContactAddress struct {
 	UpdatedAt  time.Time
 }
 
+// ContactURL is one web URL attached to a contact.
 type ContactURL struct {
 	ID        int64
 	UserID    int64
@@ -256,6 +273,7 @@ type ContactURL struct {
 	UpdatedAt time.Time
 }
 
+// ContactIcon is the blob-backed icon metadata for a contact.
 type ContactIcon struct {
 	ID          int64
 	UserID      int64
@@ -269,6 +287,7 @@ type ContactIcon struct {
 	UpdatedAt   time.Time
 }
 
+// ContactAutocomplete is a flattened contact email choice for compose recipient search.
 type ContactAutocomplete struct {
 	ContactID int64
 	Name      string
@@ -277,6 +296,7 @@ type ContactAutocomplete struct {
 	IconURL   string
 }
 
+// SyncRun is the persisted progress/status row for a sync or maintenance operation.
 type SyncRun struct {
 	ID               int64
 	UserID           int64

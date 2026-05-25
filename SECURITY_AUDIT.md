@@ -27,7 +27,7 @@ Reviewed the V1 local web app security boundary: authentication, sessions, CSRF,
 
 ## Residual Risks
 
-- Legacy server-rendered pages still require `'unsafe-inline'` in CSP for inline styles/scripts. The React SPA path is cleaner; removing the legacy templates or moving their inline behavior into static assets would allow a stricter CSP.
+- CSP still permits unsafe-inline; now that Go serves the built React SPA, the next pass should audit remaining runtime inline style needs and tighten CSP.
 - Showing remote images intentionally allows network requests to third-party image hosts. The default remains blocked per message unless the user clicks Show images or trusts the sender.
 - IMAP UID reconciliation uses `UID SEARCH 1:*`; very large folders may make that step noticeable. It is correct, but future work should support chunked reconciliation or provider-specific MODSEQ/QRESYNC where available.
 - Local administrators can create users but V1 still relies on filesystem/container access controls to protect `/data` from OS-level access.
@@ -36,5 +36,5 @@ Reviewed the V1 local web app security boundary: authentication, sessions, CSRF,
 
 - Add rate limiting for login/setup/admin password creation endpoints.
 - Add optional session listing and session revocation.
-- Replace legacy inline-template JavaScript so `script-src` can drop `'unsafe-inline'`.
+- Audit built-asset CSP needs so script-src can drop unsafe-inline.
 - Add automated route-level authorization tests for every `/api/messages`, `/attachments`, `/blobs`, and `/sync-runs` path.

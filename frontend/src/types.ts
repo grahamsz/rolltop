@@ -1,3 +1,7 @@
+// File overview: Wire-level TypeScript shapes returned by the Go API. These mirror JSON payloads,
+// so field names intentionally stay snake_case instead of being adapted per component.
+
+/** User mirrors the authenticated local account and display preferences returned by the API. */
 export type User = {
   id: number;
   email: string;
@@ -8,6 +12,7 @@ export type User = {
   theme: "classic" | "classic_dark" | "matrix" | string;
 };
 
+/** Mailbox mirrors a folder summary row including sync, visibility, and indexing counters. */
 export type Mailbox = {
   id: number;
   account_id: number;
@@ -33,6 +38,7 @@ export type Mailbox = {
   search_index_percent?: number;
 };
 
+/** Message is the API's compact message record used in lists and thread cards. */
 export type Message = {
   id: number;
   mailbox_id: number;
@@ -48,6 +54,7 @@ export type Message = {
   snippet: string;
 };
 
+/** Conversation is a list/search row grouped around the latest visible thread message. */
 export type Conversation = {
   message: Message;
   starred_message_id: number;
@@ -62,6 +69,7 @@ export type Conversation = {
   match_terms?: string[];
 };
 
+/** Attachment is message attachment metadata plus optional preview/search match details. */
 export type Attachment = {
   id: number;
   filename: string;
@@ -73,6 +81,7 @@ export type Attachment = {
   preview?: AttachmentPreview;
 };
 
+/** AttachmentPreview describes a plugin-provided in-browser preview option. */
 export type AttachmentPreview = {
   available: boolean;
   kind: string;
@@ -81,11 +90,13 @@ export type AttachmentPreview = {
   plugin_id: string;
 };
 
+/** HeaderDetail is one expanded message header row shown in thread details. */
 export type HeaderDetail = {
   label: string;
   value: string;
 };
 
+/** ThreadMessage is the render-ready payload for one message inside a conversation. */
 export type ThreadMessage = {
   message: Message;
   attachments: Attachment[];
@@ -107,14 +118,17 @@ export type ThreadMessage = {
   images_allowed: boolean;
   expanded: boolean;
   reply_subject: string;
+  can_reply_all: boolean;
 };
 
+/** SenderVisual identifies a plugin-provided sender avatar or brand image. */
 export type SenderVisual = {
   plugin_id: string;
   kind: string;
   url: string;
 };
 
+/** ContactEmail is one editable email row on a contact. */
 export type ContactEmail = {
   id?: number;
   label: string;
@@ -122,6 +136,7 @@ export type ContactEmail = {
   is_primary: boolean;
 };
 
+/** ContactPhone is one editable phone row on a contact. */
 export type ContactPhone = {
   id?: number;
   label: string;
@@ -129,6 +144,7 @@ export type ContactPhone = {
   is_primary: boolean;
 };
 
+/** ContactAddress is one editable postal address row on a contact. */
 export type ContactAddress = {
   id?: number;
   label: string;
@@ -140,6 +156,7 @@ export type ContactAddress = {
   is_primary: boolean;
 };
 
+/** ContactURL is one editable URL row on a contact. */
 export type ContactURL = {
   id?: number;
   label: string;
@@ -147,6 +164,7 @@ export type ContactURL = {
   is_primary: boolean;
 };
 
+/** Contact is the API address-book shape including nested detail rows and icon URL. */
 export type Contact = {
   id: number;
   name_prefix: string;
@@ -171,6 +189,7 @@ export type Contact = {
   icon_url: string;
 };
 
+/** ContactAutocomplete is a flattened recipient suggestion for compose. */
 export type ContactAutocomplete = {
   contact_id: number;
   name: string;
@@ -179,6 +198,7 @@ export type ContactAutocomplete = {
   icon_url: string;
 };
 
+/** ComposeIdentity is a selectable From identity returned for compose/reply forms. */
 export type ComposeIdentity = {
   id: number;
   label: string;
@@ -188,6 +208,7 @@ export type ComposeIdentity = {
   is_primary: boolean;
 };
 
+/** PluginSetting is the admin-visible enablement state for one plugin. */
 export type PluginSetting = {
   id: string;
   name: string;
@@ -197,6 +218,7 @@ export type PluginSetting = {
   heavy: boolean;
 };
 
+/** SyncRun is the API progress/status shape for sync and maintenance jobs. */
 export type SyncRun = {
   id: number;
   account_id: number;
@@ -218,6 +240,7 @@ export type SyncRun = {
   error: string;
 };
 
+/** SyncFolder combines mailbox settings with current/last sync run information. */
 export type SyncFolder = {
   mailbox: Mailbox;
   is_running: boolean;
@@ -225,8 +248,10 @@ export type SyncFolder = {
   can_sync_now: boolean;
 };
 
+/** StorageStats is a flexible storage usage payload keyed by backend stat names. */
 export type StorageStats = Record<string, unknown>;
 
+/** Bootstrap is the first API payload that establishes auth, chrome, CSRF, and plugin state. */
 export type Bootstrap = {
   users_exist: boolean;
   csrf: string;
@@ -240,6 +265,7 @@ export type Bootstrap = {
   enabled_plugins?: string[];
 };
 
+/** ChromeEvent is the SSE payload used to refresh folders and sync status. */
 export type ChromeEvent = {
   mailboxes: Mailbox[];
   latest_sync_run: SyncRun | null;
@@ -247,6 +273,10 @@ export type ChromeEvent = {
   sync_running: boolean;
 };
 
+/** ComposeExistingAttachment is an already-stored attachment that compose can reuse without a new upload. */
+export type ComposeExistingAttachment = Pick<Attachment, "id" | "filename" | "content_type" | "size" | "download_url">;
+
+/** ComposeAttachmentUpload couples a File with metadata sent in multipart compose requests. */
 export type ComposeAttachmentUpload = {
   field: string;
   filename: string;
@@ -257,6 +287,7 @@ export type ComposeAttachmentUpload = {
   file: File;
 };
 
+/** ComposeForm is the editable compose/reply/forward payload exchanged with the API. */
 export type ComposeForm = {
   to: string;
   cc: string;
@@ -266,8 +297,11 @@ export type ComposeForm = {
   body_html: string;
   in_reply_to_id: number;
   from_identity_id: number;
+  available_attachments?: ComposeExistingAttachment[];
+  include_attachment_ids?: number[];
 };
 
+/** Account is the IMAP account settings shape used by the settings page. */
 export type Account = {
   id: number;
   email: string;
@@ -285,6 +319,7 @@ export type Account = {
   sync_interval_minutes: number;
 };
 
+/** SMTPAccount is the outgoing server settings shape used by the settings page. */
 export type SMTPAccount = {
   id: number;
   label: string;
@@ -294,6 +329,7 @@ export type SMTPAccount = {
   use_tls: boolean;
 };
 
+/** MailIdentity is the settings shape for a Me-contact-backed outgoing identity. */
 export type MailIdentity = {
   id: number;
   contact_id: number;

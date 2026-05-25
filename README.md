@@ -29,7 +29,14 @@ V1 stores:
 Required:
 
 ```sh
-export MAILMIRROR_MASTER_KEY="$(openssl rand -base64 32)"
+test -f .env.mailmirror || (
+  umask 077
+  printf 'MAILMIRROR_MASTER_KEY=%s\n' "$(openssl rand -base64 32)" > .env.mailmirror
+)
+
+set -a
+. ./.env.mailmirror
+set +a
 ```
 
 Common optional variables:
@@ -55,7 +62,14 @@ Use `MAILMIRROR_COOKIE_SECURE=true` when serving over HTTPS.
 npm install
 npm run build
 go test ./...
-MAILMIRROR_MASTER_KEY="$(openssl rand -base64 32)" MAILMIRROR_DATA_DIR="./data" go run ./cmd/mailmirror
+test -f .env.mailmirror || (
+  umask 077
+  printf 'MAILMIRROR_MASTER_KEY=%s\n' "$(openssl rand -base64 32)" > .env.mailmirror
+)
+set -a
+. ./.env.mailmirror
+set +a
+MAILMIRROR_DATA_DIR="./data" go run ./cmd/mailmirror
 ```
 
 Open `http://localhost:8080`. If no users exist, `/setup` creates the first admin.
@@ -63,15 +77,20 @@ Open `http://localhost:8080`. If no users exist, `/setup` creates the first admi
 ## Docker
 
 ```sh
-docker build -t mailmirror:dev .
+docker pull ghcr.io/grahamsz/mailmirror:latest
+
+test -f .env.mailmirror || (
+  umask 077
+  printf 'MAILMIRROR_MASTER_KEY=%s\nMAILMIRROR_COOKIE_SECURE=false\n' "$(openssl rand -base64 32)" > .env.mailmirror
+)
+
 docker run --rm -p 8080:8080 \
-  -e MAILMIRROR_MASTER_KEY="$(openssl rand -base64 32)" \
-  -e MAILMIRROR_COOKIE_SECURE=false \
+  --env-file .env.mailmirror \
   -v mailmirror-data:/data \
-  mailmirror:dev
+  ghcr.io/grahamsz/mailmirror:latest
 ```
 
-Keep the same `MAILMIRROR_MASTER_KEY` for the lifetime of the data volume. Changing it makes stored IMAP passwords undecryptable.
+Keep `.env.mailmirror` with the same care as the Docker volume. Changing or losing `MAILMIRROR_MASTER_KEY` makes stored IMAP passwords undecryptable.
 
 ## V1 Flow
 

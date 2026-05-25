@@ -15,6 +15,7 @@ import (
 	"strings"
 )
 
+// EncryptString encrypts a credential with the process master key for storage in SQLite.
 func EncryptString(key []byte, plaintext string) (string, error) {
 	if len(key) != 32 {
 		return "", errors.New("encryption key must be 32 bytes")
@@ -36,6 +37,7 @@ func EncryptString(key []byte, plaintext string) (string, error) {
 	return "v1:" + enc.EncodeToString(nonce) + ":" + enc.EncodeToString(ciphertext), nil
 }
 
+// DecryptString decrypts a stored credential and returns an error when the master key no longer matches.
 func DecryptString(key []byte, value string) (string, error) {
 	if len(key) != 32 {
 		return "", errors.New("encryption key must be 32 bytes")
@@ -68,6 +70,7 @@ func DecryptString(key []byte, value string) (string, error) {
 	return string(plaintext), nil
 }
 
+// TokenHash derives a stable SHA-256 token digest so session cookies are never stored in plaintext.
 func TokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])

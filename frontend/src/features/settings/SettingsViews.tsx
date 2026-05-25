@@ -1,3 +1,6 @@
+// File overview: Settings surface for profile preferences, IMAP servers, SMTP servers, outgoing
+// identities, folder sync/indexing controls, storage usage, and admin plugin panels.
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../api";
@@ -63,6 +66,10 @@ type SettingsRoute = {
   isNew: boolean;
 };
 
+type FolderSettingsDraft = Pick<Mailbox, "sync_mode" | "role" | "icon" | "show_in_sidebar" | "show_in_all_mail" | "include_in_search">;
+
+// Settings uses real URL subpages for IMAP/SMTP editing so refresh/back keeps
+// the selected server instead of returning to the settings index.
 function settingsRouteFromPath(path: string): SettingsRoute {
   if (path === "/settings/account/imap/new") return { kind: "imap", id: null, isNew: true };
   if (path === "/settings/account/smtp/new") return { kind: "smtp", id: null, isNew: true };
@@ -112,63 +119,41 @@ const folderVisibilityChoices = [
   { key: "include_in_search", label: "Search" }
 ] as const;
 
-function FolderIconDropdown({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const current = folderIconChoices.find((choice) => choice.value === value) || folderIconChoices[0];
-  return (
-    <details className="folder-dropdown folder-icon-dropdown">
-      <summary className="folder-dropdown-button">
-        <span><Icon name={current.value} />{current.label}</span>
-        <Icon name="expand_more" />
-      </summary>
-      <div className="folder-dropdown-menu">
-        {folderIconChoices.map((choice) => (
-          <button
-            className={`folder-dropdown-option ${choice.value === value ? "active" : ""}`}
-            type="button"
-            key={choice.value}
-            onClick={(event) => {
-              onChange(choice.value);
-              (event.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open");
-            }}
-          >
-            <Icon name={choice.value} weight={choice.value === value ? "bold" : undefined} />
-            <span>{choice.label}</span>
-          </button>
-        ))}
-      </div>
-    </details>
-  );
+function folderSettingsDraft(mailbox: Mailbox): FolderSettingsDraft {
+  return {
+    sync_mode: mailbox.sync_mode || "inherit",
+    role: mailbox.role || "",
+    icon: mailbox.icon || "folder",
+    show_in_sidebar: mailbox.show_in_sidebar,
+    show_in_all_mail: mailbox.show_in_all_mail,
+    include_in_search: mailbox.include_in_search
+  };
 }
 
-function FolderVisibilityDropdown({ mailbox, onChange }: { mailbox: Mailbox; onChange: (patch: Partial<Mailbox>) => void }) {
+function folderSyncModeLabel(value: string) {
+  return syncModeChoices.find((choice) => choice.value === value)?.label || "Inherit";
+}
+
+function folderRoleLabel(value: string) {
+  return folderRoleChoices.find((choice) => choice.value === value)?.label || "Normal";
+}
+
+function folderIconLabel(value: string) {
+  return folderIconChoices.find((choice) => choice.value === value)?.label || "Folder";
+}
+
+function folderVisibilityLabel(mailbox: Pick<Mailbox, "show_in_sidebar" | "show_in_all_mail" | "include_in_search">) {
   const selected = folderVisibilityChoices.filter((choice) => Boolean(mailbox[choice.key]));
-  const label = selected.length === folderVisibilityChoices.length
-    ? "Sidebar, All Mail, Search"
-    : selected.length > 0
-      ? selected.map((choice) => choice.label).join(", ")
-      : "Hidden";
-  return (
-    <details className="folder-dropdown folder-visibility-dropdown">
-      <summary className="folder-dropdown-button">
-        <span>{label}</span>
-        <Icon name="expand_more" />
-      </summary>
-      <div className="folder-dropdown-menu folder-visibility-menu">
-        {folderVisibilityChoices.map((choice) => (
-          <label className="folder-visibility-option" key={choice.key}>
-            <input
-              type="checkbox"
-              checked={Boolean(mailbox[choice.key])}
-              onChange={(event) => onChange({ [choice.key]: event.target.checked } as Partial<Mailbox>)}
-            />
-            <span>{choice.label}</span>
-          </label>
-        ))}
-      </div>
-    </details>
-  );
+  if (selected.length === folderVisibilityChoices.length) return "Sidebar, All Mail, Search";
+  if (selected.length > 0) return selected.map((choice) => choice.label).join(", ");
+  return "Hidden";
 }
 
+/**
+ * SettingsView coordinates account data from /api/account with profile, storage,
+ * IMAP, SMTP, identity, and folder-sync editors. The selected route determines
+ * which server form is active while the main page remains a summary/dashboard.
+ */
 export function SettingsView({
   csrf,
   user,
@@ -209,6 +194,8 @@ export function SettingsView({
     date_format: user.date_format || "mdy",
     theme: ["classic_dark", "matrix"].includes(user.theme) ? user.theme : "classic"
   }));
+  const [editingFolderID, setEditingFolderID] = useState<number | null>(null);
+  const [folderDraft, setFolderDraft] = useState<FolderSettingsDraft | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadStorage = useCallback(async () => {
@@ -223,12 +210,15 @@ export function SettingsView({
     }
   }, []);
 
+  // The account endpoint returns several related tables at once. Loading derives
+  // selected IMAP/SMTP rows from the route, then rebuilds form state from those
+  // records so direct links and browser back stay coherent.
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const data = await api.account();
       const routeForLoad = settingsRouteFromPath(location.path);
-      const accounts = data.imap_accounts || (data.account ? [data.account] : []);
+      const accounts = data.imap_accounts || [];
       const nextAccountID = routeForLoad.kind === "imap"
         ? routeForLoad.isNew
           ? null
@@ -306,6 +296,8 @@ export function SettingsView({
     }
   }, [mailboxes, activeSyncRuns]);
 
+  // IMAP form edits keep common onboarding assumptions in sync: email seeds the
+  // label/username, and same-as-IMAP mirrors credentials into SMTP fields.
   function setField(field: string, value: string | boolean) {
     setForm((current) => {
       const next = { ...current, [field]: value };
@@ -451,7 +443,9 @@ export function SettingsView({
     }
   }
 
-  async function saveFolderSettings(folder: SyncFolder, patch: Partial<Mailbox>) {
+  // Folder settings are saved as whole visibility/role/icon/sync-mode snapshots
+  // so each small UI control can optimistically patch the same mailbox object.
+  async function saveFolderSettings(folder: SyncFolder, patch: Partial<Mailbox>): Promise<boolean> {
     const next = { ...folder.mailbox, ...patch };
     try {
       await api.saveFolderSettings(csrf, folder.mailbox.id, {
@@ -465,9 +459,37 @@ export function SettingsView({
       setFolders((current) => current.map((item) => item.mailbox.id === folder.mailbox.id ? { ...item, mailbox: next } : item));
       addToast(`${folder.mailbox.name} updated.`);
       await refreshChrome();
+      return true;
     } catch (err) {
       addToast(messageFromError(err), "error");
+      return false;
     }
+  }
+
+  function openFolderSettings(folder: SyncFolder) {
+    setEditingFolderID(folder.mailbox.id);
+    setFolderDraft(folderSettingsDraft(folder.mailbox));
+  }
+
+  function closeFolderSettings() {
+    setEditingFolderID(null);
+    setFolderDraft(null);
+  }
+
+  function updateFolderDraft(patch: Partial<FolderSettingsDraft>) {
+    setFolderDraft((current) => current ? { ...current, ...patch } : current);
+  }
+
+  async function saveEditingFolder(event: FormEvent) {
+    event.preventDefault();
+    if (!editingFolderID || !folderDraft) return;
+    const folder = folderMap.get(editingFolderID);
+    if (!folder) {
+      closeFolderSettings();
+      return;
+    }
+    const saved = await saveFolderSettings(folder, folderDraft);
+    if (saved) closeFolderSettings();
   }
 
   async function syncFolder(folder: SyncFolder) {
@@ -482,6 +504,7 @@ export function SettingsView({
   }
 
   async function rebuildFolderIndex(folder: SyncFolder) {
+    if (!window.confirm(`Rebuild the search index for ${folder.mailbox.name}? This may take some time.`)) return;
     try {
       await api.rebuildFolderIndex(csrf, folder.mailbox.id);
       addToast(`${folder.mailbox.name} index rebuild started.`);
@@ -511,6 +534,22 @@ export function SettingsView({
     return byServer;
   }, [identities]);
   const selectedSMTPLabel = selectedSMTP ? (selectedSMTP.label || selectedSMTP.host) : selectedSMTPID ? "SMTP server" : "New SMTP server";
+
+  useEffect(() => {
+    if (editingFolderID && !folderMap.has(editingFolderID)) {
+      setEditingFolderID(null);
+      setFolderDraft(null);
+    }
+  }, [editingFolderID, folderMap]);
+
+  useEffect(() => {
+    if (!editingFolderID) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") closeFolderSettings();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editingFolderID]);
 
   function renderIMAPList() {
     return (
@@ -578,6 +617,8 @@ export function SettingsView({
     );
   }
 
+  // Folder settings render from the same tree model as the sidebar, with
+  // maintenance actions and editable options separated from the read-only row.
   function renderFolderItems(nodes: FolderNode[], depth = 0): ReactNode[] {
     return nodes.flatMap((node) => {
       const folder = folderMap.get(node.mailbox.id);
@@ -594,6 +635,11 @@ export function SettingsView({
           : `Search ${searchPercent}%`;
       const currentRole = folder.mailbox.role || "";
       const currentIcon = folder.mailbox.icon || "folder";
+      const syncLabel = folderSyncModeLabel(folder.mailbox.sync_mode || "inherit");
+      const roleLabel = folderRoleLabel(currentRole);
+      const iconLabel = folderIconLabel(currentIcon);
+      const visibilityLabel = folderVisibilityLabel(folder.mailbox);
+      const canRebuildIndex = !folder.is_running && localMessageCount > 0;
       const rows: ReactNode[] = [
         <div className="folder-sync-row" key={folder.mailbox.id}>
           <div className="folder-sync-summary">
@@ -622,45 +668,45 @@ export function SettingsView({
             </div>
             <div className="folder-sync-run">
               <span className="settings-field-label">Last run</span>
-              <strong>{folder.is_running ? "Running now" : folder.last_run ? folder.last_run.status : "Never"}</strong>
+              <strong>{folder.is_running ? "Running" : folder.last_run ? folder.last_run.status : "Never"}</strong>
               <small>{folder.last_run ? displayDateTime(folder.last_run.updated_at, user) : "No sync activity"}</small>
             </div>
-            <div className="folder-actions">
-              <button className="secondary" type="button" disabled={!folder.can_sync_now} onClick={() => syncFolder(folder)}>Sync now</button>
-              <button className="secondary" type="button" disabled={folder.is_running || localMessageCount === 0} onClick={() => rebuildFolderIndex(folder)}>Rebuild index</button>
+            <div className="folder-sync-settings-summary" aria-label={`${node.label} folder settings`}>
+              <span title={`Sync mode: ${syncLabel}`}>Sync {syncLabel}</span>
+              <span title={`Folder role: ${roleLabel}`}>{roleLabel}</span>
+              <span title={`Sidebar icon: ${iconLabel}`}><Icon name={currentIcon} />{iconLabel}</span>
+              <span title={`Visible in: ${visibilityLabel}`}>{visibilityLabel}</span>
             </div>
-          </div>
-          <div className="folder-settings-groups">
-            <div className="folder-choice-group folder-choice-group-wide">
-              <span className="settings-field-label">Sync mode</span>
-              <div className="folder-choice-buttons">
-                {syncModeChoices.map((choice) => (
-                  <button
-                    className={folder.mailbox.sync_mode === choice.value ? "active" : ""}
-                    type="button"
-                    key={choice.value}
-                    onClick={() => saveFolderSettings(folder, { sync_mode: choice.value })}
-                  >
-                    {choice.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="folder-choice-group">
-              <span className="settings-field-label">Folder role</span>
-              <select className="folder-select-control" value={currentRole} onChange={(event) => saveFolderSettings(folder, { role: event.target.value })}>
-                {folderRoleChoices.map((choice) => (
-                  <option value={choice.value} key={choice.value || "normal"}>{choice.label}</option>
-                ))}
-              </select>
-            </div>
-            <div className="folder-choice-group folder-icon-choice-group">
-              <span className="settings-field-label">Sidebar icon</span>
-              <FolderIconDropdown value={currentIcon} onChange={(value) => saveFolderSettings(folder, { icon: value })} />
-            </div>
-            <div className="folder-choice-group folder-visibility-group">
-              <span className="settings-field-label">Visible in</span>
-              <FolderVisibilityDropdown mailbox={folder.mailbox} onChange={(patch) => saveFolderSettings(folder, patch)} />
+            <div className="folder-actions" aria-label={`${node.label} actions`}>
+              <button
+                className="folder-icon-action"
+                type="button"
+                disabled={!folder.can_sync_now}
+                onClick={() => syncFolder(folder)}
+                title={folder.can_sync_now ? `Sync ${node.label} now` : `${node.label} is already syncing`}
+                aria-label={`Sync ${node.label} now`}
+              >
+                <Icon name="sync" />
+              </button>
+              <button
+                className="folder-icon-action warning"
+                type="button"
+                disabled={!canRebuildIndex}
+                onClick={() => rebuildFolderIndex(folder)}
+                title={canRebuildIndex ? `Rebuild search index for ${node.label}. This may take some time.` : "No local messages are ready to index"}
+                aria-label={`Rebuild search index for ${node.label}. This may take some time.`}
+              >
+                <Icon name="search" />
+              </button>
+              <button
+                className="folder-icon-action"
+                type="button"
+                onClick={() => openFolderSettings(folder)}
+                title={`Edit settings for ${node.label}`}
+                aria-label={`Edit settings for ${node.label}`}
+              >
+                <Icon name="edit" />
+              </button>
             </div>
           </div>
         </div>
@@ -705,6 +751,8 @@ export function SettingsView({
     );
   }
 
+  // SMTP detail pages show identities under the selected outgoing server so the
+  // user can edit assignment and signature without jumping back to contacts.
   function renderSMTPIdentitySettings() {
     const savedServerID = selectedSMTPID || 0;
     return (
@@ -818,15 +866,134 @@ export function SettingsView({
     );
   }
 
+  function renderLicenseSettings() {
+    return (
+      <section className="panel license-panel">
+        <h2>License</h2>
+        <p>
+          MailMirror is free software licensed under the GNU Affero General Public License version 3 or later.
+          You may run, study, share, and modify it under that license.
+        </p>
+        <p>
+          The AGPL also applies when modified versions are provided over a network: users of that service must be
+          offered access to the Corresponding Source for the version they are using.
+        </p>
+        <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noreferrer">GNU AGPL v3 license text</a>
+      </section>
+    );
+  }
+
+  function renderFolderEditDialog() {
+    const folder = editingFolderID ? folderMap.get(editingFolderID) : null;
+    if (!folder || !folderDraft) return null;
+    const currentIcon = folderDraft.icon || "folder";
+
+    return (
+      <div className="folder-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) closeFolderSettings();
+      }}>
+        <form className="folder-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="folder-edit-title" onSubmit={saveEditingFolder}>
+          <header className="folder-edit-header">
+            <div className="folder-edit-title">
+              <span className="folder-edit-icon"><Icon name={currentIcon} /></span>
+              <div>
+                <h2 id="folder-edit-title">{folder.mailbox.name}</h2>
+                <small>{folder.mailbox.account_email || "Mail account"}</small>
+              </div>
+            </div>
+            <button className="folder-icon-action" type="button" onClick={closeFolderSettings} title="Close" aria-label="Close folder settings">
+              <Icon name="close" />
+            </button>
+          </header>
+
+          <div className="folder-edit-body">
+            <section className="folder-edit-section">
+              <span className="settings-field-label">Sync mode</span>
+              <div className="folder-choice-buttons folder-choice-buttons-large">
+                {syncModeChoices.map((choice) => (
+                  <button
+                    className={folderDraft.sync_mode === choice.value ? "active" : ""}
+                    type="button"
+                    key={choice.value}
+                    onClick={() => updateFolderDraft({ sync_mode: choice.value })}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="folder-edit-section">
+              <span className="settings-field-label">Folder role</span>
+              <div className="folder-role-grid">
+                {folderRoleChoices.map((choice) => (
+                  <button
+                    className={folderDraft.role === choice.value ? "active" : ""}
+                    type="button"
+                    key={choice.value || "normal"}
+                    onClick={() => updateFolderDraft({ role: choice.value })}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="folder-edit-section folder-edit-section-wide">
+              <span className="settings-field-label">Sidebar icon</span>
+              <div className="folder-icon-grid">
+                {folderIconChoices.map((choice) => (
+                  <button
+                    className={currentIcon === choice.value ? "active" : ""}
+                    type="button"
+                    key={choice.value}
+                    onClick={() => updateFolderDraft({ icon: choice.value })}
+                  >
+                    <Icon name={choice.value} weight={currentIcon === choice.value ? "bold" : undefined} />
+                    <span>{choice.label}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="folder-edit-section">
+              <span className="settings-field-label">Visible in</span>
+              <div className="folder-edit-visibility">
+                {folderVisibilityChoices.map((choice) => (
+                  <label key={choice.key}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(folderDraft[choice.key])}
+                      onChange={(event) => updateFolderDraft({ [choice.key]: event.target.checked } as Partial<FolderSettingsDraft>)}
+                    />
+                    <span>{choice.label}</span>
+                  </label>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          <footer className="folder-edit-footer">
+            <button className="secondary" type="button" onClick={closeFolderSettings}>Cancel</button>
+            <button type="submit">Save settings</button>
+          </footer>
+        </form>
+      </div>
+    );
+  }
+
   function renderFolderSettings() {
     return (
-      <section className="panel folder-settings-panel">
-        <h2>Folder sync</h2>
-        <div className="muted">Folders under {selectedAccountLabel}</div>
-        <div className="folder-sync-list">
-          {folderNodes.length > 0 ? renderFolderItems(folderNodes) : <div className="muted">No folders discovered yet. Sync this account to discover folders.</div>}
-        </div>
-      </section>
+      <>
+        <section className="panel folder-settings-panel">
+          <h2>Folder sync</h2>
+          <div className="muted">Folders under {selectedAccountLabel}</div>
+          <div className="folder-sync-list">
+            {folderNodes.length > 0 ? renderFolderItems(folderNodes) : <div className="muted">No folders discovered yet. Sync this account to discover folders.</div>}
+          </div>
+        </section>
+        {renderFolderEditDialog()}
+      </>
     );
   }
 
@@ -942,10 +1109,12 @@ export function SettingsView({
       </div>
       {renderDisplaySettings()}
       {renderStorageSettings()}
+      {renderLicenseSettings()}
     </>
   );
 }
 
+/** AdminUsersView lets an admin create local users and refreshes chrome after user changes. */
 export function AdminUsersView({
   csrf,
   refreshChrome,
@@ -1031,6 +1200,7 @@ export function AdminUsersView({
   );
 }
 
+/** SyncRunView shows a single sync run's latest progress/status details. */
 export function SyncRunView({
   location,
   navigate,

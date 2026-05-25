@@ -1,3 +1,6 @@
+// File overview: Small route switch for the single-page app. It translates the parsed location
+// into feature views while passing only the shared state each view needs.
+
 import type { LocationState, Toast } from "./appTypes";
 import type { Bootstrap, Mailbox, SyncRun, User } from "./types";
 import { MailView, SearchView } from "./features/mail/MailViews";
@@ -6,6 +9,11 @@ import { ComposePage } from "./features/compose/ComposeViews";
 import { ContactsView } from "./features/contacts/ContactsView";
 import { SettingsView, AdminUsersView, SyncRunView } from "./features/settings/SettingsViews";
 
+/**
+ * RouteView is the app's manual router. Each branch maps one URL family to a
+ * feature view and passes shared chrome state downward without letting features
+ * import App-level bootstrap or navigation state directly.
+ */
 export function RouteView({
   csrf,
   user,

@@ -51,6 +51,8 @@ func (s *Service) syncMailboxStarFlags(ctx context.Context, userID int64, accoun
 	}
 	return nil
 }
+
+// PushPendingReadState sends locally queued read-state changes to IMAP in bounded batches.
 func (s *Service) PushPendingReadState(ctx context.Context, userID int64, limit int) error {
 	messages, err := s.Store.ListMessagesWithReadSyncPending(ctx, userID, limit)
 	if err != nil {
@@ -64,6 +66,7 @@ func (s *Service) PushPendingReadState(ctx context.Context, userID int64, limit 
 	return nil
 }
 
+// SyncReadStateForMessage pushes the read state for one message UID to IMAP.
 func (s *Service) SyncReadStateForMessage(ctx context.Context, userID, messageID int64) error {
 	msg, err := s.Store.GetMessageForUser(ctx, userID, messageID)
 	if err != nil {
@@ -87,6 +90,7 @@ func (s *Service) SyncReadStateForMessage(ctx context.Context, userID, messageID
 	return s.IndexAttachmentsForMessage(ctx, msg)
 }
 
+// PushPendingStarState sends locally queued star-state changes to IMAP in bounded batches.
 func (s *Service) PushPendingStarState(ctx context.Context, userID int64, limit int) error {
 	messages, err := s.Store.ListMessagesWithStarSyncPending(ctx, userID, limit)
 	if err != nil {
@@ -100,6 +104,7 @@ func (s *Service) PushPendingStarState(ctx context.Context, userID int64, limit 
 	return nil
 }
 
+// SetStarredForMessage updates local star state and queues or performs the matching IMAP flag change.
 func (s *Service) SetStarredForMessage(ctx context.Context, userID, messageID int64, starred bool) (store.MessageRecord, error) {
 	if err := s.Store.MarkMessageStarredForUser(ctx, userID, messageID, starred, true); err != nil {
 		return store.MessageRecord{}, err
@@ -114,6 +119,7 @@ func (s *Service) SetStarredForMessage(ctx context.Context, userID, messageID in
 	return msg, nil
 }
 
+// SyncStarStateForMessage pushes the star state for one message UID to IMAP.
 func (s *Service) SyncStarStateForMessage(ctx context.Context, userID, messageID int64) error {
 	if s.Fetcher == nil {
 		return errors.New("sync fetcher is not configured")

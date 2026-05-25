@@ -1,3 +1,6 @@
+// File overview: Central Phosphor icon adapter. App code keeps semantic icon names while this file
+// maps them to concrete icon components, aliases, and default weights.
+
 import {
   Archive,
   ArrowBendUpLeft,
@@ -36,6 +39,8 @@ import {
 } from "@phosphor-icons/react";
 import type { Icon as PhosphorIcon, IconWeight } from "@phosphor-icons/react";
 
+// Keep this map semantic. Folder configuration and older UI call sites still use
+// Material-ish names, while this adapter decides which Phosphor glyph to render.
 const iconMap: Record<string, PhosphorIcon> = {
   add: Plus,
   archive: Archive,
@@ -67,6 +72,7 @@ const iconMap: Record<string, PhosphorIcon> = {
   notifications: Bell,
   report: SealWarning,
   reply: ArrowBendUpLeft,
+  reply_all: Users,
   search: MagnifyingGlass,
   send: PaperPlaneTilt,
   settings: GearSix,
@@ -87,6 +93,7 @@ const iconWeights: Partial<Record<string, IconWeight>> = {
   sync: "duotone"
 };
 
+/** Resolve a semantic MailMirror icon name to a Phosphor component and weight. */
 export function Icon({ name, weight }: { name: string; weight?: IconWeight }) {
   const normalized = name.trim().toLowerCase().replaceAll("-", "_");
   const key = iconAliases[normalized] || normalized;

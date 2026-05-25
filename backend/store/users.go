@@ -13,12 +13,14 @@ func cleanEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
+// CountUsers returns the number of local user accounts for setup gating.
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&n)
 	return n, err
 }
 
+// CreateUser inserts a system-level user row and seeds its per-user database in split mode.
 func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash string, isAdmin bool) (User, error) {
 	email = cleanEmail(email)
 	name = strings.TrimSpace(name)
@@ -38,6 +40,7 @@ func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash string
 	return s.GetUserByID(ctx, id)
 }
 
+// GetUserByID loads a user from the system database by ID.
 func (s *Store) GetUserByID(ctx context.Context, id int64) (User, error) {
 	var u User
 	var created, updated int64
@@ -50,6 +53,7 @@ func (s *Store) GetUserByID(ctx context.Context, id int64) (User, error) {
 	return u, err
 }
 
+// GetUserByEmail loads a user from the system database by normalized email.
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (User, error) {
 	var u User
 	var created, updated int64
@@ -62,6 +66,7 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (User, error) 
 	return u, err
 }
 
+// ListUsers returns all local users for admin pages and startup user-store preparation.
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, email, name, password_hash, is_admin, date_locale, date_format, theme, created_at, updated_at FROM users ORDER BY email`)
 	if err != nil {
@@ -84,6 +89,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
+// UpdateUserDisplayPreferences saves theme and date-localization choices for one user.
 func (s *Store) UpdateUserDisplayPreferences(ctx context.Context, userID int64, dateLocale, dateFormat, theme string) (User, error) {
 	dateLocale = strings.TrimSpace(dateLocale)
 	if len(dateLocale) > 64 {
@@ -119,6 +125,7 @@ func normalizeUserTheme(value string) string {
 	}
 }
 
+// CreateSession stores a hashed session token with an expiry time.
 func (s *Store) CreateSession(ctx context.Context, userID int64, tokenHash string, expiresAt time.Time) (Session, error) {
 	ts := nowUnix()
 	res, err := s.db.ExecContext(ctx, `INSERT INTO sessions (user_id, token_hash, expires_at, created_at, last_seen_at)
@@ -133,6 +140,7 @@ func (s *Store) CreateSession(ctx context.Context, userID int64, tokenHash strin
 	return Session{ID: id, UserID: userID, TokenHash: tokenHash, ExpiresAt: expiresAt.UTC(), CreatedAt: unixTime(ts), LastSeenAt: unixTime(ts)}, nil
 }
 
+// GetSessionUser resolves a hashed session token to its session and user rows.
 func (s *Store) GetSessionUser(ctx context.Context, tokenHash string) (Session, User, error) {
 	var sess Session
 	var u User
@@ -159,11 +167,13 @@ func (s *Store) GetSessionUser(ctx context.Context, tokenHash string) (Session, 
 	return sess, u, nil
 }
 
+// DeleteSession removes one session token hash during logout.
 func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
 	return err
 }
 
+// DeleteExpiredSessions removes expired sessions during startup or maintenance.
 func (s *Store) DeleteExpiredSessions(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, nowUnix())
 	return err

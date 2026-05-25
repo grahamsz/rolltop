@@ -19,7 +19,21 @@ import (
 	"mailmirror/backend/store"
 )
 
+// replyComposeForm builds the server default for reply compose. The frontend may
+// refine recipient/identity hints, but the backend still owns quoted body and
+// message threading fields.
 func replyComposeForm(msg store.MessageRecord, thread []store.MessageRecord, own map[string]bool) composeForm {
+	return replyComposeFormWithRecipients(msg, replyRecipient(msg, thread, own), "")
+}
+
+// replyAllComposeForm includes the sender plus every non-Me To/Cc recipient,
+// preserving the same quoted body and threading fields as a normal reply.
+func replyAllComposeForm(msg store.MessageRecord, thread []store.MessageRecord, own map[string]bool) composeForm {
+	to, cc := replyAllRecipients(msg, thread, own)
+	return replyComposeFormWithRecipients(msg, to, cc)
+}
+
+func replyComposeFormWithRecipients(msg store.MessageRecord, to, cc string) composeForm {
 	subject := strings.TrimSpace(msg.Subject)
 	if subject == "" {
 		subject = "(no subject)"
@@ -28,7 +42,8 @@ func replyComposeForm(msg store.MessageRecord, thread []store.MessageRecord, own
 		subject = "Re: " + subject
 	}
 	return composeForm{
-		To:          replyRecipient(msg, thread, own),
+		To:          to,
+		Cc:          cc,
 		Subject:     subject,
 		Body:        quotedReplyBody(msg),
 		BodyHTML:    "",
@@ -36,6 +51,9 @@ func replyComposeForm(msg store.MessageRecord, thread []store.MessageRecord, own
 	}
 }
 
+// replyRecipient avoids replying to the user's own address. For sent/self messages
+// it prefers external To/Cc recipients, then walks backward to the latest external
+// sender in the thread.
 func replyRecipient(msg store.MessageRecord, thread []store.MessageRecord, own map[string]bool) string {
 	if !messageFromOwnAddress(msg, own) {
 		return msg.FromAddr
@@ -53,6 +71,64 @@ func replyRecipient(msg store.MessageRecord, thread []store.MessageRecord, own m
 		}
 	}
 	return msg.FromAddr
+}
+
+func replyAllRecipients(msg store.MessageRecord, thread []store.MessageRecord, own map[string]bool) (string, string) {
+	seen := map[string]bool{}
+	var to []string
+	var cc []string
+	if messageFromOwnAddress(msg, own) {
+		appendNonOwnAddresses(&to, seen, own, msg.ToAddr)
+		appendNonOwnAddresses(&cc, seen, own, msg.CCAddr)
+	} else {
+		appendNonOwnAddresses(&to, seen, own, msg.FromAddr)
+		appendNonOwnAddresses(&cc, seen, own, msg.ToAddr, msg.CCAddr)
+	}
+	if len(to) == 0 {
+		appendNonOwnAddresses(&to, seen, own, replyRecipient(msg, thread, own))
+	}
+	return strings.Join(to, ", "), strings.Join(cc, ", ")
+}
+
+func canReplyAll(msg store.MessageRecord, thread []store.MessageRecord, own map[string]bool) bool {
+	to, cc := replyAllRecipients(msg, thread, own)
+	return replyAddressCount(to)+replyAddressCount(cc) > 1 || strings.TrimSpace(cc) != ""
+}
+
+func replyAddressCount(value string) int {
+	if strings.TrimSpace(value) == "" {
+		return 0
+	}
+	if addrs, err := mail.ParseAddressList(value); err == nil {
+		return len(addrs)
+	}
+	return len(addressIdentities(value))
+}
+
+func appendNonOwnAddresses(out *[]string, seen map[string]bool, own map[string]bool, values ...string) {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if addrs, err := mail.ParseAddressList(value); err == nil {
+			for _, addr := range addrs {
+				identity := store.SenderIdentity(addr.Address)
+				if identity == "" || own[identity] || seen[identity] {
+					continue
+				}
+				seen[identity] = true
+				*out = append(*out, addr.String())
+			}
+			continue
+		}
+		identity := store.SenderIdentity(value)
+		if identity == "" || own[identity] || seen[identity] {
+			continue
+		}
+		seen[identity] = true
+		*out = append(*out, value)
+	}
 }
 
 func messageFromOwnAddress(msg store.MessageRecord, own map[string]bool) bool {
@@ -196,6 +272,8 @@ var (
 	tagRE               = regexp.MustCompile(`(?is)<[^>]+>`)
 )
 
+// sanitizeComposeHTML strips active/remote content from HTML being embedded into
+// forwarded mail while preserving ordinary formatting and safe links.
 func sanitizeComposeHTML(value string) string {
 	value = strings.ReplaceAll(value, "\x00", "")
 	value = htmlCommentRE.ReplaceAllString(value, "")
@@ -278,6 +356,9 @@ func (s *Server) composeIdentities(ctx context.Context, cu currentUser) []apiCom
 	return out
 }
 
+// composeIdentityChoices derives outgoing identities from Me contacts first. If
+// contacts are not configured yet, it falls back to the IMAP account/user email so
+// first-run compose still has a usable From address.
 func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []composeIdentity {
 	me, err := s.store.ListMeContactsForUser(ctx, cu.User.ID)
 	if err == nil {
@@ -329,6 +410,9 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 	}}
 }
 
+// selectedComposeIdentity resolves a requested identity ID, otherwise primary,
+// otherwise first available identity. It rejects unknown IDs instead of accepting
+// arbitrary user input.
 func (s *Server) selectedComposeIdentity(ctx context.Context, cu currentUser, id int64) (composeIdentity, error) {
 	choices := s.composeIdentityChoices(ctx, cu)
 	if len(choices) == 0 {
@@ -428,7 +512,7 @@ func contactAddressHeader(label, email string) string {
 	return (&mail.Address{Name: label, Address: email}).String()
 }
 
-func composeHasVisibleAttachments(attachments []composeAttachment) bool {
+func smtpHasVisibleAttachments(attachments []smtpclient.Attachment) bool {
 	for _, attachment := range attachments {
 		if !attachment.Inline {
 			return true
@@ -485,7 +569,7 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		BlobPath:         saved.Path,
 		BodyText:         form.Body,
 		BodyHTML:         form.BodyHTML,
-		HasAttachments:   composeHasVisibleAttachments(form.Attachments),
+		HasAttachments:   smtpHasVisibleAttachments(outgoing.Attachments),
 		IsRead:           true,
 	})
 	if err != nil {
@@ -495,7 +579,7 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		return store.MessageRecord{}, err
 	}
 	attachmentDocs := []search.AttachmentDoc{}
-	if len(form.Attachments) > 0 {
+	if len(outgoing.Attachments) > 0 {
 		parsed, err := mailparse.Parse(raw)
 		if err != nil {
 			return store.MessageRecord{}, err

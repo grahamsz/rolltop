@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+// Config is the validated runtime configuration assembled from environment variables.
 type Config struct {
 	Addr         string
 	DataDir      string
@@ -30,6 +31,7 @@ type Config struct {
 	WebhookToken      string
 }
 
+// Load reads environment configuration, applies defaults, and validates values needed before services start.
 func Load() (Config, error) {
 	dataDir := env("MAILMIRROR_DATA_DIR", "/data")
 	dbPath := env("MAILMIRROR_DB_PATH", filepath.Join(dataDir, "mailmirror.db"))
@@ -76,6 +78,7 @@ func Load() (Config, error) {
 	}, nil
 }
 
+// ParseMasterKey decodes the encryption key used for IMAP/SMTP secrets and enforces the required key length.
 func ParseMasterKey(value string) ([]byte, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {

@@ -1,6 +1,9 @@
+// File overview: Per-sender image trust action displayed inside the remote-image notice.
+
 import type { ThreadMessage } from "../../types";
 import { pluginEnabled, pluginIDs, type PluginSet } from "../registry";
 
+/** TrustImageSourceAction renders the per-sender remote-image trust button when enabled. */
 export function TrustImageSourceAction({
   item,
   plugins,

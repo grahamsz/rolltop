@@ -17,6 +17,7 @@ var DefaultPatterns = []string{
 	`(?i)https?://[^"'\s>]*/(?:open\.php|track/open|pixel|beacon|1x1|transparent)[^"'\s>]*`,
 }
 
+// Migrations returns schema changes for the editable remote-image blocklist.
 func Migrations() []plugins.Migration {
 	return []plugins.Migration{{
 		PluginID: plugins.RemoteImageBlocklist,
@@ -33,6 +34,7 @@ func Migrations() []plugins.Migration {
 	}}
 }
 
+// Rule is one admin-editable regex used to block tracker-style remote image requests.
 type Rule struct {
 	ID        int64
 	Pattern   string
@@ -41,6 +43,7 @@ type Rule struct {
 	UpdatedAt time.Time
 }
 
+// SeedRules inserts default tracker-blocking regexes without overwriting admin edits.
 func SeedRules(ctx context.Context, db *sql.DB) error {
 	ts := nowUnix()
 	for _, pattern := range DefaultPatterns {
@@ -53,6 +56,7 @@ func SeedRules(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// ListRules returns the editable blocklist rows in evaluation order.
 func ListRules(ctx context.Context, db *sql.DB) ([]Rule, error) {
 	rows, err := db.QueryContext(ctx, `SELECT id, pattern, enabled, created_at, updated_at FROM plugin_remote_image_blocklist_rules ORDER BY id`)
 	if err != nil {
@@ -75,6 +79,7 @@ func ListRules(ctx context.Context, db *sql.DB) ([]Rule, error) {
 	return out, rows.Err()
 }
 
+// ListPatterns returns only regex strings for display-time filtering.
 func ListPatterns(ctx context.Context, db *sql.DB) ([]string, error) {
 	rows, err := db.QueryContext(ctx, `SELECT pattern FROM plugin_remote_image_blocklist_rules WHERE enabled = 1 ORDER BY id`)
 	if err != nil {
@@ -94,6 +99,7 @@ func ListPatterns(ctx context.Context, db *sql.DB) ([]string, error) {
 	return out, rows.Err()
 }
 
+// ReplaceRules atomically replaces the admin-maintained remote-image blocklist.
 func ReplaceRules(ctx context.Context, db *sql.DB, patterns []string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

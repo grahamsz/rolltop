@@ -1,3 +1,6 @@
+// File overview: Contact management view. It edits Me identities and address-book data used by
+// compose, sender display, reply targeting, and avatar/icon lookup.
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../api";
@@ -6,6 +9,7 @@ import type { Toast } from "../../appTypes";
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 
+/** ContactsView manages the user address book and Me contacts used by compose/reply identity logic. */
 export function ContactsView({
   csrf,
   addToast
@@ -15,7 +19,7 @@ export function ContactsView({
 }) {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [query, setQuery] = useState("");
-  const [selectedID, setSelectedID] = useState<number | "new">("new");
+  const [selectedID, setSelectedID] = useState<number | "new" | null>(null);
   const [draft, setDraft] = useState<Contact>(() => blankContact());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -25,9 +29,19 @@ export function ContactsView({
     setLoading(true);
     try {
       const data = await api.contacts(query);
-      setContacts(data.contacts || []);
-      if (selectedID !== "new") {
-        const selected = data.contacts.find((contact) => contact.id === selectedID);
+      const nextContacts = data.contacts || [];
+      setContacts(nextContacts);
+      if (selectedID === null) {
+        const first = nextContacts[0];
+        if (first) {
+          setSelectedID(first.id);
+          setDraft(cloneContact(first));
+        } else {
+          setSelectedID("new");
+          setDraft(blankContact());
+        }
+      } else if (selectedID !== "new") {
+        const selected = nextContacts.find((contact) => contact.id === selectedID);
         if (selected) setDraft(cloneContact(selected));
         else {
           setSelectedID("new");
