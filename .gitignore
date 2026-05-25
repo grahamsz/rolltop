@@ -5,6 +5,7 @@ data/
 tmp/
 build-artifacts/
 test-results/
+godoc/
 node_modules/
 frontend/dist/
 *.db

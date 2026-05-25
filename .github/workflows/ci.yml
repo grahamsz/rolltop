@@ -60,11 +60,26 @@ jobs:
       - name: Install Frontend Dependencies
         run: npm ci
 
+      - name: Run TypeScript Checks
+        run: |
+          mkdir -p test-results
+          start=$(date +%s)
+          set +e
+          npm run typecheck 2>&1 | tee test-results/typescript-typecheck.log
+          status=${PIPESTATUS[0]}
+          set -e
+          elapsed=$(($(date +%s) - start))
+
+          node .github/scripts/typescript-test-report.mjs "$status" "$elapsed" test-results/typescript-typecheck.log test-results
+          cat test-results/typescript-test-report.md >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$status"
+
       - name: Build Frontend
         run: |
           mkdir -p test-results build-artifacts
           set +e
-          npm run build 2>&1 | tee test-results/frontend-build.log
+          npm run build:vite 2>&1 | tee test-results/frontend-build.log
           status=${PIPESTATUS[0]}
           set -e
           {
@@ -129,6 +144,31 @@ jobs:
           fi
 
           exit "$status"
+
+      - name: Generate Go Documentation
+        run: |
+          mkdir -p godoc
+          go list ./... > godoc/packages.txt
+          while IFS= read -r pkg; do
+            rel="${pkg#mailmirror/}"
+            out="godoc/${rel}.txt"
+            mkdir -p "$(dirname "$out")"
+            go doc -all "$pkg" > "$out"
+          done < godoc/packages.txt
+          package_count=$(wc -l < godoc/packages.txt | tr -d " ")
+          {
+            echo "### Go Documentation"
+            echo
+            echo "Packages: ${package_count}"
+            echo "Artifact: `godoc-${MAILMIRROR_VERSION}`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Go Documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: godoc-${{ steps.build-meta.outputs.version }}
+          path: godoc
+          if-no-files-found: error
 
       - name: Upload Test Results
         if: always()

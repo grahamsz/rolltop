@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
+    "build": "npm run typecheck && vite build",
+    "build:vite": "vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
