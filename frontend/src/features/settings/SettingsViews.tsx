@@ -12,7 +12,7 @@ import { emptyAccountForm, accountToForm } from "../../lib/accountForm";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
 import { folderParentNames, folderTree, type FolderNode } from "../../lib/folders";
-import { mergeSyncRuns } from "../../lib/sync";
+import { effectiveMailboxSyncMode, mergeSyncRuns } from "../../lib/sync";
 import { pluginIDs } from "../../plugins/registry";
 import { AdminRemoteImageBlocklist } from "../../plugins/remoteImageBlocklist/AdminRemoteImageBlocklist";
 import { PluginTogglePanel } from "./admin/PluginTogglePanel";
@@ -112,7 +112,25 @@ const folderIconChoices = [
   { value: "delete", label: "Trash" },
   { value: "label", label: "Label" },
   { value: "shopping_bag", label: "Purchases" },
-  { value: "report", label: "Spam" }
+  { value: "report", label: "Spam" },
+  { value: "star", label: "Star" },
+  { value: "bookmark", label: "Bookmark" },
+  { value: "flame", label: "Flame" },
+  { value: "clock", label: "Clock" },
+  { value: "receipt", label: "Receipts" },
+  { value: "credit_card", label: "Cards" },
+  { value: "briefcase", label: "Work" },
+  { value: "bank", label: "Finance" },
+  { value: "newspaper", label: "News" },
+  { value: "calendar", label: "Calendar" },
+  { value: "camera", label: "Photos" },
+  { value: "home", label: "Home" },
+  { value: "building", label: "Business" },
+  { value: "school", label: "School" },
+  { value: "travel", label: "Travel" },
+  { value: "heart", label: "Personal" },
+  { value: "file_text", label: "Docs" },
+  { value: "chart", label: "Reports" }
 ];
 
 const folderVisibilityChoices = [
@@ -580,8 +598,9 @@ export function SettingsView({
     () => selectedAccountID ? folders.filter((folder) => folder.mailbox.account_id === selectedAccountID) : folders,
     [folders, selectedAccountID]
   );
+  const selectedFolderMailboxes = useMemo(() => selectedFolders.map((folder) => folder.mailbox), [selectedFolders]);
   const folderMap = useMemo(() => new Map(selectedFolders.map((folder) => [folder.mailbox.id, folder])), [selectedFolders]);
-  const folderNodes = useMemo(() => folderTree(selectedFolders.map((folder) => folder.mailbox), { includeHidden: true }), [selectedFolders]);
+  const folderNodes = useMemo(() => folderTree(selectedFolderMailboxes, { includeHidden: true }), [selectedFolderMailboxes]);
   const selectedAccountLabel = account ? (account.label || account.email) : route.kind === "imap" && route.isNew ? "New IMAP server" : "IMAP server";
   const selectedSMTP = smtpAccounts.find((item) => item.id === selectedSMTPID) || null;
   const identitiesBySMTP = useMemo(() => {
@@ -696,6 +715,8 @@ export function SettingsView({
       const currentRole = folder.mailbox.role || "";
       const currentIcon = folder.mailbox.icon || "folder";
       const syncLabel = folderSyncModeLabel(folder.mailbox.sync_mode || "inherit");
+      const effectiveSyncMode = effectiveMailboxSyncMode(folder.mailbox, selectedFolderMailboxes);
+      const canShowSyncAction = effectiveSyncMode !== "never";
       const roleLabel = folderRoleLabel(currentRole);
       const iconLabel = folderIconLabel(currentIcon);
       const visibilityLabel = folderVisibilityLabel(folder.mailbox);
@@ -737,16 +758,18 @@ export function SettingsView({
               <span title={`Visible in: ${visibilityLabel}`}>{visibilityLabel}</span>
             </div>
             <div className="folder-actions" aria-label={`${node.label} actions`}>
-              <button
-                className="folder-icon-action"
-                type="button"
-                disabled={!folder.can_sync_now}
-                onClick={() => syncFolder(folder)}
-                title={folder.can_sync_now ? `Sync ${node.label} now` : `${node.label} is already syncing`}
-                aria-label={`Sync ${node.label} now`}
-              >
-                <Icon name="sync" />
-              </button>
+              {canShowSyncAction ? (
+                <button
+                  className="folder-icon-action"
+                  type="button"
+                  disabled={!folder.can_sync_now}
+                  onClick={() => syncFolder(folder)}
+                  title={folder.can_sync_now ? `Sync ${node.label} now` : `${node.label} is already syncing`}
+                  aria-label={`Sync ${node.label} now`}
+                >
+                  <Icon name="sync" />
+                </button>
+              ) : null}
               <button
                 className="folder-icon-action"
                 type="button"
@@ -938,6 +961,7 @@ export function SettingsView({
     const currentIcon = folderDraft.icon || "folder";
     const modeChoices = folderSyncModeChoices(folder.mailbox);
     const selectedSyncMode = modeChoices.some((choice) => choice.value === folderDraft.sync_mode) ? folderDraft.sync_mode : "auto";
+    const selectedModeChoice = modeChoices.find((choice) => choice.value === selectedSyncMode);
     const roleConflict = folderRoleConflict(folder, folderDraft.role || "");
 
     return (
@@ -971,9 +995,9 @@ export function SettingsView({
                 ))}
               </select>
               <div className="folder-mode-help">
-                {modeChoices.map((choice) => (
-                  <p key={choice.value}><strong>{choice.label}:</strong> {choice.description}</p>
-                ))}
+                {selectedModeChoice ? (
+                  <p><strong>{selectedModeChoice.label}:</strong> {selectedModeChoice.description}</p>
+                ) : null}
               </div>
             </section>
 

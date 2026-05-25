@@ -163,11 +163,12 @@ export function MailView({
 
   async function startFolderSync() {
     if (!mailbox) return;
+    if (effectiveMode === "never") {
+      addToast(`${mailbox.name} is set to Never. Change the folder sync mode before syncing.`, "error");
+      return;
+    }
     setSyncBusy(true);
     try {
-      if (effectiveMode === "never") {
-        await api.setFolderMode(csrf, mailbox.id, "manual");
-      }
       await api.syncFolder(csrf, mailbox.id);
       addToast(`${mailbox.name} sync started.`);
       await refreshChrome();
@@ -250,9 +251,9 @@ function FolderSyncNotice({
 
   const title = syncOff ? "Folder sync is off" : "Folder is not fully synced";
   const detail = syncOff
-    ? "This folder is excluded from sync, so MailMirror may only show messages that were already mirrored."
+    ? "This folder is excluded from sync. Change its sync mode in folder settings before mirroring it."
     : "This manual-sync folder is behind the remote mailbox. Sync it to mirror the latest messages.";
-  const buttonLabel = busy ? "Starting" : syncOff ? "Enable and sync" : "Sync folder";
+  const buttonLabel = busy ? "Starting" : "Sync folder";
 
   return (
     <section className="folder-sync-notice" aria-live="polite">
@@ -261,10 +262,12 @@ function FolderSyncNotice({
         <strong>{title}</strong>
         <span>{detail}</span>
       </div>
-      <button className={syncOff ? "" : "secondary"} type="button" disabled={busy} onClick={onSync}>
-        <Icon name="sync" />
-        {buttonLabel}
-      </button>
+      {!syncOff ? (
+        <button className="secondary" type="button" disabled={busy} onClick={onSync}>
+          <Icon name="sync" />
+          {buttonLabel}
+        </button>
+      ) : null}
     </section>
   );
 }
