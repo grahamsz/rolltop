@@ -32,6 +32,28 @@ function truncateNotificationText(value: string, max: number) {
 }
 
 const allMailWakePrefetchAfterMS = 3 * 60 * 1000;
+const notificationPreferenceKey = "mailmirror.notifications.enabled";
+
+function notificationPreference() {
+  try {
+    return window.localStorage.getItem(notificationPreferenceKey) || "";
+  } catch {
+    return "";
+  }
+}
+
+function setNotificationPreference(value: "on" | "off") {
+  try {
+    window.localStorage.setItem(notificationPreferenceKey, value);
+  } catch {
+    // Ignore unavailable browser storage; in-memory state still controls this tab.
+  }
+}
+
+function initialNotificationsEnabled() {
+  if (!("Notification" in window) || Notification.permission !== "granted") return false;
+  return notificationPreference() !== "off";
+}
 
 /**
  * App owns process-wide browser state: bootstrap/session data, current URL,
@@ -50,6 +72,7 @@ export default function App() {
   const lastNotify = useRef<{ id: number; stored: number } | null>(null);
   const lastMouseActivityAt = useRef(Date.now());
   const lastAllMailWakePrefetchAt = useRef(0);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(initialNotificationsEnabled);
 
   // Navigation is intentionally tiny and local: Go serves every SPA route, so
   // the client only needs to update history and reparse LocationState.
@@ -136,8 +159,31 @@ export default function App() {
     [removeToast]
   );
 
+  const toggleNotifications = useCallback(async () => {
+    if (!("Notification" in window)) {
+      addToast("This browser does not support notifications.", "error");
+      return;
+    }
+    if (notificationsEnabled) {
+      setNotificationPreference("off");
+      setNotificationsEnabled(false);
+      addToast("New-mail notifications paused.");
+      return;
+    }
+    const result = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+    if (result === "granted") {
+      setNotificationPreference("on");
+      setNotificationsEnabled(true);
+      addToast("New-mail notifications enabled.");
+      return;
+    }
+    setNotificationPreference("off");
+    setNotificationsEnabled(false);
+    addToast("Notifications were not enabled.", "error");
+  }, [addToast, notificationsEnabled]);
+
   const notifyNewMail = useCallback((count: number, run: SyncRun | null) => {
-    if (!("Notification" in window) || Notification.permission !== "granted" || count <= 0) return;
+    if (!notificationsEnabled || !("Notification" in window) || Notification.permission !== "granted" || count <= 0) return;
     const sender = displayNotificationSender(run?.latest_new_from || "");
     const subject = truncateNotificationText(run?.latest_new_subject || "", 110);
     const title = sender ? `MailMirror - ${sender}` : "MailMirror";
@@ -149,7 +195,7 @@ export default function App() {
       body,
       tag: "mailmirror-new-mail"
     });
-  }, []);
+  }, [notificationsEnabled]);
 
   // When someone returns to an idle tab, warm All Mail before they click it.
   useEffect(() => {
@@ -285,7 +331,8 @@ export default function App() {
         onMoveMessages={moveMessages}
         openCompose={openCompose}
         refreshChrome={refreshBootstrap}
-        addToast={addToast}
+        notificationsEnabled={notificationsEnabled}
+        toggleNotifications={toggleNotifications}
       >
         <RouteView
           csrf={bootstrap.csrf}

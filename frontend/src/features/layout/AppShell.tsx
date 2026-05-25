@@ -4,7 +4,7 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import type { DragEvent, FormEvent, MouseEvent, ReactNode } from "react";
 import { api } from "../../api";
-import type { AppShellProps, LocationState, MoveTarget, Toast } from "../../appTypes";
+import type { AppShellProps, LocationState, MoveTarget } from "../../appTypes";
 import type { Bootstrap, Mailbox, SyncRun, User } from "../../types";
 import { Icon } from "../../components/Icon";
 import { folderTree, nodeContainsMailbox, type FolderNode } from "../../lib/folders";
@@ -33,7 +33,8 @@ export function AppShell({
   onMoveMessages,
   openCompose,
   refreshChrome,
-  addToast,
+  notificationsEnabled,
+  toggleNotifications,
   children
 }: AppShellProps) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -52,7 +53,8 @@ export function AppShell({
         location={location}
         navigate={navigate}
         logout={logout}
-        addToast={addToast}
+        notificationsEnabled={notificationsEnabled}
+        toggleNotifications={toggleNotifications}
         onMenu={() => setMobileSidebarOpen(true)}
       />
       <div className="app">
@@ -110,7 +112,8 @@ function Topbar({
   location,
   navigate,
   logout,
-  addToast,
+  notificationsEnabled,
+  toggleNotifications,
   onMenu
 }: {
   user: User;
@@ -119,7 +122,8 @@ function Topbar({
   location: LocationState;
   navigate: (url: string) => void;
   logout: () => void;
-  addToast: (message: string, kind?: Toast["kind"]) => number;
+  notificationsEnabled: boolean;
+  toggleNotifications: () => Promise<void>;
   onMenu: () => void;
 }) {
   const [query, setQuery] = useState(() => searchRoute(currentLocation().path).query);
@@ -148,16 +152,6 @@ function Topbar({
       return;
     }
     navigate(searchURL(trimmed));
-  }
-
-  async function enableNotifications() {
-    if (!("Notification" in window)) {
-      addToast("This browser does not support notifications.", "error");
-      return;
-    }
-    const result = await Notification.requestPermission();
-    if (result === "granted") addToast("New-mail notifications enabled.");
-    else addToast("Notifications were not enabled.", "error");
   }
 
   return (
@@ -192,8 +186,16 @@ function Topbar({
         {focused ? <SearchAutocomplete items={autocomplete.items} activeIndex={autocomplete.activeIndex} onChoose={autocomplete.choose} /> : null}
       </form>
       <nav className="top-actions" aria-label="Account">
-        <button className="ghost" type="button" title="Enable notifications" onClick={enableNotifications}>
-          <Icon name="notifications" />
+        <button
+          className={notificationsEnabled ? "notification-toggle active" : "notification-toggle"}
+          type="button"
+          role="switch"
+          aria-checked={notificationsEnabled}
+          title={notificationsEnabled ? "Pause notifications" : "Enable notifications"}
+          onClick={() => void toggleNotifications()}
+        >
+          <Icon name="notifications" weight={notificationsEnabled ? "bold" : "regular"} />
+          <span className="notification-toggle-track"><span /></span>
         </button>
         <button className="ghost settings-action" type="button" title="Settings" onClick={() => navigate("/settings/account")}>
           <Icon name="settings" />
@@ -439,10 +441,16 @@ export function SyncRunMini({ run }: { run: SyncRun }) {
       : totalFolders > 0
         ? Math.min(100, Math.round((run.mailboxes_done / totalFolders) * 100))
         : run.status === "running" ? 100 : 0;
+  const isPurge = run.latest_new_from === "mailmirror:maintenance" && run.latest_new_subject.trim().toLowerCase().startsWith("purging");
   const indexedLabel = run.messages_stored > 0 ? `${run.messages_stored.toLocaleString()} indexed` : "Indexing...";
-  const detail = run.messages_skipped > 0
-    ? `${indexedLabel}, ${run.messages_skipped.toLocaleString()} skipped`
-    : indexedLabel;
+  const purgeLabel = totalMessages > 0
+    ? `${run.messages_seen.toLocaleString()} of ${totalMessages.toLocaleString()} purged`
+    : "Purging...";
+  const detail = isPurge
+    ? purgeLabel
+    : run.messages_skipped > 0
+      ? `${indexedLabel}, ${run.messages_skipped.toLocaleString()} skipped`
+      : indexedLabel;
   return (
     <div className="sync-run-mini">
       <div className="sync-run-title">

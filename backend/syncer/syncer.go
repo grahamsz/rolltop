@@ -266,6 +266,11 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			return run, err
 		}
 		s.recordMailboxStatus(ctx, userID, mailbox, planned.Status)
+		if _, err := s.RepairMailboxSearchIndex(ctx, userID, mailbox, run.ID, &progress); err != nil {
+			status = "failed"
+			errText = err.Error()
+			return run, err
+		}
 		err = s.Fetcher.FetchMailbox(ctx, account, mailboxName, mailboxLastUIDAtStart, func(item FetchedMessage) error {
 			if item.Mailbox == "" {
 				item.Mailbox = mailboxName

@@ -51,6 +51,7 @@
   }
 
   .top-actions > .ghost:not(.settings-action),
+  .top-actions > .notification-toggle,
   .top-actions > .secondary,
   .top-actions > .user-chip {
     display: none;
@@ -173,6 +174,10 @@
 
   .content {
     padding: 14px 12px 34px;
+  }
+
+  .message-list-stage {
+    --message-list-slide-gap: 12px;
   }
 
   .content-head {

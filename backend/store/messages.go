@@ -160,6 +160,43 @@ func (s *Store) DeleteMessageForUser(ctx context.Context, userID, id int64) erro
 	return nil
 }
 
+// PurgeMailboxMessages removes all local message references for one mailbox and resets its UID checkpoint.
+func (s *Store) PurgeMailboxMessages(ctx context.Context, userID, accountID, mailboxID int64) ([]MessageRecord, error) {
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
+			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, attachment_indexed_at, created_at, updated_at
+		FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ?`, userID, accountID, mailboxID)
+	if err != nil {
+		return nil, err
+	}
+	messages, err := scanMessages(rows)
+	if closeErr := rows.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ?`, userID, accountID, mailboxID); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE mailboxes SET last_uid = 0, updated_at = ? WHERE id = ? AND user_id = ?`, nowUnix(), mailboxID, userID); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
 // DeleteMessagesMissingUIDs removes local messages no longer present in a remote mailbox UID set.
 func (s *Store) DeleteMessagesMissingUIDs(ctx context.Context, userID, accountID, mailboxID int64, remoteUIDs []uint32) ([]MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)

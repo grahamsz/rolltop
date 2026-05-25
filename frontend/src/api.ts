@@ -51,6 +51,8 @@ async function parse<T>(res: Response): Promise<T> {
   return data as T;
 }
 
+type MailListResponse = { conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean };
+
 const getCache = new Map<string, { etag: string; data: unknown }>();
 const getInflight = new Map<string, Promise<unknown>>();
 
@@ -161,6 +163,12 @@ function prefetchJSON<T>(url: string) {
   void getJSON<T>(url).catch(() => undefined);
 }
 
+function cachedJSON<T>(url: string): T | null {
+  const cached = getCache.get(url);
+  return cached ? cached.data as T : null;
+}
+
+
 // The api object is deliberately explicit rather than generated: it documents
 // the route surface used by the current frontend and keeps response shapes close
 // to the call sites that depend on them.
@@ -171,9 +179,11 @@ export const api = {
   login: (csrf: string, body: { email: string; password: string }) => postJSON<{ ok: boolean }>("/api/login", csrf, body),
   logout: (csrf: string) => postJSON<{ ok: boolean }>("/api/logout", csrf),
   mail: (mailboxID: string | null, page: number) =>
-    getJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(mailListURL(mailboxID, page)),
+    getJSON<MailListResponse>(mailListURL(mailboxID, page)),
+  cachedMail: (mailboxID: string | null, page: number) =>
+    cachedJSON<MailListResponse>(mailListURL(mailboxID, page)),
   prefetchMail: (mailboxID: string | null, page: number) =>
-    prefetchJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(mailListURL(mailboxID, page)),
+    prefetchJSON<MailListResponse>(mailListURL(mailboxID, page)),
   search: (query: string, sort: string, page: number) =>
     getJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(searchListURL(query, sort, page)),
   prefetchSearch: (query: string, sort: string, page: number) =>
@@ -294,8 +304,10 @@ export const api = {
   saveFolderSettings: (csrf: string, id: number, settings: Record<string, unknown>) =>
     postJSON<{ ok: boolean }>(`/api/account/folders/${id}/settings`, csrf, settings),
   syncFolder: (csrf: string, id: number) => postJSON<{ ok: boolean }>(`/api/account/folders/${id}/sync`, csrf),
-  rebuildFolderIndex: (csrf: string, id: number) =>
-    postJSON<{ ok: boolean; run_id: number }>(`/api/account/folders/${id}/search-index/rebuild`, csrf),
+  purgeFolderSearchIndex: (csrf: string, id: number) =>
+    postJSON<{ ok: boolean; queued: boolean; run_id: number }>(`/api/account/folders/${id}/search-index/purge`, csrf),
+  purgeFolderLocalReferences: (csrf: string, id: number) =>
+    postJSON<{ ok: boolean; queued: boolean; run_id: number }>(`/api/account/folders/${id}/local-references/purge`, csrf),
   users: () => getJSON<{ users: User[] }>("/api/admin/users"),
   createUser: (csrf: string, body: { email: string; name: string; password: string; is_admin: boolean }) =>
     postJSON<{ ok: boolean }>("/api/admin/users", csrf, body),

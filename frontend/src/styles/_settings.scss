@@ -697,6 +697,48 @@
   }
 }
 
+.folder-purge-section {
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 5%, var(--surface));
+  padding: 12px;
+}
+
+.folder-purge-note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.folder-purge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.folder-purge-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  box-shadow: none;
+
+  .icon {
+    flex: none;
+  }
+
+  &.danger {
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+    color: var(--danger);
+  }
+
+  &.danger:hover:not(:disabled) {
+    border-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+    color: var(--danger);
+  }
+}
+
 .sync-percent {
   display: grid;
   grid-template-columns: minmax(62px, 1fr) auto;

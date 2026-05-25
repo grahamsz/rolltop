@@ -2,7 +2,14 @@
 
 package syncer
 
-import "testing"
+import (
+	"context"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"mailmirror/backend/store"
+)
 
 func TestRunnerMailboxReservationsConflictAcrossGlobalAndAccountJobs(t *testing.T) {
 	r := NewRunner(nil)
@@ -49,5 +56,86 @@ func TestRunnerAccountReservationReleasesGlobalPendingRerun(t *testing.T) {
 	}
 	if r.IsAccountMailboxRunning(7, 101, "Gmail Forward") {
 		t.Fatalf("account mailbox reservation was not released")
+	}
+}
+
+func TestRunnerMailboxMaintenanceBlocksSyncUntilFinished(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "maintenance@example.test", "Maintenance", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.UpsertMailAccount(ctx, store.MailAccount{
+		UserID:              user.ID,
+		Email:               "maintenance@example.test",
+		Host:                "imap.example.test",
+		Port:                993,
+		Username:            "maintenance",
+		EncryptedPassword:   "encrypted",
+		UseTLS:              true,
+		Mailbox:             "Archive",
+		SyncIntervalMinutes: 15,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRunner(&Service{Store: db})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	run, ok, err := r.StartMailboxMaintenance(user.ID, store.Mailbox{ID: 55, AccountID: account.ID, Name: "Archive"}, "Purging", func(ctx context.Context, runID int64, progress *store.SyncProgress) error {
+		close(started)
+		select {
+		case <-release:
+			progress.MessagesTotal = 1
+			progress.MessagesSeen = 1
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	if err != nil {
+		t.Fatalf("StartMailboxMaintenance error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("maintenance did not start")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatalf("maintenance task did not start")
+	}
+	if !r.IsAccountMailboxRunning(user.ID, account.ID, "archive") {
+		t.Fatalf("maintenance did not reserve the account mailbox")
+	}
+	if r.StartAccountMailboxes(user.ID, account.ID, []string{"Archive"}) {
+		t.Fatalf("account sync started while maintenance held the folder reservation")
+	}
+	if r.runMailboxes(user.ID, []string{"Archive"}) {
+		t.Fatalf("global sync started while maintenance held the folder reservation")
+	}
+
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if !r.IsAccountMailboxRunning(user.ID, account.ID, "archive") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("maintenance reservation was not released")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	saved, err := db.GetSyncRunForUser(ctx, user.ID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != "ok" || saved.MessagesSeen != 1 || saved.MessagesTotal != 1 || saved.MailboxesDone != 1 || saved.LatestNewFrom != "mailmirror:maintenance" {
+		t.Fatalf("maintenance run = %+v", saved)
 	}
 }

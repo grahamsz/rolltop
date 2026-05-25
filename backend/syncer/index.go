@@ -4,9 +4,7 @@ package syncer
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log"
 
 	"mailmirror/backend/mailparse"
 	"mailmirror/backend/plugins"
@@ -230,6 +228,82 @@ func (s *Service) IndexAttachmentsForMessage(ctx context.Context, msg store.Mess
 	return s.Store.MarkMessageAttachmentIndexed(ctx, msg.UserID, msg.ID, visibleAttachmentCount > 0)
 }
 
+// RepairMailboxSearchIndex indexes local mailbox messages that are missing from Bleve.
+func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, mailbox store.Mailbox, runID int64, progress *store.SyncProgress) (int, error) {
+	if s.Search == nil || !mailbox.IncludeInSearch {
+		return 0, nil
+	}
+	indexedIDs, err := s.Search.MailboxMessageIDs(ctx, userID, mailbox.ID)
+	if err != nil {
+		return 0, err
+	}
+	missing, err := s.countMissingMailboxSearchDocuments(ctx, userID, mailbox.ID, indexedIDs)
+	if err != nil || missing == 0 {
+		return 0, err
+	}
+	if progress != nil {
+		progress.MessagesTotal += missing
+		progress.CurrentMailbox = mailbox.Name
+		if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
+			return 0, err
+		}
+	}
+
+	indexed := 0
+	var afterID int64
+	for {
+		messages, err := s.Store.ListMessagesForMailboxIndex(ctx, userID, mailbox.ID, 100, afterID)
+		if err != nil {
+			return indexed, err
+		}
+		if len(messages) == 0 {
+			return indexed, nil
+		}
+		for _, msg := range messages {
+			afterID = msg.ID
+			if indexedIDs[msg.ID] {
+				continue
+			}
+			if progress != nil {
+				progress.CurrentMailbox = mailbox.Name
+				progress.CurrentUID = msg.UID
+			}
+			if err := s.IndexAttachmentsForMessage(ctx, msg); err != nil {
+				return indexed, err
+			}
+			indexed++
+			indexedIDs[msg.ID] = true
+			if progress != nil {
+				progress.MessagesSeen++
+				progress.MessagesStored++
+				if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
+					return indexed, err
+				}
+			}
+		}
+	}
+}
+
+func (s *Service) countMissingMailboxSearchDocuments(ctx context.Context, userID, mailboxID int64, indexedIDs map[int64]bool) (int, error) {
+	missing := 0
+	var afterID int64
+	for {
+		messages, err := s.Store.ListMessagesForMailboxIndex(ctx, userID, mailboxID, 500, afterID)
+		if err != nil {
+			return missing, err
+		}
+		if len(messages) == 0 {
+			return missing, nil
+		}
+		for _, msg := range messages {
+			afterID = msg.ID
+			if !indexedIDs[msg.ID] {
+				missing++
+			}
+		}
+	}
+}
+
 // ReconcileMailboxSearchIndex adds or removes documents when a mailbox search-visibility setting changes.
 func (s *Service) ReconcileMailboxSearchIndex(ctx context.Context, userID, mailboxID int64, include bool) error {
 	if s.Search == nil {
@@ -255,93 +329,6 @@ func (s *Service) ReconcileMailboxSearchIndex(ctx context.Context, userID, mailb
 			if err := s.IndexAttachmentsForMessage(ctx, msg); err != nil {
 				return err
 			}
-		}
-	}
-}
-
-// StartRebuildMailboxSearchIndex launches a background rebuild job for one mailbox's search documents.
-func (s *Service) StartRebuildMailboxSearchIndex(ctx context.Context, userID, mailboxID int64, onDone func()) (store.SyncRun, error) {
-	if s.Search == nil {
-		return store.SyncRun{}, errors.New("search is not configured")
-	}
-	mailbox, err := s.Store.GetMailboxForUser(ctx, userID, mailboxID)
-	if err != nil {
-		return store.SyncRun{}, err
-	}
-	total, err := s.Store.CountMessagesForMailbox(ctx, userID, mailboxID)
-	if err != nil {
-		return store.SyncRun{}, err
-	}
-	run, err := s.Store.CreateSyncRun(ctx, userID, mailbox.AccountID)
-	if err != nil {
-		return store.SyncRun{}, err
-	}
-	progress := store.SyncProgress{MessagesTotal: total, MailboxesTotal: 1, CurrentMailbox: "Rebuilding index: " + mailbox.Name}
-	if err := s.Store.UpdateSyncRunProgress(ctx, userID, run.ID, progress); err != nil {
-		return store.SyncRun{}, err
-	}
-	s.notify(userID)
-	go s.runRebuildMailboxSearchIndex(context.Background(), userID, mailboxID, mailbox.Name, run.ID, progress, onDone)
-	return run, nil
-}
-
-func (s *Service) runRebuildMailboxSearchIndex(ctx context.Context, userID, mailboxID int64, mailboxName string, runID int64, progress store.SyncProgress, onDone func()) {
-	status := "ok"
-	errText := ""
-	defer func() {
-		if ctx.Err() != nil && status == "ok" {
-			status = "interrupted"
-			errText = "Server stopped before this rebuild finished."
-		}
-		if status == "ok" {
-			progress.MailboxesDone = 1
-		}
-		if err := s.Store.FinishSyncRun(context.Background(), userID, runID, status, progress, errText); err != nil {
-			log.Printf("finish search index rebuild user_id=%d run_id=%d: %v", userID, runID, err)
-		}
-		s.notify(userID)
-		if status == "ok" && onDone != nil {
-			onDone()
-		}
-	}()
-	var afterID int64
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		messages, err := s.Store.ListMessagesForMailboxIndex(ctx, userID, mailboxID, 100, afterID)
-		if err != nil {
-			status = "failed"
-			errText = err.Error()
-			return
-		}
-		if len(messages) == 0 {
-			return
-		}
-		for _, msg := range messages {
-			afterID = msg.ID
-			progress.CurrentMailbox = "Rebuilding index: " + mailboxName
-			progress.CurrentUID = msg.UID
-			if err := s.Search.DeleteMessage(ctx, msg.UserID, msg.ID); err != nil {
-				status = "failed"
-				errText = err.Error()
-				return
-			}
-			if err := s.IndexAttachmentsForMessage(ctx, msg); err != nil {
-				status = "failed"
-				errText = err.Error()
-				return
-			}
-			progress.MessagesSeen++
-			progress.MessagesStored++
-			if err := s.Store.UpdateSyncRunProgress(ctx, userID, runID, progress); err != nil {
-				status = "failed"
-				errText = err.Error()
-				return
-			}
-			s.notify(userID)
 		}
 	}
 }

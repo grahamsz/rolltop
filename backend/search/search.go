@@ -288,20 +288,107 @@ func (s *Service) CountMailboxMessages(ctx context.Context, userID, mailboxID in
 	if userID == 0 || mailboxID == 0 {
 		return 0, nil
 	}
-	userQuery := bleve.NewTermQuery(strconv.FormatInt(userID, 10))
-	userQuery.SetField("user_id")
-	mailboxQuery := bleve.NewTermQuery(strconv.FormatInt(mailboxID, 10))
-	mailboxQuery.SetField("mailbox_id")
-	req := bleve.NewSearchRequestOptions(bleve.NewConjunctionQuery(userQuery, mailboxQuery), 0, 0, false)
 	index, err := s.indexForUser(userID)
 	if err != nil {
 		return 0, err
 	}
-	res, err := index.Search(req)
+	res, err := index.Search(mailboxSearchRequest(userID, mailboxID, 0, 0))
 	if err != nil {
 		return 0, err
 	}
 	return int(res.Total), nil
+}
+
+// MailboxMessageIDs returns the local message IDs currently present in one mailbox's search index.
+func (s *Service) MailboxMessageIDs(ctx context.Context, userID, mailboxID int64) (map[int64]bool, error) {
+	out := map[int64]bool{}
+	if userID == 0 || mailboxID == 0 {
+		return out, nil
+	}
+	index, err := s.indexForUser(userID)
+	if err != nil {
+		return nil, err
+	}
+	const pageSize = 1000
+	for offset := 0; ; offset += pageSize {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		res, err := index.Search(mailboxSearchRequest(userID, mailboxID, pageSize, offset))
+		if err != nil {
+			return nil, err
+		}
+		if len(res.Hits) == 0 {
+			return out, nil
+		}
+		for _, hit := range res.Hits {
+			id, err := strconv.ParseInt(hit.ID, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("parse mailbox search hit id: %w", err)
+			}
+			out[id] = true
+		}
+		if len(res.Hits) < pageSize {
+			return out, nil
+		}
+	}
+}
+
+// PurgeMailbox removes all search documents for one tenant-owned mailbox. It does not touch SQLite or IMAP.
+func (s *Service) PurgeMailbox(ctx context.Context, userID, mailboxID int64) (int, error) {
+	return s.PurgeMailboxWithProgress(ctx, userID, mailboxID, nil)
+}
+
+// PurgeMailboxWithProgress removes mailbox search documents and reports each deleted batch.
+func (s *Service) PurgeMailboxWithProgress(ctx context.Context, userID, mailboxID int64, onBatch func(int) error) (int, error) {
+	if userID == 0 || mailboxID == 0 {
+		return 0, nil
+	}
+	index, err := s.indexForUser(userID)
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	const batchSize = 500
+	for {
+		select {
+		case <-ctx.Done():
+			return deleted, ctx.Err()
+		default:
+		}
+		res, err := index.Search(mailboxSearchRequest(userID, mailboxID, batchSize, 0))
+		if err != nil {
+			return deleted, err
+		}
+		if len(res.Hits) == 0 {
+			return deleted, nil
+		}
+		batch := index.NewBatch()
+		for _, hit := range res.Hits {
+			batch.Delete(hit.ID)
+		}
+		if err := index.Batch(batch); err != nil {
+			return deleted, err
+		}
+		deleted += len(res.Hits)
+		if onBatch != nil {
+			if err := onBatch(len(res.Hits)); err != nil {
+				return deleted, err
+			}
+		}
+	}
+}
+
+func mailboxSearchRequest(userID, mailboxID int64, size, from int) *bleve.SearchRequest {
+	userQuery := bleve.NewTermQuery(strconv.FormatInt(userID, 10))
+	userQuery.SetField("user_id")
+	mailboxQuery := bleve.NewTermQuery(strconv.FormatInt(mailboxID, 10))
+	mailboxQuery.SetField("mailbox_id")
+	req := bleve.NewSearchRequestOptions(bleve.NewConjunctionQuery(userQuery, mailboxQuery), size, from, false)
+	req.SortBy([]string{"_id"})
+	return req
 }
 
 // Search runs a query and returns matching message IDs with default options.

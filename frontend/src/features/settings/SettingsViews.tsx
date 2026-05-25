@@ -491,6 +491,26 @@ export function SettingsView({
     setFolderDraft((current) => current ? { ...current, ...patch } : current);
   }
 
+  function purgeSearchIndexConfirmMessage(folder: SyncFolder) {
+    return [
+      `Purge the full-text index for ${folder.mailbox.name}?`,
+      "",
+      "This removes only MailMirror's local full-text search documents for this folder.",
+      "It does not delete local message references or messages from your IMAP server.",
+      "The next sync will rebuild missing full-text entries before fetching new mail."
+    ].join("\n");
+  }
+
+  function purgeLocalReferencesConfirmMessage(folder: SyncFolder) {
+    return [
+      `Purge local references and the full-text index for ${folder.mailbox.name}?`,
+      "",
+      "This removes MailMirror's local message references, raw-message cache, and full-text search documents for this folder.",
+      "It does not delete messages from your IMAP server.",
+      "The next sync will refetch this folder from IMAP and rebuild the local full-text index."
+    ].join("\n");
+  }
+
   function folderRoleConflict(folder: SyncFolder, role: string) {
     if (!uniqueFolderRoles.has(role)) return null;
     return folders.find((item) =>
@@ -532,11 +552,23 @@ export function SettingsView({
     }
   }
 
-  async function rebuildFolderIndex(folder: SyncFolder) {
-    if (!window.confirm(`Rebuild the search index for ${folder.mailbox.name}? This may take some time.`)) return;
+  async function purgeFolderSearchIndex(folder: SyncFolder) {
+    if (!window.confirm(purgeSearchIndexConfirmMessage(folder))) return;
     try {
-      await api.rebuildFolderIndex(csrf, folder.mailbox.id);
-      addToast(`${folder.mailbox.name} index rebuild started.`);
+      await api.purgeFolderSearchIndex(csrf, folder.mailbox.id);
+      addToast(`${folder.mailbox.name} full-text index purge started.`);
+      await refreshChrome();
+      await load();
+    } catch (err) {
+      addToast(messageFromError(err), "error");
+    }
+  }
+
+  async function purgeFolderLocalReferences(folder: SyncFolder) {
+    if (!window.confirm(purgeLocalReferencesConfirmMessage(folder))) return;
+    try {
+      await api.purgeFolderLocalReferences(csrf, folder.mailbox.id);
+      addToast(`${folder.mailbox.name} local references purge started.`);
       await refreshChrome();
       await load();
     } catch (err) {
@@ -656,7 +688,6 @@ export function SettingsView({
       const searchPercent = typeof folder.mailbox.search_index_percent === "number"
         ? percentValue(folder.mailbox.search_index_percent)
         : null;
-      const localMessageCount = folder.mailbox.local_message_count ?? folder.mailbox.message_count;
       const searchLabel = !folder.mailbox.include_in_search
         ? "Search off"
         : searchPercent === null
@@ -668,7 +699,6 @@ export function SettingsView({
       const roleLabel = folderRoleLabel(currentRole);
       const iconLabel = folderIconLabel(currentIcon);
       const visibilityLabel = folderVisibilityLabel(folder.mailbox);
-      const canRebuildIndex = !folder.is_running && localMessageCount > 0;
       const rows: ReactNode[] = [
         <div className="folder-sync-row" key={folder.mailbox.id}>
           <div className="folder-sync-summary">
@@ -716,16 +746,6 @@ export function SettingsView({
                 aria-label={`Sync ${node.label} now`}
               >
                 <Icon name="sync" />
-              </button>
-              <button
-                className="folder-icon-action warning"
-                type="button"
-                disabled={!canRebuildIndex}
-                onClick={() => rebuildFolderIndex(folder)}
-                title={canRebuildIndex ? `Rebuild search index for ${node.label}. This may take some time.` : "No local messages are ready to index"}
-                aria-label={`Rebuild search index for ${node.label}. This may take some time.`}
-              >
-                <Icon name="search" />
               </button>
               <button
                 className="folder-icon-action"
@@ -1011,6 +1031,31 @@ export function SettingsView({
                     </button>
                   );
                 })}
+              </div>
+            </section>
+
+            <section className="folder-edit-section folder-edit-section-wide folder-purge-section">
+              <span className="settings-field-label">Local purge</span>
+              <div className="folder-purge-note">These actions only change MailMirror's local cache. They never delete messages from your IMAP server.</div>
+              <div className="folder-purge-actions">
+                <button
+                  className="secondary folder-purge-button"
+                  type="button"
+                  disabled={folder.is_running}
+                  onClick={() => purgeFolderSearchIndex(folder)}
+                  title={folder.is_running ? "Wait for this folder's current sync to finish" : "Purge only the local full-text search index"}
+                >
+                  <Icon name="search" />Purge full-text index
+                </button>
+                <button
+                  className="secondary folder-purge-button danger"
+                  type="button"
+                  disabled={folder.is_running}
+                  onClick={() => purgeFolderLocalReferences(folder)}
+                  title={folder.is_running ? "Wait for this folder's current sync to finish" : "Purge local references and the local full-text search index"}
+                >
+                  <Icon name="delete" />Purge references and index
+                </button>
               </div>
             </section>
           </div>

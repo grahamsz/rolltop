@@ -16,6 +16,7 @@ export type RangePagerProps = {
   pageURL: (page: number) => string;
   navigate: (url: string) => void;
   ariaLabel: string;
+  loading?: boolean;
 };
 
 /** ListHeader renders a view title with optional actions and right-aligned range paging. */
@@ -51,7 +52,8 @@ export function RangePager({
   hasNext,
   pageURL,
   navigate,
-  ariaLabel
+  ariaLabel,
+  loading = false
 }: RangePagerProps) {
   const start = itemCount > 0 || hasNext ? (page - 1) * pageSize + 1 : 0;
   const end = itemCount > 0 ? (page - 1) * pageSize + itemCount : start > 0 ? page * pageSize : 0;
@@ -61,12 +63,12 @@ export function RangePager({
     : total && total > 0 ? `0 of ${total.toLocaleString()}` : "0";
 
   return (
-    <div className="range-pager" aria-label={ariaLabel}>
-      <span>{label}</span>
-      <button className="range-pager-button" type="button" disabled={!hasPrev} onClick={() => navigate(pageURL(page - 1))} title="Previous page">
+    <div className="range-pager" aria-label={loading ? ariaLabel + ", loading" : ariaLabel}>
+      {loading ? <span className="range-pager-label range-pager-loading" aria-hidden="true" /> : <span className="range-pager-label">{label}</span>}
+      <button className="range-pager-button" type="button" disabled={loading || !hasPrev} onClick={() => navigate(pageURL(page - 1))} title="Previous page">
         <Icon name="chevron_left" />
       </button>
-      <button className="range-pager-button" type="button" disabled={!hasNext} onClick={() => navigate(pageURL(page + 1))} title="Next page">
+      <button className="range-pager-button" type="button" disabled={loading || !hasNext} onClick={() => navigate(pageURL(page + 1))} title="Next page">
         <Icon name="chevron_right" />
       </button>
     </div>

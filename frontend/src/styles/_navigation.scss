@@ -39,6 +39,19 @@
   white-space: nowrap;
 }
 
+.range-pager-label {
+  min-width: 96px;
+  text-align: right;
+}
+
+.range-pager-loading {
+  height: 13px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, rgba(84, 96, 91, .13), rgba(84, 96, 91, .23), rgba(84, 96, 91, .13));
+  background-size: 180% 100%;
+  animation: skeleton-sweep 1.15s ease-in-out infinite;
+}
+
 .range-pager-button {
   @include icon-button(32px);
   background: transparent;

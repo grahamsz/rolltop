@@ -300,7 +300,7 @@ func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]Mailb
 			ms.UnreadCount = ms.RemoteUnreadCount
 		}
 		ms.SyncPercent = mailboxSyncPercent(ms.LastUID, ms.RemoteUIDNext, ms.MessageCount)
-		ms.LocalSyncPercent = ms.SyncPercent
+		ms.LocalSyncPercent = localMailboxSyncPercent(localMessages, ms.MessageCount)
 		out = append(out, ms)
 	}
 	return out, rows.Err()
@@ -525,6 +525,22 @@ func defaultMailboxShowInAllMail(role string) bool {
 	return normalizeMailboxRole(role) != "trash"
 }
 
+func localMailboxSyncPercent(localMessages, totalMessages int) int {
+	if totalMessages <= 0 {
+		if localMessages > 0 {
+			return 100
+		}
+		return 0
+	}
+	if localMessages <= 0 {
+		return 0
+	}
+	if localMessages >= totalMessages {
+		return 100
+	}
+	return (localMessages * 100) / totalMessages
+}
+
 func mailboxSyncPercent(lastUID uint32, remoteUIDNext uint32, messageCount int) int {
 	if remoteUIDNext > 1 {
 		total := remoteUIDNext - 1
@@ -561,6 +577,12 @@ func mailboxParentNames(name string) []string {
 func (s *Store) UpdateMailboxLastUID(ctx context.Context, userID, mailboxID int64, uid uint32) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE mailboxes SET last_uid = CASE WHEN last_uid < ? THEN ? ELSE last_uid END, updated_at = ?
 		WHERE id = ? AND user_id = ?`, uid, uid, nowUnix(), mailboxID, userID)
+	return err
+}
+
+// ResetMailboxLastUID clears the incremental checkpoint so the next sync refetches the folder from UID 1.
+func (s *Store) ResetMailboxLastUID(ctx context.Context, userID, mailboxID int64) error {
+	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE mailboxes SET last_uid = 0, updated_at = ? WHERE id = ? AND user_id = ?`, nowUnix(), mailboxID, userID)
 	return err
 }
 

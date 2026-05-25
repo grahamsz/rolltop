@@ -4,11 +4,17 @@
   box-sizing: border-box;
 }
 
+html {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
 body {
   margin: 0;
   font: 14px/1.45 var(--font-ui);
   color: var(--text);
   background: var(--bg);
+  overflow-x: clip;
 }
 
 a {

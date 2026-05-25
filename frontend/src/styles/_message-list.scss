@@ -1,11 +1,7 @@
 @use "mixins/components" as *;
 
 .message-table {
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: var(--shadow);
+  background: transparent;
 }
 
 .message-row {
@@ -82,9 +78,46 @@
   }
 }
 
-.loading-list {
-  box-shadow: none;
+.message-list-stage {
+  --message-list-slide-gap: 22px;
+  --message-list-slide-duration: .12s;
+  position: relative;
+  overflow: visible;
+  z-index: 0;
 }
+
+.message-list-stage.speed-slow {
+  --message-list-slide-duration: .6s;
+}
+
+.message-list-track {
+  display: flex;
+  gap: var(--message-list-slide-gap);
+  width: calc(200% + var(--message-list-slide-gap));
+  will-change: transform;
+}
+
+.message-list-track.slide-left {
+  animation: message-list-track-left var(--message-list-slide-duration) cubic-bezier(.16, 1, .3, 1) both;
+}
+
+.message-list-track.slide-right {
+  animation: message-list-track-right var(--message-list-slide-duration) cubic-bezier(.16, 1, .3, 1) both;
+}
+
+.message-list-pane {
+  flex: 0 0 calc((100% - var(--message-list-slide-gap)) / 2);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.message-list-pane.outgoing {
+  pointer-events: none;
+}
+
 
 .skeleton-row {
   pointer-events: none;

@@ -40,6 +40,37 @@ func (s *Store) GetBlobByPathForUser(ctx context.Context, userID int64, blobPath
 	return b, err
 }
 
+// DeleteBlobsForUser removes multiple blob metadata rows for one user in one transaction.
+func (s *Store) DeleteBlobsForUser(ctx context.Context, userID int64, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.mustDataDB(ctx, userID).BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, `DELETE FROM blobs WHERE user_id = ? AND id = ?`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, err := stmt.ExecContext(ctx, userID, id); err != nil {
+			_ = stmt.Close()
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
 // DeleteBlobForUser removes blob metadata for one user; filesystem deletion is handled by the blob store.
 func (s *Store) DeleteBlobForUser(ctx context.Context, userID, id int64) error {
 	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `DELETE FROM blobs WHERE user_id = ? AND id = ?`, userID, id)

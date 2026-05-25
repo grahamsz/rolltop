@@ -263,7 +263,7 @@ func TestFakeSyncTenantIsolation(t *testing.T) {
 	}
 }
 
-func TestRebuildMailboxSearchIndexRefreshesLanguage(t *testing.T) {
+func TestRepairMailboxSearchIndexIndexesMissingIDsWhenCountsMatch(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
@@ -278,7 +278,120 @@ func TestRebuildMailboxSearchIndexRefreshesLanguage(t *testing.T) {
 	defer searchSvc.Close()
 	blobStore := blob.New(dir)
 
-	user, err := db.CreateUser(ctx, "one@example.test", "One", "hash-one", false)
+	user, err := db.CreateUser(ctx, "repair@example.test", "Repair", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := []byte("12345678901234567890123456789012")
+	enc, err := mmcrypto.EncryptString(key, "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountRec, err := db.UpsertMailAccount(ctx, account(user.ID, enc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &fakeFetcher{messages: map[int64][]syncer.FetchedMessage{
+		user.ID: {{
+			Mailbox:      "INBOX",
+			UID:          9,
+			InternalDate: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+			Raw:          []byte(rawMessage("repair@example.test", "Repair document", "needleonly local body", false)),
+		}},
+	}}
+	service := &syncer.Service{Store: db, Blobs: blobStore, Search: searchSvc, Fetcher: fetcher}
+	if _, err := service.SyncUser(ctx, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	boxes, err := db.ListMailboxesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := db.ListMessagesForMailbox(ctx, user.ID, boxes[0].ID, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("messages = %d", len(messages))
+	}
+	msg := messages[0]
+	if err := searchSvc.DeleteMessage(ctx, user.ID, msg.ID); err != nil {
+		t.Fatal(err)
+	}
+	stale := msg
+	stale.ID = msg.ID + 999
+	stale.Subject = "Stale counted document"
+	stale.MessageIDHeader = "<stale-counted@example.test>"
+	stale.BodyText = store.MessageBodyPreview("unrelated stale body", store.DefaultMessageBodyPreviewBytes)
+	if err := searchSvc.IndexMessage(ctx, stale, nil); err != nil {
+		t.Fatal(err)
+	}
+	count, err := searchSvc.CountMailboxMessages(ctx, user.ID, boxes[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("search count = %d", count)
+	}
+	ids, err := searchSvc.Search(ctx, user.ID, "needleonly", search.SortBest, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("needleonly unexpectedly indexed before repair: %v", ids)
+	}
+
+	mailbox, err := db.GetMailboxForUser(ctx, user.ID, boxes[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := db.CreateSyncRun(ctx, user.ID, accountRec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	progress := store.SyncProgress{}
+	indexed, err := service.RepairMailboxSearchIndex(ctx, user.ID, mailbox, run.ID, &progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexed != 1 {
+		t.Fatalf("indexed = %d", indexed)
+	}
+	savedRun, err := db.GetSyncRunForUser(ctx, user.ID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if savedRun.MessagesTotal != 1 || savedRun.MessagesSeen != 1 || savedRun.MessagesStored != 1 {
+		t.Fatalf("repair progress = total %d seen %d stored %d", savedRun.MessagesTotal, savedRun.MessagesSeen, savedRun.MessagesStored)
+	}
+	if savedRun.CurrentMailbox != mailbox.Name {
+		t.Fatalf("current mailbox = %q, want %q", savedRun.CurrentMailbox, mailbox.Name)
+	}
+	ids, err = searchSvc.Search(ctx, user.ID, "needleonly", search.SortBest, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != msg.ID {
+		t.Fatalf("needleonly ids = %v, want %d", ids, msg.ID)
+	}
+}
+
+func TestPurgeMailboxLocalReferencesClearsSearchAndResetsCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchSvc, err := search.Open(filepath.Join(dir, "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchSvc.Close()
+	blobStore := blob.New(dir)
+
+	user, err := db.CreateUser(ctx, "purge@example.test", "Purge", "hash", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,14 +406,9 @@ func TestRebuildMailboxSearchIndexRefreshesLanguage(t *testing.T) {
 	fetcher := &fakeFetcher{messages: map[int64][]syncer.FetchedMessage{
 		user.ID: {{
 			Mailbox:      "INBOX",
-			UID:          1,
+			UID:          42,
 			InternalDate: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
-			Raw: []byte(rawMessage(
-				"fr@example.test",
-				"Bonjour",
-				"Ceci est un message en français avec assez de contexte pour identifier correctement la langue.",
-				false,
-			)),
+			Raw:          []byte(rawMessage("purge@example.test", "Purgeable", "purgeable local body", false)),
 		}},
 	}}
 	service := &syncer.Service{Store: db, Blobs: blobStore, Search: searchSvc, Fetcher: fetcher}
@@ -311,9 +419,6 @@ func TestRebuildMailboxSearchIndexRefreshesLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(boxes) != 1 {
-		t.Fatalf("mailboxes = %d", len(boxes))
-	}
 	messages, err := db.ListMessagesForMailbox(ctx, user.ID, boxes[0].ID, 10, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -322,40 +427,65 @@ func TestRebuildMailboxSearchIndexRefreshesLanguage(t *testing.T) {
 		t.Fatalf("messages = %d", len(messages))
 	}
 	msg := messages[0]
-	msg.LanguageCode = "en"
-	if err := db.UpdateMessageLanguage(ctx, user.ID, msg.ID, "en"); err != nil {
+	boxBefore, err := db.GetMailboxForUser(ctx, user.ID, boxes[0].ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := searchSvc.IndexMessage(ctx, msg, nil); err != nil {
-		t.Fatal(err)
+	if boxBefore.LastUID == 0 {
+		t.Fatalf("last uid was not advanced before purge: %+v", boxBefore)
 	}
 
-	done := make(chan struct{})
-	run, err := service.StartRebuildMailboxSearchIndex(ctx, user.ID, boxes[0].ID, func() {
-		close(done)
-	})
+	purged, err := service.PurgeMailboxLocalReferences(ctx, user.ID, boxes[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for rebuild run %d", run.ID)
+	if purged != 1 {
+		t.Fatalf("purged = %d", purged)
 	}
-
-	refreshed, err := db.GetMessageForUser(ctx, user.ID, msg.ID)
+	messages, err = db.ListMessagesForMailbox(ctx, user.ID, boxes[0].ID, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if refreshed.LanguageCode != "fr" {
-		t.Fatalf("language = %q", refreshed.LanguageCode)
+	if len(messages) != 0 {
+		t.Fatalf("messages after purge = %d", len(messages))
 	}
-	ids, err := searchSvc.Search(ctx, user.ID, "lang:fr", search.SortRecent, 10, 0)
+	count, err := searchSvc.CountMailboxMessages(ctx, user.ID, boxes[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 1 || ids[0] != msg.ID {
-		t.Fatalf("lang:fr ids = %v", ids)
+	if count != 0 {
+		t.Fatalf("search docs after purge = %d", count)
+	}
+	boxAfter, err := db.GetMailboxForUser(ctx, user.ID, boxes[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if boxAfter.LastUID != 0 {
+		t.Fatalf("last uid after purge = %d", boxAfter.LastUID)
+	}
+	summaries, err := db.ListMailboxesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %d", len(summaries))
+	}
+	if summaries[0].LocalMessageCount != 0 || summaries[0].LocalSyncPercent != 0 {
+		t.Fatalf("local summary after purge = count %d percent %d", summaries[0].LocalMessageCount, summaries[0].LocalSyncPercent)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, err := db.GetBlobForUser(ctx, user.ID, msg.BlobID)
+		if errors.Is(err, store.ErrNotFound) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("blob row still present after async cleanup")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -55,8 +55,39 @@
   }
 }
 
+@keyframes message-list-track-left {
+  from {
+    transform: translateX(0);
+  }
+
+  72% {
+    transform: translateX(calc(-50% - (var(--message-list-slide-gap, 22px) / 2) - 5px));
+  }
+
+  to {
+    transform: translateX(calc(-50% - (var(--message-list-slide-gap, 22px) / 2)));
+  }
+}
+
+@keyframes message-list-track-right {
+  from {
+    transform: translateX(calc(-50% - (var(--message-list-slide-gap, 22px) / 2)));
+  }
+
+  72% {
+    transform: translateX(5px);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
+
 @media (prefers-reduced-motion: reduce) {
   .message-row.new-delivery,
+  .message-list-track.slide-left,
+  .message-list-track.slide-right,
   .skeleton-block,
   .fetch-status-progress span {
     animation: none;

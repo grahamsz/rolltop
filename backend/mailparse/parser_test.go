@@ -3,6 +3,8 @@
 package mailparse
 
 import (
+	"archive/zip"
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -97,6 +99,61 @@ func TestParseDecodesISO2022JPSubjectAndBody(t *testing.T) {
 	}
 }
 
+func TestDOCXAttachmentSearchableTextExtractsZippedXML(t *testing.T) {
+	data := officeZipFixture(t, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="urn:test"><w:body><w:p><w:r><w:t>Pillars of Community docx text</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	text := Attachment{
+		Filename:    "community.docx",
+		ContentType: "application/octet-stream",
+		Data:        data,
+	}.SearchableText()
+
+	if !strings.Contains(text, "Pillars of Community docx text") {
+		t.Fatalf("searchable text = %q", text)
+	}
+}
+
+func TestODSAttachmentSearchableTextExtractsContentXML(t *testing.T) {
+	data := officeZipFixture(t, map[string]string{
+		"content.xml": `<office:document-content xmlns:office="urn:office" xmlns:table="urn:table" xmlns:text="urn:text"><office:body><office:spreadsheet><table:table><table:table-row><table:table-cell><text:p>Quarterly ODS forecast needle</text:p></table:table-cell></table:table-row></table:table></office:spreadsheet></office:body></office:document-content>`,
+	})
+
+	text := Attachment{
+		Filename:    "forecast.ods",
+		ContentType: "application/octet-stream",
+		Data:        data,
+	}.SearchableText()
+
+	if !strings.Contains(text, "Quarterly ODS forecast needle") {
+		t.Fatalf("searchable text = %q", text)
+	}
+}
+
+func TestDOCAttachmentSearchableTextUsesExtractor(t *testing.T) {
+	originalExtractor := docTextExtractor
+	defer func() { docTextExtractor = originalExtractor }()
+	var received string
+	docTextExtractor = func(data []byte) (string, error) {
+		received = string(data)
+		return "Legacy Word document needle", nil
+	}
+
+	text := Attachment{
+		Filename:    "legacy.doc",
+		ContentType: "application/octet-stream",
+		Data:        []byte("doc fixture"),
+	}.SearchableText()
+
+	if received != "doc fixture" {
+		t.Fatalf("extractor received %q", received)
+	}
+	if !strings.Contains(text, "Legacy Word document needle") {
+		t.Fatalf("searchable text = %q", text)
+	}
+}
+
 func TestPDFAttachmentSearchableTextUsesExtractor(t *testing.T) {
 	originalExtractor := pdfTextExtractor
 	defer func() { pdfTextExtractor = originalExtractor }()
@@ -174,4 +231,22 @@ func TestParseDisplayBodyPreservesPlainTextLineBreaks(t *testing.T) {
 	if text != want {
 		t.Fatalf("text = %q, want %q", text, want)
 	}
+}
+func officeZipFixture(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

@@ -3,9 +3,11 @@
 package mailparse
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/xml"
 	"errors"
 	"html"
 	"io"
@@ -35,10 +37,16 @@ const (
 	maxAttachmentSearchBytes = 512 * 1024
 	maxPDFAttachmentBytes    = 32 * 1024 * 1024
 	maxPDFSearchTextBytes    = 1024 * 1024
+	maxOfficeAttachmentBytes = 32 * 1024 * 1024
+	maxOfficeSearchTextBytes = 1024 * 1024
 	pdfExtractionTimeout     = 10 * time.Second
+	officeExtractionTimeout  = 10 * time.Second
 )
 
-var pdfTextExtractor = extractPDFTextWithPdftotext
+var (
+	pdfTextExtractor = extractPDFTextWithPdftotext
+	docTextExtractor = extractDOCTextWithExternalTool
+)
 
 // Attachment is a decoded MIME part that may be indexed, displayed, or downloaded.
 type Attachment struct {
@@ -68,6 +76,27 @@ func (a Attachment) SearchableText() string {
 			return ""
 		}
 		return normalizeText(string(limitBytes([]byte(text), maxPDFSearchTextBytes)))
+	}
+	if isSearchableDOCXType(mediaType, ext) {
+		text, err := extractDOCXText(a.Data)
+		if err != nil {
+			return ""
+		}
+		return normalizeText(string(limitBytes([]byte(text), maxOfficeSearchTextBytes)))
+	}
+	if isSearchableODSType(mediaType, ext) {
+		text, err := extractODSText(a.Data)
+		if err != nil {
+			return ""
+		}
+		return normalizeText(string(limitBytes([]byte(text), maxOfficeSearchTextBytes)))
+	}
+	if isSearchableDOCType(mediaType, ext) {
+		text, err := docTextExtractor(a.Data)
+		if err != nil {
+			return ""
+		}
+		return normalizeText(string(limitBytes([]byte(text), maxOfficeSearchTextBytes)))
 	}
 	if isSearchableTextType(mediaType, ext) {
 		return normalizeText(string(limitBytes(a.Data, maxAttachmentSearchBytes)))
@@ -565,6 +594,23 @@ func isSearchablePDFType(mediaType, ext string) bool {
 	return mediaType == "application/pdf" || mediaType == "application/x-pdf" || ext == ".pdf"
 }
 
+func isSearchableDOCXType(mediaType, ext string) bool {
+	return mediaType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || ext == ".docx"
+}
+
+func isSearchableDOCType(mediaType, ext string) bool {
+	switch mediaType {
+	case "application/msword", "application/vnd.ms-word", "application/x-msword":
+		return true
+	default:
+		return ext == ".doc"
+	}
+}
+
+func isSearchableODSType(mediaType, ext string) bool {
+	return mediaType == "application/vnd.oasis.opendocument.spreadsheet" || ext == ".ods"
+}
+
 func extractPDFTextWithPdftotext(data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", nil
@@ -597,6 +643,158 @@ func extractPDFTextWithPdftotext(data []byte) (string, error) {
 		return "", err
 	}
 	return string(limitBytes(out, maxPDFSearchTextBytes)), nil
+}
+
+func extractDOCXText(data []byte) (string, error) {
+	return extractOfficeZipText(data, isDOCXTextPart, map[string]bool{"t": true})
+}
+
+func extractODSText(data []byte) (string, error) {
+	return extractOfficeZipText(data, func(name string) bool { return name == "content.xml" }, map[string]bool{"p": true, "span": true, "h": true, "a": true})
+}
+
+func extractOfficeZipText(data []byte, includePart func(string) bool, textElements map[string]bool) (string, error) {
+	if len(data) == 0 {
+		return "", nil
+	}
+	if len(data) > maxOfficeAttachmentBytes {
+		return "", errors.New("office attachment too large for search extraction")
+	}
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", err
+	}
+	var out strings.Builder
+	for _, file := range reader.File {
+		name := strings.ToLower(file.Name)
+		if !includePart(name) {
+			continue
+		}
+		rc, err := file.Open()
+		if err != nil {
+			return "", err
+		}
+		err = appendOfficeXMLText(&out, io.LimitReader(rc, maxOfficeAttachmentBytes), textElements)
+		closeErr := rc.Close()
+		if err != nil {
+			return "", err
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+		if out.Len() >= maxOfficeSearchTextBytes {
+			break
+		}
+	}
+	return out.String(), nil
+}
+
+func isDOCXTextPart(name string) bool {
+	if name == "word/document.xml" {
+		return true
+	}
+	if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") {
+		return false
+	}
+	base := filepath.Base(name)
+	return strings.HasPrefix(base, "header") || strings.HasPrefix(base, "footer") || base == "footnotes.xml" || base == "endnotes.xml" || base == "comments.xml"
+}
+
+func appendOfficeXMLText(out *strings.Builder, r io.Reader, textElements map[string]bool) error {
+	decoder := xml.NewDecoder(r)
+	decoder.Strict = false
+	textDepth := 0
+	for {
+		tok, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if textDepth > 0 || textElements[strings.ToLower(t.Name.Local)] {
+				textDepth++
+			}
+		case xml.CharData:
+			if textDepth > 0 {
+				appendOfficeText(out, string(t))
+				if out.Len() >= maxOfficeSearchTextBytes {
+					return nil
+				}
+			}
+		case xml.EndElement:
+			if textDepth > 0 {
+				textDepth--
+			}
+		}
+	}
+}
+
+func appendOfficeText(out *strings.Builder, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" || out.Len() >= maxOfficeSearchTextBytes {
+		return
+	}
+	remaining := maxOfficeSearchTextBytes - out.Len()
+	if remaining <= 0 {
+		return
+	}
+	if out.Len() > 0 {
+		out.WriteByte(' ')
+		remaining--
+	}
+	if len(value) > remaining {
+		value = string(limitBytes([]byte(value), remaining))
+	}
+	out.WriteString(value)
+}
+
+func extractDOCTextWithExternalTool(data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", nil
+	}
+	if len(data) > maxOfficeAttachmentBytes {
+		return "", errors.New("doc attachment too large for search extraction")
+	}
+	tmp, err := os.CreateTemp("", "mailmirror-doc-*.doc")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	commands := [][]string{
+		{"antiword", "-m", "UTF-8.txt", tmpName},
+		{"catdoc", "-w", tmpName},
+	}
+	var lastErr error
+	for _, args := range commands {
+		ctx, cancel := context.WithTimeout(context.Background(), officeExtractionTimeout)
+		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		cmd.Stderr = io.Discard
+		out, err := cmd.Output()
+		if ctx.Err() != nil {
+			cancel()
+			return "", ctx.Err()
+		}
+		cancel()
+		if err == nil {
+			return string(limitBytes(out, maxOfficeSearchTextBytes)), nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", errors.New("doc text extractor unavailable")
 }
 
 func isSearchableTextType(mediaType, ext string) bool {

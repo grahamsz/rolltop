@@ -453,8 +453,10 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 		return
 	}
 	action := parts[1]
-	if len(parts) == 3 && parts[1] == "search-index" && parts[2] == "rebuild" {
-		action = "rebuild-search-index"
+	if len(parts) == 3 && parts[1] == "search-index" && parts[2] == "purge" {
+		action = "purge-search-index"
+	} else if len(parts) == 3 && parts[1] == "local-references" && parts[2] == "purge" {
+		action = "purge-local-references"
 	} else if len(parts) != 2 {
 		http.NotFound(w, r)
 		return
@@ -537,23 +539,44 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
-	case "rebuild-search-index":
-		if s.syncer == nil {
+	case "purge-search-index":
+		if s.syncer == nil || s.syncRunner == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "Search indexing is not configured.")
 			return
 		}
-		run, err := s.syncer.StartRebuildMailboxSearchIndex(r.Context(), cu.User.ID, mb.ID, func() {
-			s.notifyUserChanged(cu.User.ID)
+		run, started, err := s.syncRunner.StartMailboxMaintenance(cu.User.ID, mb, "Purging full-text index", func(ctx context.Context, runID int64, progress *store.SyncProgress) error {
+			_, err := s.syncer.PurgeMailboxSearchIndexWithProgress(ctx, cu.User.ID, mb.ID, runID, progress)
+			return err
 		})
-		if err != nil {
-			if store.IsNotFound(err) {
-				http.NotFound(w, r)
-				return
-			}
-			writeAPIError(w, http.StatusBadGateway, "could not start index rebuild")
+		if !started && err == nil {
+			writeAPIError(w, http.StatusConflict, "Sync or purge is already running for this folder.")
 			return
 		}
-		writeJSON(w, map[string]any{"ok": true, "run_id": run.ID})
+		if err != nil {
+			writeAPIError(w, http.StatusBadGateway, "could not start search index purge")
+			return
+		}
+		s.notifyUserChanged(cu.User.ID)
+		writeJSON(w, map[string]any{"ok": true, "queued": true, "run_id": run.ID})
+	case "purge-local-references":
+		if s.syncer == nil || s.syncRunner == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "Sync is not configured.")
+			return
+		}
+		run, started, err := s.syncRunner.StartMailboxMaintenance(cu.User.ID, mb, "Purging local references and full-text index", func(ctx context.Context, runID int64, progress *store.SyncProgress) error {
+			_, err := s.syncer.PurgeMailboxLocalReferencesWithProgress(ctx, cu.User.ID, mb.ID, runID, progress)
+			return err
+		})
+		if !started && err == nil {
+			writeAPIError(w, http.StatusConflict, "Sync or purge is already running for this folder.")
+			return
+		}
+		if err != nil {
+			writeAPIError(w, http.StatusBadGateway, "could not start local references purge")
+			return
+		}
+		s.notifyUserChanged(cu.User.ID)
+		writeJSON(w, map[string]any{"ok": true, "queued": true, "run_id": run.ID})
 	default:
 		http.NotFound(w, r)
 	}

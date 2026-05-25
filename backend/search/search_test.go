@@ -93,6 +93,59 @@ func TestCountMailboxMessagesIsTenantScoped(t *testing.T) {
 	}
 }
 
+func TestPurgeMailboxSearchIndexIsTenantAndMailboxScoped(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	msgs := []store.MessageRecord{
+		{ID: 1, UserID: 1, MailboxID: 10, Subject: "purge me", Date: time.Now()},
+		{ID: 2, UserID: 1, MailboxID: 10, Subject: "purge me too", Date: time.Now()},
+		{ID: 3, UserID: 1, MailboxID: 20, Subject: "keep same user", Date: time.Now()},
+		{ID: 4, UserID: 2, MailboxID: 10, Subject: "keep other user", Date: time.Now()},
+	}
+	for _, msg := range msgs {
+		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ids, err := svc.MailboxMessageIDs(ctx, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || !ids[1] || !ids[2] {
+		t.Fatalf("mailbox ids before purge = %#v", ids)
+	}
+	deleted, err := svc.PurgeMailbox(ctx, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d", deleted)
+	}
+	for _, tt := range []struct {
+		userID    int64
+		mailboxID int64
+		want      int
+	}{
+		{userID: 1, mailboxID: 10, want: 0},
+		{userID: 1, mailboxID: 20, want: 1},
+		{userID: 2, mailboxID: 10, want: 1},
+	} {
+		count, err := svc.CountMailboxMessages(ctx, tt.userID, tt.mailboxID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != tt.want {
+			t.Fatalf("count user=%d mailbox=%d = %d, want %d", tt.userID, tt.mailboxID, count, tt.want)
+		}
+	}
+}
+
 func TestSearchRecentStillAppliesTerms(t *testing.T) {
 	ctx := context.Background()
 	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))

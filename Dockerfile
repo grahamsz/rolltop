@@ -18,7 +18,7 @@ RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mailmir
 
 FROM alpine:3.22
 
-RUN apk add --no-cache ca-certificates tzdata poppler-utils \
+RUN apk add --no-cache ca-certificates tzdata poppler-utils antiword \
 	&& addgroup -S -g 10001 mailmirror \
 	&& adduser -S -D -H -u 10001 -G mailmirror -s /sbin/nologin mailmirror \
 	&& mkdir -p /data \

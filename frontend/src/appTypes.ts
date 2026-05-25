@@ -50,6 +50,7 @@ export type AppShellProps = {
   onMoveMessages: (messageIDs: number[], mailbox: MoveTarget) => void;
   openCompose: (query?: string) => void;
   refreshChrome: RefreshChrome;
-  addToast: AddToast;
+  notificationsEnabled: boolean;
+  toggleNotifications: () => Promise<void>;
   children: ReactNode;
 };

@@ -87,6 +87,31 @@ func TestAPIMailCachedETagShortCircuitsBeforeStore(t *testing.T) {
 	}
 }
 
+func TestAPISearchCachedETagShortCircuitsBeforeSearch(t *testing.T) {
+	user := store.User{ID: 43, Email: "search-cache.test", Name: "Search Cache"}
+	server := &Server{mailListCache: newMailListCache()}
+	key := mailListCacheKey{UserID: user.ID, Page: 2, Search: true, Query: "needle", Sort: string(search.SortBest)}
+	etag := `"cached-search-page"`
+	server.rememberMailListETag(key, etag, server.mailListGeneration(user.ID))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=needle&page=2&sort=best", nil)
+	req.Header.Set("If-None-Match", etag)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: user}))
+	rec := httptest.NewRecorder()
+
+	server.apiSearch(rec, req)
+
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("304 body = %q", rec.Body.String())
+	}
+	if got := rec.Header().Get("ETag"); got != etag {
+		t.Fatalf("etag = %q, want %q", got, etag)
+	}
+}
+
 func TestMailListCachedETagInvalidatesOnUserChange(t *testing.T) {
 	userID := int64(99)
 	server := &Server{events: newEventHub(), mailListCache: newMailListCache()}

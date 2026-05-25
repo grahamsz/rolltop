@@ -118,6 +118,11 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 		sortMode = search.SortRecent
 	}
 	page := pageFromRequest(r)
+	cacheKey := mailListCacheKey{UserID: cu.User.ID, Page: page, Search: true, Query: q, Sort: string(sortMode)}
+	if s.writeMailListNotModifiedIfFresh(w, r, cacheKey) {
+		return
+	}
+	generation := s.mailListGeneration(cu.User.ID)
 	offset := (page - 1) * pageSize
 	own := s.ownAddresses(r.Context(), cu.User)
 	var seeds []conversationSeed
@@ -149,7 +154,7 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 	if hasNext {
 		conversations = conversations[:pageSize]
 	}
-	writeJSONCached(w, r, map[string]any{
+	etag, ok := writeJSONCachedWithETag(w, r, map[string]any{
 		"conversations": apiConversations(conversations),
 		"page":          page,
 		"has_prev":      page > 1,
@@ -157,4 +162,7 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 		"query":         q,
 		"sort":          string(sortMode),
 	})
+	if ok {
+		s.rememberMailListETag(cacheKey, etag, generation)
+	}
 }

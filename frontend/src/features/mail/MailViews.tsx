@@ -1,8 +1,8 @@
 // File overview: Mailbox and search result lists. These components fetch paged conversations,
 // surface sync clues, keep selection state stable, and link rows back to their source page.
 
-import { useEffect, useRef, useState } from "react";
-import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ChangeEvent, KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { Star } from "@phosphor-icons/react";
 import { api } from "../../api";
 import type { DatePrefs, Toast, LocationState } from "../../appTypes";
@@ -61,8 +61,15 @@ export function MailView({
   const mailbox = mailboxes.find((item) => String(item.id) === mailboxID);
   const totalCount = mailbox ? mailbox.message_count : mailboxes.filter((item) => item.show_in_all_mail !== false).reduce((sum, item) => sum + item.message_count, 0);
   const refreshKey = mailboxRefreshKey(latestSyncRun, mailbox);
-  const listKey = `${mailboxID || "all"}:${page}`;
-  const listPending = loading || previousListKey.current !== listKey;
+  const listScopeKey = mailboxID || "all";
+  const listKey = listScopeKey + ":" + page;
+  const slideDirection = useListSlideDirection(listScopeKey, page);
+  const cachedTransitionPage = previousListKey.current !== listKey ? api.cachedMail(mailboxID, page) : null;
+  const displayConversations = cachedTransitionPage?.conversations || conversations;
+  const displayHasPrev = cachedTransitionPage?.has_prev ?? hasPrev;
+  const displayHasNext = cachedTransitionPage?.has_next ?? hasNext;
+  const listPending = (loading || previousListKey.current !== listKey) && !cachedTransitionPage;
+  const listTransitionSpeed: SlideSpeed = cachedTransitionPage ? "fast" : listPending ? "slow" : "fast";
   const activeRun = mailboxActiveRun(mailbox, activeSyncRuns, latestSyncRun);
   const effectiveMode = mailbox ? effectiveMailboxSyncMode(mailbox, mailboxes) : "auto";
 
@@ -79,10 +86,20 @@ export function MailView({
     const isNewList = previousListKey.current !== listKey;
     const canAnimateNewMail = page === 1 && loaded.current && !isNewList && Boolean(refreshKey) && Boolean(latestSyncRun?.new_messages);
     if (isNewList || !loaded.current) {
-      setLoading(true);
-      setConversations([]);
-      setHasPrev(false);
-      setHasNext(false);
+      const cached = api.cachedMail(mailboxID, page);
+      if (cached) {
+        previousPageIDs.current = new Set(cached.conversations.map((conversation) => conversation.message.id));
+        previousListKey.current = listKey;
+        setConversations(cached.conversations);
+        setHasPrev(cached.has_prev);
+        setHasNext(cached.has_next);
+        setLoading(false);
+      } else {
+        setLoading(true);
+        setConversations([]);
+        setHasPrev(false);
+        setHasNext(false);
+      }
     }
     setError("");
     api
@@ -108,6 +125,7 @@ export function MailView({
         setHasPrev(data.has_prev);
         setHasNext(data.has_next);
         if (data.has_next) api.prefetchMail(mailboxID, page + 1);
+        if (data.has_prev && page > 1) api.prefetchMail(mailboxID, page - 1);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -168,13 +186,14 @@ export function MailView({
         pager={{
           page,
           pageSize: mailPageSize,
-          itemCount: listPending ? 0 : conversations.length,
+          itemCount: listPending ? 0 : displayConversations.length,
           total: totalCount,
-          hasPrev: listPending ? false : hasPrev,
-          hasNext: listPending ? false : hasNext,
+          hasPrev: listPending ? false : displayHasPrev,
+          hasNext: listPending ? false : displayHasNext,
           pageURL,
           navigate,
-          ariaLabel: "Mailbox pagination"
+          ariaLabel: "Mailbox pagination",
+          loading: listPending
         }}
       />
       {mailbox ? (
@@ -187,19 +206,24 @@ export function MailView({
         />
       ) : null}
       {error ? <div className="error">{error}</div> : null}
-      {listPending ? <MessageListSkeleton label="Loading messages" /> : null}
-      {!listPending && !error ? (
-        <MessageList
-          csrf={csrf}
-          conversations={conversations}
-          hiddenMessageIDs={hiddenMessageIDs}
-          highlightMessageIDs={newMessageIDs}
-          datePrefs={datePrefs}
-          returnURL={mailURL(mailboxID, page)}
-          navigate={navigate}
-          addToast={addToast}
-          onStarredChange={updateStarred}
-        />
+      {!error ? (
+        <SlidingMessageListStage stageKey={listKey} direction={slideDirection} pending={listPending} speed={listTransitionSpeed}>
+          {listPending ? (
+            <MessageListSkeleton label="Loading messages" />
+          ) : (
+            <MessageList
+              csrf={csrf}
+              conversations={displayConversations}
+              hiddenMessageIDs={hiddenMessageIDs}
+              highlightMessageIDs={newMessageIDs}
+              datePrefs={datePrefs}
+              returnURL={mailURL(mailboxID, page)}
+              navigate={navigate}
+              addToast={addToast}
+              onStarredChange={updateStarred}
+            />
+          )}
+        </SlidingMessageListStage>
       ) : null}
     </>
   );
@@ -273,7 +297,8 @@ export function SearchView({
   const route = searchRoute(location.path);
   const query = route.query;
   const page = route.page;
-  const searchKey = `${query}:best:${page}`;
+  const searchKey = query + ":best:" + page;
+  const slideDirection = useListSlideDirection("search:" + query, page);
   const listPending = loading || loadedKey.current !== searchKey;
 
   useEffect(() => {
@@ -336,26 +361,132 @@ export function SearchView({
           hasNext: listPending ? false : hasNext,
           pageURL,
           navigate,
-          ariaLabel: "Search pagination"
+          ariaLabel: "Search pagination",
+          loading: listPending
         }}
       />
       {query ? <div className="muted">Results for <strong>{query}</strong></div> : null}
       {error ? <div className="error">{error}</div> : null}
-      {listPending ? <MessageListSkeleton label="Searching" /> : null}
-      {!listPending && !error ? (
-        <MessageList
-          csrf={csrf}
-          conversations={conversations}
-          hiddenMessageIDs={hiddenMessageIDs}
-          navigate={navigate}
-          searchQuery={query}
-          datePrefs={datePrefs}
-          returnURL={returnURL}
-          addToast={addToast}
-          onStarredChange={updateStarred}
-        />
+      {!error ? (
+        <SlidingMessageListStage stageKey={searchKey} direction={slideDirection} pending={listPending} speed={listPending ? "slow" : "fast"}>
+          {listPending ? (
+            <MessageListSkeleton label="Searching" />
+          ) : (
+            <MessageList
+              csrf={csrf}
+              conversations={conversations}
+              hiddenMessageIDs={hiddenMessageIDs}
+              navigate={navigate}
+              searchQuery={query}
+              datePrefs={datePrefs}
+              returnURL={returnURL}
+              addToast={addToast}
+              onStarredChange={updateStarred}
+            />
+          )}
+        </SlidingMessageListStage>
       ) : null}
     </>
+  );
+}
+
+type SlideDirection = "left" | "right" | "none";
+type SlideSpeed = "fast" | "slow";
+
+type OutgoingListPane = {
+  key: string;
+  child: ReactNode;
+  direction: Exclude<SlideDirection, "none">;
+};
+
+function useListSlideDirection(scopeKey: string, page: number): SlideDirection {
+  const previous = useRef({ scopeKey, page });
+  const direction = useRef<SlideDirection>("none");
+  if (previous.current.scopeKey !== scopeKey || previous.current.page !== page) {
+    direction.current = previous.current.scopeKey === scopeKey && page !== previous.current.page
+      ? page > previous.current.page ? "left" : "right"
+      : "none";
+    previous.current = { scopeKey, page };
+  }
+  return direction.current;
+}
+
+function SlidingMessageListStage({
+  stageKey,
+  direction,
+  pending,
+  speed,
+  children
+}: {
+  stageKey: string;
+  direction: SlideDirection;
+  pending: boolean;
+  speed: SlideSpeed;
+  children: ReactNode;
+}) {
+  const lastPane = useRef({ key: stageKey, child: children });
+  const measuredHeight = useRef(0);
+  const currentPane = useRef<HTMLDivElement | null>(null);
+  const [outgoing, setOutgoing] = useState<OutgoingListPane | null>(null);
+  const [lockedHeight, setLockedHeight] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    if (lastPane.current.key === stageKey) return;
+    const previous = lastPane.current;
+    if (measuredHeight.current > 0) setLockedHeight(measuredHeight.current);
+    if (direction !== "none") {
+      setOutgoing({ key: previous.key, child: previous.child, direction });
+      const timer = window.setTimeout(() => {
+        setOutgoing((current) => current?.key === previous.key ? null : current);
+      }, speed === "slow" ? 640 : 140);
+      lastPane.current = { key: stageKey, child: children };
+      return () => window.clearTimeout(timer);
+    }
+    lastPane.current = { key: stageKey, child: children };
+    setOutgoing(null);
+  }, [stageKey, direction, speed, children]);
+
+  useLayoutEffect(() => {
+    lastPane.current = { key: stageKey, child: children };
+    if (!pending && currentPane.current) {
+      measuredHeight.current = currentPane.current.offsetHeight;
+    }
+  });
+
+  useLayoutEffect(() => {
+    if (!pending && !outgoing) setLockedHeight(null);
+  }, [pending, outgoing]);
+
+  const stageStyle = lockedHeight ? { minHeight: `${lockedHeight}px` } : undefined;
+  if (outgoing) {
+    const incomingPane = (
+      <div className="message-list-pane incoming" key={stageKey} ref={currentPane}>
+        {children}
+      </div>
+    );
+    const outgoingPane = (
+      <div className="message-list-pane outgoing" key={`out-${outgoing.key}`}>
+        {outgoing.child}
+      </div>
+    );
+    return (
+      <div className={`message-list-stage speed-${speed}`} style={stageStyle}>
+        <div
+          className={`message-list-track slide-${outgoing.direction}`}
+          onAnimationEnd={() => setOutgoing((current) => current?.key === outgoing.key ? null : current)}
+        >
+          {outgoing.direction === "right" ? incomingPane : outgoingPane}
+          {outgoing.direction === "right" ? outgoingPane : incomingPane}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className={`message-list-stage speed-${speed}`} style={stageStyle}>
+      <div className="message-list-pane" key={stageKey} ref={currentPane}>
+        {children}
+      </div>
+    </div>
   );
 }
 
