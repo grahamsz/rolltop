@@ -100,8 +100,11 @@ for (const line of raw.split(/\r?\n/)) {
 }
 
 const suites = [...packages.values()].sort((a, b) => a.name.localeCompare(b.name));
+const noTestSuites = suites.filter((suite) => suite.tests.size === 0 && suite.action !== "fail");
+const reportSuites = suites.filter((suite) => suite.tests.size > 0 || suite.action === "fail");
 const summary = {
   packages: suites.length,
+  noTestPackages: noTestSuites.length,
   tests: 0,
   failures: 0,
   skipped: 0,
@@ -111,18 +114,21 @@ const summary = {
 
 function testCasesForSuite(suite) {
   if (suite.tests.size > 0) return [...suite.tests.values()].sort((a, b) => a.name.localeCompare(b.name));
-  return [{
-    name: "package",
-    action: suite.action,
-    elapsed: suite.elapsed,
-    output: suite.output
-  }];
+  if (suite.action === "fail") {
+    return [{
+      name: "package",
+      action: suite.action,
+      elapsed: suite.elapsed,
+      output: suite.output
+    }];
+  }
+  return [];
 }
 
 const junitSuites = [];
 const markdownRows = [];
 
-for (const suite of suites) {
+for (const suite of reportSuites) {
   const cases = testCasesForSuite(suite);
   const failures = cases.filter((test) => test.action === "fail").length;
   const skipped = cases.filter((test) => test.action === "skip").length;
@@ -165,6 +171,7 @@ const markdown = [
   "### Go Test Results",
   "",
   `Packages: ${summary.packages}`,
+  `No-test packages: ${summary.noTestPackages}`,
   `Tests: ${summary.tests}`,
   `Failures: ${summary.failures}`,
   `Skipped: ${summary.skipped}`,
@@ -173,6 +180,12 @@ const markdown = [
   "| Status | Package | Tests | Failed | Skipped | Time |",
   "| --- | --- | ---: | ---: | ---: | ---: |",
   ...markdownRows,
+  "",
+  "<details>",
+  `<summary>No-test packages (${summary.noTestPackages})</summary>`,
+  "",
+  ...noTestSuites.map((suite) => `- \`${suite.name}\``),
+  "</details>",
   ""
 ].join("\n");
 
