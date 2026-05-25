@@ -304,6 +304,62 @@ func TestSyncRunStoresLatestNewMessageDetails(t *testing.T) {
 	}
 }
 
+func TestListSyncRunsForUserCollapsesNoopFolderRuns(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, account, _, _ := testMailbox(t, ctx, db)
+
+	createRun := func(mailbox string, stored int, status string) SyncRun {
+		run, err := db.CreateSyncRun(ctx, user.ID, account.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		progress := SyncProgress{
+			MessagesSeen:   stored,
+			MessagesStored: stored,
+			MessagesTotal:  stored,
+			MailboxesDone:  1,
+			MailboxesTotal: 1,
+			CurrentMailbox: mailbox,
+			CurrentUID:     uint32(run.ID),
+		}
+		if err := db.FinishSyncRun(ctx, user.ID, run.ID, status, progress, ""); err != nil {
+			t.Fatal(err)
+		}
+		return run
+	}
+
+	oldInboxNoop := createRun("INBOX", 0, "ok")
+	storedInbox := createRun("INBOX", 3, "ok")
+	newerInboxNoop := createRun("INBOX", 0, "ok")
+	latestInboxNoop := createRun("INBOX", 0, "ok")
+	archiveNoop := createRun("Archive", 0, "ok")
+	failedNoop := createRun("INBOX", 0, "failed")
+
+	runs, err := db.ListSyncRunsForUser(ctx, user.ID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[int64]bool{}
+	for _, run := range runs {
+		ids[run.ID] = true
+	}
+	for _, run := range []SyncRun{storedInbox, latestInboxNoop, archiveNoop, failedNoop} {
+		if !ids[run.ID] {
+			t.Fatalf("expected run %d in recent list; got %+v", run.ID, runs)
+		}
+	}
+	for _, run := range []SyncRun{oldInboxNoop, newerInboxNoop} {
+		if ids[run.ID] {
+			t.Fatalf("redundant no-op run %d was not collapsed; got %+v", run.ID, runs)
+		}
+	}
+}
+
 func TestMarkRunningSyncRunsInterruptedSurvivesLateFinish(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))

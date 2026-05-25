@@ -162,13 +162,34 @@ func (s *Store) DeleteMessageForUser(ctx context.Context, userID, id int64) erro
 
 // PurgeMailboxMessages removes all local message references for one mailbox and resets its UID checkpoint.
 func (s *Store) PurgeMailboxMessages(ctx context.Context, userID, accountID, mailboxID int64) ([]MessageRecord, error) {
+	if err := s.ResetMailboxLastUID(ctx, userID, mailboxID); err != nil {
+		return nil, err
+	}
+	var out []MessageRecord
+	for {
+		batch, err := s.PurgeMailboxMessageBatch(ctx, userID, accountID, mailboxID, 250)
+		if err != nil {
+			return out, err
+		}
+		if len(batch) == 0 {
+			return out, nil
+		}
+		out = append(out, batch...)
+	}
+}
+
+// PurgeMailboxMessageBatch removes a small batch of local message rows for one mailbox.
+func (s *Store) PurgeMailboxMessageBatch(ctx context.Context, userID, accountID, mailboxID int64, limit int) ([]MessageRecord, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 250
+	}
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := db.QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
 			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, attachment_indexed_at, created_at, updated_at
-		FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ?`, userID, accountID, mailboxID)
+		FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ? ORDER BY id LIMIT ?`, userID, accountID, mailboxID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -176,18 +197,26 @@ func (s *Store) PurgeMailboxMessages(ctx context.Context, userID, accountID, mai
 	if closeErr := rows.Close(); err == nil {
 		err = closeErr
 	}
-	if err != nil {
-		return nil, err
+	if err != nil || len(messages) == 0 {
+		return messages, err
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ?`, userID, accountID, mailboxID); err != nil {
+	stmt, err := tx.PrepareContext(ctx, `DELETE FROM messages WHERE user_id = ? AND id = ?`)
+	if err != nil {
 		_ = tx.Rollback()
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE mailboxes SET last_uid = 0, updated_at = ? WHERE id = ? AND user_id = ?`, nowUnix(), mailboxID, userID); err != nil {
+	for _, msg := range messages {
+		if _, err := stmt.ExecContext(ctx, userID, msg.ID); err != nil {
+			_ = stmt.Close()
+			_ = tx.Rollback()
+			return nil, err
+		}
+	}
+	if err := stmt.Close(); err != nil {
 		_ = tx.Rollback()
 		return nil, err
 	}

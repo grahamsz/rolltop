@@ -4,6 +4,7 @@ package web
 
 import (
 	"net/http"
+	"time"
 
 	"mailmirror/backend/auth"
 	mmcrypto "mailmirror/backend/crypto"
@@ -16,8 +17,10 @@ func (s *Server) apiBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{
-		"users_exist": s.usersExist(r.Context()),
-		"csrf":        s.csrfToken(w, r),
+		"users_exist":           s.usersExist(r.Context()),
+		"csrf":                  s.csrfToken(w, r),
+		"server_started_at":     timeString(s.startedAt),
+		"server_uptime_seconds": int(time.Since(s.startedAt).Seconds()),
 	}
 	if cu, ok := current(r); ok {
 		resp["user"] = safeUser(cu.User)

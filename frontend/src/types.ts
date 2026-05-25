@@ -263,6 +263,8 @@ export type Bootstrap = {
   account_needs_password?: boolean;
   account_notice?: string;
   enabled_plugins?: string[];
+  server_started_at?: string;
+  server_uptime_seconds?: number;
 };
 
 /** ChromeEvent is the SSE payload used to refresh folders and sync status. */
@@ -271,6 +273,8 @@ export type ChromeEvent = {
   latest_sync_run: SyncRun | null;
   active_sync_runs: SyncRun[];
   sync_running: boolean;
+  server_started_at?: string;
+  server_uptime_seconds?: number;
 };
 
 /** ComposeExistingAttachment is an already-stored attachment that compose can reuse without a new upload. */

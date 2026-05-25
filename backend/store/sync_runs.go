@@ -2,7 +2,11 @@
 
 package store
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+)
 
 // CreateSyncRun starts a sync progress row for one user/account.
 func (s *Store) CreateSyncRun(ctx context.Context, userID, accountID int64) (SyncRun, error) {
@@ -108,14 +112,22 @@ func (s *Store) ListSyncRunsForUser(ctx context.Context, userID int64, limit int
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
+	scanLimit := limit * 20
+	if scanLimit < 100 {
+		scanLimit = 100
+	}
+	if scanLimit > 1000 {
+		scanLimit = 1000
+	}
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, account_id, status, started_at, finished_at, updated_at,
 			messages_seen, messages_stored, messages_skipped, new_messages, latest_new_from, latest_new_subject, messages_total, mailboxes_done, mailboxes_total, current_mailbox, current_uid, error
-		FROM sync_runs WHERE user_id = ? ORDER BY started_at DESC, id DESC LIMIT ?`, userID, limit)
+		FROM sync_runs WHERE user_id = ? ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, updated_at DESC, id DESC LIMIT ?`, userID, scanLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []SyncRun
+	seenNoopFolders := map[string]bool{}
 	for rows.Next() {
 		var r SyncRun
 		var started, finished, updated int64
@@ -126,9 +138,42 @@ func (s *Store) ListSyncRunsForUser(ctx context.Context, userID int64, limit int
 		r.StartedAt = unixTime(started)
 		r.FinishedAt = unixTime(finished)
 		r.UpdatedAt = unixTime(updated)
+		if !keepSyncRunInRecentList(r, seenNoopFolders) {
+			continue
+		}
 		out = append(out, r)
+		if len(out) >= limit {
+			break
+		}
 	}
 	return out, rows.Err()
+}
+
+// keepSyncRunInRecentList keeps failure/interruption visibility and useful work history,
+// while collapsing successful no-op runs to the newest row per account/folder.
+func keepSyncRunInRecentList(run SyncRun, seenNoopFolders map[string]bool) bool {
+	status := strings.TrimSpace(strings.ToLower(run.Status))
+	if status != "" && status != "ok" {
+		return true
+	}
+	if run.MessagesStored > 0 || run.NewMessages > 0 {
+		return true
+	}
+	key := syncRunNoopFolderKey(run)
+	if seenNoopFolders[key] {
+		return false
+	}
+	seenNoopFolders[key] = true
+	return true
+}
+
+// syncRunNoopFolderKey groups zero-message runs by the mailbox label users see in sync history.
+func syncRunNoopFolderKey(run SyncRun) string {
+	mailbox := strings.ToLower(strings.TrimSpace(run.CurrentMailbox))
+	if mailbox == "" {
+		mailbox = "__account__"
+	}
+	return fmt.Sprintf("%d:%s", run.AccountID, mailbox)
 }
 
 // ListUserIDsWithAccounts returns user IDs that have IMAP accounts for background scheduling.

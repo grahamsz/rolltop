@@ -44,6 +44,8 @@ export type AppShellProps = {
   accountNeedsPassword: boolean;
   accountNotice: string;
   enabledPlugins: string[];
+  serverStartedAt: string;
+  serverUptimeSeconds: number;
   location: LocationState;
   navigate: Navigate;
   logout: () => void;

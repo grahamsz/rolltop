@@ -139,6 +139,31 @@ const folderVisibilityChoices = [
   { key: "include_in_search", label: "Search" }
 ] as const;
 
+const dateLocaleChoices = [
+  { value: "", label: "Browser default" },
+  { value: "en-US", label: "English (United States)" },
+  { value: "en-GB", label: "English (United Kingdom)" },
+  { value: "en-CA", label: "English (Canada)" },
+  { value: "en-AU", label: "English (Australia)" },
+  { value: "fr-FR", label: "French (France)" },
+  { value: "fr-CA", label: "French (Canada)" },
+  { value: "de-DE", label: "German (Germany)" },
+  { value: "es-ES", label: "Spanish (Spain)" },
+  { value: "es-MX", label: "Spanish (Mexico)" },
+  { value: "it-IT", label: "Italian (Italy)" },
+  { value: "pt-BR", label: "Portuguese (Brazil)" },
+  { value: "pt-PT", label: "Portuguese (Portugal)" },
+  { value: "nl-NL", label: "Dutch (Netherlands)" },
+  { value: "sv-SE", label: "Swedish (Sweden)" },
+  { value: "da-DK", label: "Danish (Denmark)" },
+  { value: "fi-FI", label: "Finnish (Finland)" },
+  { value: "nb-NO", label: "Norwegian Bokmal (Norway)" },
+  { value: "ja-JP", label: "Japanese (Japan)" },
+  { value: "ko-KR", label: "Korean (South Korea)" },
+  { value: "zh-CN", label: "Chinese Simplified (China)" },
+  { value: "zh-TW", label: "Chinese Traditional (Taiwan)" }
+];
+
 function folderCanInherit(mailbox: Mailbox) {
   return folderParentNames(mailbox.name).length > 0;
 }
@@ -886,7 +911,15 @@ export function SettingsView({
         <div className="settings-columns display-settings-grid">
           <section>
             <h3>Date localization</h3>
-            <Field label="Locale" value={profileForm.date_locale} onChange={(value) => setProfileForm((current) => ({ ...current, date_locale: value }))} placeholder="Browser default, en-US, en-GB, ja-JP" />
+            <label>Locale</label>
+            <select value={profileForm.date_locale} onChange={(event) => setProfileForm((current) => ({ ...current, date_locale: event.target.value }))}>
+              {(profileForm.date_locale && !dateLocaleChoices.some((choice) => choice.value === profileForm.date_locale)
+                ? [...dateLocaleChoices, { value: profileForm.date_locale, label: `${profileForm.date_locale} (saved custom)` }]
+                : dateLocaleChoices
+              ).map((choice) => (
+                <option value={choice.value} key={choice.value || "browser-default"}>{choice.label}</option>
+              ))}
+            </select>
           </section>
           <section>
             <h3>Date format</h3>

@@ -226,7 +226,9 @@ export default function App() {
           mailboxes: chrome.mailboxes,
           sync_running: chrome.sync_running,
           latest_sync_run: chrome.latest_sync_run,
-          active_sync_runs: chrome.active_sync_runs || []
+          active_sync_runs: chrome.active_sync_runs || [],
+          server_started_at: chrome.server_started_at || current.server_started_at,
+          server_uptime_seconds: chrome.server_uptime_seconds ?? current.server_uptime_seconds
         } : current);
         if (chrome.latest_sync_run) {
           const previous = lastNotify.current;
@@ -325,6 +327,8 @@ export default function App() {
         accountNeedsPassword={Boolean(bootstrap.account_needs_password)}
         accountNotice={bootstrap.account_notice || ""}
         enabledPlugins={bootstrap.enabled_plugins || []}
+        serverStartedAt={bootstrap.server_started_at || ""}
+        serverUptimeSeconds={bootstrap.server_uptime_seconds || 0}
         location={location}
         navigate={navigate}
         logout={logout}

@@ -79,6 +79,7 @@ type Server struct {
 	storageMu                 sync.Mutex
 	storageCached             map[int64]storageStatsCacheEntry
 	mailListCache             *mailListCache
+	startedAt                 time.Time
 }
 
 type contextKey string
@@ -215,6 +216,7 @@ func New(opts Options) (*Server, error) {
 		statusRefreshRunning:      map[int64]bool{},
 		statusRefreshBlockedUntil: map[int64]time.Time{},
 		mailListCache:             newMailListCache(),
+		startedAt:                 time.Now().UTC(),
 	}
 	if opts.Syncer != nil {
 		opts.Syncer.Notify = srv.notifyUserChanged

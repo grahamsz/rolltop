@@ -41,6 +41,14 @@ type AttachmentDoc struct {
 	Text        string
 }
 
+// MessageIndexDocument is the complete search payload for one stored message.
+// Sync batches these values after SQLite/blob writes so Bleve pays one commit
+// cost for many IMAP messages instead of one commit per message.
+type MessageIndexDocument struct {
+	Message     store.MessageRecord
+	Attachments []AttachmentDoc
+}
+
 // SortMode selects between best-match ranking and strict recent-date ordering.
 type SortMode string
 
@@ -208,11 +216,54 @@ func (s *Service) indexForUser(userID int64) (bleve.Index, error) {
 // message metadata/body; Bleve receives searchable text, normalized compound terms,
 // filter fields, attachment text extracted from raw .eml, and plugin language data.
 func (s *Service) IndexMessage(ctx context.Context, msg store.MessageRecord, attachments []AttachmentDoc) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
+	return s.IndexMessages(ctx, []MessageIndexDocument{{Message: msg, Attachments: attachments}})
+}
+
+// IndexMessages writes a batch of message documents to Bleve. The production
+// sync path uses this to avoid forcing a separate Bleve commit for every IMAP
+// message body while keeping tenant indexes separated by user ID.
+func (s *Service) IndexMessages(ctx context.Context, documents []MessageIndexDocument) error {
+	if len(documents) == 0 {
+		return nil
 	}
+	groups := make(map[int64][]MessageIndexDocument)
+	order := make([]int64, 0, 1)
+	for _, document := range documents {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		userID := document.Message.UserID
+		if _, ok := groups[userID]; !ok {
+			order = append(order, userID)
+		}
+		groups[userID] = append(groups[userID], document)
+	}
+	for _, userID := range order {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		index, err := s.indexForUser(userID)
+		if err != nil {
+			return err
+		}
+		batch := index.NewBatch()
+		for _, document := range groups[userID] {
+			batch.Index(strconv.FormatInt(document.Message.ID, 10), buildMessageDocument(document.Message, document.Attachments))
+		}
+		if err := index.Batch(batch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// buildMessageDocument centralizes the SQLite-to-Bleve projection so single and
+// batched indexing stay byte-for-byte equivalent.
+func buildMessageDocument(msg store.MessageRecord, attachments []AttachmentDoc) map[string]any {
 	names := make([]string, 0, len(attachments))
 	contentTypes := make([]string, 0, len(attachments))
 	texts := make([]string, 0, len(attachments))
@@ -226,7 +277,7 @@ func (s *Service) IndexMessage(ctx context.Context, msg store.MessageRecord, att
 	hasAttachment := msg.HasAttachments || len(attachments) > 0
 	compoundBody := store.MessageBodyPreview(msg.BodyText, maxCompoundFieldBytes/4)
 	compoundAttachments := store.MessageBodyPreview(strings.Join(texts, " "), maxCompoundFieldBytes/4)
-	doc := map[string]any{
+	return map[string]any{
 		"user_id":              strconv.FormatInt(msg.UserID, 10),
 		"mailbox_id":           strconv.FormatInt(msg.MailboxID, 10),
 		"subject":              msg.Subject,
@@ -257,11 +308,6 @@ func (s *Service) IndexMessage(ctx context.Context, msg store.MessageRecord, att
 			compoundAttachments,
 		),
 	}
-	index, err := s.indexForUser(msg.UserID)
-	if err != nil {
-		return err
-	}
-	return index.Index(strconv.FormatInt(msg.ID, 10), doc)
 }
 
 // DeleteMessage removes one tenant-scoped message document from the appropriate Bleve index.

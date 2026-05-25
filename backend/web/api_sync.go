@@ -94,11 +94,13 @@ func (s *Server) syncEventPayload(ctx context.Context, userID int64) (map[string
 	var data viewData
 	s.loadMailboxChrome(ctx, userID, &data)
 	return map[string]any{
-		"mailboxes":        apiMailboxes(data.Mailboxes),
-		"latest_sync_run":  apiSyncRunPtr(data.LatestSyncRun),
-		"active_sync_runs": apiSyncRuns(data.ActiveSyncRuns),
-		"sync_running":     data.SyncRunning,
-		"storage_retained": true,
+		"mailboxes":             apiMailboxes(data.Mailboxes),
+		"latest_sync_run":       apiSyncRunPtr(data.LatestSyncRun),
+		"active_sync_runs":      apiSyncRuns(data.ActiveSyncRuns),
+		"sync_running":          data.SyncRunning,
+		"server_started_at":     timeString(s.startedAt),
+		"server_uptime_seconds": int(time.Since(s.startedAt).Seconds()),
+		"storage_retained":      true,
 	}, nil
 }
 func (s *Server) apiStorage(w http.ResponseWriter, r *http.Request) {

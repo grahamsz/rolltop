@@ -84,6 +84,8 @@
       color: transparent;
       gap: 0;
       opacity: .72;
+      font-size: 0;
+      line-height: 0;
 
       .icon {
         color: var(--text);
@@ -111,6 +113,8 @@
       overflow: hidden;
       color: transparent;
       gap: 0;
+      font-size: 0;
+      line-height: 0;
 
       .icon {
         color: var(--text);
@@ -138,6 +142,8 @@
       padding: 8px 14px;
       color: var(--text);
       gap: 8px;
+      font-size: inherit;
+      line-height: normal;
     }
   }
 }

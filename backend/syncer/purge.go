@@ -6,6 +6,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"time"
 
 	"mailmirror/backend/store"
 )
@@ -83,17 +84,36 @@ func (s *Service) PurgeMailboxLocalReferencesWithProgress(ctx context.Context, u
 			return 0, err
 		}
 	}
-	messages, err := s.Store.PurgeMailboxMessages(ctx, userID, mailbox.AccountID, mailbox.ID)
-	if err != nil {
+	if err := s.Store.ResetMailboxLastUID(ctx, userID, mailbox.ID); err != nil {
 		return 0, err
 	}
-	if progress != nil {
-		progress.MessagesSeen += len(messages)
-		if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
-			return len(messages), err
+	purged := 0
+	const purgeBatchSize = 10
+	for {
+		messages, err := s.Store.PurgeMailboxMessageBatch(ctx, userID, mailbox.AccountID, mailbox.ID, purgeBatchSize)
+		if err != nil {
+			return purged, err
+		}
+		if len(messages) == 0 {
+			break
+		}
+		purged += len(messages)
+		if progress != nil {
+			progress.MessagesSeen += len(messages)
+			if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
+				return purged, err
+			}
+		}
+		s.notify(userID)
+		if err := s.cleanupPurgedMessageBlobs(ctx, userID, messages); err != nil {
+			return purged, err
+		}
+		if len(messages) == purgeBatchSize {
+			if err := pauseBetweenPurgeBatches(ctx); err != nil {
+				return purged, err
+			}
 		}
 	}
-	s.notify(userID)
 	if s.Search != nil {
 		if _, err := s.Search.PurgeMailboxWithProgress(ctx, userID, mailboxID, func(n int) error {
 			if progress == nil {
@@ -102,14 +122,23 @@ func (s *Service) PurgeMailboxLocalReferencesWithProgress(ctx context.Context, u
 			progress.MessagesSeen += n
 			return s.updateSyncProgress(ctx, userID, runID, *progress)
 		}); err != nil {
-			return len(messages), err
+			return purged, err
 		}
 	}
 	s.notify(userID)
-	if err := s.cleanupPurgedMessageBlobs(ctx, userID, messages); err != nil {
-		return len(messages), err
+	return purged, nil
+}
+
+func pauseBetweenPurgeBatches(ctx context.Context) error {
+	const delay = 150 * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	return len(messages), nil
 }
 
 func (s *Service) cleanupPurgedMessageBlobs(ctx context.Context, userID int64, messages []store.MessageRecord) error {

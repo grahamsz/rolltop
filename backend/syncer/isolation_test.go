@@ -263,6 +263,74 @@ func TestFakeSyncTenantIsolation(t *testing.T) {
 	}
 }
 
+func TestRequestedMailboxSyncRepairsIncompleteCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchSvc, err := search.Open(filepath.Join(dir, "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchSvc.Close()
+	blobStore := blob.New(dir)
+
+	user, err := db.CreateUser(ctx, "checkpoint@example.test", "Checkpoint", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := []byte("12345678901234567890123456789012")
+	enc, err := mmcrypto.EncryptString(key, "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertMailAccount(ctx, account(user.ID, enc)); err != nil {
+		t.Fatal(err)
+	}
+
+	fetcher := &fakeFetcher{messages: map[int64][]syncer.FetchedMessage{
+		user.ID: {{Mailbox: "INBOX", UID: 3, InternalDate: time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC), Raw: []byte(rawMessage("three@example.test", "Three", "body three", false))}},
+	}}
+	service := &syncer.Service{Store: db, Blobs: blobStore, Search: searchSvc, Fetcher: fetcher}
+	if _, err := service.SyncUser(ctx, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	boxes, err := db.ListMailboxesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(boxes) != 1 || boxes[0].LastUID != 3 || boxes[0].LocalMessageCount != 1 {
+		t.Fatalf("initial mailbox state = %+v", boxes)
+	}
+
+	fetcher.messages[user.ID] = []syncer.FetchedMessage{
+		{Mailbox: "INBOX", UID: 1, InternalDate: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC), Raw: []byte(rawMessage("one@example.test", "One", "body one", false))},
+		{Mailbox: "INBOX", UID: 2, InternalDate: time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC), Raw: []byte(rawMessage("two@example.test", "Two", "body two", false))},
+		{Mailbox: "INBOX", UID: 3, InternalDate: time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC), Raw: []byte(rawMessage("three@example.test", "Three", "body three", false))},
+	}
+	run, err := service.SyncUserMailboxes(ctx, user.ID, []string{"INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = db.GetSyncRunForUser(ctx, user.ID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := db.ListMessagesForMailbox(ctx, user.ID, boxes[0].ID, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("messages after repair = %d", len(messages))
+	}
+	if run.MessagesStored != 2 || run.MessagesSkipped != 1 {
+		t.Fatalf("repair run progress = %+v", run)
+	}
+}
+
 func TestRepairMailboxSearchIndexIndexesMissingIDsWhenCountsMatch(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

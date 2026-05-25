@@ -27,6 +27,8 @@ export function AppShell({
   accountNeedsPassword,
   accountNotice,
   enabledPlugins,
+  serverStartedAt,
+  serverUptimeSeconds,
   location,
   navigate,
   logout,
@@ -50,6 +52,8 @@ export function AppShell({
         user={user}
         mailboxes={mailboxes}
         enabledPlugins={enabledPlugins}
+        serverStartedAt={serverStartedAt}
+        serverUptimeSeconds={serverUptimeSeconds}
         location={location}
         navigate={navigate}
         logout={logout}
@@ -103,12 +107,39 @@ function AccountCredentialBanner({ notice, navigate }: { notice: string; navigat
   );
 }
 
+function useServerUptimeLabel(startedAt: string, fallbackSeconds: number) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+
+  const started = Date.parse(startedAt || "");
+  const seconds = Number.isFinite(started)
+    ? Math.max(0, Math.floor((now - started) / 1000))
+    : Math.max(0, Math.floor(fallbackSeconds || 0));
+  return formatUptime(seconds);
+}
+
+function formatUptime(totalSeconds: number) {
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return "";
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${Math.max(1, minutes)}m`;
+}
+
 // Topbar owns the search input because search is global navigation, not part of
 // a specific mailbox or message view.
 function Topbar({
   user,
   mailboxes,
   enabledPlugins,
+  serverStartedAt,
+  serverUptimeSeconds,
   location,
   navigate,
   logout,
@@ -119,6 +150,8 @@ function Topbar({
   user: User;
   mailboxes: Mailbox[];
   enabledPlugins: string[];
+  serverStartedAt: string;
+  serverUptimeSeconds: number;
   location: LocationState;
   navigate: (url: string) => void;
   logout: () => void;
@@ -128,6 +161,7 @@ function Topbar({
 }) {
   const [query, setQuery] = useState(() => searchRoute(currentLocation().path).query);
   const [focused, setFocused] = useState(false);
+  const uptimeLabel = useServerUptimeLabel(serverStartedAt, serverUptimeSeconds);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const pluginKey = enabledPlugins.join("|");
   const pluginSet = useMemo(() => createPluginSet(enabledPlugins), [pluginKey]);
@@ -205,6 +239,7 @@ function Topbar({
             <Icon name="group" />
           </button>
         ) : null}
+        {uptimeLabel ? <span className="uptime-chip" title={serverStartedAt ? `Started ${new Date(serverStartedAt).toLocaleString()}` : "Server uptime"}>Up {uptimeLabel}</span> : null}
         <span className="user-chip">{user.name || user.email}</span>
         <button className="secondary" type="button" onClick={logout}>Logout</button>
       </nav>
