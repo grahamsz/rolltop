@@ -191,6 +191,7 @@
   display: grid;
 }
 
+.sidebar-uptime,
 .sidebar-license {
   @include truncate;
   flex: none;
@@ -199,6 +200,14 @@
   color: var(--muted);
   font-size: 11px;
   line-height: 1.2;
+}
+
+.sidebar-uptime {
+  margin-top: 8px;
+}
+
+.sidebar-license {
+  margin-top: 3px;
 }
 
 .sync-run-list {

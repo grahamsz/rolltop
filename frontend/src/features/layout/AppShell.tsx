@@ -24,11 +24,11 @@ export function AppShell({
   latestSyncRun,
   activeSyncRuns,
   syncRunning,
+  serverStartedAt,
+  serverUptimeSeconds,
   accountNeedsPassword,
   accountNotice,
   enabledPlugins,
-  serverStartedAt,
-  serverUptimeSeconds,
   location,
   navigate,
   logout,
@@ -52,8 +52,6 @@ export function AppShell({
         user={user}
         mailboxes={mailboxes}
         enabledPlugins={enabledPlugins}
-        serverStartedAt={serverStartedAt}
-        serverUptimeSeconds={serverUptimeSeconds}
         location={location}
         navigate={navigate}
         logout={logout}
@@ -71,6 +69,8 @@ export function AppShell({
           latestSyncRun={latestSyncRun}
           activeSyncRuns={activeSyncRuns}
           syncRunning={syncRunning}
+          serverStartedAt={serverStartedAt}
+          serverUptimeSeconds={serverUptimeSeconds}
           currentPath={location.path}
           navigate={navigate}
           openCompose={openCompose}
@@ -138,8 +138,6 @@ function Topbar({
   user,
   mailboxes,
   enabledPlugins,
-  serverStartedAt,
-  serverUptimeSeconds,
   location,
   navigate,
   logout,
@@ -150,8 +148,6 @@ function Topbar({
   user: User;
   mailboxes: Mailbox[];
   enabledPlugins: string[];
-  serverStartedAt: string;
-  serverUptimeSeconds: number;
   location: LocationState;
   navigate: (url: string) => void;
   logout: () => void;
@@ -161,7 +157,6 @@ function Topbar({
 }) {
   const [query, setQuery] = useState(() => searchRoute(currentLocation().path).query);
   const [focused, setFocused] = useState(false);
-  const uptimeLabel = useServerUptimeLabel(serverStartedAt, serverUptimeSeconds);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const pluginKey = enabledPlugins.join("|");
   const pluginSet = useMemo(() => createPluginSet(enabledPlugins), [pluginKey]);
@@ -239,7 +234,6 @@ function Topbar({
             <Icon name="group" />
           </button>
         ) : null}
-        {uptimeLabel ? <span className="uptime-chip" title={serverStartedAt ? `Started ${new Date(serverStartedAt).toLocaleString()}` : "Server uptime"}>Up {uptimeLabel}</span> : null}
         <span className="user-chip">{user.name || user.email}</span>
         <button className="secondary" type="button" onClick={logout}>Logout</button>
       </nav>
@@ -255,6 +249,8 @@ function Sidebar({
   latestSyncRun,
   activeSyncRuns,
   syncRunning,
+  serverStartedAt,
+  serverUptimeSeconds,
   currentPath,
   navigate,
   openCompose,
@@ -268,6 +264,8 @@ function Sidebar({
   latestSyncRun: SyncRun | null;
   activeSyncRuns: SyncRun[];
   syncRunning: boolean;
+  serverStartedAt: string;
+  serverUptimeSeconds: number;
   currentPath: string;
   navigate: (url: string) => void;
   openCompose: (query?: string) => void;
@@ -278,6 +276,7 @@ function Sidebar({
 }) {
   const [dropID, setDropID] = useState<number | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  const uptimeLabel = useServerUptimeLabel(serverStartedAt, serverUptimeSeconds);
   const activeMailbox = mailRoute(currentPath).mailboxID;
   const allMailActive = (currentPath === "/mail" || currentPath.startsWith("/mail/")) && !activeMailbox;
   const folders = useMemo(() => folderTree(mailboxes), [mailboxes]);
@@ -414,6 +413,11 @@ function Sidebar({
         </a>
       </div>
       <SidebarSync csrf={csrf} latest={latestSyncRun} activeRuns={activeSyncRuns} running={syncRunning} refreshChrome={refreshChrome} />
+      {uptimeLabel ? (
+        <div className="sidebar-uptime" title={serverStartedAt ? `Started ${new Date(serverStartedAt).toLocaleString()}` : "Server uptime"}>
+          Up {uptimeLabel}
+        </div>
+      ) : null}
       <div className="sidebar-license">
         GNU AGPLv3-or-later
       </div>

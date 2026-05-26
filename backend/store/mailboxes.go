@@ -258,6 +258,31 @@ func (s *Store) GetMailboxForUser(ctx context.Context, userID, mailboxID int64) 
 	return m, err
 }
 
+// GetMailboxByRoleForAccount loads the single special-purpose folder, such as
+// Sent or Trash, assigned to one IMAP account. UpdateMailboxSettings prevents
+// duplicate special roles within the same account, so callers can treat this as
+// a direct lookup rather than a list.
+func (s *Store) GetMailboxByRoleForAccount(ctx context.Context, userID, accountID int64, role string) (Mailbox, error) {
+	role = normalizeMailboxRole(role)
+	if role == "" {
+		return Mailbox{}, ErrNotFound
+	}
+	var m Mailbox
+	var created, updated, statusChecked int64
+	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT id, user_id, account_id, name, sync_mode, role, icon, show_in_sidebar, show_in_all_mail, include_in_search, uidvalidity, last_uid,
+			remote_message_count, remote_unread_count, remote_uid_next, status_checked_at, created_at, updated_at
+		FROM mailboxes WHERE user_id = ? AND account_id = ? AND role = ?`, userID, accountID, role).
+		Scan(&m.ID, &m.UserID, &m.AccountID, &m.Name, &m.SyncMode, &m.Role, &m.Icon, &m.ShowInSidebar, &m.ShowInAllMail, &m.IncludeInSearch, &m.UIDValidity, &m.LastUID,
+			&m.RemoteMessageCount, &m.RemoteUnreadCount, &m.RemoteUIDNext, &statusChecked, &created, &updated)
+	m.SyncMode = normalizeSyncMode(m.SyncMode)
+	m.Role = normalizeMailboxRole(m.Role)
+	m.Icon = normalizeMailboxIcon(m.Icon, m.Name, m.Role)
+	m.StatusCheckedAt = unixTime(statusChecked)
+	m.CreatedAt = unixTime(created)
+	m.UpdatedAt = unixTime(updated)
+	return m, err
+}
+
 // ListMailboxesForUser returns folder summaries with local, remote, and indexing counters for chrome/settings.
 func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]MailboxSummary, error) {
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT mb.id, mb.user_id, mb.account_id, mb.name, mb.sync_mode, mb.role, mb.icon,

@@ -100,6 +100,18 @@ func (f *fakeFetcher) FetchMessage(ctx context.Context, account store.MailAccoun
 	return syncer.FetchedMessage{}, store.ErrNotFound
 }
 
+func (f *fakeFetcher) AppendMessage(ctx context.Context, account store.MailAccount, mailbox string, raw []byte, messageID string, date time.Time) (syncer.FetchedMessage, error) {
+	var highest uint32
+	for _, msg := range f.messages[account.UserID] {
+		if msg.Mailbox == mailbox && msg.UID > highest {
+			highest = msg.UID
+		}
+	}
+	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: highest + 1, InternalDate: date, Size: int64(len(raw)), Flags: []string{"\\Seen"}, Raw: raw}
+	f.messages[account.UserID] = append(f.messages[account.UserID], msg)
+	return msg, nil
+}
+
 func (f *fakeFetcher) SetSeen(ctx context.Context, account store.MailAccount, mailbox string, uid uint32, seen bool) error {
 	return nil
 }

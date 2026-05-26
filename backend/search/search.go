@@ -98,6 +98,27 @@ type Hit struct {
 	Fields []string
 }
 
+// FieldTermMatch groups the concrete indexed terms Bleve reported by indexed field.
+type FieldTermMatch struct {
+	Field string
+	Terms []string
+}
+
+// ScoreExplanation is Bleve's scorer tree for one hit. It is intentionally
+// exposed only through on-demand explain endpoints because it can be verbose.
+type ScoreExplanation = blevesearch.Explanation
+
+// ExplanationResult is a single-document search explanation. Locations drive
+// human-readable match labels while Raw preserves Bleve's scorer tree for debug UI.
+type ExplanationResult struct {
+	ID           int64
+	Score        float64
+	Terms        []string
+	Fields       []string
+	FieldMatches []FieldTermMatch
+	Raw          *ScoreExplanation
+}
+
 // SenderBoost increases rank for senders the user historically reads.
 type SenderBoost struct {
 	Sender string
@@ -639,33 +660,56 @@ func (s *Service) MatchMessage(ctx context.Context, userID, messageID int64, que
 // MatchMessageWithOptions uses the same query-time behavior as the search results
 // list so message-detail highlighting stays consistent with the user's profile.
 func (s *Service) MatchMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, opts SearchOptions) (Hit, bool, error) {
+	result, ok, err := s.explainMessageWithOptions(ctx, userID, messageID, queryText, SortRecent, opts, false)
+	if err != nil || !ok {
+		return Hit{}, ok, err
+	}
+	return Hit{ID: result.ID, Terms: result.Terms, Fields: result.Fields}, true, nil
+}
+
+// ExplainMessageWithOptions re-runs the same best-match query against one
+// document and requests Bleve's scorer explanation. Message-detail UI calls this
+// on demand from the action menu, not during normal search result rendering.
+func (s *Service) ExplainMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, opts SearchOptions) (ExplanationResult, bool, error) {
+	return s.explainMessageWithOptions(ctx, userID, messageID, queryText, SortBest, opts, true)
+}
+
+func (s *Service) explainMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, sortMode SortMode, opts SearchOptions, explain bool) (ExplanationResult, bool, error) {
 	select {
 	case <-ctx.Done():
-		return Hit{}, false, ctx.Err()
+		return ExplanationResult{}, false, ctx.Err()
 	default:
 	}
 	queryText = strings.TrimSpace(queryText)
 	if userID == 0 || messageID == 0 || queryText == "" {
-		return Hit{}, false, nil
+		return ExplanationResult{}, false, nil
 	}
 	docID := strconv.FormatInt(messageID, 10)
 	docQuery := bleve.NewDocIDQuery([]string{docID})
-	query := bleve.NewConjunctionQuery(buildQuery(userID, queryText, SortRecent, opts), docQuery)
+	query := bleve.NewConjunctionQuery(buildQuery(userID, queryText, sortMode, opts), docQuery)
 	req := bleve.NewSearchRequestOptions(query, 1, 0, false)
 	req.IncludeLocations = true
+	req.Explain = explain
 	index, err := s.indexForUser(userID)
 	if err != nil {
-		return Hit{}, false, err
+		return ExplanationResult{}, false, err
 	}
 	res, err := index.Search(req)
 	if err != nil {
-		return Hit{}, false, err
+		return ExplanationResult{}, false, err
 	}
 	if len(res.Hits) == 0 {
-		return Hit{}, false, nil
+		return ExplanationResult{}, false, nil
 	}
 	hit := res.Hits[0]
-	return Hit{ID: messageID, Terms: hitMatchTerms(queryText, hit.Locations), Fields: hitMatchFields(hit.Locations)}, true, nil
+	return ExplanationResult{
+		ID:           messageID,
+		Score:        hit.Score,
+		Terms:        hitMatchTerms(queryText, hit.Locations),
+		Fields:       hitMatchFields(hit.Locations),
+		FieldMatches: hitMatchFieldTerms(queryText, hit.Locations),
+		Raw:          hit.Expl,
+	}, true, nil
 }
 
 // search applies pagination bounds, builds the tenant-scoped query, optionally
@@ -1119,6 +1163,39 @@ func hitMatchFields(locations blevesearch.FieldTermLocationMap) []string {
 	}
 	sort.Strings(fields)
 	return fields
+}
+
+func hitMatchFieldTerms(queryText string, locations blevesearch.FieldTermLocationMap) []FieldTermMatch {
+	if len(locations) == 0 {
+		return nil
+	}
+	needles := queryNeedles(parseQuery(queryText))
+	fields := hitMatchFields(locations)
+	out := make([]FieldTermMatch, 0, len(fields))
+	for _, field := range fields {
+		termLocations := locations[field]
+		seen := map[string]bool{}
+		terms := make([]string, 0, len(termLocations))
+		for term := range termLocations {
+			term = strings.TrimSpace(strings.ToLower(term))
+			if term == "" || seen[term] || !termRelevantToQuery(term, needles) {
+				continue
+			}
+			seen[term] = true
+			terms = append(terms, term)
+		}
+		sort.Slice(terms, func(i, j int) bool {
+			if len([]rune(terms[i])) == len([]rune(terms[j])) {
+				return terms[i] < terms[j]
+			}
+			return len([]rune(terms[i])) > len([]rune(terms[j]))
+		})
+		if len(terms) > 8 {
+			terms = terms[:8]
+		}
+		out = append(out, FieldTermMatch{Field: field, Terms: terms})
+	}
+	return out
 }
 
 type queryNeedle struct {

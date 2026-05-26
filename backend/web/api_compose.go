@@ -50,7 +50,7 @@ func (s *Server) apiCompose(w http.ResponseWriter, r *http.Request) {
 		}
 		sent, err := s.sendCompose(r.Context(), cu, form)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, "Could not send message.")
+			writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		s.notifyUserChanged(cu.User.ID)
@@ -326,11 +326,15 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 	if s.sender == nil {
 		return store.MessageRecord{}, errors.New("SMTP sending is not configured")
 	}
-	account, err := s.store.GetMailAccount(ctx, cu.User.ID)
+	identity, err := s.selectedComposeIdentity(ctx, cu, form.FromIdentityID)
 	if err != nil {
 		return store.MessageRecord{}, err
 	}
-	identity, err := s.selectedComposeIdentity(ctx, cu, form.FromIdentityID)
+	smtpAccount, err := s.smtpAccountForIdentity(ctx, cu.User.ID, identity)
+	if err != nil {
+		return store.MessageRecord{}, err
+	}
+	imapAccount, sentMailbox, err := s.sentMailboxForIdentity(ctx, cu.User.ID, identity, smtpAccount)
 	if err != nil {
 		return store.MessageRecord{}, err
 	}
@@ -362,9 +366,13 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 			msg.References = referencesForReply(reply)
 		}
 	}
-	raw, err := s.sender.Send(ctx, account, msg)
+	raw, err := s.sender.Send(ctx, smtpEnvelopeForIdentity(identity, smtpAccount), msg)
 	if err != nil {
 		return store.MessageRecord{}, err
 	}
-	return s.storeSentMessage(ctx, cu.User.ID, account, msg, form, raw)
+	fetched, err := s.appendSentMessage(ctx, imapAccount, sentMailbox, raw, msg.MessageID, msg.Date)
+	if err != nil {
+		return store.MessageRecord{}, fmt.Errorf("message sent through SMTP, but could not save it to %s: %w", sentMailbox.Name, err)
+	}
+	return s.storeSentMessage(ctx, cu.User.ID, imapAccount, sentMailbox, msg, form, fetched)
 }

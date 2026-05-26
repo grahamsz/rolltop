@@ -6,7 +6,7 @@ import type { MouseEvent, ReactNode } from "react";
 import { Star } from "@phosphor-icons/react";
 import { api } from "../../api";
 import type { DatePrefs, LocationState, Toast } from "../../appTypes";
-import type { Bootstrap, ComposeForm, ComposeIdentity, HeaderDetail, Mailbox, ThreadMessage } from "../../types";
+import type { Bootstrap, ComposeForm, ComposeIdentity, HeaderDetail, Mailbox, MessageOriginalSource, ScoreExplanationNode, SearchExplanation, ThreadMessage } from "../../types";
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime } from "../../lib/format";
@@ -28,6 +28,20 @@ type MessageLoadStatus = {
   indexed_count: number;
   unavailable_count: number;
   source: string;
+};
+
+type SearchExplanationState = {
+  open: boolean;
+  loading: boolean;
+  error: string;
+  data: SearchExplanation | null;
+};
+
+type OriginalSourceState = {
+  messageID: number;
+  loading: boolean;
+  error: string;
+  data: MessageOriginalSource | null;
 };
 
 function shouldShowLoadStatus(status: MessageLoadStatus | null): status is MessageLoadStatus {
@@ -225,14 +239,18 @@ export function ThreadView({
   const [inlineReply, setInlineReply] = useState<ComposeForm | null>(null);
   const [unsubscribingID, setUnsubscribingID] = useState<number | null>(null);
   const [pendingUnsubscribe, setPendingUnsubscribe] = useState<ThreadMessage | null>(null);
+  const [originalSource, setOriginalSource] = useState<OriginalSourceState | null>(null);
+  const [searchExplanations, setSearchExplanations] = useState<Record<number, SearchExplanationState>>({});
   const [loadStatus, setLoadStatus] = useState<MessageLoadStatus | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const pluginKey = enabledPlugins.join("|");
   const pluginSet = useMemo(() => createPluginSet(enabledPlugins), [pluginKey]);
   const mailbox = mailboxID ? mailboxes.find((item) => item.id === mailboxID) : null;
+  const trashMailbox = mailboxes.find((item) => item.role === "trash");
   const backURL = messageBackURL(location);
   const composeInitial = (composeFrom.match(/[A-Za-z0-9]/)?.[0] || "M").toUpperCase();
+  const canExplainSearch = highlightQuery.trim() !== "";
   const brandDomainKey = useMemo(() => brandDomainKeyForThread(thread, pluginSet), [thread, pluginSet]);
   const [brandIcons, setBrandIcons] = useState<Record<string, string>>({});
 
@@ -243,6 +261,8 @@ export function ThreadView({
       setLoading(true);
       setError("");
       setLoadStatus(null);
+      setOriginalSource(null);
+      setSearchExplanations({});
       let statusTimer = 0;
       try {
         const status = await api.messageLoadStatus(id).catch(() => null);
@@ -329,9 +349,77 @@ export function ThreadView({
     }
   }
 
+  async function viewOriginal(event: MouseEvent<HTMLButtonElement>, item: ThreadMessage) {
+    event.stopPropagation();
+    event.currentTarget.closest("details")?.removeAttribute("open");
+    const messageID = item.message.id;
+    setOriginalSource({ messageID, loading: true, error: "", data: null });
+    try {
+      const data = await api.messageOriginal(messageID);
+      setOriginalSource({ messageID, loading: false, error: "", data });
+    } catch (err) {
+      setOriginalSource({ messageID, loading: false, error: messageFromError(err), data: null });
+    }
+  }
+
+  async function moveToTrash(event: MouseEvent<HTMLButtonElement>, item: ThreadMessage) {
+    event.stopPropagation();
+    event.currentTarget.closest("details")?.removeAttribute("open");
+    if (!trashMailbox || item.message.mailbox_id === trashMailbox.id) return;
+    try {
+      await api.moveMessage(csrf, item.message.id, trashMailbox.id);
+      addToast(`Moved message to ${trashMailbox.name}.`);
+      await refreshChrome();
+      navigate(backURL);
+    } catch (err) {
+      addToast(`Move to trash failed: ${messageFromError(err)}`, "error");
+    }
+  }
+
   function requestUnsubscribe(item: ThreadMessage) {
     if (item.one_click_unsubscribe_sent_at) return;
     setPendingUnsubscribe(item);
+  }
+
+  async function toggleSearchExplanation(event: MouseEvent<HTMLButtonElement>, item: ThreadMessage) {
+    event.stopPropagation();
+    event.currentTarget.closest("details")?.removeAttribute("open");
+    const messageID = item.message.id;
+    const query = highlightQuery.trim();
+    if (!query) return;
+
+    const current = searchExplanations[messageID];
+    if (current?.open) {
+      setSearchExplanations((items) => ({
+        ...items,
+        [messageID]: { ...current, open: false }
+      }));
+      return;
+    }
+    if (current?.data) {
+      setSearchExplanations((items) => ({
+        ...items,
+        [messageID]: { ...current, open: true, error: "", loading: false }
+      }));
+      return;
+    }
+
+    setSearchExplanations((items) => ({
+      ...items,
+      [messageID]: { open: true, loading: true, error: "", data: null }
+    }));
+    try {
+      const data = await api.searchExplanation(messageID, query);
+      setSearchExplanations((items) => ({
+        ...items,
+        [messageID]: { open: true, loading: false, error: "", data }
+      }));
+    } catch (err) {
+      setSearchExplanations((items) => ({
+        ...items,
+        [messageID]: { open: true, loading: false, error: messageFromError(err), data: null }
+      }));
+    }
   }
 
   async function confirmUnsubscribe() {
@@ -408,6 +496,30 @@ export function ThreadView({
             <div className="fetch-status-progress" aria-hidden="true">
               <span />
             </div>
+          </section>
+        </div>
+      ) : null}
+      {originalSource ? (
+        <div className="original-source-backdrop" role="presentation" onClick={() => setOriginalSource(null)}>
+          <section
+            className="original-source-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="original-source-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header>
+              <div>
+                <h2 id="original-source-title">Original source</h2>
+                {originalSource.data?.filename ? <span>{originalSource.data.filename}</span> : null}
+              </div>
+              <button className="ghost" type="button" title="Close original source" onClick={() => setOriginalSource(null)}>
+                <Icon name="close" />
+              </button>
+            </header>
+            {originalSource.loading ? <div className="original-source-status">Loading raw message source...</div> : null}
+            {originalSource.error ? <div className="original-source-status error-text">{originalSource.error}</div> : null}
+            {originalSource.data ? <pre tabIndex={0}>{originalSource.data.source}</pre> : null}
           </section>
         </div>
       ) : null}
@@ -509,6 +621,22 @@ export function ThreadView({
                           <Icon name="forward" />
                           Forward
                         </button>
+                        <button type="button" onClick={(event) => void viewOriginal(event, item)}>
+                          <Icon name="file_text" />
+                          View original
+                        </button>
+                        {trashMailbox && item.message.mailbox_id !== trashMailbox.id ? (
+                          <button type="button" onClick={(event) => void moveToTrash(event, item)}>
+                            <Icon name="delete" />
+                            Move to trash
+                          </button>
+                        ) : null}
+                        {canExplainSearch ? (
+                          <button type="button" onClick={(event) => void toggleSearchExplanation(event, item)}>
+                            <Icon name="search" />
+                            Why this matched
+                          </button>
+                        ) : null}
                         <button type="button" onClick={() => void addSender(item)}>
                           <Icon name="group" />
                           Add sender to contacts
@@ -524,6 +652,9 @@ export function ThreadView({
                     </details>
                   </div>
                 </div>
+                {searchExplanations[item.message.id]?.open ? (
+                  <SearchExplanationPanel state={searchExplanations[item.message.id]} />
+                ) : null}
                 <RemoteImageNotice
                   item={item}
                   plugins={pluginSet}
@@ -617,6 +748,127 @@ export function ThreadView({
       ) : null}
     </>
   );
+}
+
+
+function SearchExplanationPanel({ state }: { state: SearchExplanationState }) {
+  const data = state.data;
+  return (
+    <section className="search-explanation" aria-live="polite">
+      <div className="search-explanation-head">
+        <strong>Why this matched</strong>
+        {data?.score !== undefined ? <span>Score {formatSearchScore(data.score)}</span> : null}
+      </div>
+      {state.loading ? <p>Loading scoring details...</p> : null}
+      {state.error ? <p className="error-text">{state.error}</p> : null}
+      {!state.loading && !state.error && data && !data.matched ? (
+        <p>{data.reason || "This message did not match the current search."}</p>
+      ) : null}
+      {!state.loading && !state.error && data?.matched ? (
+        <>
+          <div className="search-explanation-grid">
+            <div>
+              <span className="search-explanation-label">Query</span>
+              <p>{data.query}</p>
+            </div>
+            <div>
+              <span className="search-explanation-label">Matched Terms</span>
+              <p>{data.terms && data.terms.length > 0 ? data.terms.join(", ") : "No highlightable text terms reported"}</p>
+            </div>
+          </div>
+          {data.field_matches && data.field_matches.length > 0 ? (
+            <div className="search-explanation-section">
+              <span className="search-explanation-label">Fields</span>
+              <div className="search-explanation-chips">
+                {data.field_matches.map((match) => (
+                  <span className="search-explanation-chip" key={match.field}>
+                    {searchFieldLabel(match.field)}{match.terms.length > 0 ? `: ${match.terms.join(", ")}` : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {data.boosts && data.boosts.length > 0 ? (
+            <div className="search-explanation-section">
+              <span className="search-explanation-label">Ranking Boosts</span>
+              <div className="search-explanation-boosts">
+                {data.boosts.map((boost) => (
+                  <div className="search-explanation-boost" key={`${boost.kind}:${boost.label}`}>
+                    <strong>{boost.label}</strong>
+                    <span>{boost.description}</span>
+                    {boost.boost !== undefined ? <code>boost {formatSearchScore(boost.boost)}</code> : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {data.raw ? (
+            <details className="search-explanation-raw">
+              <summary>Scoring detail</summary>
+              <ScoreExplanationTree node={data.raw} />
+            </details>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function ScoreExplanationTree({ node }: { node: ScoreExplanationNode }) {
+  return (
+    <div className="score-node">
+      <div>
+        {node.value !== undefined ? <code>{formatSearchScore(node.value)}</code> : null}
+        <span>{node.message || "scorer node"}</span>
+      </div>
+      {node.children && node.children.length > 0 ? (
+        <ul>
+          {node.children.map((child, index) => (
+            <li key={`${child.message}:${index}`}>
+              <ScoreExplanationTree node={child} />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function searchFieldLabel(field: string): string {
+  switch (field) {
+    case "subject":
+    case "subject_compound":
+      return "Subject";
+    case "from":
+    case "from_compound":
+    case "from_domain":
+      return "Sender";
+    case "to":
+      return "To";
+    case "cc":
+      return "Cc";
+    case "body":
+      return "Body";
+    case "attachment_names":
+      return "Attachment name";
+    case "attachment_types":
+      return "Attachment type";
+    case "attachments":
+      return "Attachment text";
+    case "compound":
+      return "Joined words";
+    case "message_id":
+      return "Message ID";
+    default:
+      return field.replace(/_/g, " ");
+  }
+}
+
+function formatSearchScore(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  if (Math.abs(value) >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  if (Math.abs(value) >= 10) return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  return value.toLocaleString(undefined, { maximumFractionDigits: 3 });
 }
 
 // QuotedDetails lazy-renders the full body iframe only after the user asks for

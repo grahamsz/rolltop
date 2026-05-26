@@ -411,6 +411,50 @@ func TestSearchHitsReportsActualMatchedTerms(t *testing.T) {
 	}
 }
 
+func TestExplainMessageWithOptionsReturnsScoreLocationsAndRawTree(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	msg := store.MessageRecord{ID: 10, UserID: 1, Subject: "housing report", BodyText: "The committee discussed housing policy.", Date: time.Now()}
+	if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+		t.Fatal(err)
+	}
+	result, ok, err := svc.ExplainMessageWithOptions(ctx, 1, 10, "housing", SearchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected message to match")
+	}
+	if result.Score <= 0 {
+		t.Fatalf("score = %f", result.Score)
+	}
+	if result.Raw == nil {
+		t.Fatal("expected raw score explanation")
+	}
+	if len(result.FieldMatches) == 0 {
+		t.Fatalf("field matches = %#v", result.FieldMatches)
+	}
+	found := false
+	for _, match := range result.FieldMatches {
+		for _, term := range match.Terms {
+			if term == "housing" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("field matches did not include housing: %#v", result.FieldMatches)
+	}
+	if _, ok, err := svc.ExplainMessageWithOptions(ctx, 2, 10, "housing", SearchOptions{}); err != nil || ok {
+		t.Fatalf("cross-user explain ok=%v err=%v", ok, err)
+	}
+}
+
 func TestSearchPrioritizesCompactPhraseOverFuzzyRecency(t *testing.T) {
 	ctx := context.Background()
 	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))

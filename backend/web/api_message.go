@@ -16,6 +16,7 @@ import (
 	oneclickunsubscribe "mailmirror/backend/plugins/one_click_unsubscribe"
 	remoteimageblocklist "mailmirror/backend/plugins/remote_image_blocklist"
 	trustedimagesources "mailmirror/backend/plugins/trusted_image_sources"
+	"mailmirror/backend/search"
 	"mailmirror/backend/store"
 )
 
@@ -39,6 +40,14 @@ func (s *Server) apiMessagePath(w http.ResponseWriter, r *http.Request, rest str
 	}
 	if len(parts) == 2 && parts[1] == "load-status" {
 		s.apiMessageLoadStatus(w, r, id)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "original" {
+		s.apiMessageOriginal(w, r, id)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "search-explanation" {
+		s.apiMessageSearchExplanation(w, r, id)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "move" {
@@ -108,6 +117,319 @@ func (s *Server) apiMessage(w http.ResponseWriter, r *http.Request, id int64) {
 		"conversation":    len(views),
 		"showing_images":  r.URL.Query().Get("images") == "1",
 	})
+}
+
+type apiMessageOriginalSource struct {
+	Filename string `json:"filename"`
+	Source   string `json:"source"`
+}
+
+// apiMessageOriginal returns raw RFC822 source for one user-owned message. The
+// browser requests this only from the message action menu because raw messages can
+// be large when they include attachments.
+func (s *Server) apiMessageOriginal(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	msg, err := s.store.GetMessageForUser(r.Context(), cu.User.ID, id)
+	if store.IsNotFound(err) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	raw, err := s.rawMessageBytes(r.Context(), cu.User.ID, msg)
+	if err != nil {
+		writeAPIError(w, http.StatusGone, "original message source is not available")
+		return
+	}
+	writeJSON(w, apiMessageOriginalSource{
+		Filename: rawMessageFilename(msg),
+		Source:   strings.ToValidUTF8(string(raw), "\uFFFD"),
+	})
+}
+
+func rawMessageFilename(msg store.MessageRecord) string {
+	name := strings.TrimSpace(msg.Subject)
+	if name == "" {
+		name = fmt.Sprintf("message-%d", msg.ID)
+	}
+	name = strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			return '-'
+		default:
+			return r
+		}
+	}, name)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = fmt.Sprintf("message-%d", msg.ID)
+	}
+	return name + ".eml"
+}
+
+type apiSearchFieldMatch struct {
+	Field string   `json:"field"`
+	Terms []string `json:"terms"`
+}
+
+type apiSearchBoost struct {
+	Kind        string  `json:"kind"`
+	Label       string  `json:"label"`
+	Description string  `json:"description"`
+	Boost       float64 `json:"boost,omitempty"`
+}
+
+type apiScoreExplanation struct {
+	Value    float64                `json:"value"`
+	Message  string                 `json:"message"`
+	Children []*apiScoreExplanation `json:"children,omitempty"`
+}
+
+// apiMessageSearchExplanation is intentionally on-demand. It re-runs the active
+// search against one user-owned message with Bleve explanations enabled, then adds
+// MailMirror-level labels for ranking boosts that are otherwise hard to interpret
+// from the raw scorer tree.
+func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if s.search == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "search is not configured")
+		return
+	}
+	msg, err := s.store.GetMessageForUser(r.Context(), cu.User.ID, id)
+	if store.IsNotFound(err) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	rawQuery := strings.TrimSpace(r.URL.Query().Get("q"))
+	if rawQuery == "" {
+		writeAPIError(w, http.StatusBadRequest, "search query is required")
+		return
+	}
+	query, _ := stripStarSearchOperators(rawQuery)
+	cleanQuery, mailboxFilter, err := s.searchMailboxFilter(r.Context(), cu.User.ID, query)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	query = strings.TrimSpace(cleanQuery)
+	if query == "" {
+		writeAPIError(w, http.StatusBadRequest, "search query has no explainable text")
+		return
+	}
+	if !mailboxFilter.matches(msg) {
+		writeJSON(w, map[string]any{
+			"matched": false,
+			"query":   query,
+			"reason":  "Message is outside the search mailbox filter.",
+		})
+		return
+	}
+	opts, senderBoost := s.searchExplanationOptions(r.Context(), cu.User, msg)
+	result, matched, err := s.search.ExplainMessageWithOptions(r.Context(), cu.User.ID, msg.ID, query, opts)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	if !matched {
+		writeJSON(w, map[string]any{
+			"matched": false,
+			"query":   query,
+			"reason":  "Bleve did not match this message for the current query.",
+		})
+		return
+	}
+	writeJSON(w, map[string]any{
+		"matched":       true,
+		"query":         query,
+		"score":         result.Score,
+		"terms":         result.Terms,
+		"fields":        result.Fields,
+		"field_matches": apiSearchFieldMatches(result.FieldMatches),
+		"boosts":        apiSearchBoosts(cu.User, msg, senderBoost),
+		"raw":           apiScoreExplanationFromRaw(result.Raw, 0),
+	})
+}
+
+func (s *Server) searchExplanationOptions(ctx context.Context, user store.User, msg store.MessageRecord) (search.SearchOptions, *apiSearchBoost) {
+	opts := searchOptionsForUser(user)
+	if !searchSenderBoostEnabledForUser(user) {
+		return opts, nil
+	}
+	stats, err := s.store.ListReadSenderStatsForUser(ctx, user.ID, 40)
+	if err != nil {
+		return opts, nil
+	}
+	messageSender := store.SenderIdentity(msg.FromAddr)
+	var matched *apiSearchBoost
+	for _, stat := range stats {
+		opts.SenderBoosts = append(opts.SenderBoosts, search.SenderBoost{Sender: stat.Sender, Boost: stat.Boost})
+		if matched == nil && messageSender != "" && strings.EqualFold(stat.Sender, messageSender) {
+			matched = &apiSearchBoost{
+				Kind:        "sender",
+				Label:       "Familiar sender",
+				Description: fmt.Sprintf("%d of %d messages from this sender are read.", stat.ReadCount, stat.TotalCount),
+				Boost:       stat.Boost,
+			}
+		}
+	}
+	return opts, matched
+}
+
+func apiSearchFieldMatches(matches []search.FieldTermMatch) []apiSearchFieldMatch {
+	out := make([]apiSearchFieldMatch, 0, len(matches))
+	for _, match := range matches {
+		out = append(out, apiSearchFieldMatch{Field: match.Field, Terms: match.Terms})
+	}
+	return out
+}
+
+func apiSearchBoosts(user store.User, msg store.MessageRecord, senderBoost *apiSearchBoost) []apiSearchBoost {
+	var out []apiSearchBoost
+	if recency := apiRecencySearchBoost(user, msg); recency != nil {
+		out = append(out, *recency)
+	}
+	if senderBoost != nil {
+		out = append(out, *senderBoost)
+	}
+	return out
+}
+
+func apiRecencySearchBoost(user store.User, msg store.MessageRecord) *apiSearchBoost {
+	bias := normalizedRecencyBiasForUser(user)
+	if bias == "none" {
+		return nil
+	}
+	messageTime := msg.Date
+	if messageTime.IsZero() {
+		messageTime = msg.InternalDate
+	}
+	if messageTime.IsZero() {
+		return nil
+	}
+	age := time.Since(messageTime)
+	if age < 0 {
+		age = 0
+	}
+	for _, bucket := range recencyExplanationBuckets(bias) {
+		if age <= bucket.age {
+			return &apiSearchBoost{
+				Kind:        "recency",
+				Label:       "Recent mail",
+				Description: fmt.Sprintf("Message date is within %s; recency profile is %s.", bucket.label, bias),
+				Boost:       bucket.boost,
+			}
+		}
+	}
+	return nil
+}
+
+func normalizedRecencyBiasForUser(user store.User) string {
+	if value := strings.ToLower(strings.TrimSpace(user.SearchRecencyBias)); value != "" {
+		switch value {
+		case "none", "light", "normal", "strong":
+			return value
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(user.SearchPreset)) {
+	case "strict":
+		return "light"
+	default:
+		return "normal"
+	}
+}
+
+func recencyExplanationBuckets(bias string) []struct {
+	age   time.Duration
+	label string
+	boost float64
+} {
+	switch bias {
+	case "light":
+		return []struct {
+			age   time.Duration
+			label string
+			boost float64
+		}{
+			{36 * time.Hour, "36 hours", 35},
+			{7 * 24 * time.Hour, "7 days", 18},
+			{30 * 24 * time.Hour, "30 days", 9},
+			{180 * 24 * time.Hour, "180 days", 4},
+			{730 * 24 * time.Hour, "2 years", 1.5},
+		}
+	case "strong":
+		return []struct {
+			age   time.Duration
+			label string
+			boost float64
+		}{
+			{36 * time.Hour, "36 hours", 50000},
+			{7 * 24 * time.Hour, "7 days", 25000},
+			{30 * 24 * time.Hour, "30 days", 12000},
+			{90 * 24 * time.Hour, "90 days", 7000},
+			{180 * 24 * time.Hour, "180 days", 4000},
+			{365 * 24 * time.Hour, "1 year", 2200},
+			{730 * 24 * time.Hour, "2 years", 600},
+		}
+	default:
+		return []struct {
+			age   time.Duration
+			label string
+			boost float64
+		}{
+			{36 * time.Hour, "36 hours", 5000},
+			{7 * 24 * time.Hour, "7 days", 2500},
+			{30 * 24 * time.Hour, "30 days", 1200},
+			{90 * 24 * time.Hour, "90 days", 700},
+			{180 * 24 * time.Hour, "180 days", 400},
+			{365 * 24 * time.Hour, "1 year", 220},
+			{730 * 24 * time.Hour, "2 years", 60},
+		}
+	}
+}
+
+func apiScoreExplanationFromRaw(raw *search.ScoreExplanation, depth int) *apiScoreExplanation {
+	if raw == nil || depth > 5 {
+		return nil
+	}
+	message := strings.TrimSpace(raw.Message)
+	if len([]rune(message)) > 220 {
+		message = string([]rune(message)[:220]) + "..."
+	}
+	out := &apiScoreExplanation{Value: raw.Value, Message: message}
+	const maxChildren = 8
+	limit := len(raw.Children)
+	if limit > maxChildren {
+		limit = maxChildren
+	}
+	for i := 0; i < limit; i++ {
+		if child := apiScoreExplanationFromRaw(raw.Children[i], depth+1); child != nil {
+			out.Children = append(out.Children, child)
+		}
+	}
+	if len(raw.Children) > maxChildren {
+		out.Children = append(out.Children, &apiScoreExplanation{Message: fmt.Sprintf("%d more scorer nodes omitted", len(raw.Children)-maxChildren)})
+	}
+	return out
 }
 
 // apiMessageLoadStatus is a cheap preflight used by ThreadView to decide whether

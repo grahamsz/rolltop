@@ -11,8 +11,10 @@ import type {
   ComposeIdentity,
   Conversation,
   MailIdentity,
+  MessageOriginalSource,
   PluginSetting,
   SMTPAccount,
+  SearchExplanation,
   StorageStats,
   SyncFolder,
   SyncRun,
@@ -216,6 +218,12 @@ export const api = {
       unavailable_count: number;
       source: "imap" | "local_blob" | "local" | "indexed" | "preview" | string;
     }>(`/api/messages/${id}/load-status`),
+  messageOriginal: (id: number) => getJSON<MessageOriginalSource>(`/api/messages/${id}/original`),
+  searchExplanation: (id: number, query: string) => {
+    const params = new URLSearchParams();
+    params.set("q", query.trim());
+    return getJSON<SearchExplanation>(`/api/messages/${id}/search-explanation?${params}`);
+  },
   trustImages: (csrf: string, id: number) => postJSON<{ ok: boolean }>(`/api/messages/${id}/images/trust`, csrf),
   unsubscribe: (csrf: string, id: number) =>
     postJSON<{ ok: boolean; already_sent: boolean; sent_at: string }>(`/api/messages/${id}/unsubscribe`, csrf),

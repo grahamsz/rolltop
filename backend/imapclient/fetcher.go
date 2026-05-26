@@ -3,6 +3,7 @@
 package imapclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -301,6 +302,80 @@ func (f *Fetcher) FetchMessage(ctx context.Context, account store.MailAccount, m
 		return syncer.FetchedMessage{}, fmt.Errorf("message not found mailbox %q UID %d", mailbox, uid)
 	}
 	return out, nil
+}
+
+// AppendMessage copies an already-sent RFC822 message into a remote mailbox and
+// returns the server-assigned UID plus canonical raw body. IMAP APPEND itself does
+// not expose a UID unless UIDPLUS is available, so this confirms the saved copy by
+// searching for the Message-ID and falls back to the mailbox UIDNEXT movement when
+// the server cannot search that header reliably.
+func (f *Fetcher) AppendMessage(ctx context.Context, account store.MailAccount, mailbox string, raw []byte, messageID string, date time.Time) (syncer.FetchedMessage, error) {
+	select {
+	case <-ctx.Done():
+		return syncer.FetchedMessage{}, ctx.Err()
+	default:
+	}
+	mailbox = strings.TrimSpace(mailbox)
+	if mailbox == "" || len(raw) == 0 {
+		return syncer.FetchedMessage{}, fmt.Errorf("append message requires a mailbox and raw message")
+	}
+	c, err := f.login(account)
+	if err != nil {
+		return syncer.FetchedMessage{}, err
+	}
+	defer c.Logout()
+
+	var beforeUIDNext uint32
+	if status, err := c.Status(mailbox, []imap.StatusItem{imap.StatusUidNext}); err == nil && status != nil {
+		beforeUIDNext = status.UidNext
+	}
+	flags := []string{imap.SeenFlag}
+	if err := c.Append(mailbox, flags, date, bytes.NewReader(raw)); err != nil {
+		return syncer.FetchedMessage{}, fmt.Errorf("append sent message to mailbox %q: %w", mailbox, err)
+	}
+	mbox, err := c.Select(mailbox, true)
+	if err != nil {
+		return syncer.FetchedMessage{}, fmt.Errorf("select mailbox %q after append: %w", mailbox, err)
+	}
+	if id := strings.TrimSpace(messageID); id != "" {
+		criteria := imap.NewSearchCriteria()
+		criteria.Header.Set("Message-ID", id)
+		uids, err := c.UidSearch(criteria)
+		if err == nil && len(uids) > 0 {
+			return f.fetchOneUID(ctx, c, mailbox, highestUID(uids))
+		}
+	}
+	if mbox != nil && mbox.UidNext > beforeUIDNext && mbox.UidNext > 1 {
+		return f.fetchOneUID(ctx, c, mailbox, mbox.UidNext-1)
+	}
+	return syncer.FetchedMessage{}, fmt.Errorf("sent message was appended to mailbox %q, but its UID could not be confirmed", mailbox)
+}
+
+func (f *Fetcher) fetchOneUID(ctx context.Context, c *client.Client, mailbox string, uid uint32) (syncer.FetchedMessage, error) {
+	var out syncer.FetchedMessage
+	found := false
+	err := f.fetchUIDs(ctx, c, mailbox, []uint32{uid}, func(msg syncer.FetchedMessage) error {
+		out = msg
+		found = true
+		return nil
+	})
+	if err != nil {
+		return syncer.FetchedMessage{}, err
+	}
+	if !found {
+		return syncer.FetchedMessage{}, fmt.Errorf("message not found mailbox %q UID %d after append", mailbox, uid)
+	}
+	return out, nil
+}
+
+func highestUID(uids []uint32) uint32 {
+	var highest uint32
+	for _, uid := range uids {
+		if uid > highest {
+			highest = uid
+		}
+	}
+	return highest
 }
 
 // SetSeen is the one remote read-state mutation MailMirror intentionally allows:

@@ -128,6 +128,44 @@ export type ThreadMessage = {
   can_reply_all: boolean;
 };
 
+
+/** MessageOriginalSource is the raw RFC822 source fetched on demand for View Original. */
+export type MessageOriginalSource = {
+  filename: string;
+  source: string;
+};
+
+/** SearchExplanation describes one on-demand Bleve scoring explanation for a message. */
+export type SearchExplanation = {
+  matched: boolean;
+  query: string;
+  reason?: string;
+  score?: number;
+  terms?: string[];
+  fields?: string[];
+  field_matches?: SearchFieldMatch[];
+  boosts?: SearchBoost[];
+  raw?: ScoreExplanationNode;
+};
+
+export type SearchFieldMatch = {
+  field: string;
+  terms: string[];
+};
+
+export type SearchBoost = {
+  kind: string;
+  label: string;
+  description: string;
+  boost?: number;
+};
+
+export type ScoreExplanationNode = {
+  value?: number;
+  message: string;
+  children?: ScoreExplanationNode[];
+};
+
 /** SenderVisual identifies a plugin-provided sender avatar or brand image. */
 export type SenderVisual = {
   plugin_id: string;

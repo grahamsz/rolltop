@@ -5,21 +5,92 @@ package web
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"mailmirror/backend/blob"
 	"mailmirror/backend/smtpclient"
 	"mailmirror/backend/store"
+	"mailmirror/backend/syncer"
 )
 
 type captureSender struct {
-	msg smtpclient.Message
+	msg   smtpclient.Message
+	count int
 }
 
 func (s *captureSender) Send(_ context.Context, _ store.MailAccount, msg smtpclient.Message) ([]byte, error) {
 	s.msg = msg
+	s.count++
 	raw, _, err := smtpclient.BuildRaw(msg)
 	return raw, err
+}
+
+type captureAppendFetcher struct {
+	syncer.Fetcher
+	nextUID uint32
+}
+
+func (f *captureAppendFetcher) AppendMessage(_ context.Context, _ store.MailAccount, mailbox string, raw []byte, _ string, date time.Time) (syncer.FetchedMessage, error) {
+	if f.nextUID == 0 {
+		f.nextUID = 1
+	}
+	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: f.nextUID, InternalDate: date, Size: int64(len(raw)), Flags: []string{"\\Seen"}, Raw: raw}
+	f.nextUID++
+	return msg, nil
+}
+
+func TestSendComposeRequiresSentRoleBeforeSMTP(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "me@example.test", "Me", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertMailAccount(ctx, store.MailAccount{
+		UserID:            user.ID,
+		Email:             "me@example.test",
+		Host:              "imap.example.test",
+		Port:              993,
+		Username:          "me@example.test",
+		EncryptedPassword: "encrypted",
+		UseTLS:            true,
+		Mailbox:           "INBOX",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateSMTPAccount(ctx, store.SMTPAccount{UserID: user.ID, Label: "SMTP", Host: "smtp.example.test", Port: 587, Username: "me@example.test", EncryptedPassword: "encrypted", UseTLS: true}); err != nil {
+		t.Fatal(err)
+	}
+	contact, err := db.CreateContact(ctx, user.ID, store.Contact{
+		DisplayName: "Me",
+		IsMe:        true,
+		IsPrimary:   true,
+		Emails:      []store.ContactEmail{{Email: "me@example.test", IsPrimary: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := &captureSender{}
+	server := &Server{store: db, blobs: blob.New(dir), sender: sender, syncer: &syncer.Service{Fetcher: &captureAppendFetcher{}}}
+	_, err = server.sendCompose(ctx, currentUser{User: user}, composeForm{
+		To:             "recipient@example.test",
+		Subject:        "No sent folder",
+		Body:           "body",
+		FromIdentityID: contact.Emails[0].ID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "Sent folder role") {
+		t.Fatalf("sendCompose error = %v, want missing Sent role", err)
+	}
+	if sender.count != 0 {
+		t.Fatalf("SMTP send count = %d, want 0", sender.count)
+	}
 }
 
 func TestSendComposeRejectsOtherUserFromIdentity(t *testing.T) {
@@ -59,6 +130,12 @@ func TestSendComposeRejectsOtherUserFromIdentity(t *testing.T) {
 	if account.ID == 0 {
 		t.Fatal("missing account")
 	}
+	if _, err := db.CreateSMTPAccount(ctx, store.SMTPAccount{UserID: user.ID, Label: "SMTP", Host: "smtp.example.test", Port: 587, Username: "me@example.test", EncryptedPassword: "encrypted", UseTLS: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Sent"); err != nil {
+		t.Fatal(err)
+	}
 	ownIdentity, err := db.CreateContact(ctx, user.ID, store.Contact{
 		DisplayName: "Personal Me",
 		IsMe:        true,
@@ -78,7 +155,7 @@ func TestSendComposeRejectsOtherUserFromIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	sender := &captureSender{}
-	server := &Server{store: db, blobs: blob.New(dir), sender: sender}
+	server := &Server{store: db, blobs: blob.New(dir), sender: sender, syncer: &syncer.Service{Fetcher: &captureAppendFetcher{}}}
 	cu := currentUser{User: user}
 	if _, err := server.sendCompose(ctx, cu, composeForm{
 		To:             "recipient@example.test",

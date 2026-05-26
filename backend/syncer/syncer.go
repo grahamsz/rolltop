@@ -54,6 +54,7 @@ type Fetcher interface {
 	UIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error)
 	FetchMailbox(ctx context.Context, account store.MailAccount, mailbox string, afterUID uint32, handle func(FetchedMessage) error) error
 	FetchMessage(ctx context.Context, account store.MailAccount, mailbox string, uid uint32) (FetchedMessage, error)
+	AppendMessage(ctx context.Context, account store.MailAccount, mailbox string, raw []byte, messageID string, date time.Time) (FetchedMessage, error)
 	SetSeen(ctx context.Context, account store.MailAccount, mailbox string, uid uint32, seen bool) error
 	SeenUIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error)
 	SetFlagged(ctx context.Context, account store.MailAccount, mailbox string, uid uint32, flagged bool) error

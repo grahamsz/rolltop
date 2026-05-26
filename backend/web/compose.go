@@ -17,6 +17,7 @@ import (
 	"mailmirror/backend/search"
 	"mailmirror/backend/smtpclient"
 	"mailmirror/backend/store"
+	"mailmirror/backend/syncer"
 )
 
 // replyComposeForm builds the server default for reply compose. The frontend may
@@ -332,12 +333,13 @@ func (s *Server) composeFromLabel(ctx context.Context, cu currentUser) string {
 }
 
 type composeIdentity struct {
-	ID        int64
-	Label     string
-	Email     string
-	Header    string
-	IconURL   string
-	IsPrimary bool
+	ID            int64
+	SMTPAccountID int64
+	Label         string
+	Email         string
+	Header        string
+	IconURL       string
+	IsPrimary     bool
 }
 
 func (s *Server) composeIdentities(ctx context.Context, cu currentUser) []apiComposeIdentity {
@@ -356,36 +358,39 @@ func (s *Server) composeIdentities(ctx context.Context, cu currentUser) []apiCom
 	return out
 }
 
-// composeIdentityChoices derives outgoing identities from Me contacts first. If
-// contacts are not configured yet, it falls back to the IMAP account/user email so
-// first-run compose still has a usable From address.
+// composeIdentityChoices returns the Me-contact-backed outgoing identities that
+// settings can assign to SMTP servers. Compose keeps using contact-email IDs for
+// From selections, while the synchronized identity rows provide the SMTP link and
+// signature data. If setup has not produced identities yet, a first-account
+// fallback keeps compose readable but send will still require SMTP and Sent-folder
+// configuration before it leaves the machine.
 func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []composeIdentity {
-	me, err := s.store.ListMeContactsForUser(ctx, cu.User.ID)
-	if err == nil {
-		var out []composeIdentity
-		for _, contact := range me {
-			label := strings.TrimSpace(contact.DisplayName)
-			if label == "" {
-				label = strings.TrimSpace(contact.GivenName + " " + contact.FamilyName)
-			}
-			iconURL := ""
+	icons := map[int64]string{}
+	if contacts, err := s.store.ListMeContactsForUser(ctx, cu.User.ID); err == nil {
+		for _, contact := range contacts {
 			if contact.Icon != nil {
-				iconURL = fmt.Sprintf("/contacts/%d/icon", contact.ID)
+				icons[contact.ID] = fmt.Sprintf("/contacts/%d/icon", contact.ID)
 			}
-			for _, contactEmail := range contact.Emails {
-				email := strings.TrimSpace(contactEmail.Email)
-				if email == "" {
-					continue
-				}
-				out = append(out, composeIdentity{
-					ID:        contactEmail.ID,
-					Label:     firstNonEmpty(label, email),
-					Email:     email,
-					Header:    contactAddressHeader(label, email),
-					IconURL:   iconURL,
-					IsPrimary: contact.IsPrimary && contactEmail.IsPrimary,
-				})
+		}
+	}
+	identities, err := s.store.ListMailIdentitiesForUser(ctx, cu.User.ID)
+	if err == nil {
+		out := make([]composeIdentity, 0, len(identities))
+		for _, identity := range identities {
+			email := strings.TrimSpace(identity.Email)
+			if email == "" {
+				continue
 			}
+			label := firstNonEmpty(identity.DisplayName, email)
+			out = append(out, composeIdentity{
+				ID:            identity.ContactEmailID,
+				SMTPAccountID: identity.SMTPAccountID,
+				Label:         label,
+				Email:         email,
+				Header:        contactAddressHeader(label, email),
+				IconURL:       icons[identity.ContactID],
+				IsPrimary:     identity.IsPrimary,
+			})
 		}
 		if len(out) > 0 {
 			return out
@@ -512,6 +517,112 @@ func contactAddressHeader(label, email string) string {
 	return (&mail.Address{Name: label, Address: email}).String()
 }
 
+func (s *Server) smtpAccountForIdentity(ctx context.Context, userID int64, identity composeIdentity) (store.SMTPAccount, error) {
+	if identity.SMTPAccountID > 0 {
+		return s.store.GetSMTPAccountForUser(ctx, userID, identity.SMTPAccountID)
+	}
+	accounts, err := s.store.ListSMTPAccountsForUser(ctx, userID)
+	if err != nil {
+		return store.SMTPAccount{}, err
+	}
+	if len(accounts) == 0 {
+		return store.SMTPAccount{}, fmt.Errorf("no SMTP server is configured for %s", identity.Email)
+	}
+	key := store.NormalizeContactEmail(identity.Email)
+	for _, account := range accounts {
+		if key != "" && store.NormalizeContactEmail(account.Username) == key {
+			return account, nil
+		}
+	}
+	if len(accounts) == 1 {
+		return accounts[0], nil
+	}
+	return store.SMTPAccount{}, fmt.Errorf("no SMTP server is assigned to %s", identity.Email)
+}
+
+func (s *Server) sentMailboxForIdentity(ctx context.Context, userID int64, identity composeIdentity, smtpAccount store.SMTPAccount) (store.MailAccount, store.Mailbox, error) {
+	accounts, err := s.store.ListMailAccountsForUser(ctx, userID)
+	if err != nil {
+		return store.MailAccount{}, store.Mailbox{}, err
+	}
+	if len(accounts) == 0 {
+		return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("no IMAP account is configured for %s", identity.Email)
+	}
+	candidates := mailAccountCandidatesForIdentity(accounts, identity, smtpAccount)
+	if len(candidates) == 0 {
+		return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("no IMAP account matches the %s identity", identity.Email)
+	}
+	for _, account := range candidates {
+		mailbox, err := s.store.GetMailboxByRoleForAccount(ctx, userID, account.ID, "sent")
+		if err == nil {
+			return account, mailbox, nil
+		}
+		if !store.IsNotFound(err) {
+			return store.MailAccount{}, store.Mailbox{}, err
+		}
+	}
+	return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("choose a Sent folder role for the IMAP account used by %s before sending", identity.Email)
+}
+
+func mailAccountCandidatesForIdentity(accounts []store.MailAccount, identity composeIdentity, smtpAccount store.SMTPAccount) []store.MailAccount {
+	keys := map[string]bool{}
+	for _, value := range []string{identity.Email, smtpAccount.Username} {
+		if key := store.NormalizeContactEmail(value); key != "" {
+			keys[key] = true
+		}
+	}
+	seen := map[int64]bool{}
+	var out []store.MailAccount
+	for _, account := range accounts {
+		for _, value := range []string{account.Email, account.Username} {
+			if keys[store.NormalizeContactEmail(value)] && !seen[account.ID] {
+				seen[account.ID] = true
+				out = append(out, account)
+				break
+			}
+		}
+	}
+	if len(out) == 0 && len(accounts) == 1 {
+		out = append(out, accounts[0])
+	}
+	return out
+}
+
+func smtpEnvelopeForIdentity(identity composeIdentity, account store.SMTPAccount) store.MailAccount {
+	return store.MailAccount{
+		UserID:                account.UserID,
+		Email:                 identity.Email,
+		SMTPHost:              account.Host,
+		SMTPPort:              account.Port,
+		SMTPUsername:          account.Username,
+		EncryptedSMTPPassword: account.EncryptedPassword,
+		SMTPUseTLS:            account.UseTLS,
+	}
+}
+
+func (s *Server) appendSentMessage(ctx context.Context, account store.MailAccount, mailbox store.Mailbox, raw []byte, messageID string, date time.Time) (syncer.FetchedMessage, error) {
+	if s.syncer == nil || s.syncer.Fetcher == nil {
+		return syncer.FetchedMessage{}, fmt.Errorf("IMAP sync is not configured")
+	}
+	fetched, err := s.syncer.Fetcher.AppendMessage(ctx, account, mailbox.Name, raw, messageID, date)
+	if err != nil {
+		return syncer.FetchedMessage{}, err
+	}
+	if fetched.UID == 0 {
+		return syncer.FetchedMessage{}, fmt.Errorf("IMAP server did not confirm a UID for %s", mailbox.Name)
+	}
+	if len(fetched.Raw) == 0 {
+		fetched.Raw = raw
+	}
+	if fetched.Mailbox == "" {
+		fetched.Mailbox = mailbox.Name
+	}
+	if fetched.InternalDate.IsZero() {
+		fetched.InternalDate = date
+	}
+	return fetched, nil
+}
+
 func smtpHasVisibleAttachments(attachments []smtpclient.Attachment) bool {
 	for _, attachment := range attachments {
 		if !attachment.Inline {
@@ -521,14 +632,14 @@ func smtpHasVisibleAttachments(attachments []smtpclient.Attachment) bool {
 	return false
 }
 
-func (s *Server) storeSentMessage(ctx context.Context, userID int64, account store.MailAccount, outgoing smtpclient.Message, form composeForm, raw []byte) (store.MessageRecord, error) {
-	mailbox, err := s.store.GetOrCreateMailbox(ctx, userID, account.ID, "Sent")
-	if err != nil {
-		return store.MessageRecord{}, err
+func (s *Server) storeSentMessage(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox, outgoing smtpclient.Message, form composeForm, fetched syncer.FetchedMessage) (store.MessageRecord, error) {
+	uid := fetched.UID
+	if uid == 0 {
+		return store.MessageRecord{}, fmt.Errorf("sent IMAP copy is missing a UID")
 	}
-	uid, err := s.store.NextUIDForMailbox(ctx, userID, mailbox.ID)
-	if err != nil {
-		return store.MessageRecord{}, err
+	raw := fetched.Raw
+	if len(raw) == 0 {
+		return store.MessageRecord{}, fmt.Errorf("sent IMAP copy is missing raw message data")
 	}
 	saved, err := s.blobs.SaveRawMessage(userID, account.ID, mailbox.Name, uid, raw)
 	if err != nil {
@@ -544,7 +655,14 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 	if err != nil {
 		return store.MessageRecord{}, err
 	}
-	now := time.Now()
+	messageDate := outgoing.Date
+	if messageDate.IsZero() {
+		messageDate = time.Now()
+	}
+	internalDate := fetched.InternalDate
+	if internalDate.IsZero() {
+		internalDate = messageDate
+	}
 	languageCode := ""
 	if s.pluginEnabled(ctx, plugins.LanguageSearch) {
 		languageCode = languagesearch.DetectCode(form.Subject, form.Body)
@@ -562,8 +680,8 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		FromAddr:         outgoing.From,
 		ToAddr:           form.To,
 		CCAddr:           form.Cc,
-		Date:             now,
-		InternalDate:     now,
+		Date:             messageDate,
+		InternalDate:     internalDate,
 		UID:              uid,
 		Size:             int64(len(raw)),
 		BlobPath:         saved.Path,
@@ -576,6 +694,9 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		return store.MessageRecord{}, err
 	}
 	if err := s.store.CreateLocation(ctx, userID, msg.ID, mailbox.ID, uid); err != nil {
+		return store.MessageRecord{}, err
+	}
+	if err := s.store.UpdateMailboxLastUID(ctx, userID, mailbox.ID, uid); err != nil {
 		return store.MessageRecord{}, err
 	}
 	attachmentDocs := []search.AttachmentDoc{}
