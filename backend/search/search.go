@@ -161,7 +161,7 @@ func (b normalizedSearchBehavior) attachmentBoostScale() float64 {
 	case "light":
 		return 0.4
 	case "strong":
-		return 8
+		return 1
 	default:
 		return 1
 	}
@@ -174,7 +174,7 @@ func (b normalizedSearchBehavior) recencyBoostScale() float64 {
 	case "light":
 		return 0.4
 	case "strong":
-		return 8
+		return 1
 	default:
 		return 1
 	}
@@ -1284,6 +1284,20 @@ func recencyBoostQueries(now time.Time, behavior normalizedSearchBehavior) []ble
 		{30 * 24 * time.Hour, 9},
 		{180 * 24 * time.Hour, 4},
 		{730 * 24 * time.Hour, 1.5},
+	}
+	if behavior.RecencyBias == "strong" {
+		buckets = []struct {
+			age   time.Duration
+			boost float64
+		}{
+			{36 * time.Hour, 5000},
+			{7 * 24 * time.Hour, 2500},
+			{30 * 24 * time.Hour, 1200},
+			{90 * 24 * time.Hour, 700},
+			{180 * 24 * time.Hour, 400},
+			{365 * 24 * time.Hour, 220},
+			{730 * 24 * time.Hour, 60},
+		}
 	}
 	out := make([]blevequery.Query, 0, len(buckets))
 	for _, bucket := range buckets {

@@ -741,8 +741,9 @@ func TestSearchStrongRecencyPromotesRecentComparableMatches(t *testing.T) {
 
 	now := time.Now()
 	msgs := []store.MessageRecord{
-		{ID: 1, UserID: 1, Subject: "Housing Help", BodyText: "Housing Help housing support", Date: now.AddDate(-9, 0, 0)},
+		{ID: 1, UserID: 1, Subject: "Housing Help", BodyText: strings.Repeat("Housing Help housing support ", 30), Date: now.AddDate(-9, 0, 0)},
 		{ID: 2, UserID: 1, Subject: "Colorado housing update", BodyText: "housing", Date: now.AddDate(0, -5, 0)},
+		{ID: 3, UserID: 1, Subject: "Housing policy this month", BodyText: "housing", Date: now.AddDate(0, 0, -20)},
 	}
 	for _, msg := range msgs {
 		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
@@ -754,7 +755,7 @@ func TestSearchStrongRecencyPromotesRecentComparableMatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 2 || ids[0] != 2 {
+	if len(ids) != 3 || ids[0] != 3 || ids[1] != 2 {
 		t.Fatalf("strong recency ids = %v", ids)
 	}
 }
