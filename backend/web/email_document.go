@@ -6,7 +6,10 @@ import (
 	"html"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"mailmirror/backend/store"
 )
 
 var plainTextURLRE = regexp.MustCompile(`https?://[^\s<>"']+`)
@@ -27,21 +30,26 @@ func emailDocument(bodyHTML, bodyText string, allowRemoteImages bool) string {
 }
 
 func emailDocumentWithBlocklist(bodyHTML, bodyText string, allowRemoteImages bool, blockedImagePatterns []string) string {
+	return emailDocumentWithInlineAttachments(bodyHTML, bodyText, allowRemoteImages, blockedImagePatterns, nil)
+}
+
+func emailDocumentWithInlineAttachments(bodyHTML, bodyText string, allowRemoteImages bool, blockedImagePatterns []string, attachments []store.Attachment) string {
 	plainTextDoc := false
 	if strings.TrimSpace(bodyHTML) == "" {
 		plainTextDoc = true
 		bodyHTML = `<div class="plaintext">` + plainTextBodyHTML(bodyText) + `</div>`
 	}
 	bodyHTML = strings.ReplaceAll(bodyHTML, "\x00", "")
+	bodyHTML = replaceInlineCIDRefs(bodyHTML, attachments)
 	if allowRemoteImages {
 		bodyHTML = normalizeProtocolRelativeRemoteRefs(bodyHTML)
 		bodyHTML = removeBlockedRemoteImages(bodyHTML, blockedImagePatterns)
 	}
-	imgSrc := "data: cid:"
+	imgSrc := "'self' data: cid:"
 	styleSrc := "'unsafe-inline'"
 	fontSrc := "data:"
 	if allowRemoteImages {
-		imgSrc = "data: cid: http: https:"
+		imgSrc = "'self' data: cid: http: https:"
 		styleSrc = "'unsafe-inline' http: https:"
 		fontSrc = "data: http: https:"
 	}
@@ -51,6 +59,54 @@ func emailDocumentWithBlocklist(bodyHTML, bodyText string, allowRemoteImages boo
 	}
 	documentCSS := `html,body{margin:0;padding:0;background:#fff;color:#1f2328;font:14px/1.55 Arial,sans-serif;overflow:hidden}body{padding:18px}.plaintext{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.55 Arial,sans-serif}.plaintext a{color:#245f80;text-decoration:none;border-bottom:1px solid #9cc5d8}pre{white-space:pre-wrap;overflow-wrap:anywhere}table{max-width:100%}img{max-width:100%;height:auto}html[data-mailmirror-theme="classic_dark"],html[data-mailmirror-theme="classic_dark"] body{background:#151f1c!important;color:#e6eee9!important;color-scheme:dark}html[data-mailmirror-theme="classic_dark"] body :where(div,p,span,blockquote,pre,td,th,li){background:transparent!important;color:inherit!important;border-color:rgba(174,190,183,.28)!important}html[data-mailmirror-theme="classic_dark"] a{color:#8bd4c8!important;border-bottom-color:rgba(139,212,200,.5)!important}html[data-mailmirror-theme="matrix"],html[data-mailmirror-theme="matrix"] body{background:#06130d!important;color:#dcffe9!important;color-scheme:dark}html[data-mailmirror-theme="matrix"] body :where(div,p,span,blockquote,pre,td,th,li){background:transparent!important;color:inherit!important;border-color:rgba(74,222,128,.24)!important}html[data-mailmirror-theme="matrix"] a{color:#7dffbf!important;border-bottom-color:rgba(125,255,191,.5)!important}`
 	return `<!doctype html><html` + documentClass + `><head><meta charset="utf-8"><base target="_blank"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ` + imgSrc + `; style-src ` + styleSrc + `; font-src ` + fontSrc + `;"><style>` + documentCSS + `</style></head><body>` + bodyHTML + `</body></html>`
+}
+
+var cidURLRE = regexp.MustCompile(`(?i)cid:([^\s"'<>\)]+)`)
+
+func replaceInlineCIDRefs(bodyHTML string, attachments []store.Attachment) string {
+	if len(attachments) == 0 || !strings.Contains(strings.ToLower(bodyHTML), "cid:") {
+		return bodyHTML
+	}
+	urlsByCID := inlineAttachmentURLsByCID(attachments)
+	if len(urlsByCID) == 0 {
+		return bodyHTML
+	}
+	return cidURLRE.ReplaceAllStringFunc(bodyHTML, func(match string) string {
+		parts := cidURLRE.FindStringSubmatch(match)
+		if len(parts) < 2 {
+			return match
+		}
+		if replacement, ok := urlsByCID[normalizeContentID(parts[1])]; ok {
+			return replacement
+		}
+		return match
+	})
+}
+
+func inlineAttachmentURLsByCID(attachments []store.Attachment) map[string]string {
+	out := make(map[string]string)
+	for _, att := range attachments {
+		key := normalizeContentID(att.ContentID)
+		if key == "" || att.ID <= 0 {
+			continue
+		}
+		out[key] = "/attachments/" + strconv.FormatInt(att.ID, 10) + "/inline"
+	}
+	return out
+}
+
+func normalizeContentID(value string) string {
+	value = strings.TrimSpace(html.UnescapeString(value))
+	value = strings.Trim(value, "<>'\" ")
+	if strings.HasPrefix(strings.ToLower(value), "cid:") {
+		value = value[4:]
+	}
+	if decoded, err := url.PathUnescape(value); err == nil {
+		value = decoded
+	}
+	value = strings.TrimSpace(html.UnescapeString(value))
+	value = strings.Trim(value, "<>'\" ")
+	return strings.ToLower(value)
 }
 
 func normalizeProtocolRelativeRemoteRefs(value string) string {

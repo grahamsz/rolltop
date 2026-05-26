@@ -106,6 +106,7 @@ type viewData struct {
 type threadMessageView struct {
 	Message                  store.MessageRecord
 	Attachments              []store.Attachment
+	InlineAttachments        []store.Attachment
 	HeaderDetails            []messageHeaderDetail
 	OneClickUnsub            bool
 	OneClickSentAt           time.Time
@@ -372,7 +373,16 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	id, ok := idFromPath(strings.TrimSuffix(r.URL.Path, "/download"), "/attachments/")
+	pathValue := r.URL.Path
+	inline := false
+	switch {
+	case strings.HasSuffix(pathValue, "/download"):
+		pathValue = strings.TrimSuffix(pathValue, "/download")
+	case strings.HasSuffix(pathValue, "/inline"):
+		pathValue = strings.TrimSuffix(pathValue, "/inline")
+		inline = true
+	}
+	id, ok := idFromPath(pathValue, "/attachments/")
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -394,7 +404,7 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request) {
 		}
 		defer file.Close()
 		w.Header().Set("Content-Type", att.ContentType)
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(att.Filename)))
+		w.Header().Set("Content-Disposition", attachmentContentDisposition(inline, att.Filename, att.ContentType))
 		_, _ = io.Copy(w, file)
 		return
 	}
@@ -428,8 +438,20 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request) {
 		contentType = att.ContentType
 	}
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(att.Filename)))
+	w.Header().Set("Content-Disposition", attachmentContentDisposition(inline, att.Filename, contentType))
 	_, _ = w.Write(file.Data)
+}
+
+func attachmentContentDisposition(inline bool, filename, contentType string) string {
+	disposition := "attachment"
+	if inline && strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "image/") {
+		disposition = "inline"
+	}
+	name := path.Base(strings.TrimSpace(filename))
+	if name == "." || name == "/" || name == "" {
+		name = "attachment"
+	}
+	return fmt.Sprintf("%s; filename=%q", disposition, name)
 }
 
 // handleBlob serves a raw blob record for the signed-in user. Message blobs can be

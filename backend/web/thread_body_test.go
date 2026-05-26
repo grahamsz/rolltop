@@ -5,6 +5,8 @@ package web
 import (
 	"strings"
 	"testing"
+
+	"mailmirror/backend/store"
 )
 
 func TestClipTextQuoteUsesStandardReplyMarker(t *testing.T) {
@@ -305,6 +307,27 @@ func TestEmailDocumentIncludesDarkThemeStyles(t *testing.T) {
 	}
 	if !strings.Contains(htmlDoc, `html[data-mailmirror-theme="matrix"],html[data-mailmirror-theme="matrix"] body`) {
 		t.Fatalf("missing matrix html document styles: %s", htmlDoc)
+	}
+}
+
+func TestEmailDocumentRewritesInlineCIDImages(t *testing.T) {
+	attachments := []store.Attachment{
+		{ID: 42, ContentID: "hero@example.test", IsInline: true, ContentType: "image/png"},
+		{ID: 43, ContentID: "Logo.JPG", IsInline: true, ContentType: "image/jpeg"},
+	}
+	body := `<p>Images</p><img src="cid:hero%40example.test"><img src='cid:logo.jpg'><img src="cid:missing">`
+	doc := emailDocumentWithInlineAttachments(body, "", false, nil, attachments)
+	if !strings.Contains(doc, `src="/attachments/42/inline"`) {
+		t.Fatalf("encoded cid was not rewritten: %s", doc)
+	}
+	if !strings.Contains(doc, `src='/attachments/43/inline'`) {
+		t.Fatalf("case-insensitive cid was not rewritten: %s", doc)
+	}
+	if !strings.Contains(doc, `cid:missing`) {
+		t.Fatalf("unknown cid should be left alone: %s", doc)
+	}
+	if !strings.Contains(doc, `img-src 'self' data: cid:`) {
+		t.Fatalf("same-origin inline images not allowed by CSP: %s", doc)
 	}
 }
 

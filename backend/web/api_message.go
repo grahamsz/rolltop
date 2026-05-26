@@ -523,11 +523,11 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 				}
 			}
 		}
-		attachments, err := s.store.ListAttachmentsForMessage(ctx, cu.User.ID, threadMsg.ID)
+		allAttachments, err := s.store.ListAttachmentsForMessage(ctx, cu.User.ID, threadMsg.ID)
 		if err != nil {
 			return nil, msg, err
 		}
-		attachments = visibleAttachments(attachments)
+		attachments := visibleAttachments(allAttachments)
 		sourceHTML, sourceText, previewOnly := s.displayBodiesForMessage(ctx, cu.User.ID, threadMsg)
 		displayMsg := threadMsg
 		displayMsg.BodyHTML = sourceHTML
@@ -552,6 +552,7 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 		threadViews = append(threadViews, threadMessageView{
 			Message:                  displayMsg,
 			Attachments:              attachments,
+			InlineAttachments:        allAttachments,
 			HeaderDetails:            s.messageHeaderDetails(ctx, cu.User.ID, threadMsg),
 			OneClickUnsub:            oneClickUnsub,
 			OneClickSentAt:           oneClickSentAt,

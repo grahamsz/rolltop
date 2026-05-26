@@ -254,7 +254,7 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 		}
 		fullDoc := ""
 		if view.HasHiddenQuoted {
-			fullDoc = emailDocumentWithBlocklist(view.Message.BodyHTML, view.Message.BodyText, view.ImagesAllowed, view.ImageBlockRules)
+			fullDoc = emailDocumentWithInlineAttachments(view.Message.BodyHTML, view.Message.BodyText, view.ImagesAllowed, view.ImageBlockRules, view.InlineAttachments)
 		}
 		out = append(out, apiThreadMessage{
 			Message:         apiMessageFromRecord(view.Message, view.Snippet),
@@ -268,7 +268,7 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 			SenderVisual:    senderVisual,
 			RecipientLine:   view.RecipientLine,
 			Snippet:         view.Snippet,
-			BodyDoc:         emailDocumentWithBlocklist(view.DisplayBodyHTML, view.DisplayBodyText, view.ImagesAllowed, view.ImageBlockRules),
+			BodyDoc:         emailDocumentWithInlineAttachments(view.DisplayBodyHTML, view.DisplayBodyText, view.ImagesAllowed, view.ImageBlockRules, view.InlineAttachments),
 			FullBodyDoc:     fullDoc,
 			HasHiddenQuoted: view.HasHiddenQuoted,
 			HasDisplayBody:  view.HasDisplayBody,
