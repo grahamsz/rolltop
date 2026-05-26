@@ -20,7 +20,6 @@ const PDF_SEARCH_RETRIES = 6;
 const PDF_SEARCH_RETRY_DELAY_MS = 250;
 const PDF_SEARCH_READY_TIMEOUT_MS = 4000;
 const PDF_SEARCH_READY_POLL_MS = 100;
-const PDF_DOCUMENT_FALLBACK_DELAY_MS = 8000;
 const MAX_PDF_SEARCH_TERMS = 8;
 const EMPTY_PDF_SEARCH_TERMS: string[] = [];
 const EMPTY_PDF_FONT_FALLBACK = { fonts: {} } satisfies NonNullable<PDFViewerConfig["fontFallback"]>;
@@ -48,7 +47,6 @@ export function PdfAttachmentViewer({ src, terms }: PdfAttachmentViewerProps) {
   const [registry, setRegistry] = useState<PluginRegistry | null>(null);
   const [documentLoaded, setDocumentLoaded] = useState(false);
   const [viewerSearchReady, setViewerSearchReady] = useState(false);
-  const [useBrowserFallback, setUseBrowserFallback] = useState(false);
   const [status, setStatus] = useState<PdfSearchStatus>("idle");
   const [activeTerm, setActiveTerm] = useState(searchTerms[0] ?? "");
   const [matchCount, setMatchCount] = useState<number | null>(null);
@@ -59,7 +57,6 @@ export function PdfAttachmentViewer({ src, terms }: PdfAttachmentViewerProps) {
     setRegistry(null);
     setDocumentLoaded(false);
     setViewerSearchReady(false);
-    setUseBrowserFallback(false);
     setStatus("idle");
     setMatchCount(null);
 
@@ -125,10 +122,9 @@ export function PdfAttachmentViewer({ src, terms }: PdfAttachmentViewerProps) {
     }
     const unsubscribeOpened = manager.onDocumentOpened(() => {
       setDocumentLoaded(true);
-      setUseBrowserFallback(false);
     });
     const unsubscribeError = manager.onDocumentError(() => {
-      setUseBrowserFallback(true);
+      setStatus("error");
     });
     return () => {
       unsubscribeOpened();
@@ -137,14 +133,8 @@ export function PdfAttachmentViewer({ src, terms }: PdfAttachmentViewerProps) {
   }, [registry, pdfFetch]);
 
   useEffect(() => {
-    if (pdfFetch.status !== "ready" || documentLoaded || useBrowserFallback) return;
-    const timer = window.setTimeout(() => setUseBrowserFallback(true), PDF_DOCUMENT_FALLBACK_DELAY_MS);
-    return () => window.clearTimeout(timer);
-  }, [pdfFetch.status, documentLoaded, useBrowserFallback]);
-
-  useEffect(() => {
     setViewerSearchReady(false);
-    if (!documentLoaded || useBrowserFallback) return;
+    if (!documentLoaded) return;
 
     let cancelled = false;
     let retryTimer: number | undefined;
@@ -179,17 +169,10 @@ export function PdfAttachmentViewer({ src, terms }: PdfAttachmentViewerProps) {
       if (frameTimer !== undefined) window.cancelAnimationFrame(frameTimer);
       if (nestedFrameTimer !== undefined) window.cancelAnimationFrame(nestedFrameTimer);
     };
-  }, [documentLoaded, useBrowserFallback, src]);
+  }, [documentLoaded, src]);
 
   useEffect(() => {
-    if (!useBrowserFallback || searchTerms.length === 0) return;
-    setActiveTerm(searchTerms[0]);
-    setMatchCount(null);
-    setStatus("error");
-  }, [useBrowserFallback, searchTerms]);
-
-  useEffect(() => {
-    if (!registry || !viewerSearchReady || useBrowserFallback || searchTerms.length === 0) return;
+    if (!registry || !viewerSearchReady || searchTerms.length === 0) return;
 
     let cancelled = false;
     let retryTimer: number | undefined;
@@ -256,7 +239,7 @@ export function PdfAttachmentViewer({ src, terms }: PdfAttachmentViewerProps) {
         // The EmbedPDF registry may already be tearing down when the modal closes.
       }
     };
-  }, [registry, viewerSearchReady, useBrowserFallback, searchTerms]);
+  }, [registry, viewerSearchReady, searchTerms]);
 
   if (pdfFetch.status === "loading") {
     return <div className="attachment-preview-loading">Loading PDF...</div>;
@@ -268,11 +251,7 @@ export function PdfAttachmentViewer({ src, terms }: PdfAttachmentViewerProps) {
 
   return (
     <div className="pdf-preview-shell" ref={shellRef}>
-      {useBrowserFallback ? (
-        <iframe className="pdf-preview-frame" src={src} title="PDF preview" />
-      ) : config ? (
-        <PDFViewer key={src} className="pdf-preview-frame" config={config} onReady={onReady} />
-      ) : null}
+      {config ? <PDFViewer key={src} className="pdf-preview-frame" config={config} onReady={onReady} /> : null}
       {status !== "idle" ? <PdfSearchStatusBadge status={status} term={activeTerm} matches={matchCount} /> : null}
     </div>
   );

@@ -4,18 +4,57 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import type { Attachment } from "../../types";
 import { Icon } from "../../components/Icon";
+import pdfiumWasmUrl from "@embedpdf/snippet/dist/pdfium.wasm?url";
 
-const LazyPdfAttachmentViewer = lazy(() =>
-  import("./PdfAttachmentViewer").then((module) => ({ default: module.PdfAttachmentViewer }))
-);
+const loadPdfAttachmentViewer = () =>
+  import("./PdfAttachmentViewer").then((module) => ({ default: module.PdfAttachmentViewer }));
+
+const LazyPdfAttachmentViewer = lazy(loadPdfAttachmentViewer);
+const PDFIUM_WASM_PRELOAD_ID = "mailmirror-pdfium-wasm-preload";
+
+function preloadPdfAttachmentViewer() {
+  void loadPdfAttachmentViewer();
+  preloadPdfiumWasm();
+}
+
+function preloadPdfiumWasm() {
+  if (typeof document === "undefined" || document.getElementById(PDFIUM_WASM_PRELOAD_ID)) return;
+  const link = document.createElement("link");
+  link.id = PDFIUM_WASM_PRELOAD_ID;
+  link.rel = "preload";
+  link.as = "fetch";
+  link.href = pdfiumWasmUrl;
+  link.type = "application/wasm";
+  link.crossOrigin = "anonymous";
+  document.head.appendChild(link);
+}
 
 /** AttachmentPreviewAction opens the available preview for a supported attachment. */
 export function AttachmentPreviewAction({ attachment }: { attachment: Attachment }) {
   const [open, setOpen] = useState(false);
-  if (!attachment.preview?.available || !attachment.preview.url) return null;
+  const preview = attachment.preview;
+  const isPdfPreview = preview?.available === true && Boolean(preview.url) && preview.kind === "pdf";
+
+  useEffect(() => {
+    if (isPdfPreview) preloadPdfAttachmentViewer();
+  }, [isPdfPreview]);
+
+  if (!preview?.available || !preview.url) return null;
+
+  const openPreview = () => {
+    if (isPdfPreview) preloadPdfAttachmentViewer();
+    setOpen(true);
+  };
+
   return (
     <>
-      <button className="attachment-preview-link" type="button" onClick={() => setOpen(true)}>
+      <button
+        className="attachment-preview-link"
+        type="button"
+        onClick={openPreview}
+        onFocus={isPdfPreview ? preloadPdfAttachmentViewer : undefined}
+        onPointerEnter={isPdfPreview ? preloadPdfAttachmentViewer : undefined}
+      >
         Preview
       </button>
       {open ? <AttachmentPreviewModal attachment={attachment} onClose={() => setOpen(false)} /> : null}
@@ -26,6 +65,7 @@ export function AttachmentPreviewAction({ attachment }: { attachment: Attachment
 function AttachmentPreviewModal({ attachment, onClose }: { attachment: Attachment; onClose: () => void }) {
   const preview = attachment.preview;
   const title = attachment.filename || "Attachment preview";
+  const pdfSearchTerms = attachment.match_terms ?? [];
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -62,7 +102,7 @@ function AttachmentPreviewModal({ attachment, onClose }: { attachment: Attachmen
         <div className="attachment-preview-body">
           {preview.kind === "pdf" ? (
             <Suspense fallback={<div className="attachment-preview-loading">Loading PDF viewer...</div>}>
-              <LazyPdfAttachmentViewer src={preview.url} terms={attachment.match_terms ?? []} />
+              <LazyPdfAttachmentViewer src={preview.url} terms={pdfSearchTerms} />
             </Suspense>
           ) : (
             <img src={preview.url} alt={title} />
