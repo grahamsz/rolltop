@@ -185,6 +185,7 @@ type apiSearchBoost struct {
 	Kind        string  `json:"kind"`
 	Label       string  `json:"label"`
 	Description string  `json:"description"`
+	Value       string  `json:"value,omitempty"`
 	Boost       float64 `json:"boost,omitempty"`
 }
 
@@ -288,6 +289,7 @@ func (s *Server) searchExplanationOptions(ctx context.Context, user store.User, 
 				Kind:        "sender",
 				Label:       "Familiar sender",
 				Description: fmt.Sprintf("%d of %d messages from this sender are read.", stat.ReadCount, stat.TotalCount),
+				Value:       fmt.Sprintf("sender weight %sx", formatSearchBoostNumber(stat.Boost)),
 				Boost:       stat.Boost,
 			}
 		}
@@ -335,8 +337,8 @@ func apiRecencySearchBoost(user store.User, msg store.MessageRecord) *apiSearchB
 			return &apiSearchBoost{
 				Kind:        "recency",
 				Label:       "Recent mail",
-				Description: fmt.Sprintf("Message date is within %s; recency profile is %s.", bucket.label, bias),
-				Boost:       bucket.boost,
+				Description: fmt.Sprintf("Message date is within %s; recency profile is %s. The raw Bleve range weight is intentionally hidden because it is not comparable to the final score.", bucket.label, bias),
+				Value:       fmt.Sprintf("%s freshness bucket", bucket.label),
 			}
 		}
 	}
@@ -356,6 +358,13 @@ func normalizedRecencyBiasForUser(user store.User) string {
 	default:
 		return "normal"
 	}
+}
+
+func formatSearchBoostNumber(value float64) string {
+	if value == 0 {
+		return "0"
+	}
+	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
 func recencyExplanationBuckets(bias string) []struct {

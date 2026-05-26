@@ -157,6 +157,7 @@ export type SearchBoost = {
   kind: string;
   label: string;
   description: string;
+  value?: string;
   boost?: number;
 };
 

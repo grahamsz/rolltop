@@ -796,7 +796,7 @@ function SearchExplanationPanel({ state }: { state: SearchExplanationState }) {
                   <div className="search-explanation-boost" key={`${boost.kind}:${boost.label}`}>
                     <strong>{boost.label}</strong>
                     <span>{boost.description}</span>
-                    {boost.boost !== undefined ? <code>boost {formatSearchScore(boost.boost)}</code> : null}
+                    {boost.value ? <code>{boost.value}</code> : boost.boost !== undefined ? <code>boost {formatSearchScore(boost.boost)}</code> : null}
                   </div>
                 ))}
               </div>
