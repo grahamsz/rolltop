@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	SystemSchemaVersion = "system-001"
-	UserSchemaVersion   = "user-001"
+	SystemSchemaVersion  = "system-001"
+	UserSchemaVersion    = "user-001"
+	UserSchemaVersion002 = "user-002"
 )
 
 // MigrationProgress is emitted while Store.OpenServerWithProgress and
@@ -71,9 +72,9 @@ func (s *Store) migrate(ctx context.Context, kind schemaKind, progress Migration
 	case schemaSystem:
 		sets = append(sets, systemMigrationSet())
 	case schemaUser:
-		sets = append(sets, userMigrationSet())
+		sets = append(sets, userMigrationSet(), userSenderStatsMigrationSet())
 	default:
-		sets = append(sets, systemMigrationSet(), userMigrationSet())
+		sets = append(sets, systemMigrationSet(), userMigrationSet(), userSenderStatsMigrationSet())
 	}
 	for _, set := range sets {
 		if err := s.applyMigrationSet(ctx, set, progress); err != nil {

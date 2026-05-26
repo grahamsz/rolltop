@@ -244,6 +244,9 @@ func TestReadSenderStatsAreUserScoped(t *testing.T) {
 	if _, err := db.CreateMessage(ctx, CreateMessage{UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: blob.ID, FromAddr: "Known <known@example.test>", Subject: "a", Date: time.Now(), UID: 1, BlobPath: blob.Path, IsRead: true}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.CreateMessage(ctx, CreateMessage{UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: blob.ID, FromAddr: "Known Again <known@example.test>", Subject: "a2", Date: time.Now(), UID: 2, BlobPath: blob.Path, IsRead: false}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.CreateMessage(ctx, CreateMessage{UserID: other.ID, AccountID: otherAccount.ID, MailboxID: otherMailbox.ID, BlobID: otherBlob.ID, FromAddr: "Other <other@example.test>", Subject: "b", Date: time.Now(), UID: 1, BlobPath: otherBlob.Path, IsRead: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -253,6 +256,13 @@ func TestReadSenderStatsAreUserScoped(t *testing.T) {
 	}
 	if len(stats) != 1 || stats[0].Sender != "known@example.test" {
 		t.Fatalf("stats = %+v", stats)
+	}
+	if stats[0].ReadCount != 1 || stats[0].TotalCount != 2 {
+		t.Fatalf("sender counts = %+v", stats[0])
+	}
+	var indexName string
+	if err := db.DB().QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_user_from_read'`).Scan(&indexName); err != nil {
+		t.Fatalf("sender stats index lookup: %v", err)
 	}
 }
 

@@ -194,7 +194,13 @@ func (s *Store) ListReadSenderStatsForUser(ctx context.Context, userID int64, li
 	if limit <= 0 || limit > 100 {
 		limit = 40
 	}
-	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT from_addr, is_read FROM messages WHERE user_id = ? AND from_addr != ''`, userID)
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `
+		SELECT from_addr,
+			SUM(CASE WHEN is_read != 0 THEN 1 ELSE 0 END) AS read_count,
+			COUNT(*) AS total_count
+		FROM messages
+		WHERE user_id = ? AND from_addr != ''
+		GROUP BY from_addr`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -202,12 +208,12 @@ func (s *Store) ListReadSenderStatsForUser(ctx context.Context, userID int64, li
 	statsBySender := map[string]*SenderReadStat{}
 	for rows.Next() {
 		var from string
-		var isRead bool
-		if err := rows.Scan(&from, &isRead); err != nil {
+		var readCount, totalCount int
+		if err := rows.Scan(&from, &readCount, &totalCount); err != nil {
 			return nil, err
 		}
 		sender := SenderIdentity(from)
-		if sender == "" {
+		if sender == "" || totalCount <= 0 {
 			continue
 		}
 		stat := statsBySender[sender]
@@ -215,10 +221,8 @@ func (s *Store) ListReadSenderStatsForUser(ctx context.Context, userID int64, li
 			stat = &SenderReadStat{Sender: sender}
 			statsBySender[sender] = stat
 		}
-		stat.TotalCount++
-		if isRead {
-			stat.ReadCount++
-		}
+		stat.TotalCount += totalCount
+		stat.ReadCount += readCount
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
