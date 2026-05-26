@@ -505,6 +505,74 @@ func TestUpdateUserDisplayPreferencesPersistsTheme(t *testing.T) {
 	}
 }
 
+func TestStorageMessageCountsAreTenantScoped(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "counts@example.test", "Counts", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateUser(ctx, "other-counts@example.test", "Other", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, MailAccount{UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993, Username: user.Email, EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAccount, err := db.CreateMailAccount(ctx, MailAccount{UserID: other.ID, Email: other.Email, Host: "imap.example.test", Port: 993, Username: other.Email, EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherBox, err := db.GetOrCreateMailbox(ctx, other.ID, otherAccount.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	localBlob, err := db.CreateBlob(ctx, BlobRecord{UserID: user.ID, Kind: "message", Path: "users/1/blobs/uid-1.eml", SHA256: "one", Size: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteBlob, err := db.CreateBlob(ctx, BlobRecord{UserID: user.ID, Kind: "message-remote", Path: "remote/uid-2.eml", SHA256: "two", Size: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherBlob, err := db.CreateBlob(ctx, BlobRecord{UserID: other.ID, Kind: "message", Path: "users/2/blobs/uid-1.eml", SHA256: "three", Size: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range []CreateMessage{
+		{UserID: user.ID, AccountID: account.ID, MailboxID: box.ID, BlobID: localBlob.ID, UID: 1, BlobPath: localBlob.Path, Date: time.Now(), InternalDate: time.Now(), Subject: "local"},
+		{UserID: user.ID, AccountID: account.ID, MailboxID: box.ID, BlobID: remoteBlob.ID, UID: 2, BlobPath: remoteBlob.Path, Date: time.Now(), InternalDate: time.Now(), Subject: "remote"},
+		{UserID: other.ID, AccountID: otherAccount.ID, MailboxID: otherBox.ID, BlobID: otherBlob.ID, UID: 1, BlobPath: otherBlob.Path, Date: time.Now(), InternalDate: time.Now(), Subject: "other"},
+	} {
+		if _, err := db.CreateMessage(ctx, msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	headers, err := db.CountMessagesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if headers != 2 {
+		t.Fatalf("message headers = %d", headers)
+	}
+	bodies, err := db.CountCachedMessageBodiesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bodies != 1 {
+		t.Fatalf("message bodies = %d", bodies)
+	}
+}
+
 func TestOnboardingMailboxDefaultsDiscoverAllButAutoSyncInboxOnly(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))

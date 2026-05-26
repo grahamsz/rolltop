@@ -17,6 +17,7 @@ import (
 type StorageStats struct {
 	DatabasePath               string
 	DatabaseBytes              int64
+	MessageHeaderCount         int
 	IndexPath                  string
 	IndexBytes                 int64
 	IndexMessageCount          int
@@ -24,6 +25,7 @@ type StorageStats struct {
 	IndexBreakdown             StorageIndexBreakdown
 	BlobPath                   string
 	BlobBytes                  int64
+	MessageBodyCount           int
 	TotalBytes                 int64
 	Error                      string
 }
@@ -79,16 +81,22 @@ func (s *Server) storageStatsForUser(userID int64) StorageStats {
 	var err error
 	stats.DatabaseBytes, err = sqliteFileSetSize(databasePath)
 	if err != nil {
-		errs = append(errs, fmt.Sprintf("user SQLite: %v", err))
+		errs = append(errs, fmt.Sprintf("message headers: %v", err))
+	}
+	if s.store != nil {
+		stats.MessageHeaderCount, err = s.store.CountMessagesForUser(context.Background(), userID)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("message header count: %v", err))
+		}
 	}
 	stats.IndexBytes, stats.IndexBreakdown, err = bleveIndexBreakdown(indexPath)
 	if err != nil {
-		errs = append(errs, fmt.Sprintf("user Bleve: %v", err))
+		errs = append(errs, fmt.Sprintf("full text index: %v", err))
 	}
 	if s.search != nil {
 		stats.IndexMessageCount, err = s.search.CountUserMessages(context.Background(), userID)
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("Bleve message count: %v", err))
+			errs = append(errs, fmt.Sprintf("full text index message count: %v", err))
 		}
 	}
 	if s.store != nil {
@@ -99,7 +107,13 @@ func (s *Server) storageStatsForUser(userID int64) StorageStats {
 	}
 	stats.BlobBytes, err = pathSize(blobPath)
 	if err != nil {
-		errs = append(errs, fmt.Sprintf("user blobs: %v", err))
+		errs = append(errs, fmt.Sprintf("message bodies: %v", err))
+	}
+	if s.store != nil {
+		stats.MessageBodyCount, err = s.store.CountCachedMessageBodiesForUser(context.Background(), userID)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("message body count: %v", err))
+		}
 	}
 	stats.TotalBytes = stats.DatabaseBytes + stats.IndexBytes + stats.BlobBytes
 	stats.Error = strings.Join(errs, "; ")

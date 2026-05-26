@@ -115,6 +115,70 @@ function profileFormForUser(user: User) {
   };
 }
 
+type SearchChoice = { value: string; label: string };
+
+const searchPresetChoices: SearchChoice[] = [
+  { value: "strict", label: "Strict" },
+  { value: "balanced", label: "Balanced" },
+  { value: "forgiving", label: "Forgiving" }
+];
+
+const fuzzyChoices: SearchChoice[] = [
+  { value: "off", label: "Off" },
+  { value: "balanced", label: "Balanced" },
+  { value: "forgiving", label: "Forgiving" }
+];
+
+const recencyChoices: SearchChoice[] = [
+  { value: "none", label: "None" },
+  { value: "light", label: "Light" },
+  { value: "normal", label: "Normal" },
+  { value: "strong", label: "Strong" }
+];
+
+const attachmentWeightChoices: SearchChoice[] = [
+  { value: "off", label: "Exclude" },
+  { value: "light", label: "Light" },
+  { value: "normal", label: "Normal" },
+  { value: "strong", label: "Strong" }
+];
+
+function SearchSliderRow({ title, value, choices, description, onChange }: {
+  title: string;
+  value: string;
+  choices: SearchChoice[];
+  description: string;
+  onChange: (value: string) => void;
+}) {
+  const index = Math.max(0, choices.findIndex((choice) => choice.value === value));
+  return (
+    <div className="search-tuning-row">
+      <div className="search-tuning-copy">
+        <strong>{title}</strong>
+        <small>{description}</small>
+      </div>
+      <div className="search-slider-control">
+        <input
+          type="range"
+          min={0}
+          max={Math.max(0, choices.length - 1)}
+          step={1}
+          value={index}
+          aria-label={title}
+          onChange={(event) => onChange(choices[Number(event.target.value)]?.value || choices[0].value)}
+        />
+        <div className="search-slider-labels">
+          {choices.map((choice) => <span className={choice.value === value ? "active" : ""} key={choice.value}>{choice.label}</span>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function storageEmailDetail(value: unknown): string {
+  return `${formatStatCount(value)} emails`;
+}
+
 function emptyAccountFormForUser(user: User) {
   const email = user.email || "";
   return {
@@ -984,7 +1048,7 @@ export function SettingsView({
   function renderDisplaySettings() {
     return (
       <form className="panel display-settings" onSubmit={saveProfile}>
-        <h2>User preferences</h2>
+        <h2>Display preferences</h2>
         <div className="settings-columns display-settings-grid">
           <section>
             <h3>Date localization</h3>
@@ -1026,60 +1090,66 @@ export function SettingsView({
               <strong>{displayTime(new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString(), profileForm)}</strong>
             </div>
           </section>
-          <section>
-            <h3>Search preset</h3>
-            <label>Ranking profile</label>
-            <select value={profileForm.search_preset} onChange={(event) => setProfileForm((current) => ({ ...current, ...searchPresetDefaults(event.target.value) }))}>
-              <option value="balanced">Balanced</option>
-              <option value="strict">Strict</option>
-              <option value="forgiving">Forgiving</option>
-            </select>
-            <small className="muted">Balanced keeps the current defaults; strict reduces fuzzy expansion; forgiving widens typo and attachment matching.</small>
-          </section>
-          <section>
-            <h3>Typo matching</h3>
-            <label>Fuzzy search</label>
-            <select value={profileForm.search_fuzzy} onChange={(event) => setProfileForm((current) => ({ ...current, search_fuzzy: event.target.value }))}>
-              <option value="balanced">Balanced</option>
-              <option value="off">Off</option>
-              <option value="forgiving">Forgiving</option>
-            </select>
-            <small className="muted">Controls unquoted typo tolerance. Quoted searches stay literal.</small>
-          </section>
-          <section>
-            <h3>Recent mail</h3>
-            <label>Recency boost</label>
-            <select value={profileForm.search_recency_bias} onChange={(event) => setProfileForm((current) => ({ ...current, search_recency_bias: event.target.value }))}>
-              <option value="normal">Normal</option>
-              <option value="none">None</option>
-              <option value="light">Light</option>
-              <option value="strong">Strong</option>
-            </select>
-            <small className="muted">Changes how much best-match results favor newer messages.</small>
-          </section>
-          <section>
-            <h3>Attachments</h3>
-            <label>Attachment text weight</label>
-            <select value={profileForm.search_attachment_weight} onChange={(event) => setProfileForm((current) => ({ ...current, search_attachment_weight: event.target.value }))}>
-              <option value="normal">Normal</option>
-              <option value="off">Exclude</option>
-              <option value="light">Light</option>
-              <option value="strong">Strong</option>
-            </select>
-            <small className="muted">Adjusts how much attachment filenames and extracted text affect matching.</small>
-          </section>
-          <section>
-            <h3>Sender history</h3>
-            <label className="identity-primary"><input type="checkbox" checked={profileForm.search_sender_boost} onChange={(event) => setProfileForm((current) => ({ ...current, search_sender_boost: event.target.checked }))} /> Boost familiar senders</label>
-            <small className="muted">Uses your read history to nudge senders you usually open higher.</small>
-          </section>
-          <section>
-            <h3>Joined words</h3>
-            <label className="identity-primary"><input type="checkbox" checked={profileForm.search_compact_splitting} onChange={(event) => setProfileForm((current) => ({ ...current, search_compact_splitting: event.target.checked }))} /> Split compact terms</label>
-            <small className="muted">Lets searches like darkroom also consider strong dark room matches.</small>
-          </section>
         </div>
-        <div className="actions"><button>Save preferences</button></div>
+        <div className="actions"><button>Save display</button></div>
+      </form>
+    );
+  }
+
+  function renderSearchSettings() {
+    return (
+      <form className="panel search-tuning-settings" onSubmit={saveProfile}>
+        <div className="panel-headline">
+          <div>
+            <h2>Search tuning</h2>
+            <div className="muted">These are query-time ranking controls, so changes do not require a reindex.</div>
+          </div>
+        </div>
+        <div className="search-tuning-list">
+          <SearchSliderRow
+            title="Ranking profile"
+            value={profileForm.search_preset}
+            choices={searchPresetChoices}
+            description="Strict reduces expansion, Balanced keeps the current defaults, and Forgiving widens typo and attachment matching."
+            onChange={(value) => setProfileForm((current) => ({ ...current, ...searchPresetDefaults(value) }))}
+          />
+          <SearchSliderRow
+            title="Typo matching"
+            value={profileForm.search_fuzzy}
+            choices={fuzzyChoices}
+            description="Controls unquoted fuzzy matching for typos. Quoted searches remain literal."
+            onChange={(value) => setProfileForm((current) => ({ ...current, search_fuzzy: value }))}
+          />
+          <SearchSliderRow
+            title="Recent mail boost"
+            value={profileForm.search_recency_bias}
+            choices={recencyChoices}
+            description="Sets how much best-match results prefer newer messages over older exact matches."
+            onChange={(value) => setProfileForm((current) => ({ ...current, search_recency_bias: value }))}
+          />
+          <SearchSliderRow
+            title="Attachment text weight"
+            value={profileForm.search_attachment_weight}
+            choices={attachmentWeightChoices}
+            description="Adjusts whether attachment filenames and extracted text are ignored, lightly weighted, normal, or prominent."
+            onChange={(value) => setProfileForm((current) => ({ ...current, search_attachment_weight: value }))}
+          />
+          <label className="search-tuning-row search-tuning-toggle">
+            <div className="search-tuning-copy">
+              <strong>Sender history</strong>
+              <small>Uses your read history to nudge senders you usually open higher in best-match results.</small>
+            </div>
+            <input type="checkbox" checked={profileForm.search_sender_boost} onChange={(event) => setProfileForm((current) => ({ ...current, search_sender_boost: event.target.checked }))} />
+          </label>
+          <label className="search-tuning-row search-tuning-toggle">
+            <div className="search-tuning-copy">
+              <strong>Joined words</strong>
+              <small>Lets searches like darkroom also consider strong dark room matches.</small>
+            </div>
+            <input type="checkbox" checked={profileForm.search_compact_splitting} onChange={(event) => setProfileForm((current) => ({ ...current, search_compact_splitting: event.target.checked }))} />
+          </label>
+        </div>
+        <div className="actions"><button>Save search tuning</button></div>
       </form>
     );
   }
@@ -1093,19 +1163,17 @@ export function SettingsView({
         {storageLoading ? <div className="muted">Calculating storage usage...</div> : null}
         {storageError ? <div className="error">{storageError}</div> : null}
         <div className="storage-grid">
-          <Stat label="SQLite" value={formatBytes(storage.DatabaseBytes)} detail={String(storage.DatabasePath || "")} />
-          <Stat label="Bleve" value={formatBytes(storage.IndexBytes)} detail={String(storage.IndexPath || "")} />
-          <Stat label="Indexed emails" value={formatStatCount(storage.IndexMessageCount)} detail="documents in Bleve" />
-          <Stat label="Full-text search" value={formatStatCount(storage.FullTextSearchMessageCount)} detail="emails in searchable folders" />
-          <Stat label="Blobs" value={formatBytes(storage.BlobBytes)} detail={String(storage.BlobPath || "")} />
+          <Stat label="Message Headers" value={formatBytes(storage.DatabaseBytes)} detail={storageEmailDetail(storage.MessageHeaderCount)} />
+          <Stat label="Full Text Index" value={formatBytes(storage.IndexBytes)} detail={storageEmailDetail(storage.IndexMessageCount)} />
+          <Stat label="Message Bodies" value={formatBytes(storage.BlobBytes)} detail={storageEmailDetail(storage.MessageBodyCount)} />
           <Stat label="Total" value={formatBytes(storage.TotalBytes)} detail={String(storage.Error || "")} />
         </div>
         {showIndexBreakdown ? (
           <>
-            <h3>Bleve index detail</h3>
+            <h3>Full text index detail</h3>
             <div className="storage-grid">
-              <Stat label="Zap segments" value={formatBytes(indexBreakdown.ZapBytes)} detail={`${formatStatCount(indexBreakdown.ZapCount)} files`} />
-              <Stat label="Largest zap" value={formatBytes(indexBreakdown.LargestZapBytes)} detail={statDetail(indexBreakdown.LargestZapPath)} />
+              <Stat label="Index segments" value={formatBytes(indexBreakdown.ZapBytes)} detail={`${formatStatCount(indexBreakdown.ZapCount)} files`} />
+              <Stat label="Largest segment" value={formatBytes(indexBreakdown.LargestZapBytes)} detail={statDetail(indexBreakdown.LargestZapPath)} />
               <Stat label="Root metadata" value={formatBytes(indexBreakdown.RootBytes)} detail="root.bolt" />
               <Stat label="Other index files" value={formatBytes(indexBreakdown.OtherBytes)} detail={`${formatStatCount(indexBreakdown.FileCount)} total files`} />
             </div>
@@ -1396,6 +1464,7 @@ export function SettingsView({
         {renderSMTPList()}
       </div>
       {renderDisplaySettings()}
+      {renderSearchSettings()}
       {renderStorageSettings()}
       {renderLicenseSettings()}
     </>

@@ -47,6 +47,36 @@ func (s *Store) ListMessagesForMailbox(ctx context.Context, userID, mailboxID in
 	return scanMessages(rows)
 }
 
+// CountMessagesForUser counts all local message header rows for one user.
+// Storage reporting presents this as Message Headers because SQLite keeps the
+// message envelope, flags, thread fields, and preview text even when the raw body
+// has been pruned or never cached locally.
+func (s *Store) CountMessagesForUser(ctx context.Context, userID int64) (int, error) {
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE user_id = ?`, userID).Scan(&n)
+	return n, err
+}
+
+// CountCachedMessageBodiesForUser counts messages whose raw RFC822 body is
+// currently held in the local blob store. Remote-only placeholder blobs are not
+// counted because there is no local body file behind them.
+func (s *Store) CountCachedMessageBodiesForUser(ctx context.Context, userID int64) (int, error) {
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	err = db.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM messages m
+		JOIN blobs b ON b.user_id = m.user_id AND b.id = m.blob_id
+		WHERE m.user_id = ? AND m.blob_path != '' AND b.kind IN ('message', 'message-cache') AND b.size > 0`, userID).Scan(&n)
+	return n, err
+}
+
 // CountMessagesForMailbox counts local mirrored messages in one user-owned mailbox.
 func (s *Store) CountMessagesForMailbox(ctx context.Context, userID, mailboxID int64) (int, error) {
 	db, err := s.dataDB(ctx, userID)

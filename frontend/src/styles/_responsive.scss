@@ -194,8 +194,13 @@
     font-size: 12px;
   }
 
-  .settings-columns {
+  .settings-columns,
+  .search-tuning-row {
     grid-template-columns: 1fr;
+  }
+
+  .search-tuning-row {
+    gap: 12px;
   }
 
   .settings-split-panel,
@@ -306,9 +311,18 @@
   }
 
   .snippet {
+    display: -webkit-box;
     flex-basis: 100%;
     margin-left: 0;
+    overflow: hidden;
     white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+  }
+
+  .thread-body {
+    margin-left: 12px;
+    margin-right: 12px;
   }
 
   .attachment-preview {

@@ -161,7 +161,7 @@ func (b normalizedSearchBehavior) attachmentBoostScale() float64 {
 	case "light":
 		return 0.4
 	case "strong":
-		return 1.7
+		return 8
 	default:
 		return 1
 	}
@@ -174,7 +174,7 @@ func (b normalizedSearchBehavior) recencyBoostScale() float64 {
 	case "light":
 		return 0.4
 	case "strong":
-		return 1.7
+		return 8
 	default:
 		return 1
 	}
