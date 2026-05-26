@@ -91,6 +91,7 @@ func (r *Runner) Start(userID int64) bool {
 				log.Printf("sync user_id=%d mailbox=%s skipped: already running", userID, mailbox)
 			}
 		}
+		r.RefreshSenderStats(userID)
 		r.StartAttachmentIndex(userID)
 	}()
 	return true
@@ -112,6 +113,7 @@ func (r *Runner) StartMailboxes(userID int64, mailboxes []string) bool {
 	}
 	go func() {
 		r.runReservedMailboxes(userID, mailboxes, keys)
+		r.RefreshSenderStats(userID)
 		r.StartAttachmentIndex(userID)
 	}()
 	return true
@@ -133,6 +135,7 @@ func (r *Runner) StartAccountMailboxes(userID, accountID int64, mailboxes []stri
 	}
 	go func() {
 		r.runReservedAccountMailboxes(userID, accountID, mailboxes, keys)
+		r.RefreshSenderStats(userID)
 		r.StartAttachmentIndex(userID)
 	}()
 	return true
@@ -183,6 +186,7 @@ func (r *Runner) runReservedMailboxMaintenance(userID int64, mailboxes []string,
 		}
 		if status == "ok" {
 			progress.MailboxesDone = progress.MailboxesTotal
+			r.RefreshSenderStats(userID)
 		}
 		if err := r.Service.Store.FinishSyncRun(context.Background(), userID, runID, status, progress, errText); err != nil {
 			log.Printf("finish mailbox maintenance user_id=%d run_id=%d: %v", userID, runID, err)
@@ -217,9 +221,21 @@ func (r *Runner) StartPriorityMailboxes(userID int64, mailboxes []string) bool {
 	}
 	go func() {
 		r.runReservedMailboxes(userID, mailboxes, keys)
+		r.RefreshSenderStats(userID)
 		r.StartAttachmentIndex(userID)
 	}()
 	return true
+}
+
+// RefreshSenderStats rebuilds the precomputed best-match sender boosts after
+// sync or local mailbox maintenance has changed message/read-state data.
+func (r *Runner) RefreshSenderStats(userID int64) {
+	if r == nil || r.Service == nil || r.Service.Store == nil || userID <= 0 {
+		return
+	}
+	if err := r.Service.Store.RefreshReadSenderStatsForUser(context.Background(), userID); err != nil {
+		log.Printf("refresh sender stats user_id=%d: %v", userID, err)
+	}
 }
 
 func (r *Runner) runMailboxes(userID int64, mailboxes []string) bool {

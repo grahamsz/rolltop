@@ -250,6 +250,9 @@ func TestReadSenderStatsAreUserScoped(t *testing.T) {
 	if _, err := db.CreateMessage(ctx, CreateMessage{UserID: other.ID, AccountID: otherAccount.ID, MailboxID: otherMailbox.ID, BlobID: otherBlob.ID, FromAddr: "Other <other@example.test>", Subject: "b", Date: time.Now(), UID: 1, BlobPath: otherBlob.Path, IsRead: true}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.RefreshReadSenderStatsForUser(ctx, user.ID); err != nil {
+		t.Fatal(err)
+	}
 	stats, err := db.ListReadSenderStatsForUser(ctx, user.ID, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -263,6 +266,9 @@ func TestReadSenderStatsAreUserScoped(t *testing.T) {
 	var indexName string
 	if err := db.DB().QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_user_from_read'`).Scan(&indexName); err != nil {
 		t.Fatalf("sender stats index lookup: %v", err)
+	}
+	if err := db.DB().QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_sender_read_stats_user_boost'`).Scan(&indexName); err != nil {
+		t.Fatalf("materialized sender stats index lookup: %v", err)
 	}
 }
 

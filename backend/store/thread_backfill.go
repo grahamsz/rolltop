@@ -189,12 +189,41 @@ func readThreadHeaders(path string) (string, string, string, error) {
 	return strings.TrimSpace(headers.Get("Message-Id")), strings.TrimSpace(headers.Get("In-Reply-To")), strings.TrimSpace(headers.Get("References")), nil
 }
 
-// ListReadSenderStatsForUser returns sender-history boosts derived from messages the user has read.
+// ListReadSenderStatsForUser returns precomputed sender-history boosts for best-match search ranking.
 func (s *Store) ListReadSenderStatsForUser(ctx context.Context, userID int64, limit int) ([]SenderReadStat, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 40
 	}
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `
+		SELECT sender, read_count, total_count, boost
+		FROM sender_read_stats
+		WHERE user_id = ? AND read_count > 0
+		ORDER BY boost DESC, read_count DESC, sender ASC
+		LIMIT ?`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stats := make([]SenderReadStat, 0, limit)
+	for rows.Next() {
+		var stat SenderReadStat
+		if err := rows.Scan(&stat.Sender, &stat.ReadCount, &stat.TotalCount, &stat.Boost); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
+}
+
+// RefreshReadSenderStatsForUser rebuilds the materialized sender-history table
+// from message rows. Sync and maintenance jobs run this outside search requests
+// so best-match ranking can read a small precomputed result set.
+func (s *Store) RefreshReadSenderStatsForUser(ctx context.Context, userID int64) error {
+	if userID <= 0 {
+		return nil
+	}
+	db := s.mustDataDB(ctx, userID)
+	rows, err := db.QueryContext(ctx, `
 		SELECT from_addr,
 			SUM(CASE WHEN is_read != 0 THEN 1 ELSE 0 END) AS read_count,
 			COUNT(*) AS total_count
@@ -202,7 +231,7 @@ func (s *Store) ListReadSenderStatsForUser(ctx context.Context, userID int64, li
 		WHERE user_id = ? AND from_addr != ''
 		GROUP BY from_addr`, userID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
 	statsBySender := map[string]*SenderReadStat{}
@@ -210,7 +239,7 @@ func (s *Store) ListReadSenderStatsForUser(ctx context.Context, userID int64, li
 		var from string
 		var readCount, totalCount int
 		if err := rows.Scan(&from, &readCount, &totalCount); err != nil {
-			return nil, err
+			return err
 		}
 		sender := SenderIdentity(from)
 		if sender == "" || totalCount <= 0 {
@@ -225,24 +254,49 @@ func (s *Store) ListReadSenderStatsForUser(ctx context.Context, userID int64, li
 		stat.ReadCount += readCount
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return err
 	}
+
 	stats := make([]SenderReadStat, 0, len(statsBySender))
 	for _, stat := range statsBySender {
 		if stat.ReadCount == 0 {
 			continue
 		}
-		ratio := float64(stat.ReadCount) / float64(stat.TotalCount)
-		boost := 0.6 + ratio*1.4 + float64(stat.ReadCount)/8
-		if boost > 8 {
-			boost = 8
-		}
-		stat.Boost = boost
+		stat.Boost = senderReadBoost(stat.ReadCount, stat.TotalCount)
 		stats = append(stats, *stat)
 	}
 	sortSenderStats(stats)
-	if len(stats) > limit {
-		stats = stats[:limit]
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	return stats, nil
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sender_read_stats WHERE user_id = ?`, userID); err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO sender_read_stats (user_id, sender, read_count, total_count, boost, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	now := nowUnix()
+	for _, stat := range stats {
+		if _, err := stmt.ExecContext(ctx, userID, stat.Sender, stat.ReadCount, stat.TotalCount, stat.Boost, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func senderReadBoost(readCount, totalCount int) float64 {
+	if readCount <= 0 || totalCount <= 0 {
+		return 0
+	}
+	ratio := float64(readCount) / float64(totalCount)
+	boost := 0.6 + ratio*1.4 + float64(readCount)/8
+	if boost > 8 {
+		return 8
+	}
+	return boost
 }
