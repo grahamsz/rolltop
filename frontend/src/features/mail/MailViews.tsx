@@ -272,6 +272,40 @@ function FolderSyncNotice({
   );
 }
 
+
+function activeSearchMaintenanceRun(runs: SyncRun[]): SyncRun | null {
+  return runs.find((run) => {
+    const subject = (run.latest_new_subject || "").toLowerCase();
+    return subject === "purging full-text index" ||
+      subject === "purging local references and full-text index" ||
+      subject === "repairing full-text index" ||
+      subject.includes("search index repair");
+  }) || null;
+}
+
+function SearchMaintenanceNotice({ run }: { run: SyncRun }) {
+  const total = Math.max(0, run.messages_total || 0);
+  const seen = Math.max(0, run.messages_seen || 0);
+  const done = total > 0 ? Math.min(seen, total) : seen;
+  const remaining = total > 0 ? Math.max(0, total - done) : 0;
+  const label = run.latest_new_subject || "Full-text indexing";
+  const scope = run.current_mailbox ? ` in ${run.current_mailbox}` : "";
+  const progress = total > 0
+    ? `${done.toLocaleString()} of ${total.toLocaleString()} messages checked`
+    : done > 0 ? `${done.toLocaleString()} messages checked` : "Index work is running";
+  const remainingText = remaining > 0 ? `, ${remaining.toLocaleString()} remaining` : "";
+
+  return (
+    <section className="folder-sync-notice search-maintenance-notice running" aria-live="polite">
+      <Icon name="report" />
+      <div className="folder-sync-copy">
+        <strong>Search may be slow</strong>
+        <span>{label}{scope}. {progress}{remainingText}.</span>
+      </div>
+    </section>
+  );
+}
+
 /**
  * SearchView is always best-match search. The URL carries the query and page so
  * opening a result can preserve a precise back target to the same result page.
@@ -282,6 +316,7 @@ export function SearchView({
   navigate,
   hiddenMessageIDs,
   datePrefs,
+  activeSyncRuns,
   addToast
 }: {
   csrf: string;
@@ -289,6 +324,7 @@ export function SearchView({
   navigate: (url: string) => void;
   hiddenMessageIDs: Set<number>;
   datePrefs: DatePrefs;
+  activeSyncRuns: SyncRun[];
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -340,6 +376,7 @@ export function SearchView({
 
   const pageURL = (nextPage: number) => searchURL(query, nextPage);
   const returnURL = routeWithSearch(location.path, location.search);
+  const maintenanceRun = activeSearchMaintenanceRun(activeSyncRuns);
 
   function updateStarred(messageID: number, starredMessageID: number, starred: boolean) {
     setConversations((current) => current.map((conversation) => {
@@ -369,6 +406,7 @@ export function SearchView({
         }}
       />
       {query ? <div className="muted">Results for <strong>{query}</strong></div> : null}
+      {maintenanceRun ? <SearchMaintenanceNotice run={maintenanceRun} /> : null}
       {error ? <div className="error">{error}</div> : null}
       {!error ? (
         <SlidingMessageListStage stageKey={searchKey} direction={slideDirection} pending={listPending} speed={listPending ? "slow" : "fast"}>

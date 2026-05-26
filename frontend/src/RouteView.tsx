@@ -42,7 +42,7 @@ export function RouteView({
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   if (location.path === "/search" || location.path.startsWith("/search/")) {
-    return <SearchView csrf={csrf} location={location} navigate={navigate} hiddenMessageIDs={hiddenMessageIDs} datePrefs={user} addToast={addToast} />;
+    return <SearchView csrf={csrf} location={location} navigate={navigate} hiddenMessageIDs={hiddenMessageIDs} datePrefs={user} activeSyncRuns={activeSyncRuns} addToast={addToast} />;
   }
   if (location.path.startsWith("/messages/")) {
     return (

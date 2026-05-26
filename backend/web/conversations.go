@@ -127,6 +127,7 @@ func (s *Server) conversationViewsFromSeeds(ctx context.Context, userID int64, s
 			}
 		}
 		if strings.TrimSpace(query) != "" && group.hasSeed {
+			view.Message = searchResultDisplayMessage(view, group.seed)
 			view.Snippet = searchResultSnippet(query, group.terms, group.seed, view.Snippet)
 			view.MatchTerms = group.terms
 			view.MatchFields = group.fields
@@ -219,6 +220,12 @@ func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q
 		targetEnd = len(unique)
 	}
 	return unique[targetStart:targetEnd], nil
+}
+
+func searchResultDisplayMessage(summary conversationView, seed store.MessageRecord) store.MessageRecord {
+	display := seed
+	display.IsStarred = summary.Message.IsStarred
+	return display
 }
 
 func mergeTerms(existing []string, next []string) []string {

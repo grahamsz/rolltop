@@ -26,6 +26,16 @@
   }
 }
 
+.search-maintenance-notice {
+  margin-top: 10px;
+
+  .folder-sync-copy span {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+}
+
 .folder-sync-copy {
   min-width: 0;
   display: grid;

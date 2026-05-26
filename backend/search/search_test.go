@@ -930,3 +930,42 @@ func TestSearchPlainNegatedTermExcludesMatches(t *testing.T) {
 		t.Fatalf("ids = %v", ids)
 	}
 }
+
+func TestSearchSenderNameBeatsOlderBodyMentions(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	now := time.Now().UTC()
+	messages := []store.MessageRecord{
+		{ID: 1, UserID: 1, Subject: "Old notes", BodyText: strings.Repeat("nick ", 80), FromAddr: "Archive <archive@example.test>", Date: now.AddDate(-5, 0, 0)},
+		{ID: 2, UserID: 1, Subject: "Checking In", BodyText: "All good. nbk Nick Koncilja", FromAddr: "\"Nick Koncilja\" <nick@riverrise.com>", Date: now.Add(-30 * time.Minute)},
+	}
+	for _, msg := range messages {
+		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ids, err := svc.SearchWithOptions(ctx, 1, "nick", SortBest, 10, 0, SearchOptions{Behavior: SearchBehavior{RecencyBias: "normal"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != 2 {
+		t.Fatalf("nick ids = %v", ids)
+	}
+
+	hit, ok, err := svc.MatchMessageWithOptions(ctx, 1, 2, "nick after:today", SearchOptions{Behavior: SearchBehavior{RecencyBias: "normal"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected sender message to match nick after:today")
+	}
+	if len(hit.Terms) == 0 {
+		t.Fatalf("expected highlight terms for hit: %+v", hit)
+	}
+}

@@ -299,10 +299,33 @@
 
 .search-explanation-head {
   margin-bottom: 8px;
+  align-items: center;
+
+  > div {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
 
   span {
     color: var(--muted);
     font-size: 12px;
+  }
+}
+
+.search-explanation-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  .icon {
+    width: 16px;
+    height: 16px;
   }
 }
 

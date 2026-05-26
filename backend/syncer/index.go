@@ -271,9 +271,15 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 	if err != nil || missing == 0 {
 		return 0, err
 	}
+	previousLatestFrom := ""
+	previousLatestSubject := ""
 	if progress != nil {
+		previousLatestFrom = progress.LatestNewFrom
+		previousLatestSubject = progress.LatestNewSubject
 		progress.MessagesTotal += missing
 		progress.CurrentMailbox = mailbox.Name
+		progress.LatestNewFrom = "mailmirror:maintenance"
+		progress.LatestNewSubject = "Repairing full-text index"
 		if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
 			return 0, err
 		}
@@ -290,6 +296,13 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 		if len(messages) == 0 {
 			if err := batch.Flush(ctx); err != nil {
 				return indexed, err
+			}
+			if progress != nil {
+				progress.LatestNewFrom = previousLatestFrom
+				progress.LatestNewSubject = previousLatestSubject
+				if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
+					return indexed, err
+				}
 			}
 			return indexed, nil
 		}

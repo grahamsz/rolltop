@@ -1020,21 +1020,18 @@ func textTermQuery(term string, behavior normalizedSearchBehavior) blevequery.Qu
 }
 
 func baseTextTermQuery(term string, behavior normalizedSearchBehavior) blevequery.Query {
-	if behavior.AttachmentWeight == "normal" {
-		return bleve.NewMatchQuery(term)
-	}
 	disjuncts := []blevequery.Query{
-		boostedMatch("subject", term, 1),
-		boostedMatch("from", term, 1),
-		boostedMatch("to", term, 1),
-		boostedMatch("cc", term, 1),
+		boostedMatch("from", term, 6),
+		boostedMatch("subject", term, 4),
+		boostedMatch("to", term, 2),
+		boostedMatch("cc", term, 2),
 		boostedMatch("message_id", term, 1),
 		boostedMatch("body", term, 1),
 	}
 	if scale := behavior.attachmentBoostScale(); scale > 0 {
 		disjuncts = append(disjuncts,
-			boostedMatch("attachment_names", term, scale),
-			boostedMatch("attachment_types", term, scale),
+			boostedMatch("attachment_names", term, 1.2*scale),
+			boostedMatch("attachment_types", term, 0.8*scale),
 			boostedMatch("attachments", term, scale),
 		)
 	}
@@ -1042,30 +1039,22 @@ func baseTextTermQuery(term string, behavior normalizedSearchBehavior) blevequer
 }
 
 func defaultOrWeightedTextQuery(term string, behavior normalizedSearchBehavior) blevequery.Query {
-	if behavior.AttachmentWeight == "normal" {
-		return bleve.NewQueryStringQuery(term)
-	}
 	return baseTextTermQuery(term, behavior)
 }
 
 func textPhraseQuery(text string, boost float64, behavior normalizedSearchBehavior) blevequery.Query {
-	if behavior.AttachmentWeight == "normal" {
-		q := bleve.NewMatchPhraseQuery(text)
-		q.SetBoost(boost)
-		return q
-	}
 	disjuncts := []blevequery.Query{
-		boostedPhrase("subject", text, boost),
-		boostedPhrase("from", text, boost),
-		boostedPhrase("to", text, boost),
-		boostedPhrase("cc", text, boost),
+		boostedPhrase("from", text, boost*6),
+		boostedPhrase("subject", text, boost*4),
+		boostedPhrase("to", text, boost*2),
+		boostedPhrase("cc", text, boost*2),
 		boostedPhrase("message_id", text, boost),
 		boostedPhrase("body", text, boost),
 	}
 	if scale := behavior.attachmentBoostScale(); scale > 0 {
 		disjuncts = append(disjuncts,
-			boostedPhrase("attachment_names", text, boost*scale),
-			boostedPhrase("attachment_types", text, boost*scale),
+			boostedPhrase("attachment_names", text, boost*1.2*scale),
+			boostedPhrase("attachment_types", text, boost*0.8*scale),
 			boostedPhrase("attachments", text, boost*scale),
 		)
 	}
@@ -1073,15 +1062,9 @@ func textPhraseQuery(text string, boost float64, behavior normalizedSearchBehavi
 }
 
 func fuzzyTextQuery(term string, boost float64, behavior normalizedSearchBehavior) blevequery.Query {
-	if behavior.AttachmentWeight == "normal" {
-		q := bleve.NewFuzzyQuery(term)
-		q.SetFuzziness(fuzzinessFor(term, behavior))
-		q.SetBoost(boost)
-		return q
-	}
 	disjuncts := []blevequery.Query{
-		boostedFuzzy("subject", term, boost, behavior),
-		boostedFuzzy("from", term, boost, behavior),
+		boostedFuzzy("from", term, boost*3, behavior),
+		boostedFuzzy("subject", term, boost*2, behavior),
 		boostedFuzzy("to", term, boost, behavior),
 		boostedFuzzy("cc", term, boost, behavior),
 		boostedFuzzy("message_id", term, boost, behavior),
@@ -1089,8 +1072,8 @@ func fuzzyTextQuery(term string, boost float64, behavior normalizedSearchBehavio
 	}
 	if scale := behavior.attachmentBoostScale(); scale > 0 {
 		disjuncts = append(disjuncts,
-			boostedFuzzy("attachment_names", term, boost*scale, behavior),
-			boostedFuzzy("attachment_types", term, boost*scale, behavior),
+			boostedFuzzy("attachment_names", term, boost*1.2*scale, behavior),
+			boostedFuzzy("attachment_types", term, boost*0.8*scale, behavior),
 			boostedFuzzy("attachments", term, boost*scale, behavior),
 		)
 	}

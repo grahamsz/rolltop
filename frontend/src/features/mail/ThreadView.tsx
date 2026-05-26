@@ -422,6 +422,17 @@ export function ThreadView({
     }
   }
 
+  function closeSearchExplanation(messageID: number) {
+    setSearchExplanations((items) => {
+      const current = items[messageID];
+      if (!current) return items;
+      return {
+        ...items,
+        [messageID]: { ...current, open: false }
+      };
+    });
+  }
+
   async function confirmUnsubscribe() {
     if (!pendingUnsubscribe) return;
     const item = pendingUnsubscribe;
@@ -653,7 +664,7 @@ export function ThreadView({
                   </div>
                 </div>
                 {searchExplanations[item.message.id]?.open ? (
-                  <SearchExplanationPanel state={searchExplanations[item.message.id]} />
+                  <SearchExplanationPanel state={searchExplanations[item.message.id]} onClose={() => closeSearchExplanation(item.message.id)} />
                 ) : null}
                 <RemoteImageNotice
                   item={item}
@@ -751,13 +762,18 @@ export function ThreadView({
 }
 
 
-function SearchExplanationPanel({ state }: { state: SearchExplanationState }) {
+function SearchExplanationPanel({ state, onClose }: { state: SearchExplanationState; onClose: () => void }) {
   const data = state.data;
   return (
     <section className="search-explanation" aria-live="polite">
       <div className="search-explanation-head">
-        <strong>Why this matched</strong>
-        {data?.score !== undefined ? <span>Score {formatSearchScore(data.score)}</span> : null}
+        <div>
+          <strong>Why this matched</strong>
+          {data?.score !== undefined ? <span>Score {formatSearchScore(data.score)}</span> : null}
+        </div>
+        <button className="ghost search-explanation-close" type="button" title="Close" aria-label="Close search explanation" onClick={onClose}>
+          <Icon name="close" />
+        </button>
       </div>
       {state.loading ? <p>Loading scoring details...</p> : null}
       {state.error ? <p className="error-text">{state.error}</p> : null}
