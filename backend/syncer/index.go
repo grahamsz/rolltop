@@ -148,46 +148,69 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 	if err != nil {
 		return 0, err
 	}
+	batch := newFetchedSearchIndexBatch(s)
+	processed := 0
 	for _, msg := range messages {
-		if err := s.IndexAttachmentsForMessage(ctx, msg); err != nil {
-			return 0, err
+		item, err := s.prepareAttachmentIndexMessage(ctx, msg)
+		if err != nil {
+			return processed, err
 		}
+		if err := batch.Add(ctx, item); err != nil {
+			return processed, err
+		}
+		processed++
 	}
-	return len(messages), nil
+	if err := batch.Flush(ctx); err != nil {
+		return processed, err
+	}
+	return processed, nil
 }
 
 // IndexAttachmentsForMessage reparses one raw message, indexes its attachment text, and updates message metadata.
 func (s *Service) IndexAttachmentsForMessage(ctx context.Context, msg store.MessageRecord) error {
+	batch := newFetchedSearchIndexBatch(s)
+	item, err := s.prepareAttachmentIndexMessage(ctx, msg)
+	if err != nil {
+		return err
+	}
+	if err := batch.Add(ctx, item); err != nil {
+		return err
+	}
+	return batch.Flush(ctx)
+}
+
+// prepareAttachmentIndexMessage refreshes attachment rows and returns a pending
+// Bleve document. The caller owns batching and the post-commit metadata mark.
+func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.MessageRecord) (*pendingFetchedSearchIndex, error) {
 	if s.Search == nil {
-		return nil
+		return nil, nil
 	}
 	mailbox, err := s.Store.GetMailboxForUser(ctx, msg.UserID, msg.MailboxID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !mailbox.IncludeInSearch {
-		return s.Search.DeleteMessage(ctx, msg.UserID, msg.ID)
+		return nil, s.Search.DeleteMessage(ctx, msg.UserID, msg.ID)
 	}
 	raw, err := s.FetchRawMessageForMessage(ctx, msg.UserID, msg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	parsed, err := mailparse.Parse(raw)
 	if err != nil {
 		if msg.LanguageCode == "" && s.pluginEnabled(ctx, plugins.LanguageSearch) {
 			msg.LanguageCode = languagesearch.DetectCode(msg.Subject, msg.BodyText)
 			if err := s.Store.UpdateMessageLanguage(ctx, msg.UserID, msg.ID, msg.LanguageCode); err != nil {
-				return err
+				return nil, err
 			}
 		}
-		if indexErr := s.Search.IndexMessage(ctx, msg, nil); indexErr != nil {
-			return indexErr
-		}
-		return s.Store.MarkMessageAttachmentIndexed(ctx, msg.UserID, msg.ID, false)
+		return &pendingFetchedSearchIndex{
+			Document: search.MessageIndexDocument{Message: msg},
+		}, nil
 	}
 	if len(parsed.Files) > 0 {
 		if err := s.Store.DeleteAttachmentsForMessage(ctx, msg.UserID, msg.ID); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	attachmentDocs := make([]search.AttachmentDoc, 0, len(parsed.Files))
@@ -204,7 +227,7 @@ func (s *Service) IndexAttachmentsForMessage(ctx context.Context, msg store.Mess
 			Size:        int64(len(file.Data)),
 			BlobPath:    "",
 		}); err != nil {
-			return err
+			return nil, err
 		}
 		if !file.IsInline {
 			visibleAttachmentCount++
@@ -221,15 +244,18 @@ func (s *Service) IndexAttachmentsForMessage(ctx context.Context, msg store.Mess
 	if s.pluginEnabled(ctx, plugins.LanguageSearch) {
 		msg.LanguageCode = languagesearch.DetectCode(parsed.Subject, parsed.Text)
 		if err := s.Store.UpdateMessageLanguage(ctx, msg.UserID, msg.ID, msg.LanguageCode); err != nil {
-			return err
+			return nil, err
 		}
 	} else {
 		msg.LanguageCode = ""
 	}
-	if err := s.Search.IndexMessage(ctx, msg, attachmentDocs); err != nil {
-		return err
-	}
-	return s.Store.MarkMessageAttachmentIndexed(ctx, msg.UserID, msg.ID, visibleAttachmentCount > 0)
+	return &pendingFetchedSearchIndex{
+		Document: search.MessageIndexDocument{
+			Message:     msg,
+			Attachments: attachmentDocs,
+		},
+		HasVisibleAttachments: visibleAttachmentCount > 0,
+	}, nil
 }
 
 // RepairMailboxSearchIndex indexes local mailbox messages that are missing from Bleve.
@@ -255,12 +281,16 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 
 	indexed := 0
 	var afterID int64
+	batch := newFetchedSearchIndexBatch(s)
 	for {
 		messages, err := s.Store.ListMessagesForMailboxIndex(ctx, userID, mailbox.ID, 100, afterID)
 		if err != nil {
 			return indexed, err
 		}
 		if len(messages) == 0 {
+			if err := batch.Flush(ctx); err != nil {
+				return indexed, err
+			}
 			return indexed, nil
 		}
 		for _, msg := range messages {
@@ -272,7 +302,11 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 				progress.CurrentMailbox = mailbox.Name
 				progress.CurrentUID = msg.UID
 			}
-			if err := s.IndexAttachmentsForMessage(ctx, msg); err != nil {
+			item, err := s.prepareAttachmentIndexMessage(ctx, msg)
+			if err != nil {
+				return indexed, err
+			}
+			if err := batch.Add(ctx, item); err != nil {
 				return indexed, err
 			}
 			indexed++
@@ -313,6 +347,10 @@ func (s *Service) ReconcileMailboxSearchIndex(ctx context.Context, userID, mailb
 	if s.Search == nil {
 		return nil
 	}
+	var batch *fetchedSearchIndexBatch
+	if include {
+		batch = newFetchedSearchIndexBatch(s)
+	}
 	var afterID int64
 	for {
 		messages, err := s.Store.ListMessagesForMailboxIndex(ctx, userID, mailboxID, 200, afterID)
@@ -320,6 +358,9 @@ func (s *Service) ReconcileMailboxSearchIndex(ctx context.Context, userID, mailb
 			return err
 		}
 		if len(messages) == 0 {
+			if batch != nil {
+				return batch.Flush(ctx)
+			}
 			return nil
 		}
 		for _, msg := range messages {
@@ -330,7 +371,11 @@ func (s *Service) ReconcileMailboxSearchIndex(ctx context.Context, userID, mailb
 				}
 				continue
 			}
-			if err := s.IndexAttachmentsForMessage(ctx, msg); err != nil {
+			item, err := s.prepareAttachmentIndexMessage(ctx, msg)
+			if err != nil {
+				return err
+			}
+			if err := batch.Add(ctx, item); err != nil {
 				return err
 			}
 		}

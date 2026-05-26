@@ -32,6 +32,7 @@ type Service struct {
 	perUser bool
 	mu      sync.Mutex
 	indexes map[int64]bleve.Index
+	writers map[int64]*sync.Mutex
 }
 
 // AttachmentDoc is transient attachment text passed to IndexMessage after raw message parsing.
@@ -85,7 +86,7 @@ func Open(path string) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{index: index}, nil
+	return &Service{index: index, writers: make(map[int64]*sync.Mutex)}, nil
 }
 
 // OpenPerUser creates a lazy per-user index service. Each tenant gets
@@ -95,7 +96,7 @@ func OpenPerUser(root string) (*Service, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	return &Service{root: root, perUser: true, indexes: make(map[int64]bleve.Index)}, nil
+	return &Service{root: root, perUser: true, indexes: make(map[int64]bleve.Index), writers: make(map[int64]*sync.Mutex)}, nil
 }
 
 // openIndex either opens an existing Bleve index or creates the MailMirror mapping.
@@ -177,6 +178,25 @@ func (s *Service) Close() error {
 	return first
 }
 
+// writerForUser returns the write mutex for the target Bleve index. Production
+// mode uses one writer per user index; combined-index test mode shares one writer
+// so batch commits and deletes never race on the same underlying index handle.
+func (s *Service) writerForUser(userID int64) *sync.Mutex {
+	key := int64(0)
+	if s.perUser {
+		key = userID
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writers == nil {
+		s.writers = make(map[int64]*sync.Mutex)
+	}
+	if s.writers[key] == nil {
+		s.writers[key] = &sync.Mutex{}
+	}
+	return s.writers[key]
+}
+
 // indexForUser resolves the correct Bleve handle. In per-user mode it lazily opens
 // and caches one index per tenant, with a double-check to avoid duplicate handles
 // during concurrent searches or sync writes.
@@ -254,7 +274,11 @@ func (s *Service) IndexMessages(ctx context.Context, documents []MessageIndexDoc
 		for _, document := range groups[userID] {
 			batch.Index(strconv.FormatInt(document.Message.ID, 10), buildMessageDocument(document.Message, document.Attachments))
 		}
-		if err := index.Batch(batch); err != nil {
+		writer := s.writerForUser(userID)
+		writer.Lock()
+		err = index.Batch(batch)
+		writer.Unlock()
+		if err != nil {
 			return err
 		}
 	}
@@ -321,7 +345,11 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, messageID int64) er
 	if err != nil {
 		return err
 	}
-	return index.Delete(strconv.FormatInt(messageID, 10))
+	writer := s.writerForUser(userID)
+	writer.Lock()
+	err = index.Delete(strconv.FormatInt(messageID, 10))
+	writer.Unlock()
+	return err
 }
 
 // CountMailboxMessages counts indexed documents for a mailbox so settings can show search-index progress.
@@ -415,7 +443,11 @@ func (s *Service) PurgeMailboxWithProgress(ctx context.Context, userID, mailboxI
 		for _, hit := range res.Hits {
 			batch.Delete(hit.ID)
 		}
-		if err := index.Batch(batch); err != nil {
+		writer := s.writerForUser(userID)
+		writer.Lock()
+		err = index.Batch(batch)
+		writer.Unlock()
+		if err != nil {
 			return deleted, err
 		}
 		deleted += len(res.Hits)

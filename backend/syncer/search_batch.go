@@ -1,4 +1,4 @@
-// File overview: Batched search-index writes for freshly fetched IMAP messages.
+// File overview: Batched search-index writes for fetched and repaired message documents.
 
 package syncer
 
@@ -10,17 +10,17 @@ import (
 
 const fetchedSearchIndexBatchSize = 25
 
-// pendingFetchedSearchIndex carries the Bleve document plus the metadata flag
+// pendingFetchedSearchIndex carries a Bleve document plus the metadata flag
 // that can only be marked after the document has been committed successfully.
 type pendingFetchedSearchIndex struct {
 	Document              search.MessageIndexDocument
 	HasVisibleAttachments bool
 }
 
-// fetchedSearchIndexBatch amortizes Bleve commit cost during IMAP fetches.
-// SQLite/blob writes still happen one message at a time, but search documents
-// are flushed in small groups; if a flush fails, attachment_indexed_at remains
-// unset so the normal repair path can retry safely.
+// fetchedSearchIndexBatch amortizes Bleve commit cost during IMAP fetches and
+// repair indexing. SQLite/blob writes still happen one message at a time, but
+// search documents are flushed in small groups; if a flush fails,
+// attachment_indexed_at remains unset so the normal repair path can retry safely.
 type fetchedSearchIndexBatch struct {
 	service *Service
 	items   []pendingFetchedSearchIndex
@@ -30,7 +30,7 @@ func newFetchedSearchIndexBatch(service *Service) *fetchedSearchIndexBatch {
 	return &fetchedSearchIndexBatch{service: service}
 }
 
-// Add queues one freshly parsed message and flushes when the batch reaches the
+// Add queues one prepared message and flushes when the batch reaches the
 // configured size. Nil entries represent mailboxes that are not search-visible.
 func (b *fetchedSearchIndexBatch) Add(ctx context.Context, item *pendingFetchedSearchIndex) error {
 	if item == nil {
