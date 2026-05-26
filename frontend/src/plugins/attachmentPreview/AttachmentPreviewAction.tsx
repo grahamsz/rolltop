@@ -65,8 +65,6 @@ export function AttachmentPreviewAction({ attachment }: { attachment: Attachment
 function AttachmentPreviewModal({ attachment, onClose }: { attachment: Attachment; onClose: () => void }) {
   const preview = attachment.preview;
   const title = attachment.filename || "Attachment preview";
-  const pdfSearchTerms = attachment.match_terms ?? [];
-
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") onClose();
@@ -102,7 +100,7 @@ function AttachmentPreviewModal({ attachment, onClose }: { attachment: Attachmen
         <div className="attachment-preview-body">
           {preview.kind === "pdf" ? (
             <Suspense fallback={<div className="attachment-preview-loading">Loading PDF viewer...</div>}>
-              <LazyPdfAttachmentViewer src={preview.url} terms={pdfSearchTerms} />
+              <LazyPdfAttachmentViewer src={preview.url} />
             </Suspense>
           ) : (
             <img src={preview.url} alt={title} />

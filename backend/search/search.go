@@ -161,23 +161,17 @@ func (b normalizedSearchBehavior) attachmentBoostScale() float64 {
 	case "light":
 		return 0.4
 	case "strong":
-		return 1
+		return 1.7
 	default:
 		return 1
 	}
 }
 
 func (b normalizedSearchBehavior) recencyBoostScale() float64 {
-	switch b.RecencyBias {
-	case "none":
+	if b.RecencyBias == "none" {
 		return 0
-	case "light":
-		return 0.4
-	case "strong":
-		return 1
-	default:
-		return 1
 	}
+	return 1
 }
 
 // Open creates or opens a single combined Bleve index. Tests use this mode; the
@@ -1279,24 +1273,38 @@ func recencyBoostQueries(now time.Time, behavior normalizedSearchBehavior) []ble
 		age   time.Duration
 		boost float64
 	}{
-		{36 * time.Hour, 35},
-		{7 * 24 * time.Hour, 18},
-		{30 * 24 * time.Hour, 9},
-		{180 * 24 * time.Hour, 4},
-		{730 * 24 * time.Hour, 1.5},
+		{36 * time.Hour, 5000},
+		{7 * 24 * time.Hour, 2500},
+		{30 * 24 * time.Hour, 1200},
+		{90 * 24 * time.Hour, 700},
+		{180 * 24 * time.Hour, 400},
+		{365 * 24 * time.Hour, 220},
+		{730 * 24 * time.Hour, 60},
 	}
-	if behavior.RecencyBias == "strong" {
+	switch behavior.RecencyBias {
+	case "light":
 		buckets = []struct {
 			age   time.Duration
 			boost float64
 		}{
-			{36 * time.Hour, 5000},
-			{7 * 24 * time.Hour, 2500},
-			{30 * 24 * time.Hour, 1200},
-			{90 * 24 * time.Hour, 700},
-			{180 * 24 * time.Hour, 400},
-			{365 * 24 * time.Hour, 220},
-			{730 * 24 * time.Hour, 60},
+			{36 * time.Hour, 35},
+			{7 * 24 * time.Hour, 18},
+			{30 * 24 * time.Hour, 9},
+			{180 * 24 * time.Hour, 4},
+			{730 * 24 * time.Hour, 1.5},
+		}
+	case "strong":
+		buckets = []struct {
+			age   time.Duration
+			boost float64
+		}{
+			{36 * time.Hour, 50000},
+			{7 * 24 * time.Hour, 25000},
+			{30 * 24 * time.Hour, 12000},
+			{90 * 24 * time.Hour, 7000},
+			{180 * 24 * time.Hour, 4000},
+			{365 * 24 * time.Hour, 2200},
+			{730 * 24 * time.Hour, 600},
 		}
 	}
 	out := make([]blevequery.Query, 0, len(buckets))

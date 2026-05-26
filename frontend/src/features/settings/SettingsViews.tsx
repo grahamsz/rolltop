@@ -1110,7 +1110,7 @@ export function SettingsView({
             title="Ranking profile"
             value={profileForm.search_preset}
             choices={searchPresetChoices}
-            description="Strict reduces expansion, Balanced keeps the current defaults, and Forgiving widens typo and attachment matching."
+            description="Strict reduces expansion, Balanced keeps the current defaults with recent-first ranking, and Forgiving widens typo and attachment matching."
             onChange={(value) => setProfileForm((current) => ({ ...current, ...searchPresetDefaults(value) }))}
           />
           <SearchSliderRow
@@ -1124,7 +1124,7 @@ export function SettingsView({
             title="Recent mail boost"
             value={profileForm.search_recency_bias}
             choices={recencyChoices}
-            description="Sets how much best-match results prefer newer messages over older exact matches."
+            description="Normal now favors recent comparable matches; Strong is an aggressive recent-first ranking mode."
             onChange={(value) => setProfileForm((current) => ({ ...current, search_recency_bias: value }))}
           />
           <SearchSliderRow
