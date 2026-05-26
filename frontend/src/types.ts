@@ -78,6 +78,7 @@ export type Attachment = {
   download_url: string;
   matched?: boolean;
   content_matched?: boolean;
+  match_terms?: string[];
   preview?: AttachmentPreview;
 };
 

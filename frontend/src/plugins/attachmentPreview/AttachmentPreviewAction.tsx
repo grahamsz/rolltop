@@ -62,7 +62,7 @@ function AttachmentPreviewModal({ attachment, onClose }: { attachment: Attachmen
         <div className="attachment-preview-body">
           {preview.kind === "pdf" ? (
             <Suspense fallback={<div className="attachment-preview-loading">Loading PDF viewer...</div>}>
-              <LazyPdfAttachmentViewer src={preview.url} />
+              <LazyPdfAttachmentViewer src={preview.url} terms={attachment.match_terms ?? []} />
             </Suspense>
           ) : (
             <img src={preview.url} alt={title} />

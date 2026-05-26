@@ -435,7 +435,8 @@ function SidebarSync({
   refreshChrome: () => Promise<Bootstrap | null>;
 }) {
   const [busy, setBusy] = useState(false);
-  const visibleRuns = activeRuns.length > 0 ? activeRuns : latest ? [latest] : [];
+  const orderedActiveRuns = useMemo(() => stableSyncRunOrder(activeRuns), [activeRuns]);
+  const visibleRuns = orderedActiveRuns.length > 0 ? orderedActiveRuns : latest ? [latest] : [];
   const isActive = activeRuns.length > 0 || running;
 
   async function startSync() {
@@ -465,6 +466,16 @@ function SidebarSync({
       </div>
     </section>
   );
+}
+
+
+function stableSyncRunOrder(runs: SyncRun[]) {
+  return [...runs].sort((a, b) => {
+    const startedA = Date.parse(a.started_at) || 0;
+    const startedB = Date.parse(b.started_at) || 0;
+    if (startedA !== startedB) return startedA - startedB;
+    return a.id - b.id;
+  });
 }
 
 /** Render compact sync progress using message progress when available, falling back to folder progress. */

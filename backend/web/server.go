@@ -111,6 +111,7 @@ type threadMessageView struct {
 	OneClickSentAt           time.Time
 	AttachmentMatches        []string
 	AttachmentContentMatched bool
+	AttachmentMatchTerms     []string
 	SenderName               string
 	SenderEmail              string
 	SenderInitial            string

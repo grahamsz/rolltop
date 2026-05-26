@@ -548,7 +548,7 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 		if oneClickUnsub {
 			oneClickSentAt = s.recentOneClickUnsubscribeSentAt(ctx, cu.User.ID, threadMsg, oneClickTarget.String())
 		}
-		attachmentMatches, attachmentContentMatched := attachmentSearchMatches(attachments, matchDetails[threadMsg.ID], query)
+		attachmentMatches, attachmentContentMatched, attachmentMatchTerms := attachmentSearchMatches(attachments, matchDetails[threadMsg.ID], query)
 		threadViews = append(threadViews, threadMessageView{
 			Message:                  displayMsg,
 			Attachments:              attachments,
@@ -557,6 +557,7 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 			OneClickSentAt:           oneClickSentAt,
 			AttachmentMatches:        attachmentMatches,
 			AttachmentContentMatched: attachmentContentMatched,
+			AttachmentMatchTerms:     attachmentMatchTerms,
 			SenderName:               senderDisplayName(displayMsg.FromAddr),
 			SenderEmail:              senderEmail(displayMsg.FromAddr),
 			SenderInitial:            senderInitial(displayMsg.FromAddr),
@@ -607,9 +608,9 @@ func (s *Server) threadSearchMatchDetails(ctx context.Context, userID int64, mes
 	return out
 }
 
-func attachmentSearchMatches(attachments []store.Attachment, match threadSearchMatch, query string) ([]string, bool) {
+func attachmentSearchMatches(attachments []store.Attachment, match threadSearchMatch, query string) ([]string, bool, []string) {
 	if !searchFieldsInclude(match.Fields, "attachment_names", "attachments", "attachment_types") {
-		return nil, false
+		return nil, false, nil
 	}
 	needles := mergeSnippetTerms(match.Terms, searchSnippetTerms(query))
 	var matches []string
@@ -621,7 +622,11 @@ func attachmentSearchMatches(attachments []store.Attachment, match threadSearchM
 			}
 		}
 	}
-	return uniqueStrings(matches, len(matches)), searchFieldsInclude(match.Fields, "attachments") && len(matches) == 0
+	contentMatched := searchFieldsInclude(match.Fields, "attachments") && len(matches) == 0
+	if len(matches) == 0 && !contentMatched {
+		needles = nil
+	}
+	return uniqueStrings(matches, len(matches)), contentMatched, needles
 }
 
 func visibleAttachments(attachments []store.Attachment) []store.Attachment {

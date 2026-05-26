@@ -40,6 +40,34 @@ function smtpToForm(account: SMTPAccount | null) {
   };
 }
 
+type StorageIndexBreakdownView = {
+  FileCount?: unknown;
+  ZapCount?: unknown;
+  ZapBytes?: unknown;
+  LargestZapPath?: unknown;
+  LargestZapBytes?: unknown;
+  RootBytes?: unknown;
+  OtherBytes?: unknown;
+};
+
+function storageIndexBreakdown(stats: StorageStats): StorageIndexBreakdownView {
+  const value = stats.IndexBreakdown;
+  return value && typeof value === "object" ? value as StorageIndexBreakdownView : {};
+}
+
+function formatStatCount(value: unknown): string {
+  const count = typeof value === "number" ? value : Number(value || 0);
+  return Number.isFinite(count) ? count.toLocaleString() : "0";
+}
+
+function statDetail(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function hasStorageIndexBreakdown(value: StorageIndexBreakdownView): boolean {
+  return Boolean(value.FileCount || value.ZapCount || value.ZapBytes || value.LargestZapBytes || value.RootBytes || value.OtherBytes);
+}
+
 function emptyAccountFormForUser(user: User) {
   const email = user.email || "";
   return {
@@ -956,6 +984,8 @@ export function SettingsView({
   }
 
   function renderStorageSettings() {
+    const indexBreakdown = storageIndexBreakdown(storage);
+    const showIndexBreakdown = hasStorageIndexBreakdown(indexBreakdown);
     return (
       <section className="panel">
         <h2>Storage</h2>
@@ -967,6 +997,17 @@ export function SettingsView({
           <Stat label="Blobs" value={formatBytes(storage.BlobBytes)} detail={String(storage.BlobPath || "")} />
           <Stat label="Total" value={formatBytes(storage.TotalBytes)} detail={String(storage.Error || "")} />
         </div>
+        {showIndexBreakdown ? (
+          <>
+            <h3>Bleve index detail</h3>
+            <div className="storage-grid">
+              <Stat label="Zap segments" value={formatBytes(indexBreakdown.ZapBytes)} detail={`${formatStatCount(indexBreakdown.ZapCount)} files`} />
+              <Stat label="Largest zap" value={formatBytes(indexBreakdown.LargestZapBytes)} detail={statDetail(indexBreakdown.LargestZapPath)} />
+              <Stat label="Root metadata" value={formatBytes(indexBreakdown.RootBytes)} detail="root.bolt" />
+              <Stat label="Other index files" value={formatBytes(indexBreakdown.OtherBytes)} detail={`${formatStatCount(indexBreakdown.FileCount)} total files`} />
+            </div>
+          </>
+        ) : null}
       </section>
     );
   }

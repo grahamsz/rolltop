@@ -14,14 +14,27 @@ import (
 
 // StorageStats is the per-user disk usage summary shown on the settings page.
 type StorageStats struct {
-	DatabasePath  string
-	DatabaseBytes int64
-	IndexPath     string
-	IndexBytes    int64
-	BlobPath      string
-	BlobBytes     int64
-	TotalBytes    int64
-	Error         string
+	DatabasePath   string
+	DatabaseBytes  int64
+	IndexPath      string
+	IndexBytes     int64
+	IndexBreakdown StorageIndexBreakdown
+	BlobPath       string
+	BlobBytes      int64
+	TotalBytes     int64
+	Error          string
+}
+
+// StorageIndexBreakdown describes the per-user Bleve directory without exposing
+// message content or data from another tenant's storage tree.
+type StorageIndexBreakdown struct {
+	FileCount       int
+	ZapCount        int
+	ZapBytes        int64
+	LargestZapPath  string
+	LargestZapBytes int64
+	RootBytes       int64
+	OtherBytes      int64
 }
 
 const storageStatsCacheTTL = 5 * time.Minute
@@ -65,7 +78,7 @@ func (s *Server) storageStatsForUser(userID int64) StorageStats {
 	if err != nil {
 		errs = append(errs, fmt.Sprintf("user SQLite: %v", err))
 	}
-	stats.IndexBytes, err = pathSize(indexPath)
+	stats.IndexBytes, stats.IndexBreakdown, err = bleveIndexBreakdown(indexPath)
 	if err != nil {
 		errs = append(errs, fmt.Sprintf("user Bleve: %v", err))
 	}
@@ -109,6 +122,65 @@ func joinedStoragePaths(paths ...string) string {
 		}
 	}
 	return strings.Join(clean, " + ")
+}
+
+func bleveIndexBreakdown(path string) (int64, StorageIndexBreakdown, error) {
+	var breakdown StorageIndexBreakdown
+	if strings.TrimSpace(path) == "" {
+		return 0, breakdown, nil
+	}
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return 0, breakdown, nil
+	}
+	if err != nil {
+		return 0, breakdown, err
+	}
+	if !info.IsDir() {
+		breakdown.FileCount = 1
+		breakdown.OtherBytes = info.Size()
+		return info.Size(), breakdown, nil
+	}
+
+	var total int64
+	err = filepath.WalkDir(path, func(filePath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		size := info.Size()
+		total += size
+		breakdown.FileCount++
+		switch {
+		case filepath.Ext(entry.Name()) == ".zap":
+			breakdown.ZapCount++
+			breakdown.ZapBytes += size
+			if size > breakdown.LargestZapBytes {
+				breakdown.LargestZapBytes = size
+				breakdown.LargestZapPath = relativeStoragePath(path, filePath)
+			}
+		case entry.Name() == "root.bolt":
+			breakdown.RootBytes += size
+		default:
+			breakdown.OtherBytes += size
+		}
+		return nil
+	})
+	return total, breakdown, err
+}
+
+func relativeStoragePath(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return filepath.Base(path)
+	}
+	return filepath.ToSlash(rel)
 }
 
 func sqliteFileSetSize(path string) (int64, error) {

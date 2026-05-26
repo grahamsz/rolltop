@@ -111,6 +111,7 @@ type apiAttachment struct {
 	DownloadURL    string                `json:"download_url"`
 	Matched        bool                  `json:"matched,omitempty"`
 	ContentMatched bool                  `json:"content_matched,omitempty"`
+	MatchTerms     []string              `json:"match_terms,omitempty"`
 	Preview        *apiAttachmentPreview `json:"preview,omitempty"`
 }
 

@@ -110,6 +110,56 @@ func TestAPISearchCachedETagShortCircuitsBeforeSearch(t *testing.T) {
 	if got := rec.Header().Get("ETag"); got != etag {
 		t.Fatalf("etag = %q, want %q", got, etag)
 	}
+	if got := rec.Header().Get("Server-Timing"); !strings.Contains(got, "cache") {
+		t.Fatalf("server timing = %q", got)
+	}
+	if got := rec.Header().Get("X-MailMirror-Search-Stats"); got != "cache=hit" {
+		t.Fatalf("search stats = %q", got)
+	}
+}
+
+func TestAPISearchWritesTimingHeaders(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchSvc, err := search.Open(filepath.Join(dir, "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchSvc.Close()
+	user, err := db.CreateUser(ctx, "timing@example.test", "Timing", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: db, search: searchSvc, mailListCache: newMailListCache()}
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=needle&page=1&sort=best", nil)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: user}))
+	rec := httptest.NewRecorder()
+
+	server.apiSearch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	serverTiming := rec.Header().Get("Server-Timing")
+	for _, part := range []string{"filter;dur=", "sender;dur=", "bleve;dur=", "hydrate;dur=", "render;dur=", "total;dur="} {
+		if !strings.Contains(serverTiming, part) {
+			t.Fatalf("server timing %q missing %q", serverTiming, part)
+		}
+	}
+	stats := rec.Header().Get("X-MailMirror-Search-Stats")
+	for _, part := range []string{"cache=miss", "sort=best", "page=1", "batches=1", "raw_hits=0", "seeds=0"} {
+		if !strings.Contains(stats, part) {
+			t.Fatalf("search stats %q missing %q", stats, part)
+		}
+	}
+	if strings.Contains(serverTiming, "needle") || strings.Contains(stats, "needle") {
+		t.Fatalf("search headers leaked query: timing=%q stats=%q", serverTiming, stats)
+	}
 }
 
 func TestMailListCachedETagInvalidatesOnUserChange(t *testing.T) {
@@ -234,6 +284,9 @@ func TestStorageStatsReportsCurrentUserOnly(t *testing.T) {
 	writeStorageFile(filepath.Join(dir, "blobs", "server"), "server blobs should not count")
 	writeStorageFile(filepath.Join(dir, "users", "1", "mailmirror.db"), "database")
 	writeStorageFile(filepath.Join(dir, "users", "1", "bleve", "index"), "bleve")
+	writeStorageFile(filepath.Join(dir, "users", "1", "bleve", "store", "001.zap"), "zap-one")
+	writeStorageFile(filepath.Join(dir, "users", "1", "bleve", "store", "002.zap"), "largest-zap")
+	writeStorageFile(filepath.Join(dir, "users", "1", "bleve", "store", "root.bolt"), "root")
 	writeStorageFile(filepath.Join(dir, "users", "1", "blobs", "blob"), "blobdata")
 	writeStorageFile(filepath.Join(dir, "users", "2", "mailmirror.db"), "other database should not count for user one")
 	writeStorageFile(filepath.Join(dir, "users", "2", "bleve", "index"), "other index should not count for user one")
@@ -244,13 +297,25 @@ func TestStorageStatsReportsCurrentUserOnly(t *testing.T) {
 	if stats.DatabaseBytes != 8 {
 		t.Fatalf("database bytes = %d", stats.DatabaseBytes)
 	}
-	if stats.IndexBytes != 5 {
+	if stats.IndexBytes != 27 {
 		t.Fatalf("index bytes = %d", stats.IndexBytes)
+	}
+	if stats.IndexBreakdown.FileCount != 4 {
+		t.Fatalf("index file count = %d", stats.IndexBreakdown.FileCount)
+	}
+	if stats.IndexBreakdown.ZapCount != 2 || stats.IndexBreakdown.ZapBytes != 18 {
+		t.Fatalf("zap breakdown = %+v", stats.IndexBreakdown)
+	}
+	if stats.IndexBreakdown.LargestZapBytes != 11 || stats.IndexBreakdown.LargestZapPath != "store/002.zap" {
+		t.Fatalf("largest zap = %+v", stats.IndexBreakdown)
+	}
+	if stats.IndexBreakdown.RootBytes != 4 || stats.IndexBreakdown.OtherBytes != 5 {
+		t.Fatalf("root/other breakdown = %+v", stats.IndexBreakdown)
 	}
 	if stats.BlobBytes != 8 {
 		t.Fatalf("blob bytes = %d", stats.BlobBytes)
 	}
-	if stats.TotalBytes != 21 {
+	if stats.TotalBytes != 43 {
 		t.Fatalf("total bytes = %d", stats.TotalBytes)
 	}
 	if strings.Contains(stats.DatabasePath, "users/2") || strings.Contains(stats.IndexPath, "users/2") || strings.Contains(stats.BlobPath, "users/2") {

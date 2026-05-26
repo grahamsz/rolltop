@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/mail"
 	"strings"
+	"time"
 
 	"mailmirror/backend/search"
 	"mailmirror/backend/store"
@@ -137,7 +138,7 @@ func (s *Server) conversationViewsFromSeeds(ctx context.Context, userID int64, s
 }
 
 func (s *Server) searchConversationSeeds(ctx context.Context, userID int64, q string, sortMode search.SortMode, page, pageSize int, opts search.SearchOptions, own map[string]bool) ([]store.MessageRecord, error) {
-	seeds, err := s.searchConversationSeedHits(ctx, userID, q, sortMode, page, pageSize, opts, own, searchMailboxFilter{})
+	seeds, err := s.searchConversationSeedHits(ctx, userID, q, sortMode, page, pageSize, opts, own, searchMailboxFilter{}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +149,7 @@ func (s *Server) searchConversationSeeds(ctx context.Context, userID int64, q st
 	return messages, nil
 }
 
-func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q string, sortMode search.SortMode, page, pageSize int, opts search.SearchOptions, own map[string]bool, mailboxFilter searchMailboxFilter) ([]conversationSeed, error) {
+func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q string, sortMode search.SortMode, page, pageSize int, opts search.SearchOptions, own map[string]bool, mailboxFilter searchMailboxFilter, timing *searchTiming) ([]conversationSeed, error) {
 	searchQuery, starFilter := stripStarSearchOperators(q)
 	targetStart := (page - 1) * pageSize
 	targetEnd := targetStart + pageSize + 1
@@ -157,7 +158,13 @@ func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q
 	rawOffset := 0
 	const batchSize = 100
 	for len(unique) < targetEnd {
+		bleveStart := time.Now()
 		hits, err := s.search.SearchHitsWithOptions(ctx, userID, searchQuery, sortMode, batchSize, rawOffset, opts)
+		if timing != nil {
+			timing.bleve += time.Since(bleveStart)
+			timing.batches++
+			timing.rawHits += len(hits)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -172,8 +179,12 @@ func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q
 			termsByID[hit.ID] = hit.Terms
 			fieldsByID[hit.ID] = hit.Fields
 		}
+		hydrateStart := time.Now()
 		messages, err := s.store.ListMessagesByIDsForUser(ctx, userID, ids)
 		if err != nil {
+			if timing != nil {
+				timing.hydrate += time.Since(hydrateStart)
+			}
 			return nil, err
 		}
 		for _, msg := range messages {
@@ -192,6 +203,9 @@ func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q
 			if len(unique) >= targetEnd {
 				break
 			}
+		}
+		if timing != nil {
+			timing.hydrate += time.Since(hydrateStart)
 		}
 		rawOffset += len(hits)
 		if len(hits) < batchSize {

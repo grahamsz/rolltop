@@ -100,8 +100,11 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	const pageSize = 50
+	timing := newSearchTiming()
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	filterDone := timing.measure(&timing.filter)
 	searchQuery, mailboxFilter, err := s.searchMailboxFilter(r.Context(), cu.User.ID, q)
+	filterDone()
 	if err != nil {
 		s.serverError(w, err)
 		return
@@ -119,7 +122,7 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	page := pageFromRequest(r)
 	cacheKey := mailListCacheKey{UserID: cu.User.ID, Page: page, Search: true, Query: q, Sort: string(sortMode)}
-	if s.writeMailListNotModifiedIfFresh(w, r, cacheKey) {
+	if s.writeSearchNotModifiedIfFresh(w, r, cacheKey) {
 		return
 	}
 	generation := s.mailListGeneration(cu.User.ID)
@@ -128,24 +131,32 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 	var seeds []conversationSeed
 	if searchQuery == "" && !mailboxFilter.enabled {
 		var messages []store.MessageRecord
+		hydrateDone := timing.measure(&timing.hydrate)
 		messages, err = s.store.ListLatestThreadMessagesForUser(r.Context(), cu.User.ID, pageSize*3+1, offset)
+		hydrateDone()
 		seeds = conversationSeedsFromMessages(messages)
 	} else {
 		opts := search.SearchOptions{}
 		if sortMode == search.SortBest {
-			if stats, statsErr := s.store.ListReadSenderStatsForUser(r.Context(), cu.User.ID, 40); statsErr == nil {
+			senderDone := timing.measure(&timing.sender)
+			stats, statsErr := s.store.ListReadSenderStatsForUser(r.Context(), cu.User.ID, 40)
+			senderDone()
+			if statsErr == nil {
 				for _, stat := range stats {
 					opts.SenderBoosts = append(opts.SenderBoosts, search.SenderBoost{Sender: stat.Sender, Boost: stat.Boost})
 				}
 			}
 		}
-		seeds, err = s.searchConversationSeedHits(r.Context(), cu.User.ID, searchQuery, sortMode, page, pageSize, opts, own, mailboxFilter)
+		seeds, err = s.searchConversationSeedHits(r.Context(), cu.User.ID, searchQuery, sortMode, page, pageSize, opts, own, mailboxFilter, timing)
 	}
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
+	timing.seeds = len(seeds)
+	renderDone := timing.measure(&timing.render)
 	conversations, err := s.conversationViewsWithSearchDetails(r.Context(), cu.User.ID, seeds, own, searchQuery)
+	renderDone()
 	if err != nil {
 		s.serverError(w, err)
 		return
@@ -154,6 +165,7 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 	if hasNext {
 		conversations = conversations[:pageSize]
 	}
+	writeSearchTimingHeaders(w, timing, string(sortMode), page)
 	etag, ok := writeJSONCachedWithETag(w, r, map[string]any{
 		"conversations": apiConversations(conversations),
 		"page":          page,

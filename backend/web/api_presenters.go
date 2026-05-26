@@ -221,6 +221,10 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 			name := attachmentDisplayName(att)
 			nameMatched := stringInSliceFold(name, view.AttachmentMatches)
 			contentMatched := view.AttachmentContentMatched
+			var matchTerms []string
+			if nameMatched || contentMatched {
+				matchTerms = view.AttachmentMatchTerms
+			}
 			var preview *apiAttachmentPreview
 			if attachmentPreviewEnabled {
 				preview = s.attachmentPreview(att)
@@ -233,6 +237,7 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 				DownloadURL:    fmt.Sprintf("/attachments/%d/download", att.ID),
 				Matched:        nameMatched || contentMatched,
 				ContentMatched: contentMatched,
+				MatchTerms:     matchTerms,
 				Preview:        preview,
 			})
 		}
