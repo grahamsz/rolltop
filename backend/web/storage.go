@@ -3,6 +3,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -14,15 +15,17 @@ import (
 
 // StorageStats is the per-user disk usage summary shown on the settings page.
 type StorageStats struct {
-	DatabasePath   string
-	DatabaseBytes  int64
-	IndexPath      string
-	IndexBytes     int64
-	IndexBreakdown StorageIndexBreakdown
-	BlobPath       string
-	BlobBytes      int64
-	TotalBytes     int64
-	Error          string
+	DatabasePath               string
+	DatabaseBytes              int64
+	IndexPath                  string
+	IndexBytes                 int64
+	IndexMessageCount          int
+	FullTextSearchMessageCount int
+	IndexBreakdown             StorageIndexBreakdown
+	BlobPath                   string
+	BlobBytes                  int64
+	TotalBytes                 int64
+	Error                      string
 }
 
 // StorageIndexBreakdown describes the per-user Bleve directory without exposing
@@ -81,6 +84,18 @@ func (s *Server) storageStatsForUser(userID int64) StorageStats {
 	stats.IndexBytes, stats.IndexBreakdown, err = bleveIndexBreakdown(indexPath)
 	if err != nil {
 		errs = append(errs, fmt.Sprintf("user Bleve: %v", err))
+	}
+	if s.search != nil {
+		stats.IndexMessageCount, err = s.search.CountUserMessages(context.Background(), userID)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("Bleve message count: %v", err))
+		}
+	}
+	if s.store != nil {
+		stats.FullTextSearchMessageCount, err = s.store.CountSearchEnabledMessagesForUser(context.Background(), userID)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("search-enabled message count: %v", err))
+		}
 	}
 	stats.BlobBytes, err = pathSize(blobPath)
 	if err != nil {

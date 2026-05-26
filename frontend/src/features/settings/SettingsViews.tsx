@@ -68,6 +68,53 @@ function hasStorageIndexBreakdown(value: StorageIndexBreakdownView): boolean {
   return Boolean(value.FileCount || value.ZapCount || value.ZapBytes || value.LargestZapBytes || value.RootBytes || value.OtherBytes);
 }
 
+function searchPresetDefaults(preset: string) {
+  switch (preset) {
+    case "strict":
+      return {
+        search_preset: "strict",
+        search_recency_bias: "light",
+        search_fuzzy: "off",
+        search_sender_boost: true,
+        search_attachment_weight: "normal",
+        search_compact_splitting: false
+      };
+    case "forgiving":
+      return {
+        search_preset: "forgiving",
+        search_recency_bias: "normal",
+        search_fuzzy: "forgiving",
+        search_sender_boost: true,
+        search_attachment_weight: "strong",
+        search_compact_splitting: true
+      };
+    default:
+      return {
+        search_preset: "balanced",
+        search_recency_bias: "normal",
+        search_fuzzy: "balanced",
+        search_sender_boost: true,
+        search_attachment_weight: "normal",
+        search_compact_splitting: true
+      };
+  }
+}
+
+function profileFormForUser(user: User) {
+  const defaults = searchPresetDefaults(user.search_preset || "balanced");
+  return {
+    date_locale: user.date_locale || "",
+    date_format: user.date_format || "mdy",
+    theme: ["classic_dark", "matrix"].includes(user.theme) ? user.theme : "classic",
+    search_preset: ["strict", "balanced", "forgiving"].includes(user.search_preset) ? user.search_preset : defaults.search_preset,
+    search_recency_bias: ["none", "light", "normal", "strong"].includes(user.search_recency_bias) ? user.search_recency_bias : defaults.search_recency_bias,
+    search_fuzzy: ["off", "balanced", "forgiving"].includes(user.search_fuzzy) ? user.search_fuzzy : defaults.search_fuzzy,
+    search_sender_boost: user.search_sender_boost !== false,
+    search_attachment_weight: ["off", "light", "normal", "strong"].includes(user.search_attachment_weight) ? user.search_attachment_weight : defaults.search_attachment_weight,
+    search_compact_splitting: user.search_compact_splitting !== false
+  };
+}
+
 function emptyAccountFormForUser(user: User) {
   const email = user.email || "";
   return {
@@ -271,11 +318,7 @@ export function SettingsView({
   const [accountNeedsPassword, setAccountNeedsPassword] = useState(false);
   const [form, setForm] = useState(() => emptyAccountForm());
   const [smtpForm, setSMTPForm] = useState(() => emptySMTPForm());
-  const [profileForm, setProfileForm] = useState(() => ({
-    date_locale: user.date_locale || "",
-    date_format: user.date_format || "mdy",
-    theme: ["classic_dark", "matrix"].includes(user.theme) ? user.theme : "classic"
-  }));
+  const [profileForm, setProfileForm] = useState(() => profileFormForUser(user));
   const [editingFolderID, setEditingFolderID] = useState<number | null>(null);
   const [folderDraft, setFolderDraft] = useState<FolderSettingsDraft | null>(null);
   const [loading, setLoading] = useState(true);
@@ -351,12 +394,18 @@ export function SettingsView({
   }, [addToast, load]);
 
   useEffect(() => {
-    setProfileForm({
-      date_locale: user.date_locale || "",
-      date_format: user.date_format || "mdy",
-      theme: ["classic_dark", "matrix"].includes(user.theme) ? user.theme : "classic"
-    });
-  }, [user.date_locale, user.date_format, user.theme]);
+    setProfileForm(profileFormForUser(user));
+  }, [
+    user.date_locale,
+    user.date_format,
+    user.theme,
+    user.search_preset,
+    user.search_recency_bias,
+    user.search_fuzzy,
+    user.search_sender_boost,
+    user.search_attachment_weight,
+    user.search_compact_splitting
+  ]);
 
   useEffect(() => {
     setFolders((current) => current.map((folder) => {
@@ -508,7 +557,7 @@ export function SettingsView({
     event.preventDefault();
     try {
       await api.saveProfile(csrf, profileForm);
-      addToast("Display preferences saved.");
+      addToast("Preferences saved.");
       await refreshChrome();
     } catch (err) {
       addToast(messageFromError(err), "error");
@@ -935,7 +984,7 @@ export function SettingsView({
   function renderDisplaySettings() {
     return (
       <form className="panel display-settings" onSubmit={saveProfile}>
-        <h2>Display preferences</h2>
+        <h2>User preferences</h2>
         <div className="settings-columns display-settings-grid">
           <section>
             <h3>Date localization</h3>
@@ -977,8 +1026,60 @@ export function SettingsView({
               <strong>{displayTime(new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString(), profileForm)}</strong>
             </div>
           </section>
+          <section>
+            <h3>Search preset</h3>
+            <label>Ranking profile</label>
+            <select value={profileForm.search_preset} onChange={(event) => setProfileForm((current) => ({ ...current, ...searchPresetDefaults(event.target.value) }))}>
+              <option value="balanced">Balanced</option>
+              <option value="strict">Strict</option>
+              <option value="forgiving">Forgiving</option>
+            </select>
+            <small className="muted">Balanced keeps the current defaults; strict reduces fuzzy expansion; forgiving widens typo and attachment matching.</small>
+          </section>
+          <section>
+            <h3>Typo matching</h3>
+            <label>Fuzzy search</label>
+            <select value={profileForm.search_fuzzy} onChange={(event) => setProfileForm((current) => ({ ...current, search_fuzzy: event.target.value }))}>
+              <option value="balanced">Balanced</option>
+              <option value="off">Off</option>
+              <option value="forgiving">Forgiving</option>
+            </select>
+            <small className="muted">Controls unquoted typo tolerance. Quoted searches stay literal.</small>
+          </section>
+          <section>
+            <h3>Recent mail</h3>
+            <label>Recency boost</label>
+            <select value={profileForm.search_recency_bias} onChange={(event) => setProfileForm((current) => ({ ...current, search_recency_bias: event.target.value }))}>
+              <option value="normal">Normal</option>
+              <option value="none">None</option>
+              <option value="light">Light</option>
+              <option value="strong">Strong</option>
+            </select>
+            <small className="muted">Changes how much best-match results favor newer messages.</small>
+          </section>
+          <section>
+            <h3>Attachments</h3>
+            <label>Attachment text weight</label>
+            <select value={profileForm.search_attachment_weight} onChange={(event) => setProfileForm((current) => ({ ...current, search_attachment_weight: event.target.value }))}>
+              <option value="normal">Normal</option>
+              <option value="off">Exclude</option>
+              <option value="light">Light</option>
+              <option value="strong">Strong</option>
+            </select>
+            <small className="muted">Adjusts how much attachment filenames and extracted text affect matching.</small>
+          </section>
+          <section>
+            <h3>Sender history</h3>
+            <label className="identity-primary"><input type="checkbox" checked={profileForm.search_sender_boost} onChange={(event) => setProfileForm((current) => ({ ...current, search_sender_boost: event.target.checked }))} /> Boost familiar senders</label>
+            <small className="muted">Uses your read history to nudge senders you usually open higher.</small>
+          </section>
+          <section>
+            <h3>Joined words</h3>
+            <label className="identity-primary"><input type="checkbox" checked={profileForm.search_compact_splitting} onChange={(event) => setProfileForm((current) => ({ ...current, search_compact_splitting: event.target.checked }))} /> Split compact terms</label>
+            <small className="muted">Lets searches like darkroom also consider strong dark room matches.</small>
+          </section>
         </div>
-        <div className="actions"><button>Save display</button></div>
+        <div className="actions"><button>Save preferences</button></div>
       </form>
     );
   }
@@ -994,6 +1095,8 @@ export function SettingsView({
         <div className="storage-grid">
           <Stat label="SQLite" value={formatBytes(storage.DatabaseBytes)} detail={String(storage.DatabasePath || "")} />
           <Stat label="Bleve" value={formatBytes(storage.IndexBytes)} detail={String(storage.IndexPath || "")} />
+          <Stat label="Indexed emails" value={formatStatCount(storage.IndexMessageCount)} detail="documents in Bleve" />
+          <Stat label="Full-text search" value={formatStatCount(storage.FullTextSearchMessageCount)} detail="emails in searchable folders" />
           <Stat label="Blobs" value={formatBytes(storage.BlobBytes)} detail={String(storage.BlobPath || "")} />
           <Stat label="Total" value={formatBytes(storage.TotalBytes)} detail={String(storage.Error || "")} />
         </div>

@@ -503,7 +503,7 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 			return nil, msg, err
 		}
 	}
-	matchDetails := s.threadSearchMatchDetails(ctx, cu.User.ID, threadMessages, query)
+	matchDetails := s.threadSearchMatchDetails(ctx, cu.User, threadMessages, query)
 	markedRead := false
 	defer func() {
 		if markedRead {
@@ -587,7 +587,8 @@ type threadSearchMatch struct {
 	Fields []string
 }
 
-func (s *Server) threadSearchMatchDetails(ctx context.Context, userID int64, messages []store.MessageRecord, query string) map[int64]threadSearchMatch {
+func (s *Server) threadSearchMatchDetails(ctx context.Context, user store.User, messages []store.MessageRecord, query string) map[int64]threadSearchMatch {
+	userID := user.ID
 	out := map[int64]threadSearchMatch{}
 	query, _ = stripStarSearchOperators(strings.TrimSpace(query))
 	cleanQuery, _, err := s.searchMailboxFilter(ctx, userID, query)
@@ -598,8 +599,9 @@ func (s *Server) threadSearchMatchDetails(ctx context.Context, userID int64, mes
 	if query == "" || s.search == nil {
 		return out
 	}
+	opts := searchOptionsForUser(user)
 	for _, msg := range messages {
-		hit, ok, err := s.search.MatchMessage(ctx, userID, msg.ID, query)
+		hit, ok, err := s.search.MatchMessageWithOptions(ctx, userID, msg.ID, query, opts)
 		if err != nil || !ok {
 			continue
 		}

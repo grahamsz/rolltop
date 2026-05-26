@@ -3,13 +3,19 @@
 package web
 
 type apiUser struct {
-	ID         int64  `json:"id"`
-	Email      string `json:"email"`
-	Name       string `json:"name"`
-	IsAdmin    bool   `json:"is_admin"`
-	DateLocale string `json:"date_locale"`
-	DateFormat string `json:"date_format"`
-	Theme      string `json:"theme"`
+	ID                     int64  `json:"id"`
+	Email                  string `json:"email"`
+	Name                   string `json:"name"`
+	IsAdmin                bool   `json:"is_admin"`
+	DateLocale             string `json:"date_locale"`
+	DateFormat             string `json:"date_format"`
+	Theme                  string `json:"theme"`
+	SearchPreset           string `json:"search_preset"`
+	SearchRecencyBias      string `json:"search_recency_bias"`
+	SearchFuzzy            string `json:"search_fuzzy"`
+	SearchSenderBoost      bool   `json:"search_sender_boost"`
+	SearchAttachmentWeight string `json:"search_attachment_weight"`
+	SearchCompactSplitting bool   `json:"search_compact_splitting"`
 }
 
 type apiMailbox struct {

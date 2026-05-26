@@ -93,6 +93,41 @@ func TestCountMailboxMessagesIsTenantScoped(t *testing.T) {
 	}
 }
 
+func TestCountUserMessagesIsTenantScoped(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	msgs := []store.MessageRecord{
+		{ID: 1, UserID: 1, Subject: "one", Date: time.Now()},
+		{ID: 2, UserID: 1, Subject: "two", Date: time.Now()},
+		{ID: 3, UserID: 2, Subject: "three", Date: time.Now()},
+	}
+	for _, msg := range msgs {
+		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	count, err := svc.CountUserMessages(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("user 1 count = %d", count)
+	}
+	count, err = svc.CountUserMessages(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("user 2 count = %d", count)
+	}
+}
+
 func TestPurgeMailboxSearchIndexIsTenantAndMailboxScoped(t *testing.T) {
 	ctx := context.Background()
 	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
@@ -489,6 +524,60 @@ func TestQuotedCompactWordDoesNotSplitOrFuzzyMatch(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != 1 {
 		t.Fatalf("ids = %v", ids)
+	}
+}
+
+func TestSearchOptionsCanDisableFuzzyMatching(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	if err := svc.IndexMessage(ctx, store.MessageRecord{ID: 1, UserID: 1, Subject: "darkroom supplies", Date: time.Now()}, nil); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := svc.Search(ctx, 1, "darkrom", SortBest, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("default fuzzy ids = %v", ids)
+	}
+	ids, err = svc.SearchWithOptions(ctx, 1, "darkrom", SortBest, 10, 0, SearchOptions{Behavior: SearchBehavior{Fuzzy: "off"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("fuzzy off ids = %v", ids)
+	}
+}
+
+func TestSearchOptionsCanExcludeAttachmentText(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	if err := svc.IndexMessage(ctx, store.MessageRecord{ID: 1, UserID: 1, Subject: "plain note", Date: time.Now(), HasAttachments: true}, []AttachmentDoc{{Filename: "report.pdf", ContentType: "application/pdf", Text: "peculiarterm"}}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := svc.Search(ctx, 1, "peculiarterm", SortBest, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("default attachment ids = %v", ids)
+	}
+	ids, err = svc.SearchWithOptions(ctx, 1, "peculiarterm", SortBest, 10, 0, SearchOptions{Behavior: SearchBehavior{AttachmentWeight: "off"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("attachment text off ids = %v", ids)
 	}
 }
 

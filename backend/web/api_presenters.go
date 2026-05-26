@@ -15,13 +15,19 @@ import (
 
 func safeUser(user store.User) apiUser {
 	return apiUser{
-		ID:         user.ID,
-		Email:      user.Email,
-		Name:       user.Name,
-		IsAdmin:    user.IsAdmin,
-		DateLocale: user.DateLocale,
-		DateFormat: user.DateFormat,
-		Theme:      user.Theme,
+		ID:                     user.ID,
+		Email:                  user.Email,
+		Name:                   user.Name,
+		IsAdmin:                user.IsAdmin,
+		DateLocale:             user.DateLocale,
+		DateFormat:             user.DateFormat,
+		Theme:                  user.Theme,
+		SearchPreset:           user.SearchPreset,
+		SearchRecencyBias:      user.SearchRecencyBias,
+		SearchFuzzy:            user.SearchFuzzy,
+		SearchSenderBoost:      user.SearchSenderBoost,
+		SearchAttachmentWeight: user.SearchAttachmentWeight,
+		SearchCompactSplitting: user.SearchCompactSplitting,
 	}
 }
 

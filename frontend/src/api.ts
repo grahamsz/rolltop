@@ -290,7 +290,17 @@ export const api = {
     }>("/api/account"),
   storage: () => getJSON<StorageStats>("/api/storage"),
   plugins: () => getJSON<{ enabled: string[] }>("/api/plugins"),
-  saveProfile: (csrf: string, profile: { date_locale: string; date_format: string; theme: string }) =>
+  saveProfile: (csrf: string, profile: {
+    date_locale: string;
+    date_format: string;
+    theme: string;
+    search_preset: string;
+    search_recency_bias: string;
+    search_fuzzy: string;
+    search_sender_boost: boolean;
+    search_attachment_weight: string;
+    search_compact_splitting: boolean;
+  }) =>
     postJSON<{ user: User }>("/api/profile", csrf, profile),
   saveIMAPAccount: (csrf: string, account: Record<string, unknown>) =>
     postJSON<{ ok: boolean; account: Account }>("/api/account/imap", csrf, account),

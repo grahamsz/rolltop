@@ -161,19 +161,36 @@ func (s *Server) apiProfile(w http.ResponseWriter, r *http.Request) {
 		if !s.verifyCSRF(w, r) {
 			return
 		}
-		var in struct {
-			DateLocale string `json:"date_locale"`
-			DateFormat string `json:"date_format"`
-			Theme      string `json:"theme"`
+		in := struct {
+			DateLocale             string `json:"date_locale"`
+			DateFormat             string `json:"date_format"`
+			Theme                  string `json:"theme"`
+			SearchPreset           string `json:"search_preset"`
+			SearchRecencyBias      string `json:"search_recency_bias"`
+			SearchFuzzy            string `json:"search_fuzzy"`
+			SearchSenderBoost      bool   `json:"search_sender_boost"`
+			SearchAttachmentWeight string `json:"search_attachment_weight"`
+			SearchCompactSplitting bool   `json:"search_compact_splitting"`
+		}{
+			DateLocale:             cu.User.DateLocale,
+			DateFormat:             cu.User.DateFormat,
+			Theme:                  cu.User.Theme,
+			SearchPreset:           cu.User.SearchPreset,
+			SearchRecencyBias:      cu.User.SearchRecencyBias,
+			SearchFuzzy:            cu.User.SearchFuzzy,
+			SearchSenderBoost:      cu.User.SearchSenderBoost,
+			SearchAttachmentWeight: cu.User.SearchAttachmentWeight,
+			SearchCompactSplitting: cu.User.SearchCompactSplitting,
 		}
 		if !decodeJSON(w, r, &in) {
 			return
 		}
-		user, err := s.store.UpdateUserDisplayPreferences(r.Context(), cu.User.ID, in.DateLocale, in.DateFormat, in.Theme)
+		user, err := s.store.UpdateUserPreferences(r.Context(), cu.User.ID, in.DateLocale, in.DateFormat, in.Theme, in.SearchPreset, in.SearchRecencyBias, in.SearchFuzzy, in.SearchAttachmentWeight, in.SearchSenderBoost, in.SearchCompactSplitting)
 		if err != nil {
 			s.serverError(w, err)
 			return
 		}
+		s.notifyUserChanged(cu.User.ID)
 		writeJSON(w, map[string]any{"user": safeUser(user)})
 	default:
 		methodNotAllowed(w)

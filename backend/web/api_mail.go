@@ -136,8 +136,8 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 		hydrateDone()
 		seeds = conversationSeedsFromMessages(messages)
 	} else {
-		opts := search.SearchOptions{}
-		if sortMode == search.SortBest {
+		opts := searchOptionsForUser(cu.User)
+		if sortMode == search.SortBest && searchSenderBoostEnabledForUser(cu.User) {
 			senderDone := timing.measure(&timing.sender)
 			stats, statsErr := s.store.ListReadSenderStatsForUser(r.Context(), cu.User.ID, 40)
 			senderDone()

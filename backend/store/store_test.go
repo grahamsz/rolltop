@@ -459,6 +459,17 @@ func TestUpdateUserDisplayPreferencesPersistsTheme(t *testing.T) {
 	if updated.DateLocale != "en-GB" || updated.DateFormat != "dmy" || updated.Theme != "matrix" {
 		t.Fatalf("updated preferences = %+v", updated)
 	}
+	if updated.SearchPreset != "balanced" || !updated.SearchSenderBoost || !updated.SearchCompactSplitting {
+		t.Fatalf("default search preferences = %+v", updated)
+	}
+
+	updated, err = db.UpdateUserPreferences(ctx, user.ID, "en-GB", "dmy", "matrix", "strict", "none", "off", "light", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.SearchPreset != "strict" || updated.SearchRecencyBias != "none" || updated.SearchFuzzy != "off" || updated.SearchAttachmentWeight != "light" || updated.SearchSenderBoost || updated.SearchCompactSplitting {
+		t.Fatalf("updated search preferences = %+v", updated)
+	}
 
 	if _, err := db.CreateSession(ctx, user.ID, "theme-token", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
@@ -470,6 +481,9 @@ func TestUpdateUserDisplayPreferencesPersistsTheme(t *testing.T) {
 	if sessionUser.Theme != "matrix" {
 		t.Fatalf("session user theme = %q", sessionUser.Theme)
 	}
+	if sessionUser.SearchPreset != "strict" || sessionUser.SearchSenderBoost {
+		t.Fatalf("session user search preferences = %+v", sessionUser)
+	}
 
 	updated, err = db.UpdateUserDisplayPreferences(ctx, user.ID, "", "locale", "classic-dark")
 	if err != nil {
@@ -477,6 +491,9 @@ func TestUpdateUserDisplayPreferencesPersistsTheme(t *testing.T) {
 	}
 	if updated.DateFormat != "locale" || updated.Theme != "classic_dark" {
 		t.Fatalf("classic dark preferences = %+v", updated)
+	}
+	if updated.SearchPreset != "strict" || updated.SearchSenderBoost || updated.SearchCompactSplitting {
+		t.Fatalf("display update did not preserve search preferences = %+v", updated)
 	}
 
 	updated, err = db.UpdateUserDisplayPreferences(ctx, user.ID, "", "bogus", "neon")

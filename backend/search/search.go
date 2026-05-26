@@ -64,6 +64,31 @@ const minSplitFragmentLength = 4
 // SearchOptions carries ranking hints supplied by callers outside the raw query text.
 type SearchOptions struct {
 	SenderBoosts []SenderBoost
+	Behavior     SearchBehavior
+}
+
+// SearchBehavior holds query-time ranking controls from the authenticated user's
+// profile. These knobs change only Bleve query construction, so saving them does
+// not require reindexing existing mail. SenderBoostSet and CompactSplittingSet
+// let zero-value SearchOptions{} preserve the established defaults.
+type SearchBehavior struct {
+	Preset              string
+	RecencyBias         string
+	Fuzzy               string
+	SenderBoost         bool
+	SenderBoostSet      bool
+	AttachmentWeight    string
+	CompactSplitting    bool
+	CompactSplittingSet bool
+}
+
+type normalizedSearchBehavior struct {
+	Preset           string
+	RecencyBias      string
+	Fuzzy            string
+	SenderBoost      bool
+	AttachmentWeight string
+	CompactSplitting bool
 }
 
 // Hit is a search result with the terms/fields Bleve reported for highlighting.
@@ -77,6 +102,82 @@ type Hit struct {
 type SenderBoost struct {
 	Sender string
 	Boost  float64
+}
+
+func (b SearchBehavior) normalized() normalizedSearchBehavior {
+	preset := normalizeChoice(b.Preset, "balanced", "strict", "balanced", "forgiving")
+	out := normalizedSearchBehavior{Preset: preset, SenderBoost: true, CompactSplitting: true}
+	switch preset {
+	case "strict":
+		out.RecencyBias = "light"
+		out.Fuzzy = "off"
+		out.AttachmentWeight = "normal"
+		out.CompactSplitting = false
+	case "forgiving":
+		out.RecencyBias = "normal"
+		out.Fuzzy = "forgiving"
+		out.AttachmentWeight = "strong"
+	default:
+		out.RecencyBias = "normal"
+		out.Fuzzy = "balanced"
+		out.AttachmentWeight = "normal"
+	}
+	if strings.TrimSpace(b.RecencyBias) != "" {
+		out.RecencyBias = normalizeChoice(b.RecencyBias, out.RecencyBias, "none", "light", "normal", "strong")
+	}
+	if strings.TrimSpace(b.Fuzzy) != "" {
+		out.Fuzzy = normalizeChoice(b.Fuzzy, out.Fuzzy, "off", "balanced", "forgiving")
+	}
+	if strings.TrimSpace(b.AttachmentWeight) != "" {
+		out.AttachmentWeight = normalizeChoice(b.AttachmentWeight, out.AttachmentWeight, "off", "light", "normal", "strong")
+	}
+	if b.SenderBoostSet {
+		out.SenderBoost = b.SenderBoost
+	}
+	if b.CompactSplittingSet {
+		out.CompactSplitting = b.CompactSplitting
+	}
+	return out
+}
+
+func normalizeChoice(value, fallback string, allowed ...string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, item := range allowed {
+		if value == item {
+			return value
+		}
+	}
+	return fallback
+}
+
+func (b normalizedSearchBehavior) fuzzyEnabled() bool {
+	return b.Fuzzy != "off"
+}
+
+func (b normalizedSearchBehavior) attachmentBoostScale() float64 {
+	switch b.AttachmentWeight {
+	case "off":
+		return 0
+	case "light":
+		return 0.4
+	case "strong":
+		return 1.7
+	default:
+		return 1
+	}
+}
+
+func (b normalizedSearchBehavior) recencyBoostScale() float64 {
+	switch b.RecencyBias {
+	case "none":
+		return 0
+	case "light":
+		return 0.4
+	case "strong":
+		return 1.7
+	default:
+		return 1
+	}
 }
 
 // Open creates or opens a single combined Bleve index. Tests use this mode; the
@@ -469,6 +570,32 @@ func mailboxSearchRequest(userID, mailboxID int64, size, from int) *bleve.Search
 	return req
 }
 
+// CountUserMessages returns the number of message documents currently present
+// in the user's Bleve index. Storage stats use it to show how much mail is
+// actually searchable without opening another user's index.
+func (s *Service) CountUserMessages(ctx context.Context, userID int64) (int, error) {
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	default:
+	}
+	if userID == 0 {
+		return 0, nil
+	}
+	q := bleve.NewTermQuery(strconv.FormatInt(userID, 10))
+	q.SetField("user_id")
+	req := bleve.NewSearchRequestOptions(q, 0, 0, false)
+	index, err := s.indexForUser(userID)
+	if err != nil {
+		return 0, err
+	}
+	res, err := index.Search(req)
+	if err != nil {
+		return 0, err
+	}
+	return int(res.Total), nil
+}
+
 // Search runs a query and returns matching message IDs with default options.
 func (s *Service) Search(ctx context.Context, userID int64, queryText string, sortMode SortMode, limit, offset int) ([]int64, error) {
 	return s.SearchWithOptions(ctx, userID, queryText, sortMode, limit, offset, SearchOptions{})
@@ -510,10 +637,14 @@ func (s *Service) SearchHitsWithOptions(ctx context.Context, userID int64, query
 	return hits, nil
 }
 
-// MatchMessage re-runs the current search against one document. Thread rendering
-// uses it to highlight matching terms even when the user opens a whole conversation
-// from a single search result.
+// MatchMessage re-runs the current search against one document with default options.
 func (s *Service) MatchMessage(ctx context.Context, userID, messageID int64, queryText string) (Hit, bool, error) {
+	return s.MatchMessageWithOptions(ctx, userID, messageID, queryText, SearchOptions{})
+}
+
+// MatchMessageWithOptions uses the same query-time behavior as the search results
+// list so message-detail highlighting stays consistent with the user's profile.
+func (s *Service) MatchMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, opts SearchOptions) (Hit, bool, error) {
 	select {
 	case <-ctx.Done():
 		return Hit{}, false, ctx.Err()
@@ -525,7 +656,7 @@ func (s *Service) MatchMessage(ctx context.Context, userID, messageID int64, que
 	}
 	docID := strconv.FormatInt(messageID, 10)
 	docQuery := bleve.NewDocIDQuery([]string{docID})
-	query := bleve.NewConjunctionQuery(buildQuery(userID, queryText, SortRecent, SearchOptions{}), docQuery)
+	query := bleve.NewConjunctionQuery(buildQuery(userID, queryText, SortRecent, opts), docQuery)
 	req := bleve.NewSearchRequestOptions(query, 1, 0, false)
 	req.IncludeLocations = true
 	index, err := s.indexForUser(userID)
@@ -575,6 +706,7 @@ func (s *Service) search(ctx context.Context, userID int64, queryText string, so
 // mode into a Boolean query with recency and sender-history boosts.
 func buildQuery(userID int64, queryText string, sortMode SortMode, opts SearchOptions) blevequery.Query {
 	parsed := parseQuery(queryText)
+	behavior := opts.Behavior.normalized()
 	parts := []blevequery.Query{}
 
 	userQuery := bleve.NewTermQuery(strconv.FormatInt(userID, 10))
@@ -636,9 +768,9 @@ func buildQuery(userID int64, queryText string, sortMode SortMode, opts SearchOp
 			parts = append(parts, bleve.NewMatchAllQuery())
 		}
 	} else {
-		parts = append(parts, textQuery(parsed.Text, parsed.TextQuoted))
+		parts = append(parts, textQuery(parsed.Text, parsed.TextQuoted, behavior))
 	}
-	mustNot := negatedTextQueries(parsed.NegatedText)
+	mustNot := negatedTextQueries(parsed.NegatedText, behavior)
 	must := bleve.NewConjunctionQuery(parts...)
 	if sortMode != SortBest {
 		if len(mustNot) == 0 {
@@ -646,8 +778,10 @@ func buildQuery(userID int64, queryText string, sortMode SortMode, opts SearchOp
 		}
 		return blevequery.NewBooleanQuery([]blevequery.Query{must}, nil, mustNot)
 	}
-	should := recencyBoostQueries(time.Now().UTC())
-	should = append(should, senderBoostQueries(opts.SenderBoosts)...)
+	should := recencyBoostQueries(time.Now().UTC(), behavior)
+	if behavior.SenderBoost {
+		should = append(should, senderBoostQueries(opts.SenderBoosts)...)
+	}
 	if len(should) == 0 && len(mustNot) == 0 {
 		return must
 	}
@@ -712,12 +846,12 @@ func fromQuery(text string) blevequery.Query {
 // textQuery implements the user-facing search feel. Quoted text is literal and
 // avoids fuzzy word breakdown; unquoted text can use all-term matching, compact
 // phrase boosts, domain matching, and controlled fuzziness for typos.
-func textQuery(text string, quoted bool) blevequery.Query {
+func textQuery(text string, quoted bool, behavior normalizedSearchBehavior) blevequery.Query {
 	var disjuncts []blevequery.Query
 	normalized := normalizeSearchText(text)
 	terms := strings.Fields(normalized)
 	if quoted {
-		for _, field := range literalTextFields() {
+		for _, field := range literalTextFields(behavior) {
 			phrase := bleve.NewMatchPhraseQuery(text)
 			phrase.SetField(field)
 			phrase.SetBoost(4)
@@ -743,41 +877,36 @@ func textQuery(text string, quoted bool) blevequery.Query {
 	if q := domainTextQuery(text); q != nil {
 		disjuncts = append(disjuncts, q)
 	} else if len(terms) > 1 {
-		disjuncts = append(disjuncts, allTextTermsQuery(terms))
-		phrase := bleve.NewMatchPhraseQuery(text)
-		phrase.SetBoost(1.5)
-		disjuncts = append(disjuncts, phrase)
+		disjuncts = append(disjuncts, allTextTermsQuery(terms, behavior))
+		disjuncts = append(disjuncts, textPhraseQuery(text, 1.5, behavior))
 	} else {
-		disjuncts = append(disjuncts, bleve.NewQueryStringQuery(text))
+		disjuncts = append(disjuncts, defaultOrWeightedTextQuery(text, behavior))
 		if normalized != "" && normalized != text {
-			disjuncts = append(disjuncts, bleve.NewQueryStringQuery(normalized))
+			disjuncts = append(disjuncts, defaultOrWeightedTextQuery(normalized, behavior))
 		}
 	}
 	joined := strings.ReplaceAll(normalized, " ", "")
 	if joined != "" {
 		if joined != normalized {
-			disjuncts = append(disjuncts, boostQuery(bleve.NewQueryStringQuery(joined), 0.8))
+			disjuncts = append(disjuncts, boostQuery(defaultOrWeightedTextQuery(joined, behavior), 0.8))
 		}
-		if joined != normalized || canSplitCompactTerm(joined) {
-			disjuncts = append(disjuncts, exactCompactQueries(joined)...)
-			disjuncts = append(disjuncts, splitPhraseQueries(joined)...)
-			disjuncts = append(disjuncts, splitWordQueries(joined)...)
-			if len(joined) >= 5 {
+		if behavior.CompactSplitting && (joined != normalized || canSplitCompactTerm(joined)) {
+			disjuncts = append(disjuncts, exactCompactQueries(joined, behavior)...)
+			disjuncts = append(disjuncts, splitPhraseQueries(joined, behavior)...)
+			disjuncts = append(disjuncts, splitWordQueries(joined, behavior)...)
+			if behavior.fuzzyEnabled() && behavior.attachmentBoostScale() > 0 && len(joined) >= 5 {
 				fq := bleve.NewFuzzyQuery(joined)
 				fq.SetField("compound")
-				fq.SetFuzziness(fuzzinessFor(joined))
-				fq.SetBoost(0.6)
+				fq.SetFuzziness(fuzzinessFor(joined, behavior))
+				fq.SetBoost(0.6 * behavior.attachmentBoostScale())
 				disjuncts = append(disjuncts, fq)
 			}
 		}
 	}
-	if len(terms) <= 1 {
+	if behavior.fuzzyEnabled() && len(terms) <= 1 {
 		for _, term := range terms {
 			if len(term) >= 5 {
-				q := bleve.NewFuzzyQuery(term)
-				q.SetFuzziness(fuzzinessFor(term))
-				q.SetBoost(0.5)
-				disjuncts = append(disjuncts, q)
+				disjuncts = append(disjuncts, fuzzyTextQuery(term, 0.5, behavior))
 			}
 		}
 	}
@@ -787,34 +916,34 @@ func textQuery(text string, quoted bool) blevequery.Query {
 	return bleve.NewDisjunctionQuery(disjuncts...)
 }
 
-func negatedTextQueries(terms []negatedTextTerm) []blevequery.Query {
+func negatedTextQueries(terms []negatedTextTerm, behavior normalizedSearchBehavior) []blevequery.Query {
 	out := make([]blevequery.Query, 0, len(terms))
 	for _, term := range terms {
-		if q := negatedTextQuery(term.Text, term.Quoted); q != nil {
+		if q := negatedTextQuery(term.Text, term.Quoted, behavior); q != nil {
 			out = append(out, q)
 		}
 	}
 	return out
 }
 
-func negatedTextQuery(text string, quoted bool) blevequery.Query {
+func negatedTextQuery(text string, quoted bool, behavior normalizedSearchBehavior) blevequery.Query {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
 	}
 	if quoted || strings.ContainsAny(text, " \t\r\n") {
-		disjuncts := make([]blevequery.Query, 0, len(literalTextFields()))
-		for _, field := range literalTextFields() {
+		disjuncts := make([]blevequery.Query, 0, len(literalTextFields(behavior)))
+		for _, field := range literalTextFields(behavior) {
 			phrase := bleve.NewMatchPhraseQuery(text)
 			phrase.SetField(field)
 			disjuncts = append(disjuncts, phrase)
 		}
 		return bleve.NewDisjunctionQuery(disjuncts...)
 	}
-	disjuncts := []blevequery.Query{bleve.NewMatchQuery(text)}
+	disjuncts := []blevequery.Query{baseTextTermQuery(text, behavior)}
 	normalized := normalizeSearchText(text)
 	if normalized != "" && normalized != strings.ToLower(strings.TrimSpace(text)) {
-		disjuncts = append(disjuncts, bleve.NewMatchQuery(normalized))
+		disjuncts = append(disjuncts, baseTextTermQuery(normalized, behavior))
 	}
 	if len(disjuncts) == 1 {
 		return disjuncts[0]
@@ -822,14 +951,18 @@ func negatedTextQuery(text string, quoted bool) blevequery.Query {
 	return bleve.NewDisjunctionQuery(disjuncts...)
 }
 
-func literalTextFields() []string {
-	return []string{"subject", "from", "to", "cc", "message_id", "body", "attachment_names", "attachment_types", "attachments"}
+func literalTextFields(behavior normalizedSearchBehavior) []string {
+	fields := []string{"subject", "from", "to", "cc", "message_id", "body"}
+	if behavior.attachmentBoostScale() > 0 {
+		fields = append(fields, "attachment_names", "attachment_types", "attachments")
+	}
+	return fields
 }
 
-func allTextTermsQuery(terms []string) blevequery.Query {
+func allTextTermsQuery(terms []string, behavior normalizedSearchBehavior) blevequery.Query {
 	parts := make([]blevequery.Query, 0, len(terms))
 	for _, term := range terms {
-		parts = append(parts, textTermQuery(term))
+		parts = append(parts, textTermQuery(term, behavior))
 	}
 	if len(parts) == 1 {
 		return parts[0]
@@ -837,18 +970,101 @@ func allTextTermsQuery(terms []string) blevequery.Query {
 	return bleve.NewConjunctionQuery(parts...)
 }
 
-func textTermQuery(term string) blevequery.Query {
-	queries := []blevequery.Query{bleve.NewMatchQuery(term)}
-	if len(term) >= 5 {
-		q := bleve.NewFuzzyQuery(term)
-		q.SetFuzziness(fuzzinessFor(term))
-		q.SetBoost(0.5)
-		queries = append(queries, q)
+func textTermQuery(term string, behavior normalizedSearchBehavior) blevequery.Query {
+	queries := []blevequery.Query{baseTextTermQuery(term, behavior)}
+	if behavior.fuzzyEnabled() && len(term) >= 5 {
+		queries = append(queries, fuzzyTextQuery(term, 0.5, behavior))
 	}
 	if len(queries) == 1 {
 		return queries[0]
 	}
 	return bleve.NewDisjunctionQuery(queries...)
+}
+
+func baseTextTermQuery(term string, behavior normalizedSearchBehavior) blevequery.Query {
+	if behavior.AttachmentWeight == "normal" {
+		return bleve.NewMatchQuery(term)
+	}
+	disjuncts := []blevequery.Query{
+		boostedMatch("subject", term, 1),
+		boostedMatch("from", term, 1),
+		boostedMatch("to", term, 1),
+		boostedMatch("cc", term, 1),
+		boostedMatch("message_id", term, 1),
+		boostedMatch("body", term, 1),
+	}
+	if scale := behavior.attachmentBoostScale(); scale > 0 {
+		disjuncts = append(disjuncts,
+			boostedMatch("attachment_names", term, scale),
+			boostedMatch("attachment_types", term, scale),
+			boostedMatch("attachments", term, scale),
+		)
+	}
+	return bleve.NewDisjunctionQuery(disjuncts...)
+}
+
+func defaultOrWeightedTextQuery(term string, behavior normalizedSearchBehavior) blevequery.Query {
+	if behavior.AttachmentWeight == "normal" {
+		return bleve.NewQueryStringQuery(term)
+	}
+	return baseTextTermQuery(term, behavior)
+}
+
+func textPhraseQuery(text string, boost float64, behavior normalizedSearchBehavior) blevequery.Query {
+	if behavior.AttachmentWeight == "normal" {
+		q := bleve.NewMatchPhraseQuery(text)
+		q.SetBoost(boost)
+		return q
+	}
+	disjuncts := []blevequery.Query{
+		boostedPhrase("subject", text, boost),
+		boostedPhrase("from", text, boost),
+		boostedPhrase("to", text, boost),
+		boostedPhrase("cc", text, boost),
+		boostedPhrase("message_id", text, boost),
+		boostedPhrase("body", text, boost),
+	}
+	if scale := behavior.attachmentBoostScale(); scale > 0 {
+		disjuncts = append(disjuncts,
+			boostedPhrase("attachment_names", text, boost*scale),
+			boostedPhrase("attachment_types", text, boost*scale),
+			boostedPhrase("attachments", text, boost*scale),
+		)
+	}
+	return bleve.NewDisjunctionQuery(disjuncts...)
+}
+
+func fuzzyTextQuery(term string, boost float64, behavior normalizedSearchBehavior) blevequery.Query {
+	if behavior.AttachmentWeight == "normal" {
+		q := bleve.NewFuzzyQuery(term)
+		q.SetFuzziness(fuzzinessFor(term, behavior))
+		q.SetBoost(boost)
+		return q
+	}
+	disjuncts := []blevequery.Query{
+		boostedFuzzy("subject", term, boost, behavior),
+		boostedFuzzy("from", term, boost, behavior),
+		boostedFuzzy("to", term, boost, behavior),
+		boostedFuzzy("cc", term, boost, behavior),
+		boostedFuzzy("message_id", term, boost, behavior),
+		boostedFuzzy("body", term, boost, behavior),
+	}
+	if scale := behavior.attachmentBoostScale(); scale > 0 {
+		disjuncts = append(disjuncts,
+			boostedFuzzy("attachment_names", term, boost*scale, behavior),
+			boostedFuzzy("attachment_types", term, boost*scale, behavior),
+			boostedFuzzy("attachments", term, boost*scale, behavior),
+		)
+	}
+	return bleve.NewDisjunctionQuery(disjuncts...)
+}
+
+func boostedFuzzy(field, term string, boost float64, behavior normalizedSearchBehavior) blevequery.Query {
+	q := bleve.NewFuzzyQuery(term)
+	q.SetField(field)
+	q.SetFuzziness(fuzzinessFor(term, behavior))
+	q.SetBoost(boost)
+	return q
 }
 
 // hitMatchTerms filters Bleve's raw location map down to user-meaningful terms,
@@ -934,7 +1150,7 @@ func queryNeedles(parsed parsedQuery) []queryNeedle {
 			seen[term] = true
 			maxDistance := 0
 			if len(term) >= 5 {
-				maxDistance = fuzzinessFor(term)
+				maxDistance = fuzzinessFor(term, SearchBehavior{}.normalized())
 			}
 			needles = append(needles, queryNeedle{Term: term, MaxDistance: maxDistance})
 		}
@@ -1051,8 +1267,12 @@ func termConjunction(field string, terms []string) blevequery.Query {
 	return bleve.NewConjunctionQuery(parts...)
 }
 
-func recencyBoostQueries(now time.Time) []blevequery.Query {
+func recencyBoostQueries(now time.Time, behavior normalizedSearchBehavior) []blevequery.Query {
 	if now.IsZero() {
+		return nil
+	}
+	scale := behavior.recencyBoostScale()
+	if scale <= 0 {
 		return nil
 	}
 	buckets := []struct {
@@ -1069,58 +1289,61 @@ func recencyBoostQueries(now time.Time) []blevequery.Query {
 	for _, bucket := range buckets {
 		q := bleve.NewDateRangeQuery(now.Add(-bucket.age), time.Time{})
 		q.SetField("date")
-		q.SetBoost(bucket.boost)
+		q.SetBoost(bucket.boost * scale)
 		out = append(out, q)
 	}
 	return out
 }
 
-func exactCompactQueries(joined string) []blevequery.Query {
+func exactCompactQueries(joined string, behavior normalizedSearchBehavior) []blevequery.Query {
 	if joined == "" {
 		return nil
 	}
-	return []blevequery.Query{
+	out := []blevequery.Query{
 		boostedMatch("subject_compound", joined, 80),
 		boostedMatch("from_domain", joined, 70),
 		boostedMatch("from", joined, 60),
 		boostedMatch("from_compound", joined, 50),
-		boostedMatch("compound", joined, 45),
 	}
+	if behavior.attachmentBoostScale() > 0 {
+		out = append(out, boostedMatch("compound", joined, 45*behavior.attachmentBoostScale()))
+	}
+	return out
 }
 
-func splitPhraseQueries(term string) []blevequery.Query {
+func splitPhraseQueries(term string, behavior normalizedSearchBehavior) []blevequery.Query {
 	if strings.Contains(term, " ") || !canSplitCompactTerm(term) || len(term) > 40 {
 		return nil
 	}
+	attachmentScale := behavior.attachmentBoostScale()
 	var out []blevequery.Query
 	for split := minSplitFragmentLength; split <= len(term)-minSplitFragmentLength; split++ {
 		phrase := term[:split] + " " + term[split:]
 		out = append(out, boostedPhrase("subject", phrase, 35))
 		out = append(out, boostedPhrase("body", phrase, 42))
-		out = append(out, boostedPhrase("attachments", phrase, 24))
+		if attachmentScale > 0 {
+			out = append(out, boostedPhrase("attachments", phrase, 24*attachmentScale))
+		}
 		out = append(out, boostedPhrase("from", phrase, 20))
 	}
 	return out
 }
 
-func splitWordQueries(term string) []blevequery.Query {
+func splitWordQueries(term string, behavior normalizedSearchBehavior) []blevequery.Query {
 	if strings.Contains(term, " ") || !canSplitCompactTerm(term) || len(term) > 40 {
 		return nil
 	}
 	var out []blevequery.Query
 	for split := minSplitFragmentLength; split <= len(term)-minSplitFragmentLength; split++ {
-		out = append(out, boostQuery(bleve.NewConjunctionQuery(splitTermQuery(term[:split]), splitTermQuery(term[split:])), 0.2))
+		out = append(out, boostQuery(bleve.NewConjunctionQuery(splitTermQuery(term[:split], behavior), splitTermQuery(term[split:], behavior)), 0.2))
 	}
 	return out
 }
 
-func splitTermQuery(term string) blevequery.Query {
-	queries := []blevequery.Query{bleve.NewMatchQuery(term)}
-	if len(term) >= 4 {
-		q := bleve.NewFuzzyQuery(term)
-		q.SetFuzziness(1)
-		q.SetBoost(0.5)
-		queries = append(queries, q)
+func splitTermQuery(term string, behavior normalizedSearchBehavior) blevequery.Query {
+	queries := []blevequery.Query{baseTextTermQuery(term, behavior)}
+	if behavior.fuzzyEnabled() && len(term) >= 4 {
+		queries = append(queries, fuzzyTextQuery(term, 0.5, behavior))
 	}
 	return bleve.NewDisjunctionQuery(queries...)
 }
@@ -1153,7 +1376,10 @@ func boostQuery(q blevequery.Query, boost float64) blevequery.Query {
 	return q
 }
 
-func fuzzinessFor(term string) int {
+func fuzzinessFor(term string, behavior normalizedSearchBehavior) int {
+	if behavior.Fuzzy == "forgiving" && len([]rune(term)) >= 7 {
+		return 2
+	}
 	return 1
 }
 

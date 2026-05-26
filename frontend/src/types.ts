@@ -10,6 +10,12 @@ export type User = {
   date_locale: string;
   date_format: "mdy" | "dmy" | "ymd" | "locale" | string;
   theme: "classic" | "classic_dark" | "matrix" | string;
+  search_preset: "strict" | "balanced" | "forgiving" | string;
+  search_recency_bias: "none" | "light" | "normal" | "strong" | string;
+  search_fuzzy: "off" | "balanced" | "forgiving" | string;
+  search_sender_boost: boolean;
+  search_attachment_weight: "off" | "light" | "normal" | "strong" | string;
+  search_compact_splitting: boolean;
 };
 
 /** Mailbox mirrors a folder summary row including sync, visibility, and indexing counters. */

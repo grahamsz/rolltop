@@ -209,8 +209,8 @@ func (s *Store) mustDataDB(ctx context.Context, userID int64) *sql.DB {
 // rows back into the high-level system database.
 func (s *Store) mirrorUser(ctx context.Context, user User) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO users
-			(id, email, name, password_hash, is_admin, date_locale, date_format, theme, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(id, email, name, password_hash, is_admin, date_locale, date_format, theme, search_preset, search_recency_bias, search_fuzzy, search_sender_boost, search_attachment_weight, search_compact_splitting, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			email = excluded.email,
 			name = excluded.name,
@@ -219,8 +219,14 @@ func (s *Store) mirrorUser(ctx context.Context, user User) error {
 			date_locale = excluded.date_locale,
 			date_format = excluded.date_format,
 			theme = excluded.theme,
+			search_preset = excluded.search_preset,
+			search_recency_bias = excluded.search_recency_bias,
+			search_fuzzy = excluded.search_fuzzy,
+			search_sender_boost = excluded.search_sender_boost,
+			search_attachment_weight = excluded.search_attachment_weight,
+			search_compact_splitting = excluded.search_compact_splitting,
 			updated_at = excluded.updated_at`,
-		user.ID, user.Email, user.Name, user.PasswordHash, boolInt(user.IsAdmin), user.DateLocale, user.DateFormat, user.Theme, user.CreatedAt.UTC().Unix(), user.UpdatedAt.UTC().Unix())
+		user.ID, user.Email, user.Name, user.PasswordHash, boolInt(user.IsAdmin), user.DateLocale, user.DateFormat, user.Theme, user.SearchPreset, user.SearchRecencyBias, user.SearchFuzzy, boolInt(user.SearchSenderBoost), user.SearchAttachmentWeight, boolInt(user.SearchCompactSplitting), user.CreatedAt.UTC().Unix(), user.UpdatedAt.UTC().Unix())
 	return err
 }
 

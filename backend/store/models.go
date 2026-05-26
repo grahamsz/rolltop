@@ -6,16 +6,22 @@ import "time"
 
 // User is the system-level local account record mirrored into each user database for joins/preferences.
 type User struct {
-	ID           int64
-	Email        string
-	Name         string
-	PasswordHash string
-	IsAdmin      bool
-	DateLocale   string
-	DateFormat   string
-	Theme        string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID                     int64
+	Email                  string
+	Name                   string
+	PasswordHash           string
+	IsAdmin                bool
+	DateLocale             string
+	DateFormat             string
+	Theme                  string
+	SearchPreset           string
+	SearchRecencyBias      string
+	SearchFuzzy            string
+	SearchSenderBoost      bool
+	SearchAttachmentWeight string
+	SearchCompactSplitting bool
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 // Session is a hashed browser login token with an expiry time.

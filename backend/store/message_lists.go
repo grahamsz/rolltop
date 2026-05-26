@@ -58,6 +58,22 @@ func (s *Store) CountMessagesForMailbox(ctx context.Context, userID, mailboxID i
 	return n, err
 }
 
+// CountSearchEnabledMessagesForUser counts local messages in folders included in
+// full-text search. Settings storage uses this alongside Bleve's document count
+// to show whether SQLite mail and the search index are in the same ballpark.
+func (s *Store) CountSearchEnabledMessagesForUser(ctx context.Context, userID int64) (int, error) {
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	err = db.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM messages m
+		JOIN mailboxes mb ON mb.id = m.mailbox_id AND mb.user_id = m.user_id
+		WHERE m.user_id = ? AND mb.include_in_search = 1`, userID).Scan(&n)
+	return n, err
+}
+
 // ListLatestThreadMessagesForUser returns one latest message per thread for all-mail list rendering.
 func (s *Store) ListLatestThreadMessagesForUser(ctx context.Context, userID int64, limit, offset int) ([]MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
