@@ -310,7 +310,7 @@ func (s *Server) composeFormForRequest(r *http.Request) (composeForm, error) {
 		if err != nil {
 			return composeForm{}, err
 		}
-		form := forwardComposeForm(msg)
+		form := s.forwardComposeFormForMessage(r.Context(), cu.User.ID, msg)
 		attachments, err := s.composeExistingAttachmentsForMessage(r.Context(), cu.User.ID, msg.ID)
 		if err != nil {
 			return composeForm{}, err

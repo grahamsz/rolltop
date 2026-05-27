@@ -177,6 +177,21 @@ func forwardComposeForm(msg store.MessageRecord) composeForm {
 	}
 }
 
+// forwardComposeFormForMessage hydrates the message body from the retained raw
+// blob or IMAP before building the forward draft. Message display already does
+// this, and forwarding needs the same source so rich HTML mail does not fall
+// back to indexed preview text or markdown-like link soup.
+func (s *Server) forwardComposeFormForMessage(ctx context.Context, userID int64, msg store.MessageRecord) composeForm {
+	bodyHTML, bodyText, _ := s.displayBodiesForMessage(ctx, userID, msg)
+	if strings.TrimSpace(bodyHTML) != "" {
+		msg.BodyHTML = bodyHTML
+	}
+	if strings.TrimSpace(bodyText) != "" {
+		msg.BodyText = bodyText
+	}
+	return forwardComposeForm(msg)
+}
+
 func quotedReplyBody(msg store.MessageRecord) string {
 	var b strings.Builder
 	b.WriteString("\n\n")

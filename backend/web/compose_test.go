@@ -3,10 +3,12 @@
 package web
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"mailmirror/backend/blob"
 	"mailmirror/backend/store"
 )
 
@@ -35,6 +37,44 @@ func TestForwardComposePrefersSanitizedHTML(t *testing.T) {
 	}
 	if !strings.Contains(form.Body, "Hello there") {
 		t.Fatalf("forward text missing visible body: %q", form.Body)
+	}
+}
+
+func TestForwardComposeHydratesHTMLFromRawBlob(t *testing.T) {
+	raw := strings.Join([]string{
+		"From: \"Peak Design\" <info@peakdesign.com>",
+		"To: me@example.test",
+		"Subject: Ten bucks",
+		"MIME-Version: 1.0",
+		"Content-Type: text/html; charset=utf-8",
+		"",
+		`<html><body><h1>Enjoy <strong>$10 off</strong></h1><p><a href="https://example.test/deal">Open the deal</a></p><img src="https://example.test/hero.jpg" alt="Hero"></body></html>`,
+	}, "\r\n")
+	blobs := blob.New(t.TempDir())
+	saved, err := blobs.SaveRawMessage(7, 1, "INBOX", 42, []byte(raw))
+	if err != nil {
+		t.Fatalf("save raw message: %v", err)
+	}
+	server := &Server{blobs: blobs}
+	form := server.forwardComposeFormForMessage(context.Background(), 7, store.MessageRecord{
+		UserID:   7,
+		BlobPath: saved.Path,
+		FromAddr: `"Peak Design" <info@peakdesign.com>`,
+		ToAddr:   "me@example.test",
+		Subject:  "Ten bucks",
+		BodyText: "Preview [Open the deal](https://example.test/deal)",
+	})
+	if !strings.Contains(form.BodyHTML, "<strong>$10 off</strong>") {
+		t.Fatalf("forward html did not use raw blob html: %q", form.BodyHTML)
+	}
+	if !strings.Contains(form.BodyHTML, `href="https://example.test/deal"`) {
+		t.Fatalf("forward html lost link href: %q", form.BodyHTML)
+	}
+	if !strings.Contains(form.BodyHTML, `src="https://example.test/hero.jpg"`) {
+		t.Fatalf("forward html lost image src: %q", form.BodyHTML)
+	}
+	if strings.Contains(form.Body, "[Open the deal]") {
+		t.Fatalf("forward text used indexed markdown preview instead of raw body: %q", form.Body)
 	}
 }
 
