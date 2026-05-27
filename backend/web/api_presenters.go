@@ -26,6 +26,8 @@ func safeUser(user store.User) apiUser {
 		SearchRecencyBias:      user.SearchRecencyBias,
 		SearchFuzzy:            user.SearchFuzzy,
 		SearchSenderBoost:      user.SearchSenderBoost,
+		SearchSenderHistory:    user.SearchSenderHistory,
+		SearchContactBoost:     user.SearchContactBoost,
 		SearchAttachmentWeight: user.SearchAttachmentWeight,
 		SearchCompactSplitting: user.SearchCompactSplitting,
 	}
@@ -132,14 +134,16 @@ func apiSMTPAccountsFromStore(accounts []store.SMTPAccount) []apiSMTPAccount {
 
 func apiMailIdentityFromStore(identity store.MailIdentity) apiMailIdentity {
 	return apiMailIdentity{
-		ID:             identity.ID,
-		ContactID:      identity.ContactID,
-		ContactEmailID: identity.ContactEmailID,
-		SMTPAccountID:  identity.SMTPAccountID,
-		Email:          identity.Email,
-		DisplayName:    identity.DisplayName,
-		Signature:      identity.Signature,
-		IsPrimary:      identity.IsPrimary,
+		ID:              identity.ID,
+		ContactID:       identity.ContactID,
+		ContactEmailID:  identity.ContactEmailID,
+		SMTPAccountID:   identity.SMTPAccountID,
+		SentMailboxID:   identity.SentMailboxID,
+		DraftsMailboxID: identity.DraftsMailboxID,
+		Email:           identity.Email,
+		DisplayName:     identity.DisplayName,
+		Signature:       identity.Signature,
+		IsPrimary:       identity.IsPrimary,
 	}
 }
 
@@ -205,6 +209,7 @@ func apiConversations(conversations []conversationView) []apiConversation {
 			Message:                  apiMessageFromRecord(conv.Message, conv.Snippet),
 			StarredMessageID:         conv.StarredMessageID,
 			Participants:             conv.Participants,
+			RecipientParticipants:    conv.RecipientParticipants,
 			Count:                    conv.Count,
 			IsRead:                   conv.IsRead,
 			HasAttachments:           conv.HasAttachments,

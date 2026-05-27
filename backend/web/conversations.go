@@ -306,13 +306,14 @@ func summarizeConversation(thread []store.MessageRecord, own map[string]bool) co
 		starredMessageID = starredMessage.ID
 	}
 	return conversationView{
-		Message:          displayMessage,
-		StarredMessageID: starredMessageID,
-		Participants:     participantSummary(thread, own),
-		Count:            len(thread),
-		IsRead:           allRead,
-		HasAttachments:   hasAttachments,
-		Snippet:          messageSnippet(latest.BodyText, latest.BodyHTML),
+		Message:               displayMessage,
+		StarredMessageID:      starredMessageID,
+		Participants:          participantSummary(thread, own),
+		RecipientParticipants: recipientParticipantSummary(thread, own),
+		Count:                 len(thread),
+		IsRead:                allRead,
+		HasAttachments:        hasAttachments,
+		Snippet:               messageSnippet(latest.BodyText, latest.BodyHTML),
 	}
 }
 
@@ -528,6 +529,72 @@ func participantSummary(thread []store.MessageRecord, own map[string]bool) strin
 		return fmt.Sprintf("%s, %s, %s +%d", labels[0], labels[1], labels[2], len(labels)-3)
 	}
 	return strings.Join(labels, ", ")
+}
+
+func recipientParticipantSummary(thread []store.MessageRecord, own map[string]bool) string {
+	var labels []string
+	seen := map[string]bool{}
+	hasMe := false
+	for _, msg := range thread {
+		for _, value := range []string{msg.ToAddr, msg.CCAddr} {
+			for _, label := range recipientAddressLabels(value, own) {
+				if label == "me" {
+					hasMe = true
+				}
+				key := strings.ToLower(label)
+				if key == "" || seen[key] {
+					continue
+				}
+				seen[key] = true
+				labels = append(labels, label)
+			}
+		}
+	}
+	if hasMe && len(labels) > 1 {
+		for i, label := range labels {
+			if label == "me" {
+				labels = append(labels[:i], labels[i+1:]...)
+				labels = append(labels, "me")
+				break
+			}
+		}
+	}
+	if len(labels) == 0 {
+		return "undisclosed recipients"
+	}
+	if len(labels) > 3 {
+		return fmt.Sprintf("%s, %s, %s +%d", labels[0], labels[1], labels[2], len(labels)-3)
+	}
+	return strings.Join(labels, ", ")
+}
+
+func recipientAddressLabels(value string, own map[string]bool) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if addrs, err := mail.ParseAddressList(value); err == nil {
+		out := make([]string, 0, len(addrs))
+		for _, addr := range addrs {
+			identity := store.SenderIdentity(addr.Address)
+			if identity == "" {
+				continue
+			}
+			if own[identity] {
+				out = append(out, "me")
+			} else {
+				out = append(out, identity)
+			}
+		}
+		return out
+	}
+	if identity := store.SenderIdentity(value); identity != "" {
+		if own[identity] {
+			return []string{"me"}
+		}
+		return []string{identity}
+	}
+	return nil
 }
 
 func senderDisplayName(value string) string {

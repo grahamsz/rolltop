@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"mailmirror/backend/plugins"
-	"mailmirror/backend/search"
 	"mailmirror/backend/store"
 )
 
@@ -135,17 +134,9 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 		hydrateDone()
 		seeds = conversationSeedsFromMessages(messages)
 	} else {
-		opts := searchOptionsForUser(cu.User)
-		if searchSenderBoostEnabledForUser(cu.User) {
-			senderDone := timing.measure(&timing.sender)
-			stats, statsErr := s.store.ListReadSenderStatsForUser(r.Context(), cu.User.ID, 40)
-			senderDone()
-			if statsErr == nil {
-				for _, stat := range stats {
-					opts.SenderBoosts = append(opts.SenderBoosts, search.SenderBoost{Sender: stat.Sender, Boost: stat.Boost})
-				}
-			}
-		}
+		boostDone := timing.measure(&timing.sender)
+		opts := s.searchOptionsWithRankingBoosts(r.Context(), cu.User)
+		boostDone()
 		seeds, err = s.searchConversationSeedHits(r.Context(), cu.User.ID, searchQuery, page, pageSize, opts, own, mailboxFilter, timing)
 	}
 	if err != nil {

@@ -14,6 +14,8 @@ export type User = {
   search_recency_bias: "none" | "light" | "normal" | "strong" | string;
   search_fuzzy: "off" | "balanced" | "forgiving" | string;
   search_sender_boost: boolean;
+  search_sender_history: "none" | "light" | "normal" | "strong" | string;
+  search_contact_boost: "none" | "light" | "normal" | "strong" | string;
   search_attachment_weight: "off" | "light" | "normal" | "strong" | string;
   search_compact_splitting: boolean;
 };
@@ -65,6 +67,7 @@ export type Conversation = {
   message: Message;
   starred_message_id: number;
   participants: string;
+  recipient_participants: string;
   count: number;
   is_read: boolean;
   has_attachments: boolean;
@@ -269,6 +272,7 @@ export type ComposeIdentity = {
   label: string;
   email: string;
   header: string;
+  signature: string;
   icon_url: string;
   is_primary: boolean;
 };
@@ -404,6 +408,8 @@ export type MailIdentity = {
   contact_id: number;
   contact_email_id: number;
   smtp_account_id: number;
+  sent_mailbox_id: number;
+  drafts_mailbox_id: number;
   email: string;
   display_name: string;
   signature: string;

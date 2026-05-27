@@ -169,6 +169,8 @@ func (s *Server) apiProfile(w http.ResponseWriter, r *http.Request) {
 			SearchRecencyBias      string `json:"search_recency_bias"`
 			SearchFuzzy            string `json:"search_fuzzy"`
 			SearchSenderBoost      bool   `json:"search_sender_boost"`
+			SearchSenderHistory    string `json:"search_sender_history"`
+			SearchContactBoost     string `json:"search_contact_boost"`
 			SearchAttachmentWeight string `json:"search_attachment_weight"`
 			SearchCompactSplitting bool   `json:"search_compact_splitting"`
 		}{
@@ -179,13 +181,15 @@ func (s *Server) apiProfile(w http.ResponseWriter, r *http.Request) {
 			SearchRecencyBias:      cu.User.SearchRecencyBias,
 			SearchFuzzy:            cu.User.SearchFuzzy,
 			SearchSenderBoost:      cu.User.SearchSenderBoost,
+			SearchSenderHistory:    cu.User.SearchSenderHistory,
+			SearchContactBoost:     cu.User.SearchContactBoost,
 			SearchAttachmentWeight: cu.User.SearchAttachmentWeight,
 			SearchCompactSplitting: cu.User.SearchCompactSplitting,
 		}
 		if !decodeJSON(w, r, &in) {
 			return
 		}
-		user, err := s.store.UpdateUserPreferences(r.Context(), cu.User.ID, in.DateLocale, in.DateFormat, in.Theme, in.SearchPreset, in.SearchRecencyBias, in.SearchFuzzy, in.SearchAttachmentWeight, in.SearchSenderBoost, in.SearchCompactSplitting)
+		user, err := s.store.UpdateUserPreferences(r.Context(), cu.User.ID, in.DateLocale, in.DateFormat, in.Theme, in.SearchPreset, in.SearchRecencyBias, in.SearchFuzzy, in.SearchSenderHistory, in.SearchContactBoost, in.SearchAttachmentWeight, in.SearchSenderBoost, in.SearchCompactSplitting)
 		if err != nil {
 			s.serverError(w, err)
 			return

@@ -463,11 +463,11 @@ func TestUpdateUserDisplayPreferencesPersistsTheme(t *testing.T) {
 		t.Fatalf("default search preferences = %+v", updated)
 	}
 
-	updated, err = db.UpdateUserPreferences(ctx, user.ID, "en-GB", "dmy", "matrix", "strict", "none", "off", "light", false, false)
+	updated, err = db.UpdateUserPreferences(ctx, user.ID, "en-GB", "dmy", "matrix", "strict", "none", "off", "none", "light", "light", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.SearchPreset != "strict" || updated.SearchRecencyBias != "none" || updated.SearchFuzzy != "off" || updated.SearchAttachmentWeight != "light" || updated.SearchSenderBoost || updated.SearchCompactSplitting {
+	if updated.SearchPreset != "strict" || updated.SearchRecencyBias != "none" || updated.SearchFuzzy != "off" || updated.SearchSenderHistory != "none" || updated.SearchContactBoost != "light" || updated.SearchAttachmentWeight != "light" || updated.SearchSenderBoost || updated.SearchCompactSplitting {
 		t.Fatalf("updated search preferences = %+v", updated)
 	}
 

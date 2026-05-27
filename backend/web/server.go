@@ -134,6 +134,7 @@ type conversationView struct {
 	Message                  store.MessageRecord
 	StarredMessageID         int64
 	Participants             string
+	RecipientParticipants    string
 	Count                    int
 	IsRead                   bool
 	HasAttachments           bool

@@ -127,16 +127,19 @@ func (s *Store) SyncMailIdentitiesForMeContacts(ctx context.Context, userID int6
 				continue
 			}
 			primary := contact.IsPrimary && email.IsPrimary
+			sentID, draftsID := s.identityMailboxDefaultIDs(ctx, userID, address, defaultSMTPID)
 			if _, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `INSERT INTO mail_identities
-					(user_id, contact_id, contact_email_id, smtp_account_id, email, display_name, signature, is_primary, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+					(user_id, contact_id, contact_email_id, smtp_account_id, sent_mailbox_id, drafts_mailbox_id, email, display_name, signature, is_primary, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
 				ON CONFLICT(user_id, contact_email_id) DO UPDATE SET
 					contact_id = excluded.contact_id,
 					smtp_account_id = CASE WHEN mail_identities.smtp_account_id = 0 THEN excluded.smtp_account_id ELSE mail_identities.smtp_account_id END,
+					sent_mailbox_id = CASE WHEN mail_identities.sent_mailbox_id = 0 THEN excluded.sent_mailbox_id ELSE mail_identities.sent_mailbox_id END,
+					drafts_mailbox_id = CASE WHEN mail_identities.drafts_mailbox_id = 0 THEN excluded.drafts_mailbox_id ELSE mail_identities.drafts_mailbox_id END,
 					email = excluded.email,
 					display_name = excluded.display_name,
 					is_primary = excluded.is_primary,
-					updated_at = excluded.updated_at`, userID, contact.ID, email.ID, defaultSMTPID, address, display, boolInt(primary), ts, ts); err != nil {
+					updated_at = excluded.updated_at`, userID, contact.ID, email.ID, defaultSMTPID, sentID, draftsID, address, display, boolInt(primary), ts, ts); err != nil {
 				return err
 			}
 		}
@@ -183,6 +186,12 @@ func (s *Store) UpdateMailIdentityForUser(ctx context.Context, userID int64, in 
 			return MailIdentity{}, err
 		}
 	}
+	if err := s.validateIdentityMailboxRole(ctx, userID, in.SentMailboxID, "sent"); err != nil {
+		return MailIdentity{}, err
+	}
+	if err := s.validateIdentityMailboxRole(ctx, userID, in.DraftsMailboxID, "drafts"); err != nil {
+		return MailIdentity{}, err
+	}
 	current, err := s.GetMailIdentityForUser(ctx, userID, in.ID)
 	if err != nil {
 		return MailIdentity{}, err
@@ -217,8 +226,8 @@ func (s *Store) UpdateMailIdentityForUser(ctx context.Context, userID int64, in 
 	if _, err = tx.ExecContext(ctx, `UPDATE contacts SET display_name = ?, is_me = 1, is_primary = CASE WHEN ? THEN 1 ELSE is_primary END, updated_at = ? WHERE user_id = ? AND id = ?`, display, boolInt(in.IsPrimary), nowUnix(), userID, current.ContactID); err != nil {
 		return rollback()
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE mail_identities SET smtp_account_id = ?, display_name = ?, signature = ?, is_primary = ?, updated_at = ? WHERE user_id = ? AND id = ?`,
-		in.SMTPAccountID, display, signature, boolInt(in.IsPrimary), nowUnix(), userID, current.ID)
+	res, err := tx.ExecContext(ctx, `UPDATE mail_identities SET smtp_account_id = ?, sent_mailbox_id = ?, drafts_mailbox_id = ?, display_name = ?, signature = ?, is_primary = ?, updated_at = ? WHERE user_id = ? AND id = ?`,
+		in.SMTPAccountID, in.SentMailboxID, in.DraftsMailboxID, display, signature, boolInt(in.IsPrimary), nowUnix(), userID, current.ID)
 	if err != nil {
 		return rollback()
 	}
@@ -261,15 +270,120 @@ func (s *Store) ensurePrimaryMailIdentity(ctx context.Context, userID int64) err
 	return err
 }
 
+// EnsureMailIdentityMailboxDefaults backfills identity-level folder choices from the
+// user's current IMAP roles. It is safe to run during startup migrations and after
+// onboarding because it only fills empty Sent/Drafts choices.
+func (s *Store) EnsureMailIdentityMailboxDefaults(ctx context.Context, userID int64) error {
+	identities, err := s.listMailIdentitiesForUserNoSync(ctx, userID)
+	if err != nil {
+		return err
+	}
+	for _, identity := range identities {
+		sentID, draftsID := s.identityMailboxDefaultIDs(ctx, userID, identity.Email, identity.SMTPAccountID)
+		if identity.SentMailboxID != 0 {
+			sentID = identity.SentMailboxID
+		}
+		if identity.DraftsMailboxID != 0 {
+			draftsID = identity.DraftsMailboxID
+		}
+		if sentID == identity.SentMailboxID && draftsID == identity.DraftsMailboxID {
+			continue
+		}
+		if _, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE mail_identities SET sent_mailbox_id = ?, drafts_mailbox_id = ?, updated_at = ? WHERE user_id = ? AND id = ?`, sentID, draftsID, nowUnix(), userID, identity.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) listMailIdentitiesForUserNoSync(ctx context.Context, userID int64) ([]MailIdentity, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, mailIdentitySelectSQL()+` WHERE user_id = ? ORDER BY is_primary DESC, lower(display_name), lower(email), id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MailIdentity
+	for rows.Next() {
+		item, err := scanMailIdentity(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) identityMailboxDefaultIDs(ctx context.Context, userID int64, email string, smtpAccountID int64) (int64, int64) {
+	accounts, err := s.ListMailAccountsForUser(ctx, userID)
+	if err != nil {
+		return 0, 0
+	}
+	var smtp SMTPAccount
+	if smtpAccountID > 0 {
+		smtp, _ = s.GetSMTPAccountForUser(ctx, userID, smtpAccountID)
+	}
+	candidates := identityMailAccountCandidates(accounts, email, smtp.Username)
+	if len(candidates) == 0 {
+		candidates = accounts
+	}
+	return s.firstMailboxRoleID(ctx, userID, candidates, "sent"), s.firstMailboxRoleID(ctx, userID, candidates, "drafts")
+}
+
+func identityMailAccountCandidates(accounts []MailAccount, values ...string) []MailAccount {
+	keys := map[string]bool{}
+	for _, value := range values {
+		if key := NormalizeContactEmail(value); key != "" {
+			keys[key] = true
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	var out []MailAccount
+	for _, account := range accounts {
+		for _, value := range []string{account.Email, account.Username, account.SMTPUsername} {
+			if keys[NormalizeContactEmail(value)] {
+				out = append(out, account)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func (s *Store) firstMailboxRoleID(ctx context.Context, userID int64, accounts []MailAccount, role string) int64 {
+	for _, account := range accounts {
+		mailbox, err := s.GetMailboxByRoleForAccount(ctx, userID, account.ID, role)
+		if err == nil {
+			return mailbox.ID
+		}
+	}
+	return 0
+}
+
+func (s *Store) validateIdentityMailboxRole(ctx context.Context, userID, mailboxID int64, role string) error {
+	if mailboxID == 0 {
+		return nil
+	}
+	mailbox, err := s.GetMailboxForUser(ctx, userID, mailboxID)
+	if err != nil {
+		return err
+	}
+	if normalizeMailboxRole(mailbox.Role) != normalizeMailboxRole(role) {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func mailIdentitySelectSQL() string {
-	return `SELECT id, user_id, contact_id, contact_email_id, smtp_account_id, email, display_name, signature, is_primary, created_at, updated_at FROM mail_identities`
+	return `SELECT id, user_id, contact_id, contact_email_id, smtp_account_id, sent_mailbox_id, drafts_mailbox_id, email, display_name, signature, is_primary, created_at, updated_at FROM mail_identities`
 }
 
 func scanMailIdentity(row rowScanner) (MailIdentity, error) {
 	var ident MailIdentity
 	var primary int
 	var created, updated int64
-	err := row.Scan(&ident.ID, &ident.UserID, &ident.ContactID, &ident.ContactEmailID, &ident.SMTPAccountID, &ident.Email, &ident.DisplayName, &ident.Signature, &primary, &created, &updated)
+	err := row.Scan(&ident.ID, &ident.UserID, &ident.ContactID, &ident.ContactEmailID, &ident.SMTPAccountID, &ident.SentMailboxID, &ident.DraftsMailboxID, &ident.Email, &ident.DisplayName, &ident.Signature, &primary, &created, &updated)
 	ident.IsPrimary = primary != 0
 	ident.CreatedAt = unixTime(created)
 	ident.UpdatedAt = unixTime(updated)

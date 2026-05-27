@@ -268,20 +268,32 @@ var (
 	blockedHTMLBlockRE  = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</\s*script\s*>|<style\b[^>]*>.*?</\s*style\s*>|<head\b[^>]*>.*?</\s*head\s*>|<iframe\b[^>]*>.*?</\s*iframe\s*>|<object\b[^>]*>.*?</\s*object\s*>|<embed\b[^>]*>.*?</\s*embed\s*>|<svg\b[^>]*>.*?</\s*svg\s*>|<math\b[^>]*>.*?</\s*math\s*>`)
 	blockedHTMLSingleRE = regexp.MustCompile(`(?is)</?(script|style|head|html|body|meta|link|base|iframe|object|embed|svg|math)\b[^>]*>`)
 	eventAttrRE         = regexp.MustCompile(`(?is)\s+on[a-z0-9_-]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
-	remoteAttrRE        = regexp.MustCompile(`(?is)\s+(src|srcset|background)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
+	srcAttrRE           = regexp.MustCompile(`(?is)\s+src\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
+	srcsetAttrRE        = regexp.MustCompile(`(?is)\s+srcset\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
+	backgroundAttrRE    = regexp.MustCompile(`(?is)\s+background\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
 	hrefAttrRE          = regexp.MustCompile(`(?is)\s+href\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
 	tagRE               = regexp.MustCompile(`(?is)<[^>]+>`)
 )
 
-// sanitizeComposeHTML strips active/remote content from HTML being embedded into
-// forwarded mail while preserving ordinary formatting and safe links.
+// sanitizeComposeHTML strips active content from HTML being embedded into
+// forwarded mail while preserving ordinary formatting, links, and image src
+// attributes so rich forwarded messages do not collapse into garbled text.
 func sanitizeComposeHTML(value string) string {
 	value = strings.ReplaceAll(value, "\x00", "")
 	value = htmlCommentRE.ReplaceAllString(value, "")
 	value = blockedHTMLBlockRE.ReplaceAllString(value, "")
 	value = blockedHTMLSingleRE.ReplaceAllString(value, "")
 	value = eventAttrRE.ReplaceAllString(value, "")
-	value = remoteAttrRE.ReplaceAllString(value, "")
+	value = srcsetAttrRE.ReplaceAllString(value, "")
+	value = backgroundAttrRE.ReplaceAllString(value, "")
+	value = srcAttrRE.ReplaceAllStringFunc(value, func(attr string) string {
+		lower := strings.ToLower(strings.TrimSpace(attr))
+		if strings.Contains(lower, `"javascript:`) || strings.Contains(lower, `'javascript:`) || strings.Contains(lower, `=javascript:`) ||
+			strings.Contains(lower, `"data:text`) || strings.Contains(lower, `'data:text`) || strings.Contains(lower, `=data:text`) {
+			return ""
+		}
+		return attr
+	})
 	value = hrefAttrRE.ReplaceAllStringFunc(value, func(attr string) string {
 		lower := strings.ToLower(strings.TrimSpace(attr))
 		if strings.Contains(lower, `"javascript:`) || strings.Contains(lower, `'javascript:`) || strings.Contains(lower, `=javascript:`) ||
@@ -333,13 +345,16 @@ func (s *Server) composeFromLabel(ctx context.Context, cu currentUser) string {
 }
 
 type composeIdentity struct {
-	ID            int64
-	SMTPAccountID int64
-	Label         string
-	Email         string
-	Header        string
-	IconURL       string
-	IsPrimary     bool
+	ID              int64
+	SMTPAccountID   int64
+	SentMailboxID   int64
+	DraftsMailboxID int64
+	Signature       string
+	Label           string
+	Email           string
+	Header          string
+	IconURL         string
+	IsPrimary       bool
 }
 
 func (s *Server) composeIdentities(ctx context.Context, cu currentUser) []apiComposeIdentity {
@@ -548,6 +563,20 @@ func (s *Server) sentMailboxForIdentity(ctx context.Context, userID int64, ident
 	if len(accounts) == 0 {
 		return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("no IMAP account is configured for %s", identity.Email)
 	}
+	if identity.SentMailboxID > 0 {
+		mailbox, err := s.store.GetMailboxForUser(ctx, userID, identity.SentMailboxID)
+		if err != nil {
+			return store.MailAccount{}, store.Mailbox{}, err
+		}
+		if mailbox.Role != "sent" {
+			return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("selected Sent folder for %s is no longer marked as Sent", identity.Email)
+		}
+		account, err := s.store.GetMailAccountForUser(ctx, userID, mailbox.AccountID)
+		if err != nil {
+			return store.MailAccount{}, store.Mailbox{}, err
+		}
+		return account, mailbox, nil
+	}
 	candidates := mailAccountCandidatesForIdentity(accounts, identity, smtpAccount)
 	if len(candidates) == 0 {
 		return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("no IMAP account matches the %s identity", identity.Email)
@@ -586,6 +615,43 @@ func mailAccountCandidatesForIdentity(accounts []store.MailAccount, identity com
 		out = append(out, accounts[0])
 	}
 	return out
+}
+
+func appendIdentitySignature(bodyHTML, bodyText, signature string) (string, string) {
+	signature = sanitizeComposeHTML(signature)
+	if strings.TrimSpace(signature) == "" {
+		return bodyHTML, bodyText
+	}
+	if strings.TrimSpace(bodyHTML) != "" {
+		bodyHTML = strings.TrimRight(bodyHTML, " \t\r\n") + `<div><br></div><div class="mailmirror-signature">` + signature + `</div>`
+	}
+	plain := htmlSignatureText(signature)
+	if plain != "" {
+		if strings.TrimSpace(bodyText) != "" {
+			bodyText = strings.TrimRight(bodyText, " \t\r\n") + "\n\n" + plain
+		} else {
+			bodyText = plain
+		}
+	}
+	return bodyHTML, bodyText
+}
+
+var signatureBreakRE = regexp.MustCompile(`(?i)<\s*(br|/p|/div|/li)\b[^>]*>`)
+var signatureTagRE = regexp.MustCompile(`(?s)<[^>]+>`)
+
+func htmlSignatureText(signature string) string {
+	text := signatureBreakRE.ReplaceAllString(signature, "\n")
+	text = signatureTagRE.ReplaceAllString(text, "")
+	text = html.UnescapeString(text)
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func smtpEnvelopeForIdentity(identity composeIdentity, account store.SMTPAccount) store.MailAccount {
@@ -665,7 +731,7 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 	}
 	languageCode := ""
 	if s.pluginEnabled(ctx, plugins.LanguageSearch) {
-		languageCode = languagesearch.DetectCode(form.Subject, form.Body)
+		languageCode = languagesearch.DetectCode(form.Subject, outgoing.BodyText)
 	}
 	msg, err := s.store.CreateMessage(ctx, store.CreateMessage{
 		UserID:           userID,
@@ -685,8 +751,8 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		UID:              uid,
 		Size:             int64(len(raw)),
 		BlobPath:         saved.Path,
-		BodyText:         form.Body,
-		BodyHTML:         form.BodyHTML,
+		BodyText:         outgoing.BodyText,
+		BodyHTML:         outgoing.BodyHTML,
 		HasAttachments:   smtpHasVisibleAttachments(outgoing.Attachments),
 		IsRead:           true,
 	})

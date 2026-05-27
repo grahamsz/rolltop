@@ -344,14 +344,15 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 		return store.MessageRecord{}, err
 	}
 	attachments := append(uploadedAttachments, existingAttachments...)
+	bodyHTML, bodyText := appendIdentitySignature(form.BodyHTML, form.Body, identity.Signature)
 	msg := smtpclient.Message{
 		From:        identity.Header,
 		To:          []string{form.To},
 		Cc:          []string{form.Cc},
 		Bcc:         []string{form.Bcc},
 		Subject:     form.Subject,
-		BodyText:    form.Body,
-		BodyHTML:    form.BodyHTML,
+		BodyText:    bodyText,
+		BodyHTML:    bodyHTML,
 		MessageID:   smtpclient.NewMessageID(identity.Email),
 		Date:        time.Now(),
 		Attachments: attachments,

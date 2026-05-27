@@ -55,8 +55,9 @@ const minSplitFragmentLength = 4
 
 // SearchOptions carries ranking hints supplied by callers outside the raw query text.
 type SearchOptions struct {
-	SenderBoosts []SenderBoost
-	Behavior     SearchBehavior
+	SenderBoosts  []SenderBoost
+	ContactBoosts []SenderBoost
+	Behavior      SearchBehavior
 }
 
 // SearchBehavior holds query-time ranking controls from the authenticated user's
@@ -69,18 +70,22 @@ type SearchBehavior struct {
 	Fuzzy               string
 	SenderBoost         bool
 	SenderBoostSet      bool
+	SenderBoostScale    float64
+	ContactBoostScale   float64
 	AttachmentWeight    string
 	CompactSplitting    bool
 	CompactSplittingSet bool
 }
 
 type normalizedSearchBehavior struct {
-	Preset           string
-	RecencyBias      string
-	Fuzzy            string
-	SenderBoost      bool
-	AttachmentWeight string
-	CompactSplitting bool
+	Preset            string
+	RecencyBias       string
+	Fuzzy             string
+	SenderBoost       bool
+	SenderBoostScale  float64
+	ContactBoostScale float64
+	AttachmentWeight  string
+	CompactSplitting  bool
 }
 
 // RecencyRankBucket describes the query-time freshness nudge added to the
@@ -150,7 +155,7 @@ type SenderBoost struct {
 
 func (b SearchBehavior) normalized() normalizedSearchBehavior {
 	preset := normalizeChoice(b.Preset, "balanced", "strict", "balanced", "forgiving")
-	out := normalizedSearchBehavior{Preset: preset, SenderBoost: true, CompactSplitting: true}
+	out := normalizedSearchBehavior{Preset: preset, SenderBoost: true, SenderBoostScale: 1, CompactSplitting: true}
 	switch preset {
 	case "strict":
 		out.RecencyBias = "light"
@@ -177,6 +182,15 @@ func (b SearchBehavior) normalized() normalizedSearchBehavior {
 	}
 	if b.SenderBoostSet {
 		out.SenderBoost = b.SenderBoost
+	}
+	if b.SenderBoostScale > 0 {
+		out.SenderBoostScale = b.SenderBoostScale
+	}
+	if !out.SenderBoost {
+		out.SenderBoostScale = 0
+	}
+	if b.ContactBoostScale > 0 {
+		out.ContactBoostScale = b.ContactBoostScale
 	}
 	if b.CompactSplittingSet {
 		out.CompactSplitting = b.CompactSplitting
@@ -216,15 +230,25 @@ func RecencyRankBuckets(bias string) []RecencyRankBucket {
 	case "none":
 		return nil
 	case "light":
-		return []RecencyRankBucket{
+		return recencyBucketsWithAgePenalties([]RecencyRankBucket{
 			{Age: 36 * time.Hour, Label: "36 hours", Boost: 0.2},
 			{Age: 7 * 24 * time.Hour, Label: "7 days", Boost: 0.12},
 			{Age: 30 * 24 * time.Hour, Label: "30 days", Boost: 0.07},
 			{Age: 180 * 24 * time.Hour, Label: "180 days", Boost: 0.03},
 			{Age: 730 * 24 * time.Hour, Label: "2 years", Boost: 0.01},
-		}
+		}, []float64{-0.005, -0.01, -0.015, -0.02})
 	case "strong":
-		return []RecencyRankBucket{
+		return recencyBucketsWithAgePenalties([]RecencyRankBucket{
+			{Age: 36 * time.Hour, Label: "36 hours", Boost: 2.6},
+			{Age: 7 * 24 * time.Hour, Label: "7 days", Boost: 1.8},
+			{Age: 30 * 24 * time.Hour, Label: "30 days", Boost: 1.2},
+			{Age: 90 * 24 * time.Hour, Label: "90 days", Boost: 0.7},
+			{Age: 180 * 24 * time.Hour, Label: "180 days", Boost: 0.4},
+			{Age: 365 * 24 * time.Hour, Label: "1 year", Boost: 0.18},
+			{Age: 730 * 24 * time.Hour, Label: "2 years", Boost: 0.06},
+		}, []float64{-0.04, -0.08, -0.13, -0.2})
+	default:
+		return recencyBucketsWithAgePenalties([]RecencyRankBucket{
 			{Age: 36 * time.Hour, Label: "36 hours", Boost: 1.6},
 			{Age: 7 * 24 * time.Hour, Label: "7 days", Boost: 1.15},
 			{Age: 30 * 24 * time.Hour, Label: "30 days", Boost: 0.75},
@@ -232,16 +256,32 @@ func RecencyRankBuckets(bias string) []RecencyRankBucket {
 			{Age: 180 * 24 * time.Hour, Label: "180 days", Boost: 0.22},
 			{Age: 365 * 24 * time.Hour, Label: "1 year", Boost: 0.1},
 			{Age: 730 * 24 * time.Hour, Label: "2 years", Boost: 0.02},
-		}
-	default:
-		return []RecencyRankBucket{
-			{Age: 36 * time.Hour, Label: "36 hours", Boost: 0.45},
-			{Age: 7 * 24 * time.Hour, Label: "7 days", Boost: 0.25},
-			{Age: 30 * 24 * time.Hour, Label: "30 days", Boost: 0.14},
-			{Age: 180 * 24 * time.Hour, Label: "180 days", Boost: 0.06},
-			{Age: 730 * 24 * time.Hour, Label: "2 years", Boost: 0.03},
-		}
+		}, []float64{-0.02, -0.04, -0.07, -0.1})
 	}
+}
+
+func recencyBucketsWithAgePenalties(fresh []RecencyRankBucket, penalties []float64) []RecencyRankBucket {
+	out := append([]RecencyRankBucket{}, fresh...)
+	ages := []struct {
+		age   time.Duration
+		label string
+	}{
+		{ageYears(5), "2-5 years old"},
+		{ageYears(10), "5-10 years old"},
+		{ageYears(20), "10-20 years old"},
+		{ageYears(200), "20+ years old"},
+	}
+	for index, bucket := range ages {
+		if index >= len(penalties) {
+			break
+		}
+		out = append(out, RecencyRankBucket{Age: bucket.age, Label: bucket.label, Boost: penalties[index]})
+	}
+	return out
+}
+
+func ageYears(years int) time.Duration {
+	return time.Duration(years*365) * 24 * time.Hour
 }
 
 // Open creates or opens a single combined Bleve index. Tests use this mode; the
@@ -937,8 +977,11 @@ func buildQuery(userID int64, queryText string, opts SearchOptions) blevequery.Q
 	must := bleve.NewConjunctionQuery(parts...)
 	base := blevequery.Query(must)
 	var should []blevequery.Query
-	if behavior.SenderBoost {
-		should = append(should, senderBoostQueries(opts.SenderBoosts)...)
+	if behavior.SenderBoostScale > 0 {
+		should = append(should, senderBoostQueries(opts.SenderBoosts, behavior.SenderBoostScale)...)
+	}
+	if behavior.ContactBoostScale > 0 {
+		should = append(should, senderBoostQueries(opts.ContactBoosts, behavior.ContactBoostScale)...)
 	}
 	if len(should) > 0 || len(mustNot) > 0 {
 		base = blevequery.NewBooleanQuery([]blevequery.Query{must}, should, mustNot)
@@ -1035,8 +1078,8 @@ func parseDocumentMatchDateString(value string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func senderBoostQueries(boosts []SenderBoost) []blevequery.Query {
-	if len(boosts) == 0 {
+func senderBoostQueries(boosts []SenderBoost, scale float64) []blevequery.Query {
+	if len(boosts) == 0 || scale <= 0 {
 		return nil
 	}
 	if len(boosts) > 40 {
@@ -1050,7 +1093,7 @@ func senderBoostQueries(boosts []SenderBoost) []blevequery.Query {
 		}
 		q := bleve.NewMatchQuery(sender)
 		q.SetField("from")
-		q.SetBoost(boost.Boost)
+		q.SetBoost(boost.Boost * scale)
 		out = append(out, q)
 	}
 	return out

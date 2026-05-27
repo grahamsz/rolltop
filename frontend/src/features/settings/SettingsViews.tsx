@@ -1,7 +1,7 @@
 // File overview: Settings surface for profile preferences, IMAP servers, SMTP servers, outgoing
 // identities, folder sync/indexing controls, storage usage, and admin plugin panels.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../api";
 import type { DatePrefs, LocationState, Toast } from "../../appTypes";
@@ -76,6 +76,8 @@ function searchPresetDefaults(preset: string) {
         search_recency_bias: "light",
         search_fuzzy: "off",
         search_sender_boost: true,
+        search_sender_history: "light",
+        search_contact_boost: "light",
         search_attachment_weight: "normal",
         search_compact_splitting: false
       };
@@ -85,6 +87,8 @@ function searchPresetDefaults(preset: string) {
         search_recency_bias: "normal",
         search_fuzzy: "forgiving",
         search_sender_boost: true,
+        search_sender_history: "strong",
+        search_contact_boost: "strong",
         search_attachment_weight: "strong",
         search_compact_splitting: true
       };
@@ -94,10 +98,116 @@ function searchPresetDefaults(preset: string) {
         search_recency_bias: "normal",
         search_fuzzy: "balanced",
         search_sender_boost: true,
+        search_sender_history: "normal",
+        search_contact_boost: "normal",
         search_attachment_weight: "normal",
         search_compact_splitting: true
       };
   }
+}
+
+function normalizeIdentityKey(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function identityAccountMatches(identity: MailIdentity, account: Account | undefined, smtp: SMTPAccount | undefined) {
+  if (!account) return false;
+  const keys = new Set([identity.email, smtp?.username || ""].map(normalizeIdentityKey).filter(Boolean));
+  if (keys.size === 0) return false;
+  return [account.email, account.username, account.smtp_username].some((value) => keys.has(normalizeIdentityKey(value || "")));
+}
+
+function mailboxChoiceLabel(mailbox: Mailbox, accounts: Account[]) {
+  const account = accounts.find((item) => item.id === mailbox.account_id);
+  const accountLabel = account?.label || account?.email || mailbox.account_email || "IMAP";
+  return `${accountLabel} / ${mailbox.name}`;
+}
+
+function identityMailboxChoices(identity: MailIdentity, role: string, mailboxes: Mailbox[], accounts: Account[], smtpAccounts: SMTPAccount[]) {
+  const roleMatches = mailboxes.filter((mailbox) => mailbox.role === role);
+  const smtp = smtpAccounts.find((item) => item.id === identity.smtp_account_id);
+  const matchingAccount = roleMatches.filter((mailbox) => identityAccountMatches(identity, accounts.find((account) => account.id === mailbox.account_id), smtp));
+  return matchingAccount.length > 0 ? matchingAccount : roleMatches;
+}
+
+function RichSignatureEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const editorRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || document.activeElement === editor || editor.innerHTML === value) return;
+    editor.innerHTML = value || "";
+  }, [value]);
+
+  function format(command: string, commandValue?: string) {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.focus();
+    document.execCommand(command, false, commandValue);
+    onChange(editor.innerHTML);
+  }
+
+  function addLink() {
+    const href = window.prompt("Link URL");
+    if (!href) return;
+    format("createLink", href);
+  }
+
+  return (
+    <div className="rich-signature-editor">
+      <div className="rich-signature-toolbar" aria-label="Signature formatting">
+        <button type="button" className="ghost" onClick={() => format("bold")}><strong>B</strong></button>
+        <button type="button" className="ghost" onClick={() => format("italic")}><em>I</em></button>
+        <button type="button" className="ghost" onClick={() => format("insertUnorderedList")}><Icon name="format_list_bulleted" /></button>
+        <button type="button" className="ghost" onClick={addLink}><Icon name="link" /></button>
+      </div>
+      <div
+        ref={editorRef}
+        className="rich-signature-input"
+        contentEditable
+        role="textbox"
+        aria-multiline="true"
+        suppressContentEditableWarning
+        onInput={(event) => onChange(event.currentTarget.innerHTML)}
+        onBlur={(event) => onChange(event.currentTarget.innerHTML)}
+      />
+    </div>
+  );
+}
+
+function IdentityMailboxFields({
+  identity,
+  accounts,
+  smtpAccounts,
+  mailboxes,
+  updateIdentity
+}: {
+  identity: MailIdentity;
+  accounts: Account[];
+  smtpAccounts: SMTPAccount[];
+  mailboxes: Mailbox[];
+  updateIdentity: (id: number, patch: Partial<MailIdentity>) => void;
+}) {
+  const sentChoices = identityMailboxChoices(identity, "sent", mailboxes, accounts, smtpAccounts);
+  const draftsChoices = identityMailboxChoices(identity, "drafts", mailboxes, accounts, smtpAccounts);
+  return (
+    <div className="identity-mailbox-fields">
+      <div>
+        <label>Sent Mail folder</label>
+        <select value={identity.sent_mailbox_id || 0} onChange={(event) => updateIdentity(identity.id, { sent_mailbox_id: Number(event.target.value) })}>
+          <option value={0}>Automatic</option>
+          {sentChoices.map((mailbox) => <option key={mailbox.id} value={mailbox.id}>{mailboxChoiceLabel(mailbox, accounts)}</option>)}
+        </select>
+      </div>
+      <div>
+        <label>Drafts folder</label>
+        <select value={identity.drafts_mailbox_id || 0} onChange={(event) => updateIdentity(identity.id, { drafts_mailbox_id: Number(event.target.value) })}>
+          <option value={0}>Automatic</option>
+          {draftsChoices.map((mailbox) => <option key={mailbox.id} value={mailbox.id}>{mailboxChoiceLabel(mailbox, accounts)}</option>)}
+        </select>
+      </div>
+    </div>
+  );
 }
 
 function profileFormForUser(user: User) {
@@ -110,6 +220,8 @@ function profileFormForUser(user: User) {
     search_recency_bias: ["none", "light", "normal", "strong"].includes(user.search_recency_bias) ? user.search_recency_bias : defaults.search_recency_bias,
     search_fuzzy: ["off", "balanced", "forgiving"].includes(user.search_fuzzy) ? user.search_fuzzy : defaults.search_fuzzy,
     search_sender_boost: user.search_sender_boost !== false,
+    search_sender_history: ["none", "light", "normal", "strong"].includes(user.search_sender_history) ? user.search_sender_history : (user.search_sender_boost === false ? "none" : defaults.search_sender_history),
+    search_contact_boost: ["none", "light", "normal", "strong"].includes(user.search_contact_boost) ? user.search_contact_boost : defaults.search_contact_boost,
     search_attachment_weight: ["off", "light", "normal", "strong"].includes(user.search_attachment_weight) ? user.search_attachment_weight : defaults.search_attachment_weight,
     search_compact_splitting: user.search_compact_splitting !== false
   };
@@ -138,6 +250,13 @@ const recencyChoices: SearchChoice[] = [
 
 const attachmentWeightChoices: SearchChoice[] = [
   { value: "off", label: "Exclude" },
+  { value: "light", label: "Light" },
+  { value: "normal", label: "Normal" },
+  { value: "strong", label: "Strong" }
+];
+
+const boostWeightChoices: SearchChoice[] = [
+  { value: "none", label: "None" },
   { value: "light", label: "Light" },
   { value: "normal", label: "Normal" },
   { value: "strong", label: "Strong" }
@@ -760,6 +879,7 @@ export function SettingsView({
     }
   }
 
+  const allFolderMailboxes = useMemo(() => folders.map((folder) => folder.mailbox), [folders]);
   const selectedFolders = useMemo(
     () => selectedAccountID ? folders.filter((folder) => folder.mailbox.account_id === selectedAccountID) : folders,
     [folders, selectedAccountID]
@@ -977,9 +1097,10 @@ export function SettingsView({
                 </div>
                 <label className="identity-primary"><input type="checkbox" checked={identity.is_primary} onChange={(event) => updateIdentity(identity.id, { is_primary: event.target.checked })} /> Primary</label>
               </div>
+              <IdentityMailboxFields identity={identity} accounts={imapAccounts} smtpAccounts={smtpAccounts} mailboxes={allFolderMailboxes} updateIdentity={updateIdentity} />
               <div>
-                <label>Signature line</label>
-                <textarea value={identity.signature} onChange={(event) => updateIdentity(identity.id, { signature: event.target.value })} rows={3} />
+                <label>Signature</label>
+                <RichSignatureEditor value={identity.signature} onChange={(value) => updateIdentity(identity.id, { signature: value })} />
               </div>
               <div className="actions"><button className="secondary" type="button" onClick={() => saveIdentity(identity)}>Save identity</button></div>
             </div>
@@ -1032,9 +1153,10 @@ export function SettingsView({
                   />
                   Use this SMTP server
                 </label>
+                <IdentityMailboxFields identity={identity} accounts={imapAccounts} smtpAccounts={smtpAccounts} mailboxes={allFolderMailboxes} updateIdentity={updateIdentity} />
                 <div>
-                  <label>Signature line</label>
-                  <textarea value={identity.signature} onChange={(event) => updateIdentity(identity.id, { signature: event.target.value })} rows={3} />
+                  <label>Signature</label>
+                  <RichSignatureEditor value={identity.signature} onChange={(value) => updateIdentity(identity.id, { signature: value })} />
                 </div>
                 <div className="actions"><button className="secondary" type="button" onClick={() => saveIdentity(identity)}>Save identity</button></div>
               </div>
@@ -1134,13 +1256,20 @@ export function SettingsView({
             description="Adjusts whether attachment filenames and extracted text are ignored, lightly weighted, normal, or prominent."
             onChange={(value) => setProfileForm((current) => ({ ...current, search_attachment_weight: value }))}
           />
-          <label className="search-tuning-row search-tuning-toggle">
-            <div className="search-tuning-copy">
-              <strong>Sender history</strong>
-              <small>Uses your read history to nudge senders you usually open higher in best-match results.</small>
-            </div>
-            <input type="checkbox" checked={profileForm.search_sender_boost} onChange={(event) => setProfileForm((current) => ({ ...current, search_sender_boost: event.target.checked }))} />
-          </label>
+          <SearchSliderRow
+            title="Sender history"
+            value={profileForm.search_sender_history}
+            choices={boostWeightChoices}
+            description="Uses your read history to nudge senders you usually open higher in best-match results."
+            onChange={(value) => setProfileForm((current) => ({ ...current, search_sender_history: value, search_sender_boost: value !== "none" }))}
+          />
+          <SearchSliderRow
+            title="In contacts"
+            value={profileForm.search_contact_boost}
+            choices={boostWeightChoices}
+            description="Boosts mail from senders saved in your contacts without changing which messages can match."
+            onChange={(value) => setProfileForm((current) => ({ ...current, search_contact_boost: value }))}
+          />
           <label className="search-tuning-row search-tuning-toggle">
             <div className="search-tuning-copy">
               <strong>Joined words</strong>

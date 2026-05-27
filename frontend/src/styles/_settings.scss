@@ -190,6 +190,45 @@
   }
 }
 
+
+.identity-mailbox-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.rich-signature-editor {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.rich-signature-toolbar {
+  display: flex;
+  gap: 3px;
+  padding: 5px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+
+  button {
+    min-width: 30px;
+    height: 28px;
+    padding: 0 8px;
+    justify-content: center;
+  }
+}
+
+.rich-signature-input {
+  min-height: 86px;
+  padding: 10px 12px;
+  outline: none;
+
+  &:focus {
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+}
+
 .identity-primary {
   display: flex;
   align-items: center;

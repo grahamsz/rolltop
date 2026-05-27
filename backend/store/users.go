@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const userSelectColumns = `id, email, name, password_hash, is_admin, date_locale, date_format, theme, search_preset, search_recency_bias, search_fuzzy, search_sender_boost, search_attachment_weight, search_compact_splitting, created_at, updated_at`
+const userSelectColumns = `id, email, name, password_hash, is_admin, date_locale, date_format, theme, search_preset, search_recency_bias, search_fuzzy, search_sender_boost, search_sender_history, search_contact_boost, search_attachment_weight, search_compact_splitting, created_at, updated_at`
 
 type scanDest interface {
 	Scan(dest ...any) error
@@ -82,7 +82,7 @@ func scanUser(row scanDest) (User, error) {
 	var u User
 	var created, updated int64
 	var isAdmin, searchSenderBoost, searchCompactSplitting int
-	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &isAdmin, &u.DateLocale, &u.DateFormat, &u.Theme, &u.SearchPreset, &u.SearchRecencyBias, &u.SearchFuzzy, &searchSenderBoost, &u.SearchAttachmentWeight, &searchCompactSplitting, &created, &updated)
+	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &isAdmin, &u.DateLocale, &u.DateFormat, &u.Theme, &u.SearchPreset, &u.SearchRecencyBias, &u.SearchFuzzy, &searchSenderBoost, &u.SearchSenderHistory, &u.SearchContactBoost, &u.SearchAttachmentWeight, &searchCompactSplitting, &created, &updated)
 	if err != nil {
 		return User{}, err
 	}
@@ -101,6 +101,8 @@ func normalizeUserPreferences(u *User) {
 	u.SearchPreset = normalizeUserSearchPreset(u.SearchPreset)
 	u.SearchRecencyBias = normalizeUserSearchRecencyBias(u.SearchRecencyBias)
 	u.SearchFuzzy = normalizeUserSearchFuzzy(u.SearchFuzzy)
+	u.SearchSenderHistory = normalizeUserSearchWeight(u.SearchSenderHistory, "normal")
+	u.SearchContactBoost = normalizeUserSearchWeight(u.SearchContactBoost, "normal")
 	u.SearchAttachmentWeight = normalizeUserSearchAttachmentWeight(u.SearchAttachmentWeight)
 }
 
@@ -111,14 +113,14 @@ func (s *Store) UpdateUserDisplayPreferences(ctx context.Context, userID int64, 
 	if err != nil {
 		return User{}, err
 	}
-	return s.UpdateUserPreferences(ctx, userID, dateLocale, dateFormat, theme, current.SearchPreset, current.SearchRecencyBias, current.SearchFuzzy, current.SearchAttachmentWeight, current.SearchSenderBoost, current.SearchCompactSplitting)
+	return s.UpdateUserPreferences(ctx, userID, dateLocale, dateFormat, theme, current.SearchPreset, current.SearchRecencyBias, current.SearchFuzzy, current.SearchSenderHistory, current.SearchContactBoost, current.SearchAttachmentWeight, current.SearchSenderBoost, current.SearchCompactSplitting)
 }
 
 // UpdateUserPreferences saves display/date settings plus query-time search
 // tuning. These preferences are read once with the authenticated session user
 // and passed through request memory into Bleve, avoiding an extra lookup on
 // search routes.
-func (s *Store) UpdateUserPreferences(ctx context.Context, userID int64, dateLocale, dateFormat, theme, searchPreset, searchRecencyBias, searchFuzzy, searchAttachmentWeight string, searchSenderBoost, searchCompactSplitting bool) (User, error) {
+func (s *Store) UpdateUserPreferences(ctx context.Context, userID int64, dateLocale, dateFormat, theme, searchPreset, searchRecencyBias, searchFuzzy, searchSenderHistory, searchContactBoost, searchAttachmentWeight string, searchSenderBoost, searchCompactSplitting bool) (User, error) {
 	dateLocale = strings.TrimSpace(dateLocale)
 	if len(dateLocale) > 64 {
 		dateLocale = dateLocale[:64]
@@ -128,9 +130,11 @@ func (s *Store) UpdateUserPreferences(ctx context.Context, userID int64, dateLoc
 	searchPreset = normalizeUserSearchPreset(searchPreset)
 	searchRecencyBias = normalizeUserSearchRecencyBias(searchRecencyBias)
 	searchFuzzy = normalizeUserSearchFuzzy(searchFuzzy)
+	searchSenderHistory = normalizeUserSearchWeight(searchSenderHistory, "normal")
+	searchContactBoost = normalizeUserSearchWeight(searchContactBoost, "normal")
 	searchAttachmentWeight = normalizeUserSearchAttachmentWeight(searchAttachmentWeight)
-	_, err := s.db.ExecContext(ctx, `UPDATE users SET date_locale = ?, date_format = ?, theme = ?, search_preset = ?, search_recency_bias = ?, search_fuzzy = ?, search_sender_boost = ?, search_attachment_weight = ?, search_compact_splitting = ?, updated_at = ? WHERE id = ?`,
-		dateLocale, dateFormat, theme, searchPreset, searchRecencyBias, searchFuzzy, boolInt(searchSenderBoost), searchAttachmentWeight, boolInt(searchCompactSplitting), nowUnix(), userID)
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET date_locale = ?, date_format = ?, theme = ?, search_preset = ?, search_recency_bias = ?, search_fuzzy = ?, search_sender_boost = ?, search_sender_history = ?, search_contact_boost = ?, search_attachment_weight = ?, search_compact_splitting = ?, updated_at = ? WHERE id = ?`,
+		dateLocale, dateFormat, theme, searchPreset, searchRecencyBias, searchFuzzy, boolInt(searchSenderBoost), searchSenderHistory, searchContactBoost, searchAttachmentWeight, boolInt(searchCompactSplitting), nowUnix(), userID)
 	if err != nil {
 		return User{}, err
 	}
@@ -204,6 +208,15 @@ func normalizeUserSearchFuzzy(value string) string {
 	}
 }
 
+func normalizeUserSearchWeight(value, fallback string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "none", "light", "normal", "strong":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return fallback
+	}
+}
+
 func normalizeUserSearchAttachmentWeight(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "off", "light", "strong":
@@ -236,12 +249,12 @@ func (s *Store) GetSessionUser(ctx context.Context, tokenHash string) (Session, 
 	var isAdmin, searchSenderBoost, searchCompactSplitting int
 	err := s.db.QueryRowContext(ctx, `SELECT
 			s.id, s.user_id, s.token_hash, s.expires_at, s.created_at, s.last_seen_at,
-			u.id, u.email, u.name, u.password_hash, u.is_admin, u.date_locale, u.date_format, u.theme, u.search_preset, u.search_recency_bias, u.search_fuzzy, u.search_sender_boost, u.search_attachment_weight, u.search_compact_splitting, u.created_at, u.updated_at
+			u.id, u.email, u.name, u.password_hash, u.is_admin, u.date_locale, u.date_format, u.theme, u.search_preset, u.search_recency_bias, u.search_fuzzy, u.search_sender_boost, u.search_sender_history, u.search_contact_boost, u.search_attachment_weight, u.search_compact_splitting, u.created_at, u.updated_at
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ? AND s.expires_at > ?`, tokenHash, nowUnix()).
 		Scan(&sess.ID, &sess.UserID, &sess.TokenHash, &expires, &created, &lastSeen,
-			&u.ID, &u.Email, &u.Name, &u.PasswordHash, &isAdmin, &u.DateLocale, &u.DateFormat, &u.Theme, &u.SearchPreset, &u.SearchRecencyBias, &u.SearchFuzzy, &searchSenderBoost, &u.SearchAttachmentWeight, &searchCompactSplitting, &userCreated, &userUpdated)
+			&u.ID, &u.Email, &u.Name, &u.PasswordHash, &isAdmin, &u.DateLocale, &u.DateFormat, &u.Theme, &u.SearchPreset, &u.SearchRecencyBias, &u.SearchFuzzy, &searchSenderBoost, &u.SearchSenderHistory, &u.SearchContactBoost, &u.SearchAttachmentWeight, &searchCompactSplitting, &userCreated, &userUpdated)
 	if err != nil {
 		return Session{}, User{}, err
 	}

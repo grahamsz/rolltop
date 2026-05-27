@@ -14,6 +14,8 @@ type apiUser struct {
 	SearchRecencyBias      string `json:"search_recency_bias"`
 	SearchFuzzy            string `json:"search_fuzzy"`
 	SearchSenderBoost      bool   `json:"search_sender_boost"`
+	SearchSenderHistory    string `json:"search_sender_history"`
+	SearchContactBoost     string `json:"search_contact_boost"`
 	SearchAttachmentWeight string `json:"search_attachment_weight"`
 	SearchCompactSplitting bool   `json:"search_compact_splitting"`
 }
@@ -70,14 +72,16 @@ type apiSMTPAccount struct {
 }
 
 type apiMailIdentity struct {
-	ID             int64  `json:"id"`
-	ContactID      int64  `json:"contact_id"`
-	ContactEmailID int64  `json:"contact_email_id"`
-	SMTPAccountID  int64  `json:"smtp_account_id"`
-	Email          string `json:"email"`
-	DisplayName    string `json:"display_name"`
-	Signature      string `json:"signature"`
-	IsPrimary      bool   `json:"is_primary"`
+	ID              int64  `json:"id"`
+	ContactID       int64  `json:"contact_id"`
+	ContactEmailID  int64  `json:"contact_email_id"`
+	SMTPAccountID   int64  `json:"smtp_account_id"`
+	SentMailboxID   int64  `json:"sent_mailbox_id"`
+	DraftsMailboxID int64  `json:"drafts_mailbox_id"`
+	Email           string `json:"email"`
+	DisplayName     string `json:"display_name"`
+	Signature       string `json:"signature"`
+	IsPrimary       bool   `json:"is_primary"`
 }
 
 type apiMessage struct {
@@ -99,6 +103,7 @@ type apiConversation struct {
 	Message                  apiMessage `json:"message"`
 	StarredMessageID         int64      `json:"starred_message_id"`
 	Participants             string     `json:"participants"`
+	RecipientParticipants    string     `json:"recipient_participants"`
 	Count                    int        `json:"count"`
 	IsRead                   bool       `json:"is_read"`
 	HasAttachments           bool       `json:"has_attachments"`
@@ -205,6 +210,7 @@ type apiComposeIdentity struct {
 	Label     string `json:"label"`
 	Email     string `json:"email"`
 	Header    string `json:"header"`
+	Signature string `json:"signature"`
 	IconURL   string `json:"icon_url"`
 	IsPrimary bool   `json:"is_primary"`
 }

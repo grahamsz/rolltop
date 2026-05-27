@@ -339,7 +339,7 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 	if explainedMsg.ID == 0 {
 		explainedMsg = msg
 	}
-	opts, senderBoost := s.searchExplanationOptions(r.Context(), cu.User, explainedMsg)
+	opts, rankingBoosts := s.searchExplanationOptions(r.Context(), cu.User, explainedMsg)
 	writeJSON(w, map[string]any{
 		"matched":              true,
 		"query":                query,
@@ -351,35 +351,50 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 		"fields":               result.Fields,
 		"field_matches":        apiSearchFieldMatches(result.FieldMatches),
 		"term_contributions":   apiSearchTermContributions(result.TermContributions),
-		"boosts":               apiSearchBoosts(cu.User, explainedMsg, senderBoost, !searchQueryHasDateOperator(query)),
+		"boosts":               apiSearchBoosts(cu.User, explainedMsg, rankingBoosts, !searchQueryHasDateOperator(query)),
 		"raw":                  apiScoreExplanationFromRaw(result.Raw, 0),
 	})
 }
 
-func (s *Server) searchExplanationOptions(ctx context.Context, user store.User, msg store.MessageRecord) (search.SearchOptions, *apiSearchBoost) {
-	opts := searchOptionsForUser(user)
-	if !searchSenderBoostEnabledForUser(user) {
-		return opts, nil
-	}
-	stats, err := s.store.ListReadSenderStatsForUser(ctx, user.ID, 40)
-	if err != nil {
-		return opts, nil
-	}
+func (s *Server) searchExplanationOptions(ctx context.Context, user store.User, msg store.MessageRecord) (search.SearchOptions, []apiSearchBoost) {
+	opts := s.searchOptionsWithRankingBoosts(ctx, user)
 	messageSender := store.SenderIdentity(msg.FromAddr)
-	var matched *apiSearchBoost
-	for _, stat := range stats {
-		opts.SenderBoosts = append(opts.SenderBoosts, search.SenderBoost{Sender: stat.Sender, Boost: stat.Boost})
-		if matched == nil && messageSender != "" && strings.EqualFold(stat.Sender, messageSender) {
-			matched = &apiSearchBoost{
-				Kind:        "sender",
-				Label:       "Familiar sender",
-				Description: fmt.Sprintf("%d of %d messages from this sender are read.", stat.ReadCount, stat.TotalCount),
-				Value:       "sender history",
-				Boost:       stat.Boost,
+	var boosts []apiSearchBoost
+	if messageSender == "" {
+		return opts, boosts
+	}
+	if opts.Behavior.SenderBoostScale > 0 {
+		if stats, err := s.store.ListReadSenderStatsForUser(ctx, user.ID, 40); err == nil {
+			for _, stat := range stats {
+				if strings.EqualFold(stat.Sender, messageSender) {
+					boosts = append(boosts, apiSearchBoost{
+						Kind:        "sender",
+						Label:       "Familiar sender",
+						Description: fmt.Sprintf("%d of %d messages from this sender are read.", stat.ReadCount, stat.TotalCount),
+						Value:       fmt.Sprintf("%s sender history", searchSenderHistoryWeightForUser(user)),
+						Boost:       stat.Boost * opts.Behavior.SenderBoostScale,
+					})
+					break
+				}
 			}
 		}
 	}
-	return opts, matched
+	if opts.Behavior.ContactBoostScale > 0 {
+		if contact, err := s.store.GetContactByEmailForUser(ctx, user.ID, messageSender); err == nil && !contact.IsMe {
+			label := strings.TrimSpace(contact.DisplayName)
+			if label == "" {
+				label = messageSender
+			}
+			boosts = append(boosts, apiSearchBoost{
+				Kind:        "contacts",
+				Label:       "In contacts",
+				Description: fmt.Sprintf("Sender is in your contacts as %s.", label),
+				Value:       fmt.Sprintf("%s contact boost", searchContactBoostWeightForUser(user)),
+				Boost:       opts.Behavior.ContactBoostScale,
+			})
+		}
+	}
+	return opts, boosts
 }
 
 func apiSearchFieldMatches(matches []search.FieldTermMatch) []apiSearchFieldMatch {
@@ -437,16 +452,14 @@ func apiSearchFieldLabel(field string) string {
 	}
 }
 
-func apiSearchBoosts(user store.User, msg store.MessageRecord, senderBoost *apiSearchBoost, includeRecency bool) []apiSearchBoost {
+func apiSearchBoosts(user store.User, msg store.MessageRecord, rankingBoosts []apiSearchBoost, includeRecency bool) []apiSearchBoost {
 	var out []apiSearchBoost
 	if includeRecency {
 		if recency := apiRecencySearchBoost(user, msg); recency != nil {
 			out = append(out, *recency)
 		}
 	}
-	if senderBoost != nil {
-		out = append(out, *senderBoost)
-	}
+	out = append(out, rankingBoosts...)
 	return out
 }
 
@@ -478,11 +491,19 @@ func apiRecencySearchBoost(user store.User, msg store.MessageRecord) *apiSearchB
 	}
 	for _, bucket := range recencyExplanationBuckets(bias) {
 		if age <= bucket.age {
+			label := "Recent mail"
+			description := fmt.Sprintf("Message date is within %s; recency profile is %s. This nudge contributes to the final rank score but is not required for matching.", bucket.label, bias)
+			value := fmt.Sprintf("%s freshness bucket", bucket.label)
+			if bucket.boost < 0 {
+				label = "Older mail"
+				description = fmt.Sprintf("Message date falls in the %s bucket; recency profile is %s. This small penalty helps newer equally relevant mail stay ahead without blocking old exact matches.", bucket.label, bias)
+				value = fmt.Sprintf("%s age bucket", bucket.label)
+			}
 			return &apiSearchBoost{
 				Kind:        "recency",
-				Label:       "Recent mail",
-				Description: fmt.Sprintf("Message date is within %s; recency profile is %s. This nudge contributes to the final rank score but is not required for matching.", bucket.label, bias),
-				Value:       fmt.Sprintf("%s freshness bucket", bucket.label),
+				Label:       label,
+				Description: description,
+				Value:       value,
 				Boost:       bucket.boost,
 			}
 		}

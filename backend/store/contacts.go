@@ -288,6 +288,40 @@ func (s *Store) AutocompleteContactsForUser(ctx context.Context, userID int64, q
 	return out, rows.Err()
 }
 
+// ListContactEmailsForSearchBoostForUser returns non-Me contact email addresses
+// used as optional from: ranking nudges during best-match search. The caller
+// applies the actual boost weight, so this helper stays cacheable and tenant-scoped.
+func (s *Store) ListContactEmailsForSearchBoostForUser(ctx context.Context, userID int64, limit int) ([]string, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT DISTINCT e.email
+		FROM contact_emails e
+		JOIN contacts c ON c.user_id = e.user_id AND c.id = e.contact_id
+		WHERE e.user_id = ? AND c.is_me = 0 AND e.normalized_email != ''
+		ORDER BY lower(e.email)
+		LIMIT ?`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0, limit)
+	seen := map[string]bool{}
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return nil, err
+		}
+		identity := SenderIdentity(email)
+		if identity == "" || seen[identity] {
+			continue
+		}
+		seen[identity] = true
+		out = append(out, identity)
+	}
+	return out, rows.Err()
+}
+
 // ListMeContactsForUser returns contacts marked as the signed-in user's own identities.
 func (s *Store) ListMeContactsForUser(ctx context.Context, userID int64) ([]Contact, error) {
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, contactSelectSQL()+`

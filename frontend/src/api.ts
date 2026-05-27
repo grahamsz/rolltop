@@ -307,6 +307,8 @@ export const api = {
     search_recency_bias: string;
     search_fuzzy: string;
     search_sender_boost: boolean;
+    search_sender_history: string;
+    search_contact_boost: string;
     search_attachment_weight: string;
     search_compact_splitting: boolean;
   }) =>

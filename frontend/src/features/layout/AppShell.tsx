@@ -287,12 +287,28 @@ function Sidebar({
     onClose();
   }
 
-  function onDragOver(event: DragEvent, mailboxID: number) {
+  function canAcceptDraggedMessages(event: DragEvent) {
     const types = Array.from(event.dataTransfer.types);
-    if (!types.includes("application/x-mailmirror-messages") && !types.includes("application/x-mailmirror-message")) return;
+    return types.includes("application/x-mailmirror-messages") || types.includes("application/x-mailmirror-message");
+  }
+
+  function onDragEnter(event: DragEvent, mailboxID: number) {
+    if (!canAcceptDraggedMessages(event)) return;
+    event.preventDefault();
+    setDropID(mailboxID);
+  }
+
+  function onDragOver(event: DragEvent, mailboxID: number) {
+    if (!canAcceptDraggedMessages(event)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
     setDropID(mailboxID);
+  }
+
+  function onDragLeave(event: DragEvent, mailboxID: number) {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setDropID((current) => current === mailboxID ? null : current);
   }
 
   function onDrop(event: DragEvent, mailbox: Mailbox) {
@@ -338,8 +354,9 @@ function Sidebar({
         style={depth > 0 ? { paddingLeft: `${18 + depth * 18}px` } : undefined}
         key={mailbox.id}
         onClick={(event) => open(event, url)}
+        onDragEnter={(event) => onDragEnter(event, mailbox.id)}
         onDragOver={(event) => onDragOver(event, mailbox.id)}
-        onDragLeave={() => setDropID(null)}
+        onDragLeave={(event) => onDragLeave(event, mailbox.id)}
         onDrop={(event) => onDrop(event, mailbox)}
       >
         <span className="folder-name"><Icon name={mailbox.icon || "folder"} weight={active ? "bold" : undefined} />{label}</span>
@@ -359,8 +376,9 @@ function Sidebar({
         <div
           className={`folder folder-parent ${depth > 0 ? "folder-child" : ""} ${active ? "active" : ""} ${dropID === node.mailbox.id ? "drop-target" : ""}`}
           style={depth > 0 ? { paddingLeft: `${18 + depth * 18}px` } : undefined}
+          onDragEnter={(event) => onDragEnter(event, node.mailbox.id)}
           onDragOver={(event) => onDragOver(event, node.mailbox.id)}
-          onDragLeave={() => setDropID(null)}
+          onDragLeave={(event) => onDragLeave(event, node.mailbox.id)}
           onDrop={(event) => onDrop(event, node.mailbox)}
         >
           <a href={url} className="folder-main" onClick={(event) => open(event, url)}>

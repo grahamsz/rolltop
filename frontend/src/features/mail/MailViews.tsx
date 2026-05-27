@@ -2,7 +2,7 @@
 // surface sync clues, keep selection state stable, and link rows back to their source page.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ChangeEvent, KeyboardEvent, MouseEvent, ReactNode } from "react";
+import type { ChangeEvent, DragEvent, KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { Star } from "@phosphor-icons/react";
 import { api } from "../../api";
 import type { DatePrefs, Toast, LocationState } from "../../appTypes";
@@ -114,7 +114,7 @@ export function MailView({
           if (appeared.length > 0) {
             setNewMessageIDs(new Set(appeared));
             if (newMessageTimer.current !== null) window.clearTimeout(newMessageTimer.current);
-            newMessageTimer.current = window.setTimeout(() => setNewMessageIDs(new Set()), 2200);
+            newMessageTimer.current = window.setTimeout(() => setNewMessageIDs(new Set()), 1200);
           }
         } else {
           setNewMessageIDs(new Set());
@@ -217,6 +217,7 @@ export function MailView({
               conversations={displayConversations}
               hiddenMessageIDs={hiddenMessageIDs}
               highlightMessageIDs={newMessageIDs}
+              showRecipients={mailbox?.role === "sent"}
               datePrefs={datePrefs}
               returnURL={mailURL(mailboxID, page)}
               navigate={navigate}
@@ -545,6 +546,36 @@ function MessageListSkeleton({ label }: { label: string }) {
   );
 }
 
+function messageDragPreview(conversations: Conversation[], ids: number[]) {
+  if (typeof document === "undefined" || ids.length === 0) return null;
+  const idSet = new Set(ids);
+  const rows = conversations.filter((conversation) => idSet.has(conversation.message.id));
+  const preview = document.createElement("div");
+  preview.className = "message-drag-preview";
+  preview.setAttribute("aria-hidden", "true");
+  const count = ids.length;
+  const title = document.createElement("div");
+  title.className = "message-drag-preview-count";
+  title.textContent = count === 1 ? "1 message" : `${count.toLocaleString()} messages`;
+  preview.appendChild(title);
+  rows.slice(0, 4).forEach((conversation) => {
+    const line = document.createElement("div");
+    line.className = "message-drag-preview-row";
+    const sender = conversation.participants || conversation.message.from_addr || "Unknown sender";
+    const subject = conversation.message.subject || "(no subject)";
+    line.textContent = `${sender} - ${subject}`;
+    preview.appendChild(line);
+  });
+  if (count > rows.length || count > 4) {
+    const more = document.createElement("div");
+    more.className = "message-drag-preview-more";
+    more.textContent = `+${Math.max(0, count - Math.min(rows.length, 4)).toLocaleString()} more`;
+    preview.appendChild(more);
+  }
+  document.body.appendChild(preview);
+  return preview;
+}
+
 // MessageList is shared by mailbox and search pages. It owns local row selection,
 // shift-select ranges, drag payloads, optimistic star updates, and message links.
 function MessageList({
@@ -552,6 +583,7 @@ function MessageList({
   conversations,
   hiddenMessageIDs,
   highlightMessageIDs,
+  showRecipients = false,
   searchQuery = "",
   datePrefs,
   returnURL = "",
@@ -563,6 +595,7 @@ function MessageList({
   conversations: Conversation[];
   hiddenMessageIDs: Set<number>;
   highlightMessageIDs?: Set<number>;
+  showRecipients?: boolean;
   searchQuery?: string;
   datePrefs: DatePrefs;
   returnURL?: string;
@@ -571,9 +604,52 @@ function MessageList({
   onStarredChange: (messageID: number, starredMessageID: number, starred: boolean) => void;
 }) {
   const [selectedIDs, setSelectedIDs] = useState<Set<number>>(() => new Set());
+  const [dismissedIDs, setDismissedIDs] = useState<Set<number>>(() => new Set());
   const lastSelectedIndex = useRef<number | null>(null);
-  const visible = conversations.filter((conversation) => !hiddenMessageIDs.has(conversation.message.id));
+  const moveOutTimers = useRef<Map<number, number>>(new Map());
+  const visible = conversations.filter((conversation) => !dismissedIDs.has(conversation.message.id));
   const visibleKey = visible.map((conversation) => conversation.message.id).join(",");
+  const sourceKey = conversations.map((conversation) => conversation.message.id).join(",");
+  const hiddenKey = Array.from(hiddenMessageIDs).sort((a, b) => a - b).join(",");
+
+  useEffect(() => {
+    return () => {
+      moveOutTimers.current.forEach((timer) => window.clearTimeout(timer));
+      moveOutTimers.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    const sourceIDs = new Set(conversations.map((conversation) => conversation.message.id));
+    setDismissedIDs((current) => {
+      const next = new Set<number>();
+      current.forEach((id) => {
+        if (sourceIDs.has(id) && hiddenMessageIDs.has(id)) next.add(id);
+      });
+      return next.size === current.size ? current : next;
+    });
+    sourceIDs.forEach((id) => {
+      if (hiddenMessageIDs.has(id)) {
+        if (!moveOutTimers.current.has(id)) {
+          const timer = window.setTimeout(() => {
+            moveOutTimers.current.delete(id);
+            setDismissedIDs((current) => {
+              const next = new Set(current);
+              next.add(id);
+              return next;
+            });
+          }, 230);
+          moveOutTimers.current.set(id, timer);
+        }
+      } else {
+        const timer = moveOutTimers.current.get(id);
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+          moveOutTimers.current.delete(id);
+        }
+      }
+    });
+  }, [conversations, hiddenKey, sourceKey, hiddenMessageIDs]);
 
   useEffect(() => {
     const ids = new Set(visible.map((conversation) => conversation.message.id));
@@ -587,6 +663,19 @@ function MessageList({
     if (!selectedIDs.has(messageID)) return [messageID];
     const selected = visible.map((conversation) => conversation.message.id).filter((id) => selectedIDs.has(id));
     return selected.length > 0 ? selected : [messageID];
+  }
+
+  function startMessageDrag(event: DragEvent<HTMLDivElement>, conversation: Conversation) {
+    const ids = selectedDragIDs(conversation.message.id);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-mailmirror-messages", JSON.stringify(ids));
+    event.dataTransfer.setData("application/x-mailmirror-message", String(ids[0]));
+    event.dataTransfer.setData("text/plain", String(ids[0]));
+    const dragImage = messageDragPreview(visible, ids);
+    if (dragImage) {
+      event.dataTransfer.setDragImage(dragImage, 18, 18);
+      window.setTimeout(() => dragImage.remove(), 0);
+    }
   }
 
   function selectMessage(event: ChangeEvent<HTMLInputElement>, index: number, messageID: number) {
@@ -642,8 +731,9 @@ function MessageList({
   if (visible.length === 0) {
     return <div className="panel muted">No messages here.</div>;
   }
+  const arrivalActive = visible.some((conversation) => highlightMessageIDs?.has(conversation.message.id));
   return (
-    <div className="message-table">
+    <div className={`message-table ${arrivalActive ? "mail-arrival-shift" : ""}`}>
       {visible.map((conversation, index) => {
         const msg = conversation.message;
         const matchTerms = conversation.match_terms || [];
@@ -651,22 +741,20 @@ function MessageList({
         const attachmentNames = conversation.attachment_names || [];
         const attachmentMatches = conversation.attachment_matches || [];
         const selected = selectedIDs.has(msg.id);
+        const movingOut = hiddenMessageIDs.has(msg.id);
+        const participantText = showRecipients
+          ? `To: ${conversation.recipient_participants || msg.to_addr || conversation.participants || "undisclosed recipients"}`
+          : (conversation.participants || msg.from_addr || "Unknown sender");
         return (
           <div
-            className={`message-row ${conversation.is_read ? "read" : "unread"} ${selected ? "selected" : ""} ${highlightMessageIDs?.has(msg.id) ? "new-delivery" : ""}`}
+            className={`message-row ${conversation.is_read ? "read" : "unread"} ${selected ? "selected" : ""} ${movingOut ? "moving-out" : ""} ${highlightMessageIDs?.has(msg.id) ? "new-delivery" : ""}`}
             draggable
             key={msg.id}
             role="link"
             tabIndex={0}
             onClick={(event) => openRow(event, href)}
             onKeyDown={(event) => openRowWithKeyboard(event, href)}
-            onDragStart={(event) => {
-              const ids = selectedDragIDs(msg.id);
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("application/x-mailmirror-messages", JSON.stringify(ids));
-              event.dataTransfer.setData("application/x-mailmirror-message", String(ids[0]));
-              event.dataTransfer.setData("text/plain", String(ids[0]));
-            }}
+            onDragStart={(event) => startMessageDrag(event, conversation)}
           >
             <label className="message-select" onClick={(event) => event.stopPropagation()} title="Select message">
               <input
@@ -687,7 +775,7 @@ function MessageList({
             </button>
             <span className="sender">
               <span className="sender-name">
-                <HighlightedText text={conversation.participants || msg.from_addr || "Unknown sender"} query={searchQuery} terms={matchTerms} />
+                <HighlightedText text={participantText} query={searchQuery} terms={matchTerms} />
               </span>
               {conversation.count > 1 ? <span className="thread-count">({conversation.count})</span> : null}
             </span>

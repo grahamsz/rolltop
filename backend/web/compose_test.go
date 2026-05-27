@@ -22,7 +22,10 @@ func TestForwardComposePrefersSanitizedHTML(t *testing.T) {
 	if !strings.Contains(form.BodyHTML, "<strong>there</strong>") {
 		t.Fatalf("forward html lost body: %q", form.BodyHTML)
 	}
-	for _, bad := range []string{"font-family", "<script", "<style", "tracker.example", "onload"} {
+	if !strings.Contains(form.BodyHTML, `src="https://tracker.example/open.png"`) {
+		t.Fatalf("forward html lost image src: %q", form.BodyHTML)
+	}
+	for _, bad := range []string{"font-family", "<script", "<style", "onload"} {
 		if strings.Contains(strings.ToLower(form.BodyHTML), strings.ToLower(bad)) {
 			t.Fatalf("forward html contains %q: %s", bad, form.BodyHTML)
 		}
