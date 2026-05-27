@@ -142,8 +142,22 @@ func (s *Sender) SendRaw(ctx context.Context, account store.MailAccount, recipie
 	return c.Quit()
 }
 
-// BuildRaw constructs the RFC822 message, including text/html alternatives, headers, and attachments.
+// BuildRaw constructs the RFC822 message, including text/html alternatives,
+// headers, and attachments. It is used for real sends, so at least one
+// recipient is required before SMTP is attempted.
 func BuildRaw(msg Message) ([]byte, []string, error) {
+	return buildRaw(msg, true)
+}
+
+// BuildDraftRaw constructs an unsent RFC822 draft. Drafts are allowed to be
+// incomplete, so To/Cc/Bcc may all be empty while the MIME body and attachments
+// are still preserved for IMAP APPEND.
+func BuildDraftRaw(msg Message) ([]byte, error) {
+	raw, _, err := buildRaw(msg, false)
+	return raw, err
+}
+
+func buildRaw(msg Message, requireRecipients bool) ([]byte, []string, error) {
 	if msg.Date.IsZero() {
 		msg.Date = time.Now()
 	}
@@ -164,7 +178,7 @@ func BuildRaw(msg Message) ([]byte, []string, error) {
 		return nil, nil, fmt.Errorf("bcc address: %w", err)
 	}
 	recipients := addressStrings(append(append(to, cc...), bcc...))
-	if len(recipients) == 0 {
+	if requireRecipients && len(recipients) == 0 {
 		return nil, nil, errors.New("message has no recipients")
 	}
 	if strings.TrimSpace(msg.MessageID) == "" {
@@ -179,6 +193,9 @@ func BuildRaw(msg Message) ([]byte, []string, error) {
 	}
 	if len(cc) > 0 {
 		writeHeader(w, "Cc", addressListString(cc))
+	}
+	if !requireRecipients && len(bcc) > 0 {
+		writeHeader(w, "Bcc", addressListString(bcc))
 	}
 	writeHeader(w, "Subject", mime.QEncoding.Encode("utf-8", strings.TrimSpace(msg.Subject)))
 	writeHeader(w, "Date", msg.Date.Format(time.RFC1123Z))

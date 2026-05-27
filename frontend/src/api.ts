@@ -3,6 +3,7 @@
 
 import type {
   Account,
+  AccountPurgeEstimate,
   Bootstrap,
   Contact,
   ContactAutocomplete,
@@ -146,7 +147,7 @@ export async function postForm<T>(url: string, csrf: string, body: FormData): Pr
 }
 
 function composeSendPayload(form: ComposeForm): ComposeForm {
-  const { available_attachments: _availableAttachments, ...payload } = form;
+  const { available_attachments: _availableAttachments, forward_attachment: _forwardAttachment, ...payload } = form;
   return payload;
 }
 
@@ -262,6 +263,26 @@ export const api = {
     attachments.forEach((attachment) => body.append(attachment.field, attachment.file, attachment.filename));
     return postForm<{ ok: boolean; message_id: number }>("/api/compose", csrf, body);
   },
+  saveDraft: (csrf: string, form: ComposeForm, attachments: ComposeAttachmentUpload[] = []) => {
+    const payload = composeSendPayload(form);
+    if (attachments.length === 0) {
+      return postJSON<{ ok: boolean; message_id: number }>("/api/compose/draft", csrf, payload);
+    }
+    const body = new FormData();
+    body.append("payload", JSON.stringify({
+      ...payload,
+      attachments: attachments.map((attachment) => ({
+        field: attachment.field,
+        filename: attachment.filename,
+        content_type: attachment.content_type,
+        content_id: attachment.content_id,
+        inline: attachment.inline,
+        size: attachment.size
+      }))
+    }));
+    attachments.forEach((attachment) => body.append(attachment.field, attachment.file, attachment.filename));
+    return postForm<{ ok: boolean; message_id: number }>("/api/compose/draft", csrf, body);
+  },
   contacts: (query = "") => {
     const q = query.trim() ? `?${new URLSearchParams({ q: query.trim() })}` : "";
     return getJSON<{ contacts: Contact[] }>(`/api/contacts${q}`);
@@ -315,6 +336,10 @@ export const api = {
     postJSON<{ user: User }>("/api/profile", csrf, profile),
   saveIMAPAccount: (csrf: string, account: Record<string, unknown>) =>
     postJSON<{ ok: boolean; account: Account }>("/api/account/imap", csrf, account),
+  imapAccountPurgeEstimate: (id: number) =>
+    getJSON<AccountPurgeEstimate>(`/api/account/imap/${id}/purge-estimate`),
+  deleteIMAPAccount: (csrf: string, id: number, confirm: string) =>
+    postJSON<{ ok: boolean; queued: boolean; run_id: number; estimate: AccountPurgeEstimate }>(`/api/account/imap/${id}/delete`, csrf, { confirm }),
   saveSMTPAccount: (csrf: string, account: Record<string, unknown>) =>
     postJSON<{ ok: boolean; smtp_account: SMTPAccount }>("/api/account/smtp", csrf, account),
   saveMailIdentity: (csrf: string, identity: Record<string, unknown>) =>

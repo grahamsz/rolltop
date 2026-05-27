@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../api";
 import type { DatePrefs, LocationState, Toast } from "../../appTypes";
-import type { Account, Bootstrap, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SyncFolder, SyncRun, User } from "../../types";
+import type { Account, AccountPurgeEstimate, Bootstrap, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SyncFolder, SyncRun, User } from "../../types";
 import { Icon } from "../../components/Icon";
 import { Field, Stat } from "../../components/common";
 import { emptyAccountForm, accountToForm } from "../../lib/accountForm";
@@ -64,6 +64,22 @@ function statDetail(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function imapDeletePrompt(estimate: AccountPurgeEstimate): string {
+  return [
+    `Delete the local IMAP server "${estimate.account_name}" from MailMirror?`,
+    "",
+    "This does not delete any messages from the remote IMAP server.",
+    "MailMirror will hide the server now, then purge local SQLite rows, message bodies, and full-text index documents in the background.",
+    "",
+    `Folders: ${formatStatCount(estimate.mailbox_count)}`,
+    `Message headers: ${formatStatCount(estimate.message_count)}`,
+    `Message bodies: ${formatStatCount(estimate.blob_count)} blobs, ${formatBytes(estimate.blob_bytes)}`,
+    `Full text index: ${formatStatCount(estimate.search_index_count)} documents`,
+    "",
+    `Type ${estimate.account_name} to confirm.`
+  ].join("\n");
+}
+
 function hasStorageIndexBreakdown(value: StorageIndexBreakdownView): boolean {
   return Boolean(value.FileCount || value.ZapCount || value.ZapBytes || value.LargestZapBytes || value.RootBytes || value.OtherBytes);
 }
@@ -119,7 +135,7 @@ function identityAccountMatches(identity: MailIdentity, account: Account | undef
 
 function mailboxChoiceLabel(mailbox: Mailbox, accounts: Account[]) {
   const account = accounts.find((item) => item.id === mailbox.account_id);
-  const accountLabel = account?.label || account?.email || mailbox.account_email || "IMAP";
+  const accountLabel = account?.label || mailbox.account_label || account?.email || mailbox.account_email || "IMAP";
   return `${accountLabel} / ${mailbox.name}`;
 }
 
@@ -504,6 +520,7 @@ export function SettingsView({
   const [profileForm, setProfileForm] = useState(() => profileFormForUser(user));
   const [editingFolderID, setEditingFolderID] = useState<number | null>(null);
   const [folderDraft, setFolderDraft] = useState<FolderSettingsDraft | null>(null);
+  const [deletingAccountID, setDeletingAccountID] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadStorage = useCallback(async () => {
@@ -754,6 +771,34 @@ export function SettingsView({
       await refreshChrome();
     } catch (err) {
       addToast(messageFromError(err), "error");
+    }
+  }
+
+  async function deleteSelectedIMAPAccount() {
+    if (!account || deletingAccountID) return;
+    setDeletingAccountID(account.id);
+    try {
+      const estimate = await api.imapAccountPurgeEstimate(account.id);
+      const expected = estimate.account_name;
+      const typed = window.prompt(imapDeletePrompt(estimate));
+      if (typed === null) return;
+      if (typed.trim() !== expected) {
+        addToast("IMAP server name did not match. Nothing was deleted.", "error");
+        return;
+      }
+      await api.deleteIMAPAccount(csrf, account.id, typed.trim());
+      addToast(`Deleting ${expected} locally. Remote IMAP mail is untouched.`);
+      setIMAPAccounts((current) => current.filter((item) => item.id !== account.id));
+      setFolders((current) => current.filter((folder) => folder.mailbox.account_id !== account.id));
+      setSelectedAccountID(null);
+      setAccount(null);
+      navigate("/settings/account");
+      await refreshChrome();
+      await load();
+    } catch (err) {
+      addToast(messageFromError(err), "error");
+    } finally {
+      setDeletingAccountID(null);
     }
   }
 
@@ -1541,7 +1586,14 @@ export function SettingsView({
               <Field label="Interval minutes" value={form.sync_interval_minutes} onChange={(value) => setField("sync_interval_minutes", value)} type="number" />
             </section>
           </div>
-          <div className="actions"><button>Save IMAP server</button></div>
+          <div className="actions split-actions">
+            <button>Save IMAP server</button>
+            {account ? (
+              <button className="danger secondary" type="button" disabled={deletingAccountID === account.id} onClick={deleteSelectedIMAPAccount}>
+                <Icon name="delete" />{deletingAccountID === account.id ? "Deleting..." : "Delete local server"}
+              </button>
+            ) : null}
+          </div>
         </form>
         {route.isNew ? null : renderFolderSettings()}
         {route.isNew ? null : renderRecentRuns()}

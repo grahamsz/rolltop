@@ -778,6 +778,21 @@
   }
 }
 
+.account-settings .actions.split-actions {
+  justify-content: space-between;
+
+  .danger {
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+    color: var(--danger);
+
+    &:hover:not(:disabled) {
+      border-color: var(--danger);
+      background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+      color: var(--danger);
+    }
+  }
+}
+
 .sync-percent {
   display: grid;
   grid-template-columns: minmax(62px, 1fr) auto;

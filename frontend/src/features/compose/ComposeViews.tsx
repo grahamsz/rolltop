@@ -166,6 +166,7 @@ export function ComposeBox({
   const [showCc, setShowCc] = useState(Boolean(initial.cc));
   const [showBcc, setShowBcc] = useState(Boolean(initial.bcc));
   const [sending, setSending] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
   const [resizing, setResizing] = useState(false);
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
   const editorRef = useRef<HTMLDivElement | null>(null);
@@ -175,6 +176,7 @@ export function ComposeBox({
   const primaryIdentity = useMemo(() => identities.find((identity) => identity.is_primary) || identities[0] || null, [identities]);
   const availableExistingAttachments = form.available_attachments || [];
   const includedExistingAttachmentIDs = form.include_attachment_ids || [];
+  const forwardedMessageAttachment = form.forward_attachment_message_id ? form.forward_attachment || null : null;
   const includedExistingAttachments = useMemo(() => {
     const ids = new Set(includedExistingAttachmentIDs);
     return availableExistingAttachments.filter((attachment) => ids.has(attachment.id));
@@ -183,8 +185,9 @@ export function ComposeBox({
   const totalAttachmentBytes = useMemo(() => {
     const uploadBytes = attachments.reduce((total, attachment) => total + attachment.size, 0);
     const existingBytes = includedExistingAttachments.reduce((total, attachment) => total + attachment.size, 0);
-    return uploadBytes + existingBytes;
-  }, [attachments, includedExistingAttachments]);
+    const forwardedBytes = forwardedMessageAttachment?.size || 0;
+    return uploadBytes + existingBytes + forwardedBytes;
+  }, [attachments, includedExistingAttachments, forwardedMessageAttachment]);
   const hasAttachmentWarning = totalAttachmentBytes > ATTACHMENT_WARNING_BYTES;
   const canResizePhotos = attachments.some((attachment) => isResizablePhoto(attachment.file));
 
@@ -200,7 +203,8 @@ export function ComposeBox({
       return [];
     });
     if (editorRef.current) {
-      editorRef.current.innerHTML = initial.body_html || textToHTML(initial.body);
+      editorRef.current.innerHTML = initialEditorHTML(initial);
+      placeInitialCaret(editorRef.current);
     }
   }, [initial, primaryIdentity?.id]);
 
@@ -287,6 +291,14 @@ export function ComposeBox({
     }));
   }
 
+  function removeForwardAttachment() {
+    setForm((current) => ({
+      ...current,
+      forward_attachment_message_id: 0,
+      forward_attachment: undefined
+    }));
+  }
+
   async function resizePhotos() {
     if (resizing || !canResizePhotos) return;
     setResizing(true);
@@ -349,6 +361,28 @@ export function ComposeBox({
       addToast(messageFromError(err), "error");
     } finally {
       setSending(false);
+    }
+  }
+
+  async function saveDraft() {
+    const editor = editorRef.current;
+    const preparedHTML = prepareComposeHTML(editor?.innerHTML || "", attachments);
+    const uploadAttachments = attachments.filter((attachment) => !attachment.inline || preparedHTML.inlineIDs.has(attachment.id));
+    const nextForm: ComposeForm = {
+      ...form,
+      from_identity_id: form.from_identity_id || primaryIdentity?.id || 0,
+      body: editor?.innerText || "",
+      body_html: preparedHTML.html
+    };
+    setSavingDraft(true);
+    try {
+      const data = await api.saveDraft(csrf, nextForm, uploadAttachments);
+      setForm((current) => ({ ...current, draft_message_id: data.message_id }));
+      addToast("Draft saved.");
+    } catch (err) {
+      addToast(messageFromError(err), "error");
+    } finally {
+      setSavingDraft(false);
     }
   }
 
@@ -461,7 +495,7 @@ export function ComposeBox({
           suppressContentEditableWarning
         />
       </div>
-      {attachments.length > 0 || includedExistingAttachments.length > 0 || remainingExistingAttachmentCount > 0 || hasAttachmentWarning ? (
+      {attachments.length > 0 || includedExistingAttachments.length > 0 || forwardedMessageAttachment || remainingExistingAttachmentCount > 0 || hasAttachmentWarning ? (
         <div className="compose-attachments" aria-live="polite">
           {remainingExistingAttachmentCount > 0 ? (
             <button className="compose-existing-attachment-link ghost text-link" type="button" onClick={includeExistingAttachments}>
@@ -483,6 +517,18 @@ export function ComposeBox({
                   </button>
                 </div>
               ))}
+              {forwardedMessageAttachment ? (
+                <div className="compose-attachment compose-attachment-existing" key="forwarded-message">
+                  <Icon name="file_text" />
+                  <span>
+                    <strong>{composeExistingAttachmentName(forwardedMessageAttachment)}</strong>
+                    <small>Original message - {formatBytes(forwardedMessageAttachment.size)}</small>
+                  </span>
+                  <button className="ghost" type="button" title="Remove attachment" onClick={removeForwardAttachment}>
+                    <Icon name="close" />
+                  </button>
+                </div>
+              ) : null}
               {attachments.map((attachment) => (
                 <div className="compose-attachment" key={attachment.id}>
                   <Icon name={attachment.inline ? "image" : "attach_file"} />
@@ -550,8 +596,11 @@ export function ComposeBox({
       />
       <div className="compose-sendbar">
         <div className="compose-send-actions">
-          <button className="send-button" disabled={sending || resizing}>
+          <button className="send-button" disabled={sending || savingDraft || resizing}>
             {sending ? "Sending..." : "Send"}
+          </button>
+          <button className="secondary save-draft-button" type="button" disabled={sending || savingDraft || resizing} onClick={() => void saveDraft()}>
+            {savingDraft ? "Saving..." : "Save draft"}
           </button>
           <button className="ghost" type="button" title="Attach files" onClick={() => attachmentInputRef.current?.click()}>
             <Icon name="attach_file" />
@@ -600,6 +649,9 @@ function randomAttachmentID(): string {
 function prepareComposeHTML(html: string, attachments: ComposeAttachment[]): { html: string; inlineIDs: Set<string> } {
   const template = document.createElement("template");
   template.innerHTML = html;
+  template.content.querySelectorAll<HTMLElement>("[data-compose-caret-start]").forEach((node) => {
+    node.removeAttribute("data-compose-caret-start");
+  });
   const byID = new Map(attachments.map((attachment) => [attachment.id, attachment]));
   const inlineIDs = new Set<string>();
   template.content.querySelectorAll<HTMLElement>("[data-compose-attachment-id]").forEach((node) => {
@@ -614,6 +666,35 @@ function prepareComposeHTML(html: string, attachments: ComposeAttachment[]): { h
     }
   });
   return { html: template.innerHTML, inlineIDs };
+}
+
+function initialEditorHTML(initial: ComposeForm): string {
+  const html = initial.body_html || textToHTML(initial.body);
+  if (!isForwardDraft(initial)) return html;
+  return `<div data-compose-caret-start="true"><br></div>${stripLeadingBreaks(html)}`;
+}
+
+function isForwardDraft(initial: ComposeForm): boolean {
+  const subject = initial.subject.trim().toLowerCase();
+  if (subject.startsWith("fwd:") || subject.startsWith("fw:")) return true;
+  const body = `${initial.body_html}\n${initial.body}`.toLowerCase();
+  return body.includes("mailmirror-forwarded-body") || body.includes("forwarded message");
+}
+
+function stripLeadingBreaks(html: string): string {
+  return html.replace(/^(?:\s|<br\s*\/?>|<div><br><\/div>|<p><br><\/p>)+/i, "");
+}
+
+function placeInitialCaret(editor: HTMLDivElement) {
+  const marker = editor.querySelector<HTMLElement>("[data-compose-caret-start]");
+  if (!marker) return;
+  editor.focus({ preventScroll: true });
+  const range = document.createRange();
+  range.selectNodeContents(marker);
+  range.collapse(true);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
 }
 
 function removeInlineAttachmentElement(editor: HTMLDivElement | null, id: string) {

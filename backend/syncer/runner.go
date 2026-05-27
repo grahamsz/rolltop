@@ -176,6 +176,48 @@ func (r *Runner) StartMailboxMaintenance(userID int64, mailbox store.Mailbox, la
 	return run, true, nil
 }
 
+// StartAccountMaintenance reserves all known folders for one account and runs a
+// local maintenance task in the background. It is used for destructive local
+// cache work such as deleting an IMAP account from MailMirror.
+func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount, mailboxes []store.Mailbox, label string, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
+	ctx := r.context()
+	if ctx.Err() != nil {
+		return store.SyncRun{}, false, nil
+	}
+	if r.Service == nil || r.Service.Store == nil {
+		return store.SyncRun{}, false, fmt.Errorf("sync service is not configured")
+	}
+	if fn == nil {
+		return store.SyncRun{}, false, fmt.Errorf("maintenance function is required")
+	}
+	names := mailboxNamesForReservation(mailboxes)
+	if len(names) == 0 {
+		names = []string{"__account__"}
+	}
+	keys, ok := r.reserveAccountMailboxes(userID, account.ID, names)
+	if !ok {
+		return store.SyncRun{}, false, nil
+	}
+	run, err := r.Service.Store.CreateSyncRun(context.Background(), userID, account.ID)
+	if err != nil {
+		r.releaseAccountMailboxReservations(userID, names, keys)
+		return store.SyncRun{}, true, err
+	}
+	progress := store.SyncProgress{
+		MailboxesTotal:   len(mailboxes),
+		CurrentMailbox:   accountMaintenanceLabel(account),
+		LatestNewFrom:    "mailmirror:maintenance",
+		LatestNewSubject: label,
+	}
+	if err := r.Service.Store.UpdateSyncRunProgress(context.Background(), userID, run.ID, progress); err != nil {
+		r.releaseAccountMailboxReservations(userID, names, keys)
+		return store.SyncRun{}, true, err
+	}
+	r.Service.notify(userID)
+	go r.runReservedMailboxMaintenance(userID, names, keys, run.ID, progress, fn)
+	return run, true, nil
+}
+
 func (r *Runner) runReservedMailboxMaintenance(userID int64, mailboxes []string, keys []string, runID int64, progress store.SyncProgress, fn func(context.Context, int64, *store.SyncProgress) error) {
 	status := "ok"
 	errText := ""
@@ -202,6 +244,24 @@ func (r *Runner) runReservedMailboxMaintenance(userID int64, mailboxes []string,
 		errText = err.Error()
 		log.Printf("mailbox maintenance user_id=%d mailboxes=%s: %v", userID, strings.Join(mailboxes, ","), err)
 	}
+}
+
+func mailboxNamesForReservation(mailboxes []store.Mailbox) []string {
+	names := make([]string, 0, len(mailboxes))
+	for _, mailbox := range mailboxes {
+		names = append(names, mailbox.Name)
+	}
+	return uniqueMailboxes(names)
+}
+
+func accountMaintenanceLabel(account store.MailAccount) string {
+	if strings.TrimSpace(account.Label) != "" {
+		return account.Label
+	}
+	if strings.TrimSpace(account.Email) != "" {
+		return account.Email
+	}
+	return account.Host
 }
 
 // StartPriorityMailboxes records a pending rerun when the folder is already busy.

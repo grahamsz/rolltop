@@ -310,6 +310,13 @@ func (f *Fetcher) FetchMessage(ctx context.Context, account store.MailAccount, m
 // searching for the Message-ID and falls back to the mailbox UIDNEXT movement when
 // the server cannot search that header reliably.
 func (f *Fetcher) AppendMessage(ctx context.Context, account store.MailAccount, mailbox string, raw []byte, messageID string, date time.Time) (syncer.FetchedMessage, error) {
+	return f.AppendMessageWithFlags(ctx, account, mailbox, raw, messageID, date, []string{imap.SeenFlag})
+}
+
+// AppendMessageWithFlags copies an RFC822 payload into a remote mailbox with
+// caller-provided IMAP flags. Draft saves use \Draft while sent-message copies
+// keep the existing \Seen behavior.
+func (f *Fetcher) AppendMessageWithFlags(ctx context.Context, account store.MailAccount, mailbox string, raw []byte, messageID string, date time.Time, flags []string) (syncer.FetchedMessage, error) {
 	select {
 	case <-ctx.Done():
 		return syncer.FetchedMessage{}, ctx.Err()
@@ -329,9 +336,8 @@ func (f *Fetcher) AppendMessage(ctx context.Context, account store.MailAccount, 
 	if status, err := c.Status(mailbox, []imap.StatusItem{imap.StatusUidNext}); err == nil && status != nil {
 		beforeUIDNext = status.UidNext
 	}
-	flags := []string{imap.SeenFlag}
 	if err := c.Append(mailbox, flags, date, bytes.NewReader(raw)); err != nil {
-		return syncer.FetchedMessage{}, fmt.Errorf("append sent message to mailbox %q: %w", mailbox, err)
+		return syncer.FetchedMessage{}, fmt.Errorf("append message to mailbox %q: %w", mailbox, err)
 	}
 	mbox, err := c.Select(mailbox, true)
 	if err != nil {

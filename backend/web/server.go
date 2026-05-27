@@ -76,6 +76,8 @@ type Server struct {
 	statusMu                  sync.Mutex
 	statusRefreshRunning      map[int64]bool
 	statusRefreshBlockedUntil map[int64]time.Time
+	deletingMu                sync.Mutex
+	deletingIMAPAccounts      map[int64]map[int64]bool
 	storageMu                 sync.Mutex
 	storageCached             map[int64]storageStatsCacheEntry
 	mailListCache             *mailListCache
@@ -155,10 +157,13 @@ type composeForm struct {
 	Subject              string                      `json:"subject"`
 	Body                 string                      `json:"body"`
 	BodyHTML             string                      `json:"body_html"`
+	DraftMessageID       int64                       `json:"draft_message_id"`
 	InReplyToID          int64                       `json:"in_reply_to_id"`
 	FromIdentityID       int64                       `json:"from_identity_id"`
 	AvailableAttachments []composeExistingAttachment `json:"available_attachments,omitempty"`
 	IncludeAttachmentIDs []int64                     `json:"include_attachment_ids,omitempty"`
+	ForwardAttachmentID  int64                       `json:"forward_attachment_message_id,omitempty"`
+	ForwardAttachment    *composeExistingAttachment  `json:"forward_attachment,omitempty"`
 	Attachments          []composeAttachment         `json:"attachments,omitempty"`
 }
 
@@ -219,6 +224,7 @@ func New(opts Options) (*Server, error) {
 
 		statusRefreshRunning:      map[int64]bool{},
 		statusRefreshBlockedUntil: map[int64]time.Time{},
+		deletingIMAPAccounts:      map[int64]map[int64]bool{},
 		mailListCache:             newMailListCache(),
 		startedAt:                 time.Now().UTC(),
 	}
@@ -554,6 +560,7 @@ func (s *Server) loadMailboxChrome(ctx context.Context, userID int64, data *view
 		return
 	}
 	if boxes, err := s.store.ListMailboxesForUser(ctx, userID); err == nil {
+		boxes = s.filterDeletingMailboxes(userID, boxes)
 		data.Mailboxes = boxes
 		s.maybeRefreshMailboxStatuses(userID, boxes)
 	}
@@ -640,6 +647,7 @@ func (s *Server) syncFolderViews(ctx context.Context, userID int64, runs []store
 	if err != nil {
 		return nil
 	}
+	boxes = s.filterDeletingMailboxes(userID, boxes)
 	lastByFolder := map[string]store.SyncRun{}
 	for _, run := range runs {
 		name := strings.ToLower(strings.TrimSpace(run.CurrentMailbox))
@@ -672,6 +680,59 @@ func (s *Server) syncFolderViews(ctx context.Context, userID int64, runs []store
 			view.LastRun = &r
 		}
 		out = append(out, view)
+	}
+	return out
+}
+
+func (s *Server) markDeletingIMAPAccount(userID, accountID int64) {
+	s.deletingMu.Lock()
+	defer s.deletingMu.Unlock()
+	if s.deletingIMAPAccounts[userID] == nil {
+		s.deletingIMAPAccounts[userID] = map[int64]bool{}
+	}
+	s.deletingIMAPAccounts[userID][accountID] = true
+}
+
+func (s *Server) clearDeletingIMAPAccount(userID, accountID int64) {
+	s.deletingMu.Lock()
+	defer s.deletingMu.Unlock()
+	if s.deletingIMAPAccounts[userID] == nil {
+		return
+	}
+	delete(s.deletingIMAPAccounts[userID], accountID)
+	if len(s.deletingIMAPAccounts[userID]) == 0 {
+		delete(s.deletingIMAPAccounts, userID)
+	}
+}
+
+func (s *Server) imapAccountDeleting(userID, accountID int64) bool {
+	s.deletingMu.Lock()
+	defer s.deletingMu.Unlock()
+	return s.deletingIMAPAccounts[userID] != nil && s.deletingIMAPAccounts[userID][accountID]
+}
+
+func (s *Server) filterDeletingAccounts(userID int64, accounts []store.MailAccount) []store.MailAccount {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	out := accounts[:0]
+	for _, account := range accounts {
+		if !s.imapAccountDeleting(userID, account.ID) {
+			out = append(out, account)
+		}
+	}
+	return out
+}
+
+func (s *Server) filterDeletingMailboxes(userID int64, boxes []store.MailboxSummary) []store.MailboxSummary {
+	if len(boxes) == 0 {
+		return boxes
+	}
+	out := boxes[:0]
+	for _, box := range boxes {
+		if !s.imapAccountDeleting(userID, box.AccountID) {
+			out = append(out, box)
+		}
 	}
 	return out
 }

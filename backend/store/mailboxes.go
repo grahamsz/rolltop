@@ -288,7 +288,7 @@ func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]Mailb
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT mb.id, mb.user_id, mb.account_id, mb.name, mb.sync_mode, mb.role, mb.icon,
 			mb.show_in_sidebar, mb.show_in_all_mail, mb.include_in_search, mb.uidvalidity, mb.last_uid, mb.created_at, mb.updated_at,
 			mb.remote_message_count, mb.remote_unread_count, mb.remote_uid_next, mb.status_checked_at,
-			ma.email,
+			ma.email, ma.label,
 			count(m.id),
 			COALESCE(sum(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END), 0)
 		FROM mailboxes mb
@@ -308,7 +308,7 @@ func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]Mailb
 		var localMessages, localUnread int
 		if err := rows.Scan(&ms.ID, &ms.UserID, &ms.AccountID, &ms.Name, &ms.SyncMode, &ms.Role, &ms.Icon,
 			&ms.ShowInSidebar, &ms.ShowInAllMail, &ms.IncludeInSearch, &ms.UIDValidity, &ms.LastUID, &created, &updated,
-			&ms.RemoteMessageCount, &ms.RemoteUnreadCount, &ms.RemoteUIDNext, &statusChecked, &ms.AccountEmail, &localMessages, &localUnread); err != nil {
+			&ms.RemoteMessageCount, &ms.RemoteUnreadCount, &ms.RemoteUIDNext, &statusChecked, &ms.AccountEmail, &ms.AccountLabel, &localMessages, &localUnread); err != nil {
 			return nil, err
 		}
 		ms.SyncMode = normalizeSyncMode(ms.SyncMode)

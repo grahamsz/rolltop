@@ -29,6 +29,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiSearch(w, r)
 	case path == "compose":
 		s.apiCompose(w, r)
+	case path == "compose/draft":
+		s.apiComposeDraft(w, r)
 	case path == "sync/status":
 		s.apiSyncStatus(w, r)
 	case path == "events":
@@ -47,6 +49,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiAccount(w, r)
 	case path == "account/imap":
 		s.apiIMAPAccount(w, r)
+	case strings.HasPrefix(path, "account/imap/"):
+		s.apiIMAPAccountPath(w, r, strings.TrimPrefix(path, "account/imap/"))
 	case path == "account/smtp":
 		s.apiSMTPAccount(w, r)
 	case path == "account/identities":

@@ -25,6 +25,7 @@ export type Mailbox = {
   id: number;
   account_id: number;
   account_email: string;
+  account_label: string;
   name: string;
   message_count: number;
   unread_count: number;
@@ -368,10 +369,13 @@ export type ComposeForm = {
   subject: string;
   body: string;
   body_html: string;
+  draft_message_id: number;
   in_reply_to_id: number;
   from_identity_id: number;
   available_attachments?: ComposeExistingAttachment[];
   include_attachment_ids?: number[];
+  forward_attachment_message_id?: number;
+  forward_attachment?: ComposeExistingAttachment;
 };
 
 /** Account is the IMAP account settings shape used by the settings page. */
@@ -390,6 +394,17 @@ export type Account = {
   smtp_same_as_imap: boolean;
   mailbox: string;
   sync_interval_minutes: number;
+};
+
+export type AccountPurgeEstimate = {
+  account_id: number;
+  account_name: string;
+  account_email: string;
+  mailbox_count: number;
+  message_count: number;
+  blob_count: number;
+  blob_bytes: number;
+  search_index_count: number;
 };
 
 /** SMTPAccount is the outgoing server settings shape used by the settings page. */

@@ -13,7 +13,7 @@ export type FolderNode = {
 /** folderTree converts flat mailbox names into a nested tree while preserving mailbox IDs. */
 export function folderTree(mailboxes: Mailbox[], options: { includeHidden?: boolean } = {}): FolderNode[] {
   const visible = options.includeHidden ? mailboxes : mailboxes.filter((mailbox) => mailbox.show_in_sidebar !== false);
-  const byName = new Map(visible.map((mailbox) => [mailbox.name, mailbox]));
+  const byName = new Map(visible.map((mailbox) => [folderAccountKey(mailbox, mailbox.name), mailbox]));
   const nodes = new Map<number, FolderNode>();
   for (const mailbox of visible) {
     nodes.set(mailbox.id, { mailbox, label: folderLabel(mailbox.name), children: [] });
@@ -22,7 +22,7 @@ export function folderTree(mailboxes: Mailbox[], options: { includeHidden?: bool
   for (const mailbox of visible) {
     const node = nodes.get(mailbox.id);
     if (!node) continue;
-    const parent = closestVisibleParent(mailbox.name, byName);
+    const parent = closestVisibleParent(mailbox, byName);
     if (!parent) {
       roots.push(node);
       continue;
@@ -43,12 +43,16 @@ export function folderTree(mailboxes: Mailbox[], options: { includeHidden?: bool
   return sortNodes(roots);
 }
 
-function closestVisibleParent(name: string, byName: Map<string, Mailbox>): Mailbox | null {
-  for (const parent of folderParentNames(name)) {
-    const mailbox = byName.get(parent);
-    if (mailbox) return mailbox;
+function closestVisibleParent(mailbox: Mailbox, byName: Map<string, Mailbox>): Mailbox | null {
+  for (const parent of folderParentNames(mailbox.name)) {
+    const match = byName.get(folderAccountKey(mailbox, parent));
+    if (match) return match;
   }
   return null;
+}
+
+function folderAccountKey(mailbox: Pick<Mailbox, "account_id">, name: string): string {
+  return `${mailbox.account_id}:${name}`;
 }
 
 /** folderParentNames returns the implied parent paths for a mailbox name. */

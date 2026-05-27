@@ -46,6 +46,7 @@ func apiMailboxFromSummary(box store.MailboxSummary) apiMailbox {
 		ID:                 box.ID,
 		AccountID:          box.AccountID,
 		AccountEmail:       box.AccountEmail,
+		AccountLabel:       box.AccountLabel,
 		Name:               box.Name,
 		MessageCount:       box.MessageCount,
 		UnreadCount:        box.UnreadCount,
@@ -72,6 +73,7 @@ func apiMailboxFromStore(box store.Mailbox) apiMailbox {
 	return apiMailbox{
 		ID:                 box.ID,
 		AccountID:          box.AccountID,
+		AccountLabel:       "",
 		Name:               box.Name,
 		SyncMode:           box.SyncMode,
 		Role:               box.Role,

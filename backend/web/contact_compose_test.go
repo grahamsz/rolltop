@@ -30,6 +30,7 @@ func (s *captureSender) Send(_ context.Context, _ store.MailAccount, msg smtpcli
 type captureAppendFetcher struct {
 	syncer.Fetcher
 	nextUID uint32
+	flags   []string
 }
 
 func (f *captureAppendFetcher) AppendMessage(_ context.Context, _ store.MailAccount, mailbox string, raw []byte, _ string, date time.Time) (syncer.FetchedMessage, error) {
@@ -37,6 +38,16 @@ func (f *captureAppendFetcher) AppendMessage(_ context.Context, _ store.MailAcco
 		f.nextUID = 1
 	}
 	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: f.nextUID, InternalDate: date, Size: int64(len(raw)), Flags: []string{"\\Seen"}, Raw: raw}
+	f.nextUID++
+	return msg, nil
+}
+
+func (f *captureAppendFetcher) AppendMessageWithFlags(_ context.Context, _ store.MailAccount, mailbox string, raw []byte, _ string, date time.Time, flags []string) (syncer.FetchedMessage, error) {
+	if f.nextUID == 0 {
+		f.nextUID = 1
+	}
+	f.flags = append([]string(nil), flags...)
+	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: f.nextUID, InternalDate: date, Size: int64(len(raw)), Flags: flags, Raw: raw}
 	f.nextUID++
 	return msg, nil
 }
@@ -90,6 +101,67 @@ func TestSendComposeRequiresSentRoleBeforeSMTP(t *testing.T) {
 	}
 	if sender.count != 0 {
 		t.Fatalf("SMTP send count = %d, want 0", sender.count)
+	}
+}
+
+func TestSaveComposeDraftAppendsToDraftsMailbox(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "me@example.test", "Me", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.UpsertMailAccount(ctx, store.MailAccount{
+		UserID:            user.ID,
+		Email:             "me@example.test",
+		Host:              "imap.example.test",
+		Port:              993,
+		Username:          "me@example.test",
+		EncryptedPassword: "encrypted",
+		UseTLS:            true,
+		Mailbox:           "INBOX",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Drafts"); err != nil {
+		t.Fatal(err)
+	}
+	contact, err := db.CreateContact(ctx, user.ID, store.Contact{
+		DisplayName: "Me",
+		IsMe:        true,
+		IsPrimary:   true,
+		Emails:      []store.ContactEmail{{Email: "me@example.test", IsPrimary: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &captureAppendFetcher{}
+	server := &Server{store: db, blobs: blob.New(dir), syncer: &syncer.Service{Fetcher: fetcher}}
+	draft, err := server.saveComposeDraft(ctx, currentUser{User: user}, composeForm{
+		To:             "recipient@example.test",
+		Bcc:            "hidden@example.test",
+		Subject:        "Unfinished",
+		Body:           "draft body",
+		FromIdentityID: contact.Emails[0].ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.ID == 0 || draft.MailboxID == 0 {
+		t.Fatalf("invalid draft message: %+v", draft)
+	}
+	if strings.Join(fetcher.flags, ",") != "\\Draft" {
+		t.Fatalf("append flags = %v, want Draft", fetcher.flags)
+	}
+	form := server.draftComposeFormForMessage(ctx, currentUser{User: user}, draft)
+	if form.Bcc != "<hidden@example.test>" {
+		t.Fatalf("draft bcc = %q", form.Bcc)
 	}
 }
 

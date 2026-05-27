@@ -51,6 +51,7 @@ func (s *Server) apiAccount(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
+	accounts = s.filterDeletingAccounts(cu.User.ID, accounts)
 	if len(accounts) > 0 && s.syncer != nil && s.syncer.Fetcher != nil {
 		s.refreshMailboxStatusesAsync(cu.User.ID)
 	}
@@ -123,6 +124,176 @@ func (s *Server) apiIMAPAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "account": apiAccountFromStore(account)})
+}
+
+func (s *Server) apiIMAPAccountPath(w http.ResponseWriter, r *http.Request, path string) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 2 {
+		http.NotFound(w, r)
+		return
+	}
+	accountID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || accountID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	switch parts[1] {
+	case "purge-estimate":
+		s.apiIMAPAccountPurgeEstimate(w, r, accountID)
+	case "delete":
+		s.apiDeleteIMAPAccount(w, r, accountID)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) apiIMAPAccountPurgeEstimate(w http.ResponseWriter, r *http.Request, accountID int64) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	estimate, err := s.accountPurgeEstimate(r.Context(), cu.User.ID, accountID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
+		s.serverError(w, err)
+		return
+	}
+	writeJSON(w, estimate)
+}
+
+type deleteIMAPAccountInput struct {
+	Confirm string `json:"confirm"`
+}
+
+func (s *Server) accountPurgeEstimate(ctx context.Context, userID, accountID int64) (map[string]any, error) {
+	estimate, err := s.store.AccountPurgeEstimate(ctx, userID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	searchCount := 0
+	if s.search != nil {
+		mailboxes, err := s.store.ListMailboxesForAccount(ctx, userID, accountID)
+		if err != nil {
+			return nil, err
+		}
+		for _, mailbox := range mailboxes {
+			count, err := s.search.CountMailboxMessages(ctx, userID, mailbox.ID)
+			if err != nil {
+				return nil, err
+			}
+			searchCount += count
+		}
+	}
+	return map[string]any{
+		"account_id":         estimate.Account.ID,
+		"account_name":       accountDeleteConfirmationName(estimate.Account),
+		"account_email":      estimate.Account.Email,
+		"mailbox_count":      estimate.MailboxCount,
+		"message_count":      estimate.MessageCount,
+		"blob_count":         estimate.BlobCount,
+		"blob_bytes":         estimate.BlobBytes,
+		"search_index_count": searchCount,
+	}, nil
+}
+
+func accountDeleteConfirmationName(account store.MailAccount) string {
+	if strings.TrimSpace(account.Label) != "" {
+		return strings.TrimSpace(account.Label)
+	}
+	if strings.TrimSpace(account.Email) != "" {
+		return strings.TrimSpace(account.Email)
+	}
+	return strings.TrimSpace(account.Host)
+}
+
+func (s *Server) apiDeleteIMAPAccount(w http.ResponseWriter, r *http.Request, accountID int64) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	var in deleteIMAPAccountInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if s.imapAccountDeleting(cu.User.ID, accountID) {
+		writeAPIError(w, http.StatusConflict, "That IMAP server is already being deleted.")
+		return
+	}
+	account, err := s.store.GetMailAccountForUser(r.Context(), cu.User.ID, accountID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
+		s.serverError(w, err)
+		return
+	}
+	expected := accountDeleteConfirmationName(account)
+	if strings.TrimSpace(in.Confirm) != expected {
+		writeAPIError(w, http.StatusBadRequest, "Confirmation did not match the IMAP server name.")
+		return
+	}
+	if s.syncer == nil || s.syncRunner == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "Account deletion requires the local sync service.")
+		return
+	}
+	mailboxes, err := s.store.ListMailboxesForAccount(r.Context(), cu.User.ID, accountID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	for _, mailbox := range mailboxes {
+		if s.syncRunner.IsAccountMailboxRunning(cu.User.ID, accountID, mailbox.Name) {
+			writeAPIError(w, http.StatusConflict, "Sync or maintenance is already running for this IMAP server.")
+			return
+		}
+	}
+	estimate, err := s.accountPurgeEstimate(r.Context(), cu.User.ID, accountID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	s.markDeletingIMAPAccount(cu.User.ID, accountID)
+	run, started, err := s.syncRunner.StartAccountMaintenance(cu.User.ID, account, mailboxes, "Deleting local IMAP account data", func(ctx context.Context, runID int64, progress *store.SyncProgress) error {
+		defer s.clearDeletingIMAPAccount(cu.User.ID, accountID)
+		if _, err := s.syncer.PurgeAccountLocalDataWithProgress(ctx, cu.User.ID, account, mailboxes, runID, progress); err != nil {
+			return err
+		}
+		if err := s.store.ClearIdentityMailboxRefsForAccount(ctx, cu.User.ID, accountID); err != nil {
+			return err
+		}
+		if err := s.store.DeleteMailAccountForUser(ctx, cu.User.ID, accountID); err != nil {
+			return err
+		}
+		s.notifyUserChanged(cu.User.ID)
+		return nil
+	})
+	if !started && err == nil {
+		s.clearDeletingIMAPAccount(cu.User.ID, accountID)
+		writeAPIError(w, http.StatusConflict, "Sync or maintenance is already running for this IMAP server.")
+		return
+	}
+	if err != nil {
+		s.clearDeletingIMAPAccount(cu.User.ID, accountID)
+		writeAPIError(w, http.StatusBadGateway, "Could not start IMAP server deletion.")
+		return
+	}
+	s.notifyUserChanged(cu.User.ID)
+	writeJSON(w, map[string]any{"ok": true, "queued": true, "run_id": run.ID, "estimate": estimate})
 }
 
 // saveMailAccountFromInput normalizes account form data, preserves encrypted

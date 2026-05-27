@@ -279,7 +279,7 @@ function Sidebar({
   const uptimeLabel = useServerUptimeLabel(serverStartedAt, serverUptimeSeconds);
   const activeMailbox = mailRoute(currentPath).mailboxID;
   const allMailActive = (currentPath === "/mail" || currentPath.startsWith("/mail/")) && !activeMailbox;
-  const folders = useMemo(() => folderTree(mailboxes), [mailboxes]);
+  const accountGroups = useMemo(() => sidebarAccountGroups(mailboxes), [mailboxes]);
 
   function open(event: MouseEvent, url: string) {
     event.preventDefault();
@@ -334,11 +334,11 @@ function Sidebar({
     }
   }
 
-  function toggleGroup(name: string) {
+  function toggleGroup(key: string) {
     setExpandedGroups((current) => {
       const next = new Set(current);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -369,7 +369,8 @@ function Sidebar({
     if (node.children.length === 0) return folderLink(node.mailbox, node.label, depth);
     const active = currentPath.startsWith("/mailbox/") && activeMailbox === String(node.mailbox.id);
     const count = node.mailbox.unread_count;
-    const expanded = expandedGroups.has(node.mailbox.name) || nodeContainsMailbox(node, activeMailbox);
+    const expandKey = folderExpandKey(node.mailbox);
+    const expanded = expandedGroups.has(expandKey) || nodeContainsMailbox(node, activeMailbox);
     const url = mailURL(node.mailbox.id);
     return (
       <div className="folder-tree" key={node.mailbox.id}>
@@ -385,7 +386,7 @@ function Sidebar({
             <span className="folder-name"><Icon name={node.mailbox.icon || "folder"} weight={active ? "bold" : undefined} />{node.label}</span>
           </a>
           {count > 0 ? <span className="folder-count">{count.toLocaleString()}</span> : null}
-          <button className="folder-toggle" type="button" onClick={() => toggleGroup(node.mailbox.name)} title={expanded ? "Collapse folder" : "Expand folder"}>
+          <button className="folder-toggle" type="button" onClick={() => toggleGroup(expandKey)} title={expanded ? "Collapse folder" : "Expand folder"}>
             <Icon name={expanded ? "expand_more" : "chevron_right"} />
           </button>
         </div>
@@ -417,10 +418,12 @@ function Sidebar({
           <span className="folder-name"><Icon name="mail" weight={allMailActive ? "bold" : undefined} />All Mail</span>
         </a>
         <div className="side-section">Folders</div>
-        {Array.from(new Set(mailboxes.map((mailbox) => mailbox.account_email).filter(Boolean))).map((email) => (
-          <div className="account-section" key={email}>{email}</div>
+        {accountGroups.map((group) => (
+          <div className="account-folder-group" key={group.key}>
+            <div className="account-section">{group.label}</div>
+            {group.folders.map((node) => folderNode(node))}
+          </div>
         ))}
-        {folders.map((node) => folderNode(node))}
         <div className="side-section">Address Book</div>
         <a
           href="/contacts"
@@ -441,6 +444,49 @@ function Sidebar({
       </div>
     </aside>
   );
+}
+
+type SidebarAccountGroup = {
+  key: string;
+  label: string;
+  folders: FolderNode[];
+};
+
+function sidebarAccountGroups(mailboxes: Mailbox[]): SidebarAccountGroup[] {
+  const grouped = new Map<string, { key: string; label: string; mailboxes: Mailbox[] }>();
+  for (const mailbox of mailboxes) {
+    const key = mailbox.account_id ? String(mailbox.account_id) : `email:${mailbox.account_email || "local"}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.mailboxes.push(mailbox);
+      continue;
+    }
+    grouped.set(key, { key, label: mailboxAccountLabel(mailbox), mailboxes: [mailbox] });
+  }
+
+  const groups = Array.from(grouped.values());
+  const labelCounts = groups.reduce((counts, group) => {
+    counts.set(group.label, (counts.get(group.label) || 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+
+  return groups
+    .map((group) => ({
+      key: group.key,
+      label: (labelCounts.get(group.label) || 0) > 1 ? `${group.label} · Account ${group.key}` : group.label,
+      folders: folderTree(group.mailboxes)
+    }))
+    .filter((group) => group.folders.length > 0);
+}
+
+function mailboxAccountLabel(mailbox: Mailbox): string {
+  const label = (mailbox.account_label || mailbox.account_email || "").trim();
+  if (label) return label;
+  return mailbox.account_id ? `Account ${mailbox.account_id}` : "Mail account";
+}
+
+function folderExpandKey(mailbox: Mailbox): string {
+  return `${mailbox.account_id}:${mailbox.name}`;
 }
 
 function SidebarSync({

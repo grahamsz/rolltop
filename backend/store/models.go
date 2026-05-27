@@ -115,6 +115,7 @@ type Mailbox struct {
 type MailboxSummary struct {
 	Mailbox
 	AccountEmail       string
+	AccountLabel       string
 	MessageCount       int
 	UnreadCount        int
 	LocalMessageCount  int
@@ -123,6 +124,17 @@ type MailboxSummary struct {
 	SearchIndexedCount *int
 	SearchIndexTotal   *int
 	SearchIndexPercent *int
+}
+
+// AccountPurgeEstimate is the local data footprint shown before deleting an
+// IMAP account from MailMirror. It deliberately describes only local SQLite,
+// blob, and search-index data; no remote IMAP message is deleted.
+type AccountPurgeEstimate struct {
+	Account      MailAccount
+	MailboxCount int
+	MessageCount int
+	BlobCount    int
+	BlobBytes    int64
 }
 
 // MailboxSettings is the editable subset of mailbox configuration saved from settings.

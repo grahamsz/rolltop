@@ -59,6 +59,32 @@ func (s *Server) apiCompose(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 	}
 }
+
+func (s *Server) apiComposeDraft(w http.ResponseWriter, r *http.Request) {
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	form, ok := decodeComposePost(w, r)
+	if !ok {
+		return
+	}
+	draft, err := s.saveComposeDraft(r.Context(), cu, form)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.notifyUserChanged(cu.User.ID)
+	writeJSON(w, map[string]any{"ok": true, "message_id": draft.ID})
+}
+
 func decodeComposePost(w http.ResponseWriter, r *http.Request) (composeForm, bool) {
 	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
 		return decodeComposeMultipart(w, r)
@@ -253,7 +279,60 @@ func (s *Server) composeSMTPExistingAttachments(ctx context.Context, userID int6
 	return attachments, nil
 }
 
+func (s *Server) composeMessageAttachments(ctx context.Context, userID int64, form composeForm) ([]smtpclient.Attachment, error) {
+	uploadedAttachments := composeSMTPAttachments(form.Attachments)
+	remaining := composeMaxUploadBytes - composeUploadedAttachmentBytes(form.Attachments)
+	existingAttachments, err := s.composeSMTPExistingAttachments(ctx, userID, form.IncludeAttachmentIDs, remaining)
+	if err != nil {
+		return nil, err
+	}
+	remaining -= smtpAttachmentBytes(existingAttachments)
+	forwardAttachment, err := s.composeForwardMessageAttachment(ctx, userID, form.ForwardAttachmentID, remaining)
+	if err != nil {
+		return nil, err
+	}
+	attachments := append(uploadedAttachments, existingAttachments...)
+	if forwardAttachment != nil {
+		attachments = append(attachments, *forwardAttachment)
+	}
+	return attachments, nil
+}
+
+func smtpAttachmentBytes(items []smtpclient.Attachment) int64 {
+	var total int64
+	for _, item := range items {
+		total += int64(len(item.Data))
+	}
+	return total
+}
+
 func (s *Server) composeFormForRequest(r *http.Request) (composeForm, error) {
+	if raw := strings.TrimSpace(r.URL.Query().Get("draft")); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			return composeForm{}, store.ErrNotFound
+		}
+		cu, _ := current(r)
+		msg, err := s.store.GetMessageForUser(r.Context(), cu.User.ID, id)
+		if err != nil {
+			return composeForm{}, err
+		}
+		mailbox, err := s.store.GetMailboxForUser(r.Context(), cu.User.ID, msg.MailboxID)
+		if err != nil {
+			return composeForm{}, err
+		}
+		if mailbox.Role != "drafts" {
+			return composeForm{}, store.ErrNotFound
+		}
+		form := s.draftComposeFormForMessage(r.Context(), cu, msg)
+		attachments, err := s.composeExistingAttachmentsForMessage(r.Context(), cu.User.ID, msg.ID)
+		if err != nil {
+			return composeForm{}, err
+		}
+		form.AvailableAttachments = attachments
+		form.IncludeAttachmentIDs = composeExistingAttachmentIDs(attachments)
+		return form, nil
+	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("reply_all")); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || id <= 0 {
@@ -319,6 +398,18 @@ func (s *Server) composeFormForRequest(r *http.Request) (composeForm, error) {
 		form.IncludeAttachmentIDs = composeExistingAttachmentIDs(attachments)
 		return form, nil
 	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("forward_attachment")); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			return composeForm{}, store.ErrNotFound
+		}
+		cu, _ := current(r)
+		msg, err := s.store.GetMessageForUser(r.Context(), cu.User.ID, id)
+		if err != nil {
+			return composeForm{}, err
+		}
+		return s.forwardAsAttachmentComposeForm(msg), nil
+	}
 	return composeForm{}, nil
 }
 
@@ -338,12 +429,10 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 	if err != nil {
 		return store.MessageRecord{}, err
 	}
-	uploadedAttachments := composeSMTPAttachments(form.Attachments)
-	existingAttachments, err := s.composeSMTPExistingAttachments(ctx, cu.User.ID, form.IncludeAttachmentIDs, composeMaxUploadBytes-composeUploadedAttachmentBytes(form.Attachments))
+	attachments, err := s.composeMessageAttachments(ctx, cu.User.ID, form)
 	if err != nil {
 		return store.MessageRecord{}, err
 	}
-	attachments := append(uploadedAttachments, existingAttachments...)
 	bodyHTML, bodyText := appendIdentitySignature(form.BodyHTML, form.Body, identity.Signature)
 	msg := smtpclient.Message{
 		From:        identity.Header,

@@ -198,7 +198,7 @@ function buildSearchAutocompleteItems(
           value: `in:${quoteSearchValue(mailbox.name)} `,
           token: active.token,
           label: mailbox.name,
-          detail: mailbox.account_email || "folder",
+          detail: mailbox.account_label || mailbox.account_email || "folder",
           kind: "folder" as const
         }));
     case "before":
@@ -283,7 +283,7 @@ function unquoteSearchValue(value: string): string {
 }
 
 function mailboxSearchText(mailbox: Mailbox): string {
-  return [mailbox.name, mailbox.role, mailbox.account_email].join(" ").toLocaleLowerCase();
+  return [mailbox.name, mailbox.role, mailbox.account_label, mailbox.account_email].join(" ").toLocaleLowerCase();
 }
 
 function dateSamples(value: string): string[] {

@@ -3,6 +3,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"html"
@@ -177,6 +178,22 @@ func forwardComposeForm(msg store.MessageRecord) composeForm {
 	}
 }
 
+func (s *Server) forwardAsAttachmentComposeForm(msg store.MessageRecord) composeForm {
+	subject := strings.TrimSpace(msg.Subject)
+	if subject == "" {
+		subject = "(no subject)"
+	}
+	if !strings.HasPrefix(strings.ToLower(subject), "fwd:") && !strings.HasPrefix(strings.ToLower(subject), "fw:") {
+		subject = "Fwd: " + subject
+	}
+	return composeForm{
+		Subject:              subject,
+		ForwardAttachmentID:  msg.ID,
+		ForwardAttachment:    forwardAttachmentMetadata(msg),
+		AvailableAttachments: nil,
+	}
+}
+
 // forwardComposeFormForMessage hydrates the message body from the retained raw
 // blob or IMAP before building the forward draft. Message display already does
 // this, and forwarding needs the same source so rich HTML mail does not fall
@@ -190,6 +207,33 @@ func (s *Server) forwardComposeFormForMessage(ctx context.Context, userID int64,
 		msg.BodyText = bodyText
 	}
 	return forwardComposeForm(msg)
+}
+
+func (s *Server) draftComposeFormForMessage(ctx context.Context, cu currentUser, msg store.MessageRecord) composeForm {
+	bodyHTML, bodyText, _ := s.displayBodiesForMessage(ctx, cu.User.ID, msg)
+	choices := s.composeIdentityChoices(ctx, cu)
+	return composeForm{
+		To:             msg.ToAddr,
+		Cc:             msg.CCAddr,
+		Bcc:            s.draftBccHeader(ctx, cu.User.ID, msg),
+		Subject:        msg.Subject,
+		Body:           bodyText,
+		BodyHTML:       bodyHTML,
+		DraftMessageID: msg.ID,
+		FromIdentityID: identityIDForAddressValues(choices, msg.FromAddr),
+	}
+}
+
+func (s *Server) draftBccHeader(ctx context.Context, userID int64, msg store.MessageRecord) string {
+	raw, err := s.rawMessageBytes(ctx, userID, msg)
+	if err != nil {
+		return ""
+	}
+	parsed, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Header.Get("Bcc"))
 }
 
 func quotedReplyBody(msg store.MessageRecord) string {
@@ -413,13 +457,16 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 			}
 			label := firstNonEmpty(identity.DisplayName, email)
 			out = append(out, composeIdentity{
-				ID:            identity.ContactEmailID,
-				SMTPAccountID: identity.SMTPAccountID,
-				Label:         label,
-				Email:         email,
-				Header:        contactAddressHeader(label, email),
-				IconURL:       icons[identity.ContactID],
-				IsPrimary:     identity.IsPrimary,
+				ID:              identity.ContactEmailID,
+				SMTPAccountID:   identity.SMTPAccountID,
+				SentMailboxID:   identity.SentMailboxID,
+				DraftsMailboxID: identity.DraftsMailboxID,
+				Signature:       identity.Signature,
+				Label:           label,
+				Email:           email,
+				Header:          contactAddressHeader(label, email),
+				IconURL:         icons[identity.ContactID],
+				IsPrimary:       identity.IsPrimary,
 			})
 		}
 		if len(out) > 0 {
@@ -608,6 +655,44 @@ func (s *Server) sentMailboxForIdentity(ctx context.Context, userID int64, ident
 	return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("choose a Sent folder role for the IMAP account used by %s before sending", identity.Email)
 }
 
+func (s *Server) draftsMailboxForIdentity(ctx context.Context, userID int64, identity composeIdentity) (store.MailAccount, store.Mailbox, error) {
+	accounts, err := s.store.ListMailAccountsForUser(ctx, userID)
+	if err != nil {
+		return store.MailAccount{}, store.Mailbox{}, err
+	}
+	if len(accounts) == 0 {
+		return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("no IMAP account is configured for %s", identity.Email)
+	}
+	if identity.DraftsMailboxID > 0 {
+		mailbox, err := s.store.GetMailboxForUser(ctx, userID, identity.DraftsMailboxID)
+		if err != nil {
+			return store.MailAccount{}, store.Mailbox{}, err
+		}
+		if mailbox.Role != "drafts" {
+			return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("selected Drafts folder for %s is no longer marked as Drafts", identity.Email)
+		}
+		account, err := s.store.GetMailAccountForUser(ctx, userID, mailbox.AccountID)
+		if err != nil {
+			return store.MailAccount{}, store.Mailbox{}, err
+		}
+		return account, mailbox, nil
+	}
+	candidates := mailAccountCandidatesForAddress(accounts, identity.Email)
+	if len(candidates) == 0 {
+		return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("no IMAP account matches the %s identity", identity.Email)
+	}
+	for _, account := range candidates {
+		mailbox, err := s.store.GetMailboxByRoleForAccount(ctx, userID, account.ID, "drafts")
+		if err == nil {
+			return account, mailbox, nil
+		}
+		if !store.IsNotFound(err) {
+			return store.MailAccount{}, store.Mailbox{}, err
+		}
+	}
+	return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("choose a Drafts folder role for the IMAP account used by %s before saving drafts", identity.Email)
+}
+
 func mailAccountCandidatesForIdentity(accounts []store.MailAccount, identity composeIdentity, smtpAccount store.SMTPAccount) []store.MailAccount {
 	keys := map[string]bool{}
 	for _, value := range []string{identity.Email, smtpAccount.Username} {
@@ -620,6 +705,25 @@ func mailAccountCandidatesForIdentity(accounts []store.MailAccount, identity com
 	for _, account := range accounts {
 		for _, value := range []string{account.Email, account.Username} {
 			if keys[store.NormalizeContactEmail(value)] && !seen[account.ID] {
+				seen[account.ID] = true
+				out = append(out, account)
+				break
+			}
+		}
+	}
+	if len(out) == 0 && len(accounts) == 1 {
+		out = append(out, accounts[0])
+	}
+	return out
+}
+
+func mailAccountCandidatesForAddress(accounts []store.MailAccount, email string) []store.MailAccount {
+	key := store.NormalizeContactEmail(email)
+	seen := map[int64]bool{}
+	var out []store.MailAccount
+	for _, account := range accounts {
+		for _, value := range []string{account.Email, account.Username} {
+			if key != "" && store.NormalizeContactEmail(value) == key && !seen[account.ID] {
 				seen[account.ID] = true
 				out = append(out, account)
 				break
@@ -681,11 +785,150 @@ func smtpEnvelopeForIdentity(identity composeIdentity, account store.SMTPAccount
 	}
 }
 
+func forwardAttachmentMetadata(msg store.MessageRecord) *composeExistingAttachment {
+	size := msg.Size
+	return &composeExistingAttachment{
+		ID:          msg.ID,
+		Filename:    forwardedMessageFilename(msg),
+		ContentType: "message/rfc822",
+		Size:        size,
+	}
+}
+
+func (s *Server) composeForwardMessageAttachment(ctx context.Context, userID, messageID int64, remaining int64) (*smtpclient.Attachment, error) {
+	if messageID <= 0 {
+		return nil, nil
+	}
+	if remaining <= 0 {
+		return nil, fmt.Errorf("attachments exceed compose limit")
+	}
+	msg, err := s.store.GetMessageForUser(ctx, userID, messageID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.rawMessageBytes(ctx, userID, msg)
+	if err != nil {
+		return nil, fmt.Errorf("load original message: %w", err)
+	}
+	if int64(len(raw)) > remaining {
+		return nil, fmt.Errorf("attachments exceed compose limit")
+	}
+	return &smtpclient.Attachment{
+		Filename:    forwardedMessageFilename(msg),
+		ContentType: "message/rfc822",
+		Inline:      false,
+		Data:        raw,
+	}, nil
+}
+
+func forwardedMessageFilename(msg store.MessageRecord) string {
+	name := strings.TrimSpace(msg.Subject)
+	if name == "" {
+		name = "forwarded-message"
+	}
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '.', r == '-', r == '_':
+			b.WriteRune(r)
+		case r == ' ', r == '\t':
+			b.WriteByte('-')
+		}
+		if b.Len() >= 80 {
+			break
+		}
+	}
+	out := strings.Trim(b.String(), ".- _")
+	if out == "" {
+		out = "forwarded-message"
+	}
+	if !strings.HasSuffix(strings.ToLower(out), ".eml") {
+		out += ".eml"
+	}
+	return out
+}
+
+func (s *Server) saveComposeDraft(ctx context.Context, cu currentUser, form composeForm) (store.MessageRecord, error) {
+	identity, err := s.selectedComposeIdentity(ctx, cu, form.FromIdentityID)
+	if err != nil {
+		return store.MessageRecord{}, err
+	}
+	imapAccount, draftsMailbox, err := s.draftsMailboxForIdentity(ctx, cu.User.ID, identity)
+	if err != nil {
+		return store.MessageRecord{}, err
+	}
+	attachments, err := s.composeMessageAttachments(ctx, cu.User.ID, form)
+	if err != nil {
+		return store.MessageRecord{}, err
+	}
+	messageID := smtpclient.NewMessageID(identity.Email)
+	messageDate := time.Now()
+	if form.DraftMessageID > 0 {
+		if existing, err := s.store.GetMessageForUser(ctx, cu.User.ID, form.DraftMessageID); err == nil && strings.TrimSpace(existing.MessageIDHeader) != "" {
+			messageID = existing.MessageIDHeader
+		}
+	}
+	msg := smtpclient.Message{
+		From:        identity.Header,
+		To:          []string{form.To},
+		Cc:          []string{form.Cc},
+		Bcc:         []string{form.Bcc},
+		Subject:     form.Subject,
+		BodyText:    form.Body,
+		BodyHTML:    form.BodyHTML,
+		MessageID:   messageID,
+		Date:        messageDate,
+		Attachments: attachments,
+	}
+	raw, err := smtpclient.BuildDraftRaw(msg)
+	if err != nil {
+		return store.MessageRecord{}, err
+	}
+	fetched, err := s.appendDraftMessage(ctx, imapAccount, draftsMailbox, raw, msg.MessageID, msg.Date)
+	if err != nil {
+		return store.MessageRecord{}, fmt.Errorf("could not save draft to %s: %w", draftsMailbox.Name, err)
+	}
+	return s.storeSentMessage(ctx, cu.User.ID, imapAccount, draftsMailbox, msg, form, fetched)
+}
+
 func (s *Server) appendSentMessage(ctx context.Context, account store.MailAccount, mailbox store.Mailbox, raw []byte, messageID string, date time.Time) (syncer.FetchedMessage, error) {
 	if s.syncer == nil || s.syncer.Fetcher == nil {
 		return syncer.FetchedMessage{}, fmt.Errorf("IMAP sync is not configured")
 	}
 	fetched, err := s.syncer.Fetcher.AppendMessage(ctx, account, mailbox.Name, raw, messageID, date)
+	if err != nil {
+		return syncer.FetchedMessage{}, err
+	}
+	if fetched.UID == 0 {
+		return syncer.FetchedMessage{}, fmt.Errorf("IMAP server did not confirm a UID for %s", mailbox.Name)
+	}
+	if len(fetched.Raw) == 0 {
+		fetched.Raw = raw
+	}
+	if fetched.Mailbox == "" {
+		fetched.Mailbox = mailbox.Name
+	}
+	if fetched.InternalDate.IsZero() {
+		fetched.InternalDate = date
+	}
+	return fetched, nil
+}
+
+type flagAppendingFetcher interface {
+	AppendMessageWithFlags(ctx context.Context, account store.MailAccount, mailbox string, raw []byte, messageID string, date time.Time, flags []string) (syncer.FetchedMessage, error)
+}
+
+func (s *Server) appendDraftMessage(ctx context.Context, account store.MailAccount, mailbox store.Mailbox, raw []byte, messageID string, date time.Time) (syncer.FetchedMessage, error) {
+	if s.syncer == nil || s.syncer.Fetcher == nil {
+		return syncer.FetchedMessage{}, fmt.Errorf("IMAP sync is not configured")
+	}
+	appender, ok := s.syncer.Fetcher.(flagAppendingFetcher)
+	if !ok {
+		return syncer.FetchedMessage{}, fmt.Errorf("IMAP sync does not support draft append")
+	}
+	fetched, err := appender.AppendMessageWithFlags(ctx, account, mailbox.Name, raw, messageID, date, []string{"\\Draft"})
 	if err != nil {
 		return syncer.FetchedMessage{}, err
 	}

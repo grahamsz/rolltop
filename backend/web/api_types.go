@@ -24,6 +24,7 @@ type apiMailbox struct {
 	ID                 int64  `json:"id"`
 	AccountID          int64  `json:"account_id"`
 	AccountEmail       string `json:"account_email"`
+	AccountLabel       string `json:"account_label"`
 	Name               string `json:"name"`
 	MessageCount       int    `json:"message_count"`
 	UnreadCount        int    `json:"unread_count"`

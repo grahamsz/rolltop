@@ -12,6 +12,7 @@
   right: 24px;
   bottom: 0;
   width: min(720px, calc(100vw - 48px));
+  max-height: calc(100dvh - 24px);
   z-index: 80;
 
   .error {
@@ -22,7 +23,9 @@
 
 .compose-window {
   width: min(720px, 100%);
-  min-height: 620px;
+  height: min(680px, calc(100dvh - 24px));
+  min-height: min(440px, calc(100dvh - 24px));
+  max-height: calc(100dvh - 24px);
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: 8px 8px 0 0;
@@ -33,6 +36,7 @@
 }
 
 .compose-loading {
+  height: auto;
   min-height: 180px;
 }
 
@@ -243,8 +247,11 @@
 }
 
 .compose-body {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
   padding: 0 12px;
+  overscroll-behavior: contain;
 
   textarea {
     display: none;
@@ -253,7 +260,7 @@
 
 .compose-editor {
   width: 100%;
-  min-height: 330px;
+  min-height: 260px;
   padding: 14px 0;
   outline: 0;
   font: 14px/1.5 var(--font-ui);
@@ -385,6 +392,7 @@
 .compose-send-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -437,4 +445,9 @@
   &:hover:not(:disabled) {
     background: var(--accent-warm-strong);
   }
+}
+
+.save-draft-button {
+  min-width: 104px;
+  border-radius: 7px;
 }

@@ -633,6 +633,10 @@ export function ThreadView({
                           <Icon name="forward" />
                           Forward
                         </button>
+                        <button type="button" onClick={() => openCompose(`forward_attachment=${item.message.id}`)}>
+                          <Icon name="attach_file" />
+                          Forward as attachment
+                        </button>
                         <button type="button" onClick={(event) => void viewOriginal(event, item)}>
                           <Icon name="file_text" />
                           View original

@@ -11,8 +11,10 @@ export const emptyCompose: ComposeForm = {
   subject: "",
   body: "",
   body_html: "",
+  draft_message_id: 0,
   in_reply_to_id: 0,
   from_identity_id: 0,
   available_attachments: [],
-  include_attachment_ids: []
+  include_attachment_ids: [],
+  forward_attachment_message_id: 0
 };

@@ -57,6 +57,26 @@ func TestBuildRawRejectsHeaderInjection(t *testing.T) {
 	}
 }
 
+func TestBuildDraftRawAllowsNoRecipientsAndKeepsBcc(t *testing.T) {
+	raw, err := BuildDraftRaw(Message{
+		From:      "Sender <sender@example.test>",
+		Bcc:       []string{"hidden@example.test"},
+		Subject:   "Draft",
+		BodyText:  "unfinished",
+		MessageID: "<draft@example.test>",
+		Date:      time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte("\r\nBcc: <hidden@example.test>\r\n")) {
+		t.Fatalf("draft raw missing Bcc header:\n%s", raw)
+	}
+	if !bytes.Contains(raw, []byte("unfinished")) {
+		t.Fatalf("draft raw missing body:\n%s", raw)
+	}
+}
+
 func TestBuildRawWithHTMLBodyUsesMultipartAlternative(t *testing.T) {
 	raw, _, err := BuildRaw(Message{
 		From:      "sender@example.test",

@@ -217,7 +217,8 @@ export function MailView({
               conversations={displayConversations}
               hiddenMessageIDs={hiddenMessageIDs}
               highlightMessageIDs={newMessageIDs}
-              showRecipients={mailbox?.role === "sent"}
+              showRecipients={mailbox?.role === "sent" || mailbox?.role === "drafts"}
+              openAsDraft={mailbox?.role === "drafts"}
               datePrefs={datePrefs}
               returnURL={mailURL(mailboxID, page)}
               navigate={navigate}
@@ -584,6 +585,7 @@ function MessageList({
   hiddenMessageIDs,
   highlightMessageIDs,
   showRecipients = false,
+  openAsDraft = false,
   searchQuery = "",
   datePrefs,
   returnURL = "",
@@ -596,6 +598,7 @@ function MessageList({
   hiddenMessageIDs: Set<number>;
   highlightMessageIDs?: Set<number>;
   showRecipients?: boolean;
+  openAsDraft?: boolean;
   searchQuery?: string;
   datePrefs: DatePrefs;
   returnURL?: string;
@@ -737,7 +740,7 @@ function MessageList({
       {visible.map((conversation, index) => {
         const msg = conversation.message;
         const matchTerms = conversation.match_terms || [];
-        const href = messageURL(msg.id, searchQuery, matchTerms, returnURL, searchQuery ? msg.id : 0);
+        const href = openAsDraft ? `/compose?draft=${msg.id}` : messageURL(msg.id, searchQuery, matchTerms, returnURL, searchQuery ? msg.id : 0);
         const attachmentNames = conversation.attachment_names || [];
         const attachmentMatches = conversation.attachment_matches || [];
         const selected = selectedIDs.has(msg.id);

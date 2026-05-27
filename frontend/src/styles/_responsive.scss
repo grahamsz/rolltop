@@ -354,9 +354,32 @@
   }
 
   .compose-popover {
-    left: 8px;
-    right: 8px;
+    inset: 0;
     width: auto;
+    max-height: none;
+    z-index: 120;
+  }
+
+  .compose-window {
+    width: 100%;
+    height: 100dvh;
+    min-height: 0;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .compose-head {
+    padding-top: env(safe-area-inset-top);
+    height: calc(42px + env(safe-area-inset-top));
+  }
+
+  .compose-body {
+    min-height: 0;
+  }
+
+  .compose-editor {
+    min-height: 220px;
   }
 
   .inline-reply-row {
