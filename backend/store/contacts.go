@@ -488,6 +488,11 @@ func (s *Store) loadContactDetails(ctx context.Context, userID int64, c *Contact
 	c.Phones = phones
 	c.Addresses = addresses
 	c.URLs = urls
+	pgpKeys, err := s.ListContactPGPPublicKeysForContact(ctx, userID, c.ID)
+	if err != nil {
+		return err
+	}
+	c.PGPKeys = pgpKeys
 	if icon, err := s.GetContactIconForUser(ctx, userID, c.ID); err == nil {
 		c.Icon = &icon
 	} else if err != nil && !IsNotFound(err) {
@@ -497,7 +502,7 @@ func (s *Store) loadContactDetails(ctx context.Context, userID int64, c *Contact
 }
 
 func replaceContactChildren(ctx context.Context, tx *sql.Tx, userID, contactID int64, c Contact, ts int64) error {
-	for _, table := range []string{"contact_emails", "contact_phones", "contact_addresses", "contact_urls"} {
+	for _, table := range []string{"contact_emails", "contact_phones", "contact_addresses", "contact_urls", "contact_pgp_public_keys"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE user_id = ? AND contact_id = ?`, userID, contactID); err != nil {
 			return err
 		}
@@ -539,6 +544,18 @@ func replaceContactChildren(ctx context.Context, tx *sql.Tx, userID, contactID i
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_urls (user_id, contact_id, label, url, is_primary, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`, userID, contactID, strings.TrimSpace(u.Label), u.URL, boolInt(u.IsPrimary || i == 0), ts, ts); err != nil {
+			return err
+		}
+	}
+	for i, key := range c.PGPKeys {
+		key.ContactID = contactID
+		key.UserID = userID
+		key = normalizeContactPGPPublicKey(key)
+		if key.NormalizedEmail == "" || key.PublicKeyArmored == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_pgp_public_keys (user_id, contact_id, email, normalized_email, label, fingerprint, key_id, user_ids, public_key_armored, is_preferred, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, contactID, key.Email, key.NormalizedEmail, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, boolInt(key.IsPreferred || i == 0), ts, ts); err != nil {
 			return err
 		}
 	}

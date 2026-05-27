@@ -5,6 +5,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"net/mail"
@@ -404,17 +405,20 @@ func (s *Server) composeFromLabel(ctx context.Context, cu currentUser) string {
 }
 
 type composeIdentity struct {
-	ID              int64
-	SMTPAccountID   int64
-	IMAPAccountID   int64
-	SentMailboxID   int64
-	DraftsMailboxID int64
-	Signature       string
-	Label           string
-	Email           string
-	Header          string
-	IconURL         string
-	IsPrimary       bool
+	ID                  int64
+	PGPIdentityID       int64
+	PGPPublicKeyArmored string
+	HasPGPPrivateKey    bool
+	SMTPAccountID       int64
+	IMAPAccountID       int64
+	SentMailboxID       int64
+	DraftsMailboxID     int64
+	Signature           string
+	Label               string
+	Email               string
+	Header              string
+	IconURL             string
+	IsPrimary           bool
 }
 
 func (s *Server) composeIdentities(ctx context.Context, cu currentUser) []apiComposeIdentity {
@@ -422,12 +426,16 @@ func (s *Server) composeIdentities(ctx context.Context, cu currentUser) []apiCom
 	out := make([]apiComposeIdentity, 0, len(choices))
 	for _, choice := range choices {
 		out = append(out, apiComposeIdentity{
-			ID:        choice.ID,
-			Label:     choice.Label,
-			Email:     choice.Email,
-			Header:    choice.Header,
-			IconURL:   choice.IconURL,
-			IsPrimary: choice.IsPrimary,
+			ID:                  choice.ID,
+			PGPIdentityID:       choice.PGPIdentityID,
+			Label:               choice.Label,
+			Email:               choice.Email,
+			Header:              choice.Header,
+			Signature:           choice.Signature,
+			IconURL:             choice.IconURL,
+			IsPrimary:           choice.IsPrimary,
+			HasPGPPrivateKey:    choice.HasPGPPrivateKey,
+			PGPPublicKeyArmored: choice.PGPPublicKeyArmored,
 		})
 	}
 	return out
@@ -457,18 +465,28 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 				continue
 			}
 			label := firstNonEmpty(identity.DisplayName, email)
+			pgpKey, pgpErr := s.store.ActiveIdentityPGPPublicKeyForUser(ctx, cu.User.ID, identity.ID)
+			pgpPublic := ""
+			hasPGP := false
+			if pgpErr == nil {
+				pgpPublic = pgpKey.PublicKeyArmored
+				hasPGP = true
+			}
 			out = append(out, composeIdentity{
-				ID:              identity.ContactEmailID,
-				SMTPAccountID:   identity.SMTPAccountID,
-				IMAPAccountID:   identity.IMAPAccountID,
-				SentMailboxID:   identity.SentMailboxID,
-				DraftsMailboxID: identity.DraftsMailboxID,
-				Signature:       identity.Signature,
-				Label:           label,
-				Email:           email,
-				Header:          contactAddressHeader(label, email),
-				IconURL:         icons[identity.ContactID],
-				IsPrimary:       identity.IsPrimary,
+				ID:                  identity.ContactEmailID,
+				PGPIdentityID:       identity.ID,
+				PGPPublicKeyArmored: pgpPublic,
+				HasPGPPrivateKey:    hasPGP,
+				SMTPAccountID:       identity.SMTPAccountID,
+				IMAPAccountID:       identity.IMAPAccountID,
+				SentMailboxID:       identity.SentMailboxID,
+				DraftsMailboxID:     identity.DraftsMailboxID,
+				Signature:           identity.Signature,
+				Label:               label,
+				Email:               email,
+				Header:              contactAddressHeader(label, email),
+				IconURL:             icons[identity.ContactID],
+				IsPrimary:           identity.IsPrimary,
 			})
 		}
 		if len(out) > 0 {
@@ -882,6 +900,17 @@ func (s *Server) saveComposeDraft(ctx context.Context, cu currentUser, form comp
 	if err != nil {
 		return store.MessageRecord{}, err
 	}
+	if form.PGPEncrypted || form.PGPSigned {
+		if len(attachments) > 0 || form.AttachPublicKey {
+			return store.MessageRecord{}, errors.New("PGP encrypt/sign does not support attachments yet")
+		}
+	} else if form.AttachPublicKey {
+		attachment, err := s.composePublicKeyAttachment(ctx, cu.User.ID, identity)
+		if err != nil {
+			return store.MessageRecord{}, err
+		}
+		attachments = append(attachments, attachment)
+	}
 	messageID := smtpclient.NewMessageID(identity.Email)
 	messageDate := time.Now()
 	if form.DraftMessageID > 0 {
@@ -1007,7 +1036,7 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		internalDate = messageDate
 	}
 	languageCode := ""
-	if s.pluginEnabled(ctx, plugins.LanguageSearch) {
+	if !form.PGPEncrypted && s.pluginEnabled(ctx, plugins.LanguageSearch) {
 		languageCode = languagesearch.DetectCode(form.Subject, outgoing.BodyText)
 	}
 	msg, err := s.store.CreateMessage(ctx, store.CreateMessage{
@@ -1031,6 +1060,8 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		BodyText:         outgoing.BodyText,
 		BodyHTML:         outgoing.BodyHTML,
 		HasAttachments:   smtpHasVisibleAttachments(outgoing.Attachments),
+		IsEncrypted:      form.PGPEncrypted,
+		IsSigned:         form.PGPSigned,
 		IsRead:           true,
 	})
 	if err != nil {

@@ -16,6 +16,7 @@ const (
 	AttachmentPreview    = "attachment_preview"
 	LanguageSearch       = "language_search"
 	OneClickUnsubscribe  = "one_click_unsubscribe"
+	ClientSidePGP        = "client_side_pgp"
 )
 
 // Definition describes a compiled plugin and how it should appear in admin settings.
@@ -79,6 +80,12 @@ func All() []Definition {
 			Name:             "One-click unsubscribe",
 			Description:      "Detects RFC 8058 unsubscribe links and sends one-click unsubscribe requests.",
 			EnabledByDefault: true,
+		},
+		{
+			ID:          ClientSidePGP,
+			Name:        "Client-side PGP",
+			Description: "Adds browser-only PGP key unlock, decrypt, sign, and encrypt controls.",
+			Heavy:       true,
 		},
 	}
 }

@@ -4,17 +4,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../api";
-import type { Contact, ContactAddress, ContactEmail, ContactPhone, ContactURL } from "../../types";
+import type { Contact, ContactAddress, ContactEmail, ContactPGPKey, ContactPhone, ContactURL } from "../../types";
 import type { Toast } from "../../appTypes";
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
+import { publicKeyRecordFromArmored } from "../../lib/pgp";
 
 /** ContactsView manages the user address book and Me contacts used by compose/reply identity logic. */
 export function ContactsView({
   csrf,
+  pgpEnabled,
   addToast
 }: {
   csrf: string;
+  pgpEnabled: boolean;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -217,6 +220,14 @@ export function ContactsView({
             <label><input type="checkbox" checked={draft.is_primary} disabled={!draft.is_me} onChange={(event) => setField("is_primary", event.target.checked)} /> Primary From identity</label>
           </div>
           <ContactEmailEditor value={draft.emails} onChange={(emails) => setField("emails", emails)} />
+          {pgpEnabled ? (
+            <ContactPGPKeyEditor
+              emails={draft.emails}
+              value={draft.pgp_keys || []}
+              onChange={(keys) => setField("pgp_keys", keys)}
+              addToast={addToast}
+            />
+          ) : null}
           <ContactPhoneEditor value={draft.phones} onChange={(phones) => setField("phones", phones)} />
           <ContactAddressEditor value={draft.addresses} onChange={(addresses) => setField("addresses", addresses)} />
           <ContactURLEditor value={draft.urls} onChange={(urls) => setField("urls", urls)} />
@@ -270,6 +281,90 @@ function ContactEmailEditor({ value, onChange }: { value: ContactEmail[]; onChan
         </div>
       ))}
     </ContactSection>
+  );
+}
+
+
+function ContactPGPKeyEditor({
+  emails,
+  value,
+  onChange,
+  addToast
+}: {
+  emails: ContactEmail[];
+  value: ContactPGPKey[];
+  onChange: (value: ContactPGPKey[]) => void;
+  addToast: (message: string, kind?: Toast["kind"]) => number;
+}) {
+  const emailChoices = emails.map((item) => item.email.trim()).filter(Boolean);
+  const [email, setEmail] = useState(emailChoices[0] || "");
+  const [armored, setArmored] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  useEffect(() => {
+    if (email && emailChoices.includes(email)) return;
+    setEmail(emailChoices[0] || "");
+  }, [email, emailChoices.join("|")]);
+
+  async function addKey() {
+    if (!email || !armored.trim()) return;
+    setAdding(true);
+    try {
+      const parsed = await publicKeyRecordFromArmored(armored, email);
+      const hasPreferredForEmail = value.some((key) => key.email.toLowerCase() === email.toLowerCase() && key.is_preferred);
+      onChange([...value, { ...parsed, email, is_preferred: !hasPreferredForEmail }]);
+      setArmored("");
+      addToast("PGP public key added.");
+    } catch (err) {
+      addToast(messageFromError(err), "error");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  function preferKey(index: number) {
+    const selected = value[index];
+    if (!selected) return;
+    onChange(value.map((key, keyIndex) => ({
+      ...key,
+      is_preferred: key.email.toLowerCase() === selected.email.toLowerCase() ? keyIndex === index : key.is_preferred
+    })));
+  }
+
+  return (
+    <section className="contact-section contact-pgp-section">
+      <div>
+        <h2>PGP public keys</h2>
+      </div>
+      <div className="contact-pgp-import">
+        <select value={email} disabled={emailChoices.length === 0} onChange={(event) => setEmail(event.target.value)}>
+          {emailChoices.length === 0 ? <option value="">Add an email first</option> : null}
+          {emailChoices.map((choice) => <option value={choice} key={choice}>{choice}</option>)}
+        </select>
+        <textarea
+          value={armored}
+          placeholder="Paste an ASCII-armored public key"
+          onChange={(event) => setArmored(event.target.value)}
+        />
+        <button className="secondary" type="button" disabled={adding || !email || !armored.trim()} onClick={() => void addKey()}>
+          {adding ? "Reading key..." : "Add key"}
+        </button>
+      </div>
+      {value.length === 0 ? <div className="muted">No PGP public keys saved for this contact.</div> : null}
+      <div className="contact-pgp-key-list">
+        {value.map((key, index) => (
+          <div className="contact-pgp-key-row" key={`${key.fingerprint || key.key_id || index}:${index}`}>
+            <Icon name="lock" />
+            <span>
+              <strong>{key.label || key.email || "PGP key"}</strong>
+              <small>{[key.email, shortFingerprint(key.fingerprint || key.key_id), firstKeyUserID(key.user_ids)].filter(Boolean).join(" · ")}</small>
+            </span>
+            <label className="primary-toggle"><input type="radio" checked={key.is_preferred} onChange={() => preferKey(index)} /> Preferred</label>
+            <RemoveButton onClick={() => onChange(removeAt(value, index))} />
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -372,6 +467,7 @@ function blankContact(): Contact {
     phones: [],
     addresses: [],
     urls: [],
+    pgp_keys: [],
     icon_url: ""
   };
 }
@@ -382,6 +478,17 @@ function cloneContact(contact: Contact): Contact {
 
 function primaryEmail(contact: Contact): string {
   return contact.emails.find((email) => email.is_primary && email.email.trim())?.email || contact.emails.find((email) => email.email.trim())?.email || "";
+}
+
+
+function shortFingerprint(value: string): string {
+  const clean = value.replace(/\s+/g, "");
+  if (clean.length <= 16) return clean;
+  return `${clean.slice(0, 8)}...${clean.slice(-8)}`;
+}
+
+function firstKeyUserID(value: string): string {
+  return value.split(/\r?\n/).map((item) => item.trim()).find(Boolean) || "";
 }
 
 function updateAt<T>(items: T[], index: number, value: T): T[] {

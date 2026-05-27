@@ -776,3 +776,12 @@
 .thread-tail {
   height: 18px;
 }
+
+
+.pgp-body-notice {
+  small {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+}

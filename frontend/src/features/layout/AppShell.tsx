@@ -4,12 +4,12 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import type { DragEvent, FormEvent, MouseEvent, ReactNode } from "react";
 import { api } from "../../api";
-import type { AppShellProps, LocationState, MessageTransferAction, MoveTarget } from "../../appTypes";
+import type { AppShellProps, LocationState, MessageTransferAction, MoveTarget, PGPUnlockState } from "../../appTypes";
 import type { Bootstrap, Mailbox, SyncRun, User } from "../../types";
 import { Icon, LogoMark } from "../../components/Icon";
 import { folderTree, nodeContainsMailbox, type FolderNode } from "../../lib/folders";
 import { mailRoute, mailURL, searchRoute, searchURL, currentLocation } from "../../lib/routes";
-import { createPluginSet } from "../../plugins/registry";
+import { createPluginSet, pluginIDs } from "../../plugins/registry";
 import { SearchAutocomplete, useSearchAutocomplete } from "./SearchAutocomplete";
 
 /**
@@ -39,6 +39,9 @@ export function AppShell({
   refreshChrome,
   notificationsEnabled,
   toggleNotifications,
+  pgpUnlock,
+  openPGPUnlock,
+  lockPGP,
   children
 }: AppShellProps) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -58,6 +61,9 @@ export function AppShell({
         navigate={navigate}
         notificationsEnabled={notificationsEnabled}
         toggleNotifications={toggleNotifications}
+        pgpUnlock={pgpUnlock}
+        openPGPUnlock={openPGPUnlock}
+        lockPGP={lockPGP}
         onMenu={() => setMobileSidebarOpen(true)}
       />
       <div className="app">
@@ -156,6 +162,9 @@ function Topbar({
   navigate,
   notificationsEnabled,
   toggleNotifications,
+  pgpUnlock,
+  openPGPUnlock,
+  lockPGP,
   onMenu
 }: {
   user: User;
@@ -165,6 +174,9 @@ function Topbar({
   navigate: (url: string) => void;
   notificationsEnabled: boolean;
   toggleNotifications: () => Promise<void>;
+  pgpUnlock: PGPUnlockState;
+  openPGPUnlock: () => void;
+  lockPGP: () => void;
   onMenu: () => void;
 }) {
   const [query, setQuery] = useState(() => searchRoute(currentLocation().path).query);
@@ -172,6 +184,8 @@ function Topbar({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const pluginKey = enabledPlugins.join("|");
   const pluginSet = useMemo(() => createPluginSet(enabledPlugins), [pluginKey]);
+  const pgpEnabled = pluginSet.has(pluginIDs.clientSidePGP);
+  const pgpUnlocked = pgpUnlock.keys.length > 0 && pgpUnlock.unlockedUntil > Date.now();
   const autocomplete = useSearchAutocomplete({
     query,
     focused,
@@ -238,6 +252,16 @@ function Topbar({
           <Icon name="notifications" weight={notificationsEnabled ? "bold" : "regular"} />
           <span className="notification-toggle-track"><span /></span>
         </button>
+        {pgpEnabled ? (
+          <button
+            className={pgpUnlocked ? "ghost pgp-lock-toggle active" : "ghost pgp-lock-toggle"}
+            type="button"
+            title={pgpUnlocked ? "Lock PGP keys" : "Unlock PGP key"}
+            onClick={pgpUnlocked ? lockPGP : openPGPUnlock}
+          >
+            <Icon name={pgpUnlocked ? "lock_open" : "lock"} weight={pgpUnlocked ? "bold" : "regular"} />
+          </button>
+        ) : null}
         <button className="ghost settings-action" type="button" title="Settings" onClick={() => navigate("/settings/account")}>
           <Icon name="settings" />
         </button>

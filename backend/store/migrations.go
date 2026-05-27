@@ -28,6 +28,7 @@ const (
 	UserSchemaVersion005   = "user-005"
 	UserSchemaVersion006   = "user-006"
 	UserSchemaVersion007   = "user-007"
+	UserSchemaVersion008   = "user-008"
 )
 
 // MigrationProgress is emitted while Store.OpenServerWithProgress and
@@ -79,9 +80,9 @@ func (s *Store) migrate(ctx context.Context, kind schemaKind, progress Migration
 	case schemaSystem:
 		sets = append(sets, systemMigrationSet(), systemUserSearchPreferencesMigrationSet(), systemUserSearchRankingMigrationSet())
 	case schemaUser:
-		sets = append(sets, userMigrationSet(), userSearchPreferencesMigrationSet(), userSearchRankingMigrationSet(), userSenderStatsMigrationSet(), userSenderStatsTableMigrationSet(), userIdentityMailboxMigrationSet(), userIdentityIMAPMigrationSet())
+		sets = append(sets, userMigrationSet(), userSearchPreferencesMigrationSet(), userSearchRankingMigrationSet(), userSenderStatsMigrationSet(), userSenderStatsTableMigrationSet(), userIdentityMailboxMigrationSet(), userIdentityIMAPMigrationSet(), userPGPMigrationSet())
 	default:
-		sets = append(sets, systemMigrationSet(), systemUserSearchPreferencesMigrationSet(), systemUserSearchRankingMigrationSet(), userMigrationSet(), userSearchPreferencesMigrationSet(), userSearchRankingMigrationSet(), userSenderStatsMigrationSet(), userSenderStatsTableMigrationSet(), userIdentityMailboxMigrationSet(), userIdentityIMAPMigrationSet())
+		sets = append(sets, systemMigrationSet(), systemUserSearchPreferencesMigrationSet(), systemUserSearchRankingMigrationSet(), userMigrationSet(), userSearchPreferencesMigrationSet(), userSearchRankingMigrationSet(), userSenderStatsMigrationSet(), userSenderStatsTableMigrationSet(), userIdentityMailboxMigrationSet(), userIdentityIMAPMigrationSet(), userPGPMigrationSet())
 	}
 	for _, set := range sets {
 		if err := s.applyMigrationSet(ctx, set, progress); err != nil {

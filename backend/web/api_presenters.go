@@ -202,6 +202,8 @@ func apiMessageFromRecord(msg store.MessageRecord, snippet string) apiMessage {
 		IsRead:         msg.IsRead,
 		IsStarred:      msg.IsStarred,
 		HasAttachments: msg.HasAttachments,
+		IsEncrypted:    msg.IsEncrypted,
+		IsSigned:       msg.IsSigned,
 		Snippet:        snippet,
 	}
 }
@@ -322,6 +324,9 @@ func apiContactFromStore(c store.Contact) apiContact {
 	for _, email := range c.Emails {
 		out.Emails = append(out.Emails, apiContactEmail{ID: email.ID, Label: email.Label, Email: email.Email, IsPrimary: email.IsPrimary})
 	}
+	for _, key := range c.PGPKeys {
+		out.PGPKeys = append(out.PGPKeys, apiContactPGPKeyFromStore(key))
+	}
 	for _, phone := range c.Phones {
 		out.Phones = append(out.Phones, apiContactPhone{ID: phone.ID, Label: phone.Label, Number: phone.Number, IsPrimary: phone.IsPrimary})
 	}
@@ -440,4 +445,38 @@ func shortDateString(t time.Time) string {
 		return local.Format("Jan 2")
 	}
 	return local.Format("1/2/06")
+}
+
+func apiContactPGPKeyFromStore(key store.ContactPGPPublicKey) apiContactPGPKey {
+	return apiContactPGPKey{
+		ID:               key.ID,
+		ContactID:        key.ContactID,
+		Email:            key.Email,
+		Label:            key.Label,
+		Fingerprint:      key.Fingerprint,
+		KeyID:            key.KeyID,
+		UserIDs:          key.UserIDs,
+		PublicKeyArmored: key.PublicKeyArmored,
+		IsPreferred:      key.IsPreferred,
+	}
+}
+
+func apiIdentityPGPPrivateKeyFromStore(key store.IdentityPGPPrivateKey, includePrivate bool) apiIdentityPGPPrivateKey {
+	out := apiIdentityPGPPrivateKey{
+		ID:                    key.ID,
+		IdentityID:            key.IdentityID,
+		Label:                 key.Label,
+		Fingerprint:           key.Fingerprint,
+		KeyID:                 key.KeyID,
+		UserIDs:               key.UserIDs,
+		PublicKeyArmored:      key.PublicKeyArmored,
+		RevocationCertificate: key.RevocationCertificate,
+		IsActiveSigning:       key.IsActiveSigning,
+		IsActiveEncryption:    key.IsActiveEncryption,
+		IsDecryptOnly:         key.IsDecryptOnly,
+	}
+	if includePrivate {
+		out.PrivateKeyArmored = key.PrivateKeyArmored
+	}
+	return out
 }

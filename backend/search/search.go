@@ -322,6 +322,8 @@ func openIndex(path string) (bleve.Index, error) {
 		doc.AddFieldMappingsAt("has_attachment", userField)
 		doc.AddFieldMappingsAt("is_read", userField)
 		doc.AddFieldMappingsAt("is_starred", userField)
+		doc.AddFieldMappingsAt("is_encrypted", userField)
+		doc.AddFieldMappingsAt("is_signed", userField)
 		doc.AddFieldMappingsAt("plugin_language_code", userField)
 		for _, field := range []string{
 			"subject", "subject_compound", "from", "from_compound", "from_domain", "to", "cc",
@@ -493,6 +495,9 @@ func (s *Service) IndexMessages(ctx context.Context, documents []MessageIndexDoc
 // buildMessageDocument centralizes the SQLite-to-Bleve projection so single and
 // batched indexing stay byte-for-byte equivalent.
 func buildMessageDocument(msg store.MessageRecord, attachments []AttachmentDoc) map[string]any {
+	if msg.IsEncrypted {
+		attachments = nil
+	}
 	names := make([]string, 0, len(attachments))
 	contentTypes := make([]string, 0, len(attachments))
 	texts := make([]string, 0, len(attachments))
@@ -504,7 +509,11 @@ func buildMessageDocument(msg store.MessageRecord, attachments []AttachmentDoc) 
 		}
 	}
 	hasAttachment := msg.HasAttachments || len(attachments) > 0
-	compoundBody := store.MessageBodyPreview(msg.BodyText, maxCompoundFieldBytes/4)
+	bodyForIndex := msg.BodyText
+	if msg.IsEncrypted {
+		bodyForIndex = ""
+	}
+	compoundBody := store.MessageBodyPreview(bodyForIndex, maxCompoundFieldBytes/4)
 	compoundAttachments := store.MessageBodyPreview(strings.Join(texts, " "), maxCompoundFieldBytes/4)
 	return map[string]any{
 		"user_id":              strconv.FormatInt(msg.UserID, 10),
@@ -517,10 +526,12 @@ func buildMessageDocument(msg store.MessageRecord, attachments []AttachmentDoc) 
 		"to":                   msg.ToAddr,
 		"cc":                   msg.CCAddr,
 		"message_id":           msg.MessageIDHeader,
-		"body":                 msg.BodyText,
+		"body":                 bodyForIndex,
 		"date":                 msg.Date,
 		"is_read":              strconv.FormatBool(msg.IsRead),
 		"is_starred":           strconv.FormatBool(msg.IsStarred),
+		"is_encrypted":         strconv.FormatBool(msg.IsEncrypted),
+		"is_signed":            strconv.FormatBool(msg.IsSigned),
 		"plugin_language_code": languagesearch.NormalizeCode(msg.LanguageCode),
 		"has_attachment":       strconv.FormatBool(hasAttachment),
 		"attachment_names":     strings.Join(names, " "),
@@ -929,6 +940,16 @@ func buildQuery(userID int64, queryText string, opts SearchOptions) blevequery.Q
 	if parsed.IsStarred != nil {
 		q := bleve.NewTermQuery(strconv.FormatBool(*parsed.IsStarred))
 		q.SetField("is_starred")
+		parts = append(parts, q)
+	}
+	if parsed.IsEncrypted != nil {
+		q := bleve.NewTermQuery(strconv.FormatBool(*parsed.IsEncrypted))
+		q.SetField("is_encrypted")
+		parts = append(parts, q)
+	}
+	if parsed.IsSigned != nil {
+		q := bleve.NewTermQuery(strconv.FormatBool(*parsed.IsSigned))
+		q.SetField("is_signed")
 		parts = append(parts, q)
 	}
 	if parsed.Language != "" {
@@ -1947,6 +1968,8 @@ type parsedQuery struct {
 	HasAttachment *bool
 	IsRead        *bool
 	IsStarred     *bool
+	IsEncrypted   *bool
+	IsSigned      *bool
 	Language      string
 	Filename      string
 	From          string
@@ -1962,7 +1985,7 @@ type negatedTextTerm struct {
 	Quoted bool
 }
 
-var operatorRE = regexp.MustCompile(`(?i)(^|\s)(-?)(has:attachment|is:read|is:unread|is:starred|is:notstarred|lang:("[^"]+"|\S+)|filename:("[^"]+"|\S+)|from:("[^"]+"|\S+)|to:("[^"]+"|\S+)|cc:("[^"]+"|\S+)|subject:("[^"]+"|\S+)|after:("[^"]+"|\S+)|before:("[^"]+"|\S+)|year:("[^"]+"|\S+))`)
+var operatorRE = regexp.MustCompile(`(?i)(^|\s)(-?)(has:attachment|is:read|is:unread|is:starred|is:notstarred|is:encrypted|is:unencrypted|is:signed|is:unsigned|lang:("[^"]+"|\S+)|filename:("[^"]+"|\S+)|from:("[^"]+"|\S+)|to:("[^"]+"|\S+)|cc:("[^"]+"|\S+)|subject:("[^"]+"|\S+)|after:("[^"]+"|\S+)|before:("[^"]+"|\S+)|year:("[^"]+"|\S+))`)
 
 // parseQuery extracts supported operators while preserving the remaining free text.
 // The parser is intentionally small and predictable rather than a full Gmail clone.
@@ -2000,6 +2023,18 @@ func parseQuery(queryText string) parsedQuery {
 		case lower == "is:notstarred":
 			v := negated
 			out.IsStarred = &v
+		case lower == "is:encrypted":
+			v := !negated
+			out.IsEncrypted = &v
+		case lower == "is:unencrypted":
+			v := negated
+			out.IsEncrypted = &v
+		case lower == "is:signed":
+			v := !negated
+			out.IsSigned = &v
+		case lower == "is:unsigned":
+			v := negated
+			out.IsSigned = &v
 		case strings.HasPrefix(lower, "lang:"):
 			out.Language = languagesearch.NormalizeCode(strings.Trim(operatorValue(token), `"`))
 		case strings.HasPrefix(lower, "filename:"):

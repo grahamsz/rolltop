@@ -1,7 +1,7 @@
 // File overview: Small route switch for the single-page app. It translates the parsed location
 // into feature views while passing only the shared state each view needs.
 
-import type { LocationState, Toast } from "./appTypes";
+import type { LocationState, PGPUnlockState, Toast } from "./appTypes";
 import type { Bootstrap, Mailbox, SyncRun, User } from "./types";
 import { MailView, SearchView } from "./features/mail/MailViews";
 import { ThreadView } from "./features/mail/ThreadView";
@@ -27,6 +27,8 @@ export function RouteView({
   openCompose,
   refreshChrome,
   logout,
+  pgpUnlock,
+  openPGPUnlock,
   addToast
 }: {
   csrf: string;
@@ -41,8 +43,11 @@ export function RouteView({
   openCompose: (query?: string) => void;
   refreshChrome: () => Promise<Bootstrap | null>;
   logout: () => void;
+  pgpUnlock: PGPUnlockState;
+  openPGPUnlock: () => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
+  const pgpEnabled = enabledPlugins.includes("client_side_pgp");
   if (location.path === "/search" || location.path.startsWith("/search/")) {
     return <SearchView csrf={csrf} location={location} navigate={navigate} hiddenMessageIDs={hiddenMessageIDs} datePrefs={user} activeSyncRuns={activeSyncRuns} addToast={addToast} />;
   }
@@ -57,18 +62,20 @@ export function RouteView({
         enabledPlugins={enabledPlugins}
         refreshChrome={refreshChrome}
         openCompose={openCompose}
+        pgpUnlock={pgpUnlock}
+        openPGPUnlock={openPGPUnlock}
         addToast={addToast}
       />
     );
   }
   if (location.path === "/compose") {
-    return <ComposePage csrf={csrf} location={location} navigate={navigate} addToast={addToast} />;
+    return <ComposePage csrf={csrf} location={location} navigate={navigate} pgpEnabled={pgpEnabled} pgpUnlock={pgpUnlock} openPGPUnlock={openPGPUnlock} addToast={addToast} />;
   }
   if (location.path === "/contacts") {
-    return <ContactsView csrf={csrf} addToast={addToast} />;
+    return <ContactsView csrf={csrf} pgpEnabled={pgpEnabled} addToast={addToast} />;
   }
   if (location.path === "/settings/account" || location.path.startsWith("/settings/account/")) {
-    return <SettingsView csrf={csrf} user={user} mailboxes={mailboxes} activeSyncRuns={activeSyncRuns} location={location} navigate={navigate} refreshChrome={refreshChrome} logout={logout} addToast={addToast} />;
+    return <SettingsView csrf={csrf} user={user} mailboxes={mailboxes} activeSyncRuns={activeSyncRuns} location={location} navigate={navigate} refreshChrome={refreshChrome} logout={logout} pgpEnabled={pgpEnabled} addToast={addToast} />;
   }
   if (location.path === "/admin/users" && user.is_admin) {
     return <AdminUsersView csrf={csrf} refreshChrome={refreshChrome} addToast={addToast} />;

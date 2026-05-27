@@ -144,7 +144,7 @@ func (s *Store) ListMessagesWithPrunableBlobs(ctx context.Context, cutoff time.T
 		return out, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
-			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, attachment_indexed_at, created_at, updated_at
+			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
 		FROM messages WHERE blob_path != '' AND date_unix < ? ORDER BY date_unix, id LIMIT ?`, cutoff.UTC().Unix(), limit)
 	if err != nil {
 		return nil, err
@@ -181,7 +181,7 @@ func (s *Store) ListMessagesWithExpiredCachedBlobs(ctx context.Context, cutoff t
 		return out, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.user_id, m.account_id, m.mailbox_id, m.blob_id, m.message_id_header, m.in_reply_to, m.references_header, m.thread_key, m.subject, m.language_code, m.from_addr, m.to_addr, m.cc_addr,
-			m.date_unix, m.internal_date_unix, m.uid, m.size, m.blob_path, m.body_text, m.body_html, m.is_read, m.read_sync_pending, m.is_starred, m.star_sync_pending, m.has_attachments, m.attachment_indexed_at, m.created_at, m.updated_at
+			m.date_unix, m.internal_date_unix, m.uid, m.size, m.blob_path, m.body_text, m.body_html, m.is_read, m.read_sync_pending, m.is_starred, m.star_sync_pending, m.has_attachments, m.is_encrypted, m.is_signed, m.attachment_indexed_at, m.created_at, m.updated_at
 		FROM messages m
 		JOIN blobs b ON b.user_id = m.user_id AND b.id = m.blob_id
 		WHERE m.blob_path != '' AND b.kind = 'message-cache' AND b.created_at < ?

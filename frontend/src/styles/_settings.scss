@@ -1024,3 +1024,73 @@
     overflow-wrap: anywhere;
   }
 }
+
+
+.identity-pgp-settings {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+
+  h3,
+  h4 {
+    margin: 0;
+  }
+}
+
+.identity-pgp-key-list {
+  display: grid;
+  gap: 6px;
+}
+
+.identity-pgp-key-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+
+  > span {
+    min-width: 0;
+    display: grid;
+    gap: 1px;
+  }
+
+  strong,
+  small {
+    @include truncate;
+  }
+
+  small {
+    color: var(--muted);
+  }
+}
+
+.identity-pgp-key-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.identity-pgp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+
+  section {
+    display: grid;
+    gap: 8px;
+  }
+
+  textarea {
+    min-height: 112px;
+    font: 12px/1.45 var(--font-mono);
+    resize: vertical;
+  }
+}

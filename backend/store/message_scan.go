@@ -10,7 +10,7 @@ func scanMessages(rows *sql.Rows) ([]MessageRecord, error) {
 		var m MessageRecord
 		var dateUnix, internalUnix, indexedAt, created, updated int64
 		if err := rows.Scan(&m.ID, &m.UserID, &m.AccountID, &m.MailboxID, &m.BlobID, &m.MessageIDHeader, &m.InReplyTo, &m.ReferencesHeader, &m.ThreadKey, &m.Subject, &m.LanguageCode, &m.FromAddr, &m.ToAddr, &m.CCAddr,
-			&dateUnix, &internalUnix, &m.UID, &m.Size, &m.BlobPath, &m.BodyText, &m.BodyHTML, &m.IsRead, &m.ReadSyncPending, &m.IsStarred, &m.StarSyncPending, &m.HasAttachments, &indexedAt, &created, &updated); err != nil {
+			&dateUnix, &internalUnix, &m.UID, &m.Size, &m.BlobPath, &m.BodyText, &m.BodyHTML, &m.IsRead, &m.ReadSyncPending, &m.IsStarred, &m.StarSyncPending, &m.HasAttachments, &m.IsEncrypted, &m.IsSigned, &indexedAt, &created, &updated); err != nil {
 			return nil, err
 		}
 		m.Date = unixTime(dateUnix)

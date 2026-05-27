@@ -166,6 +166,9 @@ type composeForm struct {
 	ForwardAttachmentID  int64                       `json:"forward_attachment_message_id,omitempty"`
 	ForwardAttachment    *composeExistingAttachment  `json:"forward_attachment,omitempty"`
 	Attachments          []composeAttachment         `json:"attachments,omitempty"`
+	PGPEncrypted         bool                        `json:"pgp_encrypted,omitempty"`
+	PGPSigned            bool                        `json:"pgp_signed,omitempty"`
+	AttachPublicKey      bool                        `json:"attach_public_key,omitempty"`
 }
 
 type composeExistingAttachment struct {

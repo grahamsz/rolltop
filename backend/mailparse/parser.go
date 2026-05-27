@@ -106,17 +106,19 @@ func (a Attachment) SearchableText() string {
 
 // ParsedMessage is the normalized output from parsing a raw RFC822 message.
 type ParsedMessage struct {
-	MessageID  string
-	InReplyTo  string
-	References string
-	Subject    string
-	From       string
-	To         string
-	CC         string
-	Date       time.Time
-	Text       string
-	HTML       string
-	Files      []Attachment
+	MessageID   string
+	InReplyTo   string
+	References  string
+	Subject     string
+	From        string
+	To          string
+	CC          string
+	Date        time.Time
+	Text        string
+	HTML        string
+	Files       []Attachment
+	IsEncrypted bool
+	IsSigned    bool
 }
 
 // Parse is the indexing/parser entrypoint. It decodes headers, walks MIME parts,
@@ -129,33 +131,55 @@ func Parse(raw []byte) (ParsedMessage, error) {
 	}
 	decoder := wordDecoder()
 	subject, _ := decoder.DecodeHeader(msg.Header.Get("Subject"))
+	pgpEncrypted, pgpSigned := DetectPGP(raw)
 	parsed := ParsedMessage{
-		MessageID:  strings.TrimSpace(msg.Header.Get("Message-ID")),
-		InReplyTo:  strings.TrimSpace(msg.Header.Get("In-Reply-To")),
-		References: strings.TrimSpace(msg.Header.Get("References")),
-		Subject:    strings.TrimSpace(subject),
-		From:       addressHeader(msg.Header.Get("From")),
-		To:         addressHeader(msg.Header.Get("To")),
-		CC:         addressHeader(msg.Header.Get("Cc")),
+		IsEncrypted: pgpEncrypted,
+		IsSigned:    pgpSigned,
+		MessageID:   strings.TrimSpace(msg.Header.Get("Message-ID")),
+		InReplyTo:   strings.TrimSpace(msg.Header.Get("In-Reply-To")),
+		References:  strings.TrimSpace(msg.Header.Get("References")),
+		Subject:     strings.TrimSpace(subject),
+		From:        addressHeader(msg.Header.Get("From")),
+		To:          addressHeader(msg.Header.Get("To")),
+		CC:          addressHeader(msg.Header.Get("Cc")),
 	}
 	if d, err := mail.ParseDate(msg.Header.Get("Date")); err == nil {
 		parsed.Date = d.UTC()
 	}
 	if err := parsePart(textproto.MIMEHeader(msg.Header), msg.Body, &parsed); err != nil {
 		if isTolerableEOF(err) {
-			parsed.Text = cleanIndexedText(parsed.Text)
+			if parsed.IsEncrypted {
+				parsed.Text = ""
+				parsed.HTML = ""
+				parsed.Files = nil
+			} else {
+				parsed.Text = cleanIndexedText(parsed.Text)
+			}
 			return parsed, nil
 		}
 		return ParsedMessage{}, err
 	}
-	parsed.Text = cleanIndexedText(parsed.Text)
+	if parsed.IsEncrypted {
+		parsed.Text = ""
+		parsed.HTML = ""
+		parsed.Files = nil
+	} else {
+		parsed.Text = cleanIndexedText(parsed.Text)
+	}
 	return parsed, nil
 }
 
 // ParseDisplayBody is the lighter display path used when a raw message is loaded
 // on demand. It skips attachment bodies and returns body text/html only.
 func ParseDisplayBody(r io.Reader) (string, string, error) {
-	msg, err := mail.ReadMessage(r)
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return "", "", err
+	}
+	if encrypted, _ := DetectPGP(raw); encrypted {
+		return "", "", nil
+	}
+	msg, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
 		return "", "", err
 	}
@@ -838,4 +862,26 @@ func stripHTML(value string) string {
 		}
 	}
 	return html.UnescapeString(b.String())
+}
+
+var (
+	inlinePGPMessageRE = regexp.MustCompile(`(?is)-----BEGIN PGP MESSAGE-----.*?-----END PGP MESSAGE-----`)
+	inlinePGPSignedRE  = regexp.MustCompile(`(?is)-----BEGIN PGP SIGNED MESSAGE-----.*?-----END PGP SIGNATURE-----`)
+)
+
+// DetectPGP reports whether a raw RFC822 message appears to contain OpenPGP
+// encrypted or signed content. It intentionally treats this as metadata only;
+// private-key operations happen in the browser.
+func DetectPGP(raw []byte) (encrypted bool, signed bool) {
+	lower := strings.ToLower(string(limitBytes(raw, 256*1024)))
+	if strings.Contains(lower, "multipart/encrypted") || strings.Contains(lower, "application/pgp-encrypted") || inlinePGPMessageRE.Match(raw) {
+		encrypted = true
+	}
+	if strings.Contains(lower, "multipart/signed") && strings.Contains(lower, "application/pgp-signature") {
+		signed = true
+	}
+	if strings.Contains(lower, "application/pgp-signature") || inlinePGPSignedRE.Match(raw) {
+		signed = true
+	}
+	return encrypted, signed
 }

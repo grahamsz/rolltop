@@ -456,3 +456,49 @@
   font-size: 12px;
   vertical-align: middle;
 }
+
+
+.pgp-lock-toggle {
+  min-width: 34px;
+  width: 34px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+
+  &.active {
+    border-color: var(--accent);
+    background: var(--active);
+    color: var(--accent-strong);
+  }
+}
+
+.pgp-unlock-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(21, 31, 46, .36);
+}
+
+.pgp-unlock-dialog {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.pgp-unlock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}

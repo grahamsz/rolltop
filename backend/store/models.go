@@ -90,6 +90,26 @@ type MailIdentity struct {
 	UpdatedAt       time.Time
 }
 
+// IdentityPGPPrivateKey is passphrase-protected OpenPGP private key material for one outgoing identity.
+type IdentityPGPPrivateKey struct {
+	ID                    int64
+	UserID                int64
+	IdentityID            int64
+	Label                 string
+	Fingerprint           string
+	KeyID                 string
+	UserIDs               string
+	PublicKeyArmored      string
+	EncryptedPrivateKey   string
+	PrivateKeyArmored     string
+	RevocationCertificate string
+	IsActiveSigning       bool
+	IsActiveEncryption    bool
+	IsDecryptOnly         bool
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
 // Mailbox is the local representation of one remote IMAP folder and its sync/search settings.
 type Mailbox struct {
 	ID                 int64
@@ -176,6 +196,8 @@ type MessageRecord struct {
 	IsStarred           bool
 	StarSyncPending     bool
 	HasAttachments      bool
+	IsEncrypted         bool
+	IsSigned            bool
 	AttachmentIndexedAt time.Time
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
@@ -238,6 +260,7 @@ type Contact struct {
 	Phones         []ContactPhone
 	Addresses      []ContactAddress
 	URLs           []ContactURL
+	PGPKeys        []ContactPGPPublicKey
 	Icon           *ContactIcon
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -294,6 +317,23 @@ type ContactURL struct {
 	IsPrimary bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// ContactPGPPublicKey is one public key associated with a contact email address.
+type ContactPGPPublicKey struct {
+	ID               int64
+	UserID           int64
+	ContactID        int64
+	Email            string
+	NormalizedEmail  string
+	Label            string
+	Fingerprint      string
+	KeyID            string
+	UserIDs          string
+	PublicKeyArmored string
+	IsPreferred      bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // ContactIcon is the blob-backed icon metadata for a contact.

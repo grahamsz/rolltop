@@ -61,6 +61,8 @@ export type Message = {
   is_read: boolean;
   is_starred: boolean;
   has_attachments: boolean;
+  is_encrypted: boolean;
+  is_signed: boolean;
   snippet: string;
 };
 
@@ -206,6 +208,18 @@ export type ContactEmail = {
   is_primary: boolean;
 };
 
+export type ContactPGPKey = {
+  id?: number;
+  contact_id?: number;
+  email: string;
+  label: string;
+  fingerprint: string;
+  key_id: string;
+  user_ids: string;
+  public_key_armored: string;
+  is_preferred: boolean;
+};
+
 /** ContactPhone is one editable phone row on a contact. */
 export type ContactPhone = {
   id?: number;
@@ -256,6 +270,7 @@ export type Contact = {
   phones: ContactPhone[];
   addresses: ContactAddress[];
   urls: ContactURL[];
+  pgp_keys?: ContactPGPKey[];
   icon_url: string;
 };
 
@@ -271,12 +286,15 @@ export type ContactAutocomplete = {
 /** ComposeIdentity is a selectable From identity returned for compose/reply forms. */
 export type ComposeIdentity = {
   id: number;
+  pgp_identity_id: number;
   label: string;
   email: string;
   header: string;
   signature: string;
   icon_url: string;
   is_primary: boolean;
+  has_pgp_private_key?: boolean;
+  pgp_public_key_armored?: string;
 };
 
 /** PluginSetting is the admin-visible enablement state for one plugin. */
@@ -371,6 +389,21 @@ export type ComposeAttachmentUpload = {
 };
 
 /** ComposeForm is the editable compose/reply/forward payload exchanged with the API. */
+export type IdentityPGPPrivateKey = {
+  id?: number;
+  identity_id: number;
+  label: string;
+  fingerprint: string;
+  key_id: string;
+  user_ids: string;
+  public_key_armored: string;
+  private_key_armored?: string;
+  revocation_certificate?: string;
+  is_active_signing: boolean;
+  is_active_encryption: boolean;
+  is_decrypt_only: boolean;
+};
+
 export type ComposeForm = {
   to: string;
   cc: string;
@@ -385,6 +418,9 @@ export type ComposeForm = {
   include_attachment_ids?: number[];
   forward_attachment_message_id?: number;
   forward_attachment?: ComposeExistingAttachment;
+  pgp_encrypted?: boolean;
+  pgp_signed?: boolean;
+  attach_public_key?: boolean;
 };
 
 /** Account is the IMAP account settings shape used by the settings page. */

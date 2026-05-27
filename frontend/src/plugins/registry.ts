@@ -8,7 +8,8 @@ export const pluginIDs = {
   trustedImageSources: "trusted_image_sources",
   attachmentPreview: "attachment_preview",
   languageSearch: "language_search",
-  oneClickUnsubscribe: "one_click_unsubscribe"
+  oneClickUnsubscribe: "one_click_unsubscribe",
+  clientSidePGP: "client_side_pgp"
 } as const;
 
 /** PluginID is the union of frontend-known plugin identifiers. */

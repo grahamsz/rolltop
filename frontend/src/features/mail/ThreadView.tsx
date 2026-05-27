@@ -5,11 +5,12 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import type { MouseEvent, ReactNode } from "react";
 import { Star } from "@phosphor-icons/react";
 import { api } from "../../api";
-import type { DatePrefs, LocationState, Toast } from "../../appTypes";
+import type { DatePrefs, LocationState, PGPUnlockState, Toast } from "../../appTypes";
 import type { Bootstrap, ComposeForm, ComposeIdentity, HeaderDetail, Mailbox, MessageOriginalSource, SearchExplanation, ThreadMessage } from "../../types";
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime } from "../../lib/format";
+import { decryptedHTMLDoc, decryptPGPSource } from "../../lib/pgp";
 import { HighlightedText, highlightEmailDocument } from "../../lib/searchHighlight";
 import { messageBackURL, messageHighlightQuery, messageHighlightTerms, messageSearchHitID } from "../../lib/routes";
 import { ComposeBox } from "../compose/ComposeViews";
@@ -17,7 +18,7 @@ import { AttachmentPreviewSlot } from "../../plugins/attachmentPreview";
 import { brandDomainKeyForThread, loadBrandIconsForDomains } from "../../plugins/bimiBrandIcons";
 import { OneClickUnsubscribeInlineAction, OneClickUnsubscribeMenuAction } from "../../plugins/oneClickUnsubscribe";
 import { RemoteImageNotice } from "../../plugins/remoteImageBlocklist/RemoteImageNotice";
-import { createPluginSet } from "../../plugins/registry";
+import { createPluginSet, pluginIDs } from "../../plugins/registry";
 import { senderVisualURL } from "../../plugins/senderVisuals";
 import { TrustImageSourceAction } from "../../plugins/trustedImageSources/TrustImageSourceAction";
 
@@ -214,6 +215,8 @@ export function ThreadView({
   enabledPlugins,
   refreshChrome,
   openCompose,
+  pgpUnlock,
+  openPGPUnlock,
   addToast
 }: {
   csrf: string;
@@ -224,6 +227,8 @@ export function ThreadView({
   enabledPlugins: string[];
   refreshChrome: () => Promise<Bootstrap | null>;
   openCompose: (query?: string) => void;
+  pgpUnlock: PGPUnlockState;
+  openPGPUnlock: () => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const id = location.path.split("/").pop() || "";
@@ -241,12 +246,14 @@ export function ThreadView({
   const [unsubscribingID, setUnsubscribingID] = useState<number | null>(null);
   const [pendingUnsubscribe, setPendingUnsubscribe] = useState<ThreadMessage | null>(null);
   const [originalSource, setOriginalSource] = useState<OriginalSourceState | null>(null);
+  const [pgpBodies, setPGPBodies] = useState<Record<number, { loading: boolean; error: string; doc: string; status: string }>>({});
   const [searchExplanations, setSearchExplanations] = useState<Record<number, SearchExplanationState>>({});
   const [loadStatus, setLoadStatus] = useState<MessageLoadStatus | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const pluginKey = enabledPlugins.join("|");
   const pluginSet = useMemo(() => createPluginSet(enabledPlugins), [pluginKey]);
+  const pgpEnabled = pluginSet.has(pluginIDs.clientSidePGP);
   const mailbox = mailboxID ? mailboxes.find((item) => item.id === mailboxID) : null;
   const trashMailbox = mailboxes.find((item) => item.role === "trash");
   const backURL = messageBackURL(location);
@@ -263,6 +270,7 @@ export function ThreadView({
       setError("");
       setLoadStatus(null);
       setOriginalSource(null);
+      setPGPBodies({});
       setSearchExplanations({});
       let statusTimer = 0;
       try {
@@ -360,6 +368,35 @@ export function ThreadView({
       setOriginalSource({ messageID, loading: false, error: "", data });
     } catch (err) {
       setOriginalSource({ messageID, loading: false, error: messageFromError(err), data: null });
+    }
+  }
+
+  async function decryptMessage(item: ThreadMessage) {
+    const messageID = item.message.id;
+    if (item.message.is_encrypted && pgpUnlock.keys.length === 0) {
+      openPGPUnlock();
+      addToast("Unlock a PGP key to decrypt this message.", "error");
+      return;
+    }
+    setPGPBodies((current) => ({ ...current, [messageID]: { loading: true, error: "", doc: current[messageID]?.doc || "", status: "" } }));
+    try {
+      const original = await api.messageOriginal(messageID);
+      const decrypted = await decryptPGPSource(original.source, pgpUnlock.keys);
+      const doc = await decryptedHTMLDoc(decrypted);
+      setPGPBodies((current) => ({
+        ...current,
+        [messageID]: {
+          loading: false,
+          error: "",
+          doc,
+          status: item.message.is_encrypted ? "Decrypted in this browser." : "Signature block opened in this browser."
+        }
+      }));
+    } catch (err) {
+      setPGPBodies((current) => ({
+        ...current,
+        [messageID]: { loading: false, error: messageFromError(err), doc: current[messageID]?.doc || "", status: "" }
+      }));
     }
   }
 
@@ -561,6 +598,8 @@ export function ThreadView({
             const isExpanded = expanded.has(item.message.id);
             const senderVisual = senderVisualURL(item, brandIcons, pluginSet);
             const unsubscribeSent = unsubscribeSentLabel(item);
+            const pgpBody = pgpBodies[item.message.id];
+            const pgpMessage = pgpEnabled && (item.message.is_encrypted || item.message.is_signed);
             return (
               <article className={`thread-card ${isExpanded ? "" : "collapsed"}`} key={item.message.id}>
                 <div
@@ -690,7 +729,18 @@ export function ThreadView({
                       <button className="secondary" type="button" onClick={() => navigate("/settings/account")}>Account settings</button>
                     </div>
                   ) : null}
-                  <EmailFrame srcDoc={item.body_doc} highlightQuery={highlightQuery} highlightTerms={highlightTerms} />
+                  {pgpMessage ? (
+                    <div className="body-notice pgp-body-notice">
+                      <Icon name={item.message.is_encrypted ? "lock" : "file_text"} />
+                      <span>{item.message.is_encrypted ? "This message is PGP encrypted." : "This message is PGP signed."}</span>
+                      <button className="secondary" type="button" disabled={pgpBody?.loading} onClick={() => void decryptMessage(item)}>
+                        {pgpBody?.loading ? "Opening..." : item.message.is_encrypted ? "Decrypt" : "Open signed text"}
+                      </button>
+                      {pgpBody?.status ? <small>{pgpBody.status}</small> : null}
+                    </div>
+                  ) : null}
+                  {pgpBody?.error ? <div className="body-notice pgp-body-notice error-text">{pgpBody.error}</div> : null}
+                  <EmailFrame srcDoc={pgpBody?.doc || item.body_doc} highlightQuery={highlightQuery} highlightTerms={highlightTerms} />
                   {item.has_hidden_quoted && item.full_body_doc ? (
                     <QuotedDetails srcDoc={item.full_body_doc} highlightQuery={highlightQuery} highlightTerms={highlightTerms} />
                   ) : null}
@@ -747,6 +797,9 @@ export function ThreadView({
                       identities={fromIdentities}
                       initial={inlineReply}
                       inline
+                      pgpEnabled={pgpEnabled}
+                      pgpUnlock={pgpUnlock}
+                      openPGPUnlock={openPGPUnlock}
                       addToast={addToast}
                       onSent={() => {
                         setInlineReply(null);

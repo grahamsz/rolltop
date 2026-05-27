@@ -451,7 +451,7 @@ func (s *Store) ListMessagesForMailboxIndex(ctx context.Context, userID, mailbox
 		limit = 200
 	}
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
-			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, attachment_indexed_at, created_at, updated_at
+			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
 		FROM messages WHERE user_id = ? AND mailbox_id = ? AND id > ? ORDER BY id LIMIT ?`, userID, mailboxID, afterID, limit)
 	if err != nil {
 		return nil, err

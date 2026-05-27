@@ -16,9 +16,12 @@ import (
 func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox, item FetchedMessage) (store.MessageRecord, *pendingFetchedSearchIndex, error) {
 	parsed, err := mailparse.Parse(item.Raw)
 	if err != nil {
+		encrypted, signed := mailparse.DetectPGP(item.Raw)
 		parsed = mailparse.ParsedMessage{
-			Subject: fmt.Sprintf("Unparseable message UID %d", item.UID),
-			Text:    fmt.Sprintf("rolltop stored the raw message, but could not parse its MIME body: %v. Download the raw .eml to inspect it.", err),
+			Subject:     fmt.Sprintf("Unparseable message UID %d", item.UID),
+			Text:        fmt.Sprintf("rolltop stored the raw message, but could not parse its MIME body: %v. Download the raw .eml to inspect it.", err),
+			IsEncrypted: encrypted,
+			IsSigned:    signed,
 		}
 	}
 	date := parsed.Date
@@ -83,6 +86,8 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 		IsRead:           hasSeen(item.Flags),
 		IsStarred:        hasFlagged(item.Flags),
 		HasAttachments:   len(parsed.Files) > 0,
+		IsEncrypted:      parsed.IsEncrypted,
+		IsSigned:         parsed.IsSigned,
 	})
 	if err != nil {
 		return store.MessageRecord{}, nil, err
@@ -210,6 +215,11 @@ func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.M
 		return &pendingFetchedSearchIndex{
 			Document: search.MessageIndexDocument{Message: msg},
 		}, nil
+	}
+	msg.IsEncrypted = parsed.IsEncrypted
+	msg.IsSigned = parsed.IsSigned
+	if err := s.Store.UpdateMessagePGPState(ctx, msg.UserID, msg.ID, msg.IsEncrypted, msg.IsSigned); err != nil {
+		return nil, err
 	}
 	if len(parsed.Files) > 0 {
 		if err := s.Store.DeleteAttachmentsForMessage(ctx, msg.UserID, msg.ID); err != nil {

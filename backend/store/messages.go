@@ -33,6 +33,8 @@ type CreateMessage struct {
 	IsRead           bool
 	IsStarred        bool
 	HasAttachments   bool
+	IsEncrypted      bool
+	IsSigned         bool
 }
 
 // CreateMessage inserts or updates a mirrored message row and its mailbox location.
@@ -46,10 +48,10 @@ func (s *Store) CreateMessage(ctx context.Context, m CreateMessage) (MessageReco
 		m.ThreadKey = ThreadKey(m.MessageIDHeader, m.InReplyTo, m.ReferencesHeader, m.Subject)
 	}
 	res, err := db.ExecContext(ctx, `INSERT INTO messages
-			(user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, thread_headers_checked_at, subject, language_code, from_addr, to_addr, cc_addr, date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, is_starred, has_attachments, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, thread_headers_checked_at, subject, language_code, from_addr, to_addr, cc_addr, date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, is_starred, has_attachments, is_encrypted, is_signed, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.UserID, m.AccountID, m.MailboxID, m.BlobID, m.MessageIDHeader, m.InReplyTo, m.ReferencesHeader, m.ThreadKey, ts, m.Subject, strings.ToLower(strings.TrimSpace(m.LanguageCode)), m.FromAddr, m.ToAddr, m.CCAddr,
-		m.Date.UTC().Unix(), m.InternalDate.UTC().Unix(), m.UID, m.Size, m.BlobPath, m.BodyText, m.BodyHTML, boolInt(m.IsRead), boolInt(m.IsStarred), boolInt(m.HasAttachments), ts, ts)
+		m.Date.UTC().Unix(), m.InternalDate.UTC().Unix(), m.UID, m.Size, m.BlobPath, m.BodyText, m.BodyHTML, boolInt(m.IsRead), boolInt(m.IsStarred), boolInt(m.HasAttachments), boolInt(m.IsEncrypted), boolInt(m.IsSigned), ts, ts)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: messages.user_id, messages.account_id, messages.mailbox_id, messages.uid") {
 			return s.GetMessageByUID(ctx, m.UserID, m.AccountID, m.MailboxID, m.UID)
@@ -75,10 +77,10 @@ func (s *Store) GetMessageByUID(ctx context.Context, userID, accountID, mailboxI
 	var m MessageRecord
 	var dateUnix, internalUnix, indexedAt, created, updated int64
 	err = db.QueryRowContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
-			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, attachment_indexed_at, created_at, updated_at
+			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
 		FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND uid = ?`, userID, accountID, mailboxID, uid).
 		Scan(&m.ID, &m.UserID, &m.AccountID, &m.MailboxID, &m.BlobID, &m.MessageIDHeader, &m.InReplyTo, &m.ReferencesHeader, &m.ThreadKey, &m.Subject, &m.LanguageCode, &m.FromAddr, &m.ToAddr, &m.CCAddr,
-			&dateUnix, &internalUnix, &m.UID, &m.Size, &m.BlobPath, &m.BodyText, &m.BodyHTML, &m.IsRead, &m.ReadSyncPending, &m.IsStarred, &m.StarSyncPending, &m.HasAttachments, &indexedAt, &created, &updated)
+			&dateUnix, &internalUnix, &m.UID, &m.Size, &m.BlobPath, &m.BodyText, &m.BodyHTML, &m.IsRead, &m.ReadSyncPending, &m.IsStarred, &m.StarSyncPending, &m.HasAttachments, &m.IsEncrypted, &m.IsSigned, &indexedAt, &created, &updated)
 	m.Date = unixTime(dateUnix)
 	m.InternalDate = unixTime(internalUnix)
 	m.AttachmentIndexedAt = unixTime(indexedAt)
@@ -107,10 +109,10 @@ func (s *Store) GetMessageForUser(ctx context.Context, userID, id int64) (Messag
 	var m MessageRecord
 	var dateUnix, internalUnix, indexedAt, created, updated int64
 	err = db.QueryRowContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
-			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, attachment_indexed_at, created_at, updated_at
+			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
 		FROM messages WHERE user_id = ? AND id = ?`, userID, id).
 		Scan(&m.ID, &m.UserID, &m.AccountID, &m.MailboxID, &m.BlobID, &m.MessageIDHeader, &m.InReplyTo, &m.ReferencesHeader, &m.ThreadKey, &m.Subject, &m.LanguageCode, &m.FromAddr, &m.ToAddr, &m.CCAddr,
-			&dateUnix, &internalUnix, &m.UID, &m.Size, &m.BlobPath, &m.BodyText, &m.BodyHTML, &m.IsRead, &m.ReadSyncPending, &m.IsStarred, &m.StarSyncPending, &m.HasAttachments, &indexedAt, &created, &updated)
+			&dateUnix, &internalUnix, &m.UID, &m.Size, &m.BlobPath, &m.BodyText, &m.BodyHTML, &m.IsRead, &m.ReadSyncPending, &m.IsStarred, &m.StarSyncPending, &m.HasAttachments, &m.IsEncrypted, &m.IsSigned, &indexedAt, &created, &updated)
 	m.Date = unixTime(dateUnix)
 	m.InternalDate = unixTime(internalUnix)
 	m.AttachmentIndexedAt = unixTime(indexedAt)
@@ -128,10 +130,10 @@ func (s *Store) GetMessageByBlobIDForUser(ctx context.Context, userID, blobID in
 	var m MessageRecord
 	var dateUnix, internalUnix, indexedAt, created, updated int64
 	err = db.QueryRowContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
-			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, attachment_indexed_at, created_at, updated_at
+			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
 		FROM messages WHERE user_id = ? AND blob_id = ?`, userID, blobID).
 		Scan(&m.ID, &m.UserID, &m.AccountID, &m.MailboxID, &m.BlobID, &m.MessageIDHeader, &m.InReplyTo, &m.ReferencesHeader, &m.ThreadKey, &m.Subject, &m.LanguageCode, &m.FromAddr, &m.ToAddr, &m.CCAddr,
-			&dateUnix, &internalUnix, &m.UID, &m.Size, &m.BlobPath, &m.BodyText, &m.BodyHTML, &m.IsRead, &m.ReadSyncPending, &m.IsStarred, &m.StarSyncPending, &m.HasAttachments, &indexedAt, &created, &updated)
+			&dateUnix, &internalUnix, &m.UID, &m.Size, &m.BlobPath, &m.BodyText, &m.BodyHTML, &m.IsRead, &m.ReadSyncPending, &m.IsStarred, &m.StarSyncPending, &m.HasAttachments, &m.IsEncrypted, &m.IsSigned, &indexedAt, &created, &updated)
 	m.Date = unixTime(dateUnix)
 	m.InternalDate = unixTime(internalUnix)
 	m.AttachmentIndexedAt = unixTime(indexedAt)
@@ -188,7 +190,7 @@ func (s *Store) PurgeMailboxMessageBatch(ctx context.Context, userID, accountID,
 		return nil, err
 	}
 	rows, err := db.QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
-			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, attachment_indexed_at, created_at, updated_at
+			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
 		FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ? ORDER BY id LIMIT ?`, userID, accountID, mailboxID, limit)
 	if err != nil {
 		return nil, err
@@ -237,7 +239,7 @@ func (s *Store) DeleteMessagesMissingUIDs(ctx context.Context, userID, accountID
 		remote[uid] = true
 	}
 	rows, err := db.QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
-			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, attachment_indexed_at, created_at, updated_at
+			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
 		FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ?`, userID, accountID, mailboxID)
 	if err != nil {
 		return nil, err

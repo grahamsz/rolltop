@@ -433,7 +433,21 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 	if err != nil {
 		return store.MessageRecord{}, err
 	}
-	bodyHTML, bodyText := appendIdentitySignature(form.BodyHTML, form.Body, identity.Signature)
+	if form.PGPEncrypted || form.PGPSigned {
+		if len(attachments) > 0 || form.AttachPublicKey {
+			return store.MessageRecord{}, errors.New("PGP encrypt/sign does not support attachments yet")
+		}
+	} else if form.AttachPublicKey {
+		attachment, err := s.composePublicKeyAttachment(ctx, cu.User.ID, identity)
+		if err != nil {
+			return store.MessageRecord{}, err
+		}
+		attachments = append(attachments, attachment)
+	}
+	bodyHTML, bodyText := form.BodyHTML, form.Body
+	if !form.PGPEncrypted && !form.PGPSigned {
+		bodyHTML, bodyText = appendIdentitySignature(form.BodyHTML, form.Body, identity.Signature)
+	}
 	msg := smtpclient.Message{
 		From:        identity.Header,
 		To:          []string{form.To},
@@ -465,4 +479,27 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 		return store.MessageRecord{}, fmt.Errorf("message sent through SMTP, but could not save it to %s: %w", sentMailbox.Name, err)
 	}
 	return s.storeSentMessage(ctx, cu.User.ID, imapAccount, sentMailbox, msg, form, fetched)
+}
+
+func (s *Server) composePublicKeyAttachment(ctx context.Context, userID int64, identity composeIdentity) (smtpclient.Attachment, error) {
+	if identity.PGPIdentityID == 0 {
+		return smtpclient.Attachment{}, errors.New("this identity does not have a PGP public key")
+	}
+	key, err := s.store.ActiveIdentityPGPPublicKeyForUser(ctx, userID, identity.PGPIdentityID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return smtpclient.Attachment{}, errors.New("this identity does not have a PGP public key")
+		}
+		return smtpclient.Attachment{}, err
+	}
+	filename := strings.NewReplacer("@", "-", ".", "-").Replace(store.NormalizeContactEmail(identity.Email))
+	if strings.TrimSpace(filename) == "" {
+		filename = "public-key"
+	}
+	return smtpclient.Attachment{
+		Filename:    filename + ".asc",
+		ContentType: "application/pgp-keys",
+		Inline:      false,
+		Data:        []byte(strings.TrimSpace(key.PublicKeyArmored) + "\n"),
+	}, nil
 }

@@ -2,9 +2,10 @@
 // toast lifecycle, server-sent events, browser-history navigation, and the compose overlay.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import { api } from "./api";
-import type { Bootstrap, ChromeEvent, SyncRun } from "./types";
-import type { LocationState, MessageTransferAction, MoveTarget, Toast } from "./appTypes";
+import type { Bootstrap, ChromeEvent, IdentityPGPPrivateKey, SyncRun } from "./types";
+import type { LocationState, MessageTransferAction, MoveTarget, PGPUnlockState, Toast } from "./appTypes";
 import { ToastStack } from "./components/common";
 import { LogoMark } from "./components/Icon";
 import { SetupPage, LoginPage } from "./features/auth/AuthPages";
@@ -13,6 +14,7 @@ import { ComposeOverlay } from "./features/compose/ComposeViews";
 import { RouteView } from "./RouteView";
 import { messageFromError } from "./lib/errors";
 import { currentLocation } from "./lib/routes";
+import { unlockPrivateKey } from "./lib/pgp";
 
 
 // Push notifications should identify the human sender when possible. This helper
@@ -74,6 +76,8 @@ export default function App() {
   const lastMouseActivityAt = useRef(Date.now());
   const lastAllMailWakePrefetchAt = useRef(0);
   const [notificationsEnabled, setNotificationsEnabled] = useState(initialNotificationsEnabled);
+  const [pgpUnlock, setPGPUnlock] = useState<PGPUnlockState>({ unlockedUntil: 0, keys: [] });
+  const [pgpUnlockOpen, setPGPUnlockOpen] = useState(false);
 
   // Navigation is intentionally tiny and local: Go serves every SPA route, so
   // the client only needs to update history and reparse LocationState.
@@ -159,6 +163,22 @@ export default function App() {
     },
     [removeToast]
   );
+
+  const lockPGP = useCallback(() => {
+    setPGPUnlock({ unlockedUntil: 0, keys: [] });
+    addToast("PGP keys locked.");
+  }, [addToast]);
+
+  const openPGPUnlock = useCallback(() => {
+    setPGPUnlockOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!pgpUnlock.unlockedUntil) return;
+    const delay = Math.max(0, pgpUnlock.unlockedUntil - Date.now());
+    const timer = window.setTimeout(() => setPGPUnlock({ unlockedUntil: 0, keys: [] }), delay);
+    return () => window.clearTimeout(timer);
+  }, [pgpUnlock.unlockedUntil]);
 
   const toggleNotifications = useCallback(async () => {
     if (!("Notification" in window)) {
@@ -359,6 +379,9 @@ export default function App() {
         refreshChrome={refreshBootstrap}
         notificationsEnabled={notificationsEnabled}
         toggleNotifications={toggleNotifications}
+        pgpUnlock={pgpUnlock}
+        openPGPUnlock={openPGPUnlock}
+        lockPGP={lockPGP}
       >
         <RouteView
           csrf={bootstrap.csrf}
@@ -373,6 +396,8 @@ export default function App() {
           openCompose={openCompose}
           refreshChrome={refreshBootstrap}
           logout={logout}
+          pgpUnlock={pgpUnlock}
+          openPGPUnlock={openPGPUnlock}
           addToast={addToast}
         />
       </AppShell>
@@ -380,11 +405,112 @@ export default function App() {
         <ComposeOverlay
           csrf={bootstrap.csrf}
           query={composeOverlayQuery}
+          pgpEnabled={(bootstrap.enabled_plugins || []).includes("client_side_pgp")}
+          pgpUnlock={pgpUnlock}
+          openPGPUnlock={openPGPUnlock}
           addToast={addToast}
           onClose={() => setComposeOverlayQuery(null)}
         />
       ) : null}
+      {pgpUnlockOpen ? (
+        <PGPUnlockDialog
+          onClose={() => setPGPUnlockOpen(false)}
+          onUnlocked={(state) => setPGPUnlock(state)}
+          addToast={addToast}
+        />
+      ) : null}
       <ToastStack toasts={toasts} onDismiss={removeToast} />
     </>
+  );
+}
+
+function PGPUnlockDialog({
+  onClose,
+  onUnlocked,
+  addToast
+}: {
+  onClose: () => void;
+  onUnlocked: (state: PGPUnlockState) => void;
+  addToast: (message: string, kind?: Toast["kind"]) => number;
+}) {
+  const [keys, setKeys] = useState<IdentityPGPPrivateKey[]>([]);
+  const [selectedID, setSelectedID] = useState(0);
+  const [passphrase, setPassphrase] = useState("");
+  const [durationMinutes, setDurationMinutes] = useState(30);
+  const [loading, setLoading] = useState(true);
+  const [unlocking, setUnlocking] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api.pgpPrivateKeys()
+      .then((data) => {
+        if (cancelled) return;
+        const list = data.keys || [];
+        setKeys(list);
+        setSelectedID(list[0]?.id || 0);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(messageFromError(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const key = keys.find((item) => item.id === selectedID);
+    if (!key) return;
+    setUnlocking(true);
+    setError("");
+    try {
+      const unlocked = await unlockPrivateKey(key, passphrase);
+      onUnlocked({ unlockedUntil: Date.now() + durationMinutes * 60_000, keys: [unlocked] });
+      addToast("PGP key unlocked.");
+      onClose();
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setUnlocking(false);
+    }
+  }
+
+  return (
+    <div className="pgp-unlock-backdrop" role="presentation" onClick={onClose}>
+      <form className="pgp-unlock-dialog" role="dialog" aria-label="Unlock PGP key" onSubmit={submit} onClick={(event) => event.stopPropagation()}>
+        <div className="pgp-unlock-head">
+          <strong>Unlock PGP key</strong>
+          <button className="ghost" type="button" title="Close" onClick={onClose}>Close</button>
+        </div>
+        {loading ? <div className="muted">Loading keys...</div> : null}
+        {error ? <div className="error">{error}</div> : null}
+        {!loading && keys.length === 0 ? <div className="muted">Add a PGP private key on an identity first.</div> : null}
+        {keys.length > 0 ? (
+          <>
+            <label>
+              Key
+              <select value={selectedID} onChange={(event) => setSelectedID(Number(event.target.value))}>
+                {keys.map((key) => <option key={key.id} value={key.id}>{key.label || key.fingerprint}</option>)}
+              </select>
+            </label>
+            <label>
+              Passphrase
+              <input type="password" value={passphrase} autoFocus onChange={(event) => setPassphrase(event.target.value)} />
+            </label>
+            <label>
+              Keep unlocked
+              <select value={durationMinutes} onChange={(event) => setDurationMinutes(Number(event.target.value))}>
+                <option value={15}>15 minutes</option>
+                <option value={30}>30 minutes</option>
+                <option value={60}>1 hour</option>
+              </select>
+            </label>
+            <button disabled={unlocking || !passphrase}>{unlocking ? "Unlocking..." : "Unlock"}</button>
+          </>
+        ) : null}
+      </form>
+    </div>
   );
 }

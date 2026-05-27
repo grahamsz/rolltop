@@ -25,6 +25,20 @@ export type MoveTarget = {
 
 export type MessageTransferAction = "move" | "copy";
 
+export type UnlockedPGPKey = {
+  id: number;
+  identity_id: number;
+  label: string;
+  fingerprint: string;
+  public_key_armored: string;
+  privateKey: unknown;
+};
+
+export type PGPUnlockState = {
+  unlockedUntil: number;
+  keys: UnlockedPGPKey[];
+};
+
 /** DatePrefs is the subset of user preferences required by date-formatting helpers. */
 export type DatePrefs = Pick<User, "date_locale" | "date_format">;
 
@@ -58,5 +72,8 @@ export type AppShellProps = {
   refreshChrome: RefreshChrome;
   notificationsEnabled: boolean;
   toggleNotifications: () => Promise<void>;
+  pgpUnlock: PGPUnlockState;
+  openPGPUnlock: () => void;
+  lockPGP: () => void;
   children: ReactNode;
 };
