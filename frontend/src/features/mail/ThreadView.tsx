@@ -823,29 +823,16 @@ function SearchExplanationPanel({ state, onClose }: { state: SearchExplanationSt
               </div>
             </div>
           ) : null}
-          {data.score_effect ? (
+          {data.score !== undefined ? (
             <div className="search-explanation-section">
               <span className="search-explanation-label">Rank Score</span>
               <div className="search-explanation-score">
                 <div>
-                  <strong>{formatSearchScore(data.score_effect.final_score)}</strong>
-                  <span>final score</span>
+                  <strong>{formatSearchScore(data.score)}</strong>
+                  <span>Bleve score for this exact query</span>
                 </div>
-                <div>
-                  <strong>{formatSearchScore(data.score_effect.baseline_score)}</strong>
-                  <span>without recency/sender nudges</span>
-                </div>
-                <div className={data.score_effect.delta >= 0 ? "positive" : "negative"}>
-                  <strong>{formatSignedSearchScore(data.score_effect.delta)}</strong>
-                  <span>combined nudge effect</span>
-                </div>
-                {(data.score_effect.boost_effects || []).map((effect) => (
-                  <div className={effect.delta >= 0 ? "positive" : "negative"} key={effect.kind}>
-                    <strong>{formatSignedSearchScore(effect.delta)}</strong>
-                    <span>{effect.label}; without it {formatSearchScore(effect.score_without)}</span>
-                  </div>
-                ))}
               </div>
+              <p className="search-explanation-note">Boosts below are part of this query. Raw scores from different query shapes are not directly comparable.</p>
             </div>
           ) : null}
           {data.boosts && data.boosts.length > 0 ? (
@@ -913,12 +900,6 @@ function formatSearchScore(value: number): string {
   if (Math.abs(value) >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
   if (Math.abs(value) >= 10) return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
   return value.toLocaleString(undefined, { maximumFractionDigits: 3 });
-}
-
-function formatSignedSearchScore(value: number): string {
-  const formatted = formatSearchScore(value);
-  if (!Number.isFinite(value) || value === 0) return formatted;
-  return value > 0 ? `+${formatted}` : formatted;
 }
 
 // QuotedDetails lazy-renders the full body iframe only after the user asks for

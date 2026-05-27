@@ -203,20 +203,6 @@ type apiSearchBoost struct {
 	Boost       float64 `json:"boost,omitempty"`
 }
 
-type apiSearchScoreEffect struct {
-	FinalScore    float64                     `json:"final_score"`
-	BaselineScore float64                     `json:"baseline_score"`
-	Delta         float64                     `json:"delta"`
-	BoostEffects  []apiSearchScoreBoostEffect `json:"boost_effects,omitempty"`
-}
-
-type apiSearchScoreBoostEffect struct {
-	Kind         string  `json:"kind"`
-	Label        string  `json:"label"`
-	ScoreWithout float64 `json:"score_without"`
-	Delta        float64 `json:"delta"`
-}
-
 type apiScoreExplanation struct {
 	Value    float64                `json:"value"`
 	Message  string                 `json:"message"`
@@ -293,10 +279,22 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if !matched {
+		if repaired, repairErr := s.ensureSearchDocuments(r.Context(), cu.User.ID, threadMessages); repairErr != nil {
+			s.serverError(w, repairErr)
+			return
+		} else if repaired > 0 {
+			result, matched, err = s.search.ExplainMessagesWithOptions(r.Context(), cu.User.ID, candidateIDs, query, opts)
+			if err != nil {
+				s.serverError(w, err)
+				return
+			}
+		}
+	}
+	if !matched {
 		writeJSON(w, map[string]any{
 			"matched": false,
 			"query":   query,
-			"reason":  "Bleve did not match any message in this conversation for the current query.",
+			"reason":  "Bleve did not match any message in this conversation for the current query. The local SQLite copy is present, but the query still did not match after a lightweight search-index repair.",
 		})
 		return
 	}
@@ -305,11 +303,6 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 		explainedMsg = msg
 	}
 	opts, senderBoost := s.searchExplanationOptions(r.Context(), cu.User, explainedMsg)
-	scoreEffect, err := s.searchScoreEffect(r.Context(), cu.User.ID, result.ID, query, opts, result.Score)
-	if err != nil {
-		s.serverError(w, err)
-		return
-	}
 	writeJSON(w, map[string]any{
 		"matched":              true,
 		"query":                query,
@@ -321,62 +314,9 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 		"fields":               result.Fields,
 		"field_matches":        apiSearchFieldMatches(result.FieldMatches),
 		"term_contributions":   apiSearchTermContributions(result.TermContributions),
-		"score_effect":         scoreEffect,
 		"boosts":               apiSearchBoosts(cu.User, explainedMsg, senderBoost),
 		"raw":                  apiScoreExplanationFromRaw(result.Raw, 0),
 	})
-}
-
-func (s *Server) searchScoreEffect(ctx context.Context, userID, messageID int64, query string, opts search.SearchOptions, finalScore float64) (*apiSearchScoreEffect, error) {
-	baselineOpts := searchOptionsWithoutRecency(searchOptionsWithoutSender(opts))
-	baselineScore, ok, err := s.search.ScoreMessageWithOptions(ctx, userID, messageID, query, baselineOpts)
-	if err != nil || !ok {
-		return nil, err
-	}
-	effect := &apiSearchScoreEffect{
-		FinalScore:    finalScore,
-		BaselineScore: baselineScore,
-		Delta:         finalScore - baselineScore,
-	}
-	withoutRecencyScore, ok, err := s.search.ScoreMessageWithOptions(ctx, userID, messageID, query, searchOptionsWithoutRecency(opts))
-	if err != nil {
-		return nil, err
-	}
-	if ok {
-		effect.BoostEffects = append(effect.BoostEffects, apiSearchScoreBoostEffect{
-			Kind:         "recency",
-			Label:        "Recent mail",
-			ScoreWithout: withoutRecencyScore,
-			Delta:        finalScore - withoutRecencyScore,
-		})
-	}
-	withoutSenderScore, ok, err := s.search.ScoreMessageWithOptions(ctx, userID, messageID, query, searchOptionsWithoutSender(opts))
-	if err != nil {
-		return nil, err
-	}
-	if ok {
-		effect.BoostEffects = append(effect.BoostEffects, apiSearchScoreBoostEffect{
-			Kind:         "sender",
-			Label:        "Familiar sender",
-			ScoreWithout: withoutSenderScore,
-			Delta:        finalScore - withoutSenderScore,
-		})
-	}
-	return effect, nil
-}
-
-func searchOptionsWithoutRecency(opts search.SearchOptions) search.SearchOptions {
-	out := opts
-	out.Behavior.RecencyBias = "none"
-	return out
-}
-
-func searchOptionsWithoutSender(opts search.SearchOptions) search.SearchOptions {
-	out := opts
-	out.SenderBoosts = nil
-	out.Behavior.SenderBoost = false
-	out.Behavior.SenderBoostSet = true
-	return out
 }
 
 func (s *Server) searchExplanationOptions(ctx context.Context, user store.User, msg store.MessageRecord) (search.SearchOptions, *apiSearchBoost) {

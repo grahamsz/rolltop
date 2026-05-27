@@ -501,6 +501,48 @@ func (s *Service) CountMailboxMessages(ctx context.Context, userID, mailboxID in
 	return int(res.Total), nil
 }
 
+// MessageIDsIndexed reports which of the supplied local message IDs currently have
+// documents in the user-scoped Bleve index. Search repair uses this to cheaply
+// catch messages that were stored in SQLite but missed a previous index commit.
+func (s *Service) MessageIDsIndexed(ctx context.Context, userID int64, messageIDs []int64) (map[int64]bool, error) {
+	out := map[int64]bool{}
+	if userID == 0 || len(messageIDs) == 0 {
+		return out, nil
+	}
+	docIDs := make([]string, 0, len(messageIDs))
+	seen := map[int64]bool{}
+	for _, id := range messageIDs {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		docIDs = append(docIDs, strconv.FormatInt(id, 10))
+	}
+	if len(docIDs) == 0 {
+		return out, nil
+	}
+	index, err := s.indexForUser(userID)
+	if err != nil {
+		return nil, err
+	}
+	userQuery := bleve.NewTermQuery(strconv.FormatInt(userID, 10))
+	userQuery.SetField("user_id")
+	docQuery := bleve.NewDocIDQuery(docIDs)
+	req := bleve.NewSearchRequestOptions(bleve.NewConjunctionQuery(userQuery, docQuery), len(docIDs), 0, false)
+	res, err := index.Search(req)
+	if err != nil {
+		return nil, err
+	}
+	for _, hit := range res.Hits {
+		id, err := strconv.ParseInt(hit.ID, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse indexed message hit id: %w", err)
+		}
+		out[id] = true
+	}
+	return out, nil
+}
+
 // MailboxMessageIDs returns the local message IDs currently present in one mailbox's search index.
 func (s *Service) MailboxMessageIDs(ctx context.Context, userID, mailboxID int64) (map[int64]bool, error) {
 	out := map[int64]bool{}

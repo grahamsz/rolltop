@@ -162,6 +162,83 @@ func TestAPISearchWritesTimingHeaders(t *testing.T) {
 	}
 }
 
+func TestAPISearchRepairsRecentMissingSearchDocument(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchSvc, err := search.Open(filepath.Join(dir, "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchSvc.Close()
+
+	user, err := db.CreateUser(ctx, "nick-search@example.test", "Nick Search", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.UpsertMailAccount(ctx, store.MailAccount{UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993, Username: user.Email, EncryptedPassword: "encrypted", Mailbox: "INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := db.CreateBlob(ctx, store.BlobRecord{UserID: user.ID, Kind: "message", Path: "messages/nick.eml", SHA256: "nick-sha", Size: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := db.CreateMessage(ctx, store.CreateMessage{
+		UserID:    user.ID,
+		AccountID: account.ID,
+		MailboxID: mailbox.ID,
+		BlobID:    blob.ID,
+		Subject:   "Checking In",
+		FromAddr:  `"Nick Koncilja" <nick@riverrise.com>`,
+		ToAddr:    user.Email,
+		Date:      time.Now().UTC(),
+		UID:       101,
+		BodyText:  "All good. nbk Nick Koncilja",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexed, err := searchSvc.MessageIDsIndexed(ctx, user.ID, []int64{msg.ID}); err != nil || indexed[msg.ID] {
+		t.Fatalf("message should start missing from Bleve indexed=%v err=%v", indexed, err)
+	}
+
+	server := &Server{store: db, search: searchSvc, mailListCache: newMailListCache()}
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=nick", nil)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: user}))
+	rec := httptest.NewRecorder()
+
+	server.apiSearch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Conversations []apiConversation `json:"conversations"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Conversations) == 0 || payload.Conversations[0].Message.ID != msg.ID {
+		t.Fatalf("conversations = %#v", payload.Conversations)
+	}
+	indexed, err := searchSvc.MessageIDsIndexed(ctx, user.ID, []int64{msg.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !indexed[msg.ID] {
+		t.Fatal("expected search request to repair missing Bleve document")
+	}
+}
+
 func TestMailListCachedETagInvalidatesOnUserChange(t *testing.T) {
 	userID := int64(99)
 	server := &Server{events: newEventHub(), mailListCache: newMailListCache()}

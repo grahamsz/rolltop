@@ -104,6 +104,31 @@ func (s *Store) CountSearchEnabledMessagesForUser(ctx context.Context, userID in
 	return n, err
 }
 
+// ListRecentSearchEnabledMessagesForUser returns the newest local messages from
+// folders that participate in full-text search. The web layer uses this as a
+// bounded self-healing pass before search requests so a failed/interrupted Bleve
+// commit does not leave today's mail undiscoverable until a manual repair.
+func (s *Store) ListRecentSearchEnabledMessagesForUser(ctx context.Context, userID int64, limit int) ([]MessageRecord, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT m.id, m.user_id, m.account_id, m.mailbox_id, m.blob_id, m.message_id_header, m.in_reply_to, m.references_header, m.thread_key, m.subject, m.language_code, m.from_addr, m.to_addr, m.cc_addr,
+			m.date_unix, m.internal_date_unix, m.uid, m.size, m.blob_path, m.body_text, m.body_html, m.is_read, m.read_sync_pending, m.is_starred, m.star_sync_pending, m.has_attachments, m.attachment_indexed_at, m.created_at, m.updated_at
+		FROM messages m
+		JOIN mailboxes mb ON mb.id = m.mailbox_id AND mb.user_id = m.user_id
+		WHERE m.user_id = ? AND mb.include_in_search = 1
+		ORDER BY m.date_unix DESC, m.id DESC LIMIT ?`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMessages(rows)
+}
+
 // ListLatestThreadMessagesForUser returns one latest message per thread for all-mail list rendering.
 func (s *Store) ListLatestThreadMessagesForUser(ctx context.Context, userID int64, limit, offset int) ([]MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)

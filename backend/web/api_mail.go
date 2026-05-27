@@ -113,6 +113,12 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "Language search is disabled.")
 		return
 	}
+	if strings.TrimSpace(searchQuery) != "" {
+		if _, err := s.ensureRecentSearchDocuments(r.Context(), cu.User.ID); err != nil {
+			s.serverError(w, err)
+			return
+		}
+	}
 	page := pageFromRequest(r)
 	cacheKey := mailListCacheKey{UserID: cu.User.ID, Page: page, Search: true, Query: q}
 	if s.writeSearchNotModifiedIfFresh(w, r, cacheKey) {
