@@ -351,7 +351,7 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 		"fields":               result.Fields,
 		"field_matches":        apiSearchFieldMatches(result.FieldMatches),
 		"term_contributions":   apiSearchTermContributions(result.TermContributions),
-		"boosts":               apiSearchBoosts(cu.User, explainedMsg, senderBoost),
+		"boosts":               apiSearchBoosts(cu.User, explainedMsg, senderBoost, !searchQueryHasDateOperator(query)),
 		"raw":                  apiScoreExplanationFromRaw(result.Raw, 0),
 	})
 }
@@ -437,15 +437,27 @@ func apiSearchFieldLabel(field string) string {
 	}
 }
 
-func apiSearchBoosts(user store.User, msg store.MessageRecord, senderBoost *apiSearchBoost) []apiSearchBoost {
+func apiSearchBoosts(user store.User, msg store.MessageRecord, senderBoost *apiSearchBoost, includeRecency bool) []apiSearchBoost {
 	var out []apiSearchBoost
-	if recency := apiRecencySearchBoost(user, msg); recency != nil {
-		out = append(out, *recency)
+	if includeRecency {
+		if recency := apiRecencySearchBoost(user, msg); recency != nil {
+			out = append(out, *recency)
+		}
 	}
 	if senderBoost != nil {
 		out = append(out, *senderBoost)
 	}
 	return out
+}
+
+func searchQueryHasDateOperator(query string) bool {
+	for _, token := range strings.Fields(strings.ToLower(query)) {
+		token = strings.TrimPrefix(token, "-")
+		if strings.HasPrefix(token, "after:") || strings.HasPrefix(token, "before:") || strings.HasPrefix(token, "year:") {
+			return true
+		}
+	}
+	return false
 }
 
 func apiRecencySearchBoost(user store.User, msg store.MessageRecord) *apiSearchBoost {

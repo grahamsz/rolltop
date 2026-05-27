@@ -898,7 +898,10 @@ func buildQuery(userID int64, queryText string, opts SearchOptions) blevequery.Q
 	}
 	mustNot := negatedTextQueries(parsed.NegatedText, behavior)
 	must := bleve.NewConjunctionQuery(parts...)
-	should := recencyBoostQueries(time.Now().UTC(), behavior)
+	var should []blevequery.Query
+	if parsed.After.IsZero() && parsed.Before.IsZero() {
+		should = recencyBoostQueries(time.Now().UTC(), behavior)
+	}
 	if behavior.SenderBoost {
 		should = append(should, senderBoostQueries(opts.SenderBoosts)...)
 	}

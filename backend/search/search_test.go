@@ -4,6 +4,7 @@ package search
 
 import (
 	"context"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -881,6 +882,33 @@ func TestSearchNormalRecencyBeatsOlderSubjectOnlyAdvantage(t *testing.T) {
 	}
 }
 
+func TestSearchExplicitDateFilterDisablesRecencyBoost(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	msg := store.MessageRecord{ID: 1, UserID: 1, Subject: "Checking In", FromAddr: `"Nick Koncilja" <nick@riverrise.com>`, BodyText: "nick", Date: time.Now().UTC()}
+	if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	query := "nick after:2000-01-01"
+	withRecency, ok, err := svc.ScoreMessageWithOptions(ctx, 1, msg.ID, query, SearchOptions{Behavior: SearchBehavior{RecencyBias: "normal"}})
+	if err != nil || !ok {
+		t.Fatalf("with recency ok=%v err=%v", ok, err)
+	}
+	withoutRecency, ok, err := svc.ScoreMessageWithOptions(ctx, 1, msg.ID, query, SearchOptions{Behavior: SearchBehavior{RecencyBias: "none"}})
+	if err != nil || !ok {
+		t.Fatalf("without recency ok=%v err=%v", ok, err)
+	}
+	if math.Abs(withRecency-withoutRecency) > 0.000001 {
+		t.Fatalf("date-filtered score should not include recency boost: with=%v without=%v", withRecency, withoutRecency)
+	}
+}
+
 func TestSearchStrongRecencyOverpowersVeryOldDenseMatches(t *testing.T) {
 	ctx := context.Background()
 	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
@@ -1047,11 +1075,11 @@ func TestSearchSenderNameBeatsOlderBodyMentions(t *testing.T) {
 		t.Fatalf("expected highlight terms for hit: %+v", hit)
 	}
 
-	boostedScore, ok, err := svc.ScoreMessageWithOptions(ctx, 1, 2, "nick after:today", SearchOptions{Behavior: SearchBehavior{RecencyBias: "normal"}})
+	boostedScore, ok, err := svc.ScoreMessageWithOptions(ctx, 1, 2, "nick", SearchOptions{Behavior: SearchBehavior{RecencyBias: "normal"}})
 	if err != nil || !ok {
 		t.Fatalf("boosted score ok=%v err=%v", ok, err)
 	}
-	baselineScore, ok, err := svc.ScoreMessageWithOptions(ctx, 1, 2, "nick after:today", SearchOptions{Behavior: SearchBehavior{RecencyBias: "none", SenderBoost: false, SenderBoostSet: true}})
+	baselineScore, ok, err := svc.ScoreMessageWithOptions(ctx, 1, 2, "nick", SearchOptions{Behavior: SearchBehavior{RecencyBias: "none", SenderBoost: false, SenderBoostSet: true}})
 	if err != nil || !ok {
 		t.Fatalf("baseline score ok=%v err=%v", ok, err)
 	}
