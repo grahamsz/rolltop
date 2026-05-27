@@ -439,8 +439,9 @@ export function ComposeBox({
             </div>
           ) : null}
           <div className="compose-line">
+            <span>Subject</span>
             <input
-              placeholder="Subject"
+              aria-label="Subject"
               value={form.subject}
               onChange={(event) => setField("subject", event.target.value)}
               required
@@ -560,7 +561,7 @@ export function ComposeBox({
         <button type="button" title="Bold" onClick={() => applyFormat("bold")}>B</button>
         <button type="button" title="Italic" onClick={() => applyFormat("italic")}><em>I</em></button>
         <button type="button" title="Underline" onClick={() => applyFormat("underline")}><u>U</u></button>
-        <button type="button" title="Text color" onClick={() => applyFormat("foreColor", "#d95f3d")}>
+        <button type="button" title="Text color" onClick={() => applyFormat("foreColor", "#c46b44")}>
           <Icon name="format_color_text" />
         </button>
         <button type="button" title="Bulleted list" onClick={() => applyFormat("insertUnorderedList")}>

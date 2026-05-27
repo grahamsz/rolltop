@@ -603,6 +603,10 @@ func TestOnboardingMailboxDefaultsDiscoverAllButAutoSyncInboxOnly(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	drafts, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Drafts")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if inbox.SyncMode != "auto" || inbox.Role != "inbox" {
 		t.Fatalf("inbox defaults = mode %q role %q, want auto/inbox", inbox.SyncMode, inbox.Role)
 	}
@@ -611,6 +615,9 @@ func TestOnboardingMailboxDefaultsDiscoverAllButAutoSyncInboxOnly(t *testing.T) 
 	}
 	if child.SyncMode != "manual" {
 		t.Fatalf("inbox child sync mode = %q, want manual", child.SyncMode)
+	}
+	if drafts.Role != "drafts" || drafts.ShowInAllMail {
+		t.Fatalf("drafts defaults = role %q show_in_all_mail %v, want drafts/false", drafts.Role, drafts.ShowInAllMail)
 	}
 }
 

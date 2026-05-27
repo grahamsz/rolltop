@@ -4,8 +4,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import type { Bootstrap, ChromeEvent, SyncRun } from "./types";
-import type { LocationState, MoveTarget, Toast } from "./appTypes";
+import type { LocationState, MessageTransferAction, MoveTarget, Toast } from "./appTypes";
 import { ToastStack } from "./components/common";
+import { LogoMark } from "./components/Icon";
 import { SetupPage, LoginPage } from "./features/auth/AuthPages";
 import { AppShell } from "./features/layout/AppShell";
 import { ComposeOverlay } from "./features/compose/ComposeViews";
@@ -251,20 +252,33 @@ export default function App() {
     };
   }, [bootstrap?.user, notifyNewMail]);
 
-  // Folder drag/drop hides rows optimistically and reverts only if the backend
-  // rejects the move request. The backend remains the authority for follow-up sync.
+  // Folder drag/drop hides rows optimistically only for moves. Ctrl/Cmd-drag
+  // copies messages to the destination and leaves the source list untouched.
   const moveMessages = useCallback(
-    async (messageIDs: number[], mailbox: MoveTarget) => {
+    async (messageIDs: number[], mailbox: MoveTarget, action: MessageTransferAction = "move") => {
       if (!bootstrap?.csrf) return;
       const ids = Array.from(new Set(messageIDs.filter((id) => Number.isFinite(id) && id > 0)));
       if (ids.length === 0) return;
-      setHiddenMessageIDs((current) => {
-        const next = new Set(current);
-        ids.forEach((id) => next.add(id));
-        return next;
-      });
-      const toastID = addToast(`Moving ${ids.length.toLocaleString()} ${ids.length === 1 ? "message" : "messages"} to ${mailbox.name}...`, "loading");
+      const copying = action === "copy";
+      if (!copying) {
+        setHiddenMessageIDs((current) => {
+          const next = new Set(current);
+          ids.forEach((id) => next.add(id));
+          return next;
+        });
+      }
+      const verb = copying ? "Copying" : "Moving";
+      const toastID = addToast(`${verb} ${ids.length.toLocaleString()} ${ids.length === 1 ? "message" : "messages"} to ${mailbox.name}...`, "loading");
       try {
+        if (copying) {
+          const data = await api.bulkCopyMessages(bootstrap.csrf, ids, mailbox.id);
+          if (data.queued) {
+            updateToast(toastID, `Copy task started for ${ids.length.toLocaleString()} messages.`, "success");
+          } else {
+            updateToast(toastID, `Copied ${(data.copied || ids.length).toLocaleString()} ${ids.length === 1 ? "message" : "messages"} to ${mailbox.name}.`, "success");
+          }
+          return;
+        }
         const data = ids.length === 1
           ? await api.moveMessage(bootstrap.csrf, ids[0], mailbox.id).then((res) => ({ ...res, queued: false, moved: 1 }))
           : await api.bulkMoveMessages(bootstrap.csrf, ids, mailbox.id);
@@ -274,12 +288,14 @@ export default function App() {
           updateToast(toastID, `Moved ${(data.moved || ids.length).toLocaleString()} ${ids.length === 1 ? "message" : "messages"} to ${mailbox.name}.`, "success");
         }
       } catch (err) {
-        setHiddenMessageIDs((current) => {
-          const next = new Set(current);
-          ids.forEach((id) => next.delete(id));
-          return next;
-        });
-        updateToast(toastID, `Move failed: ${messageFromError(err)}`, "error");
+        if (!copying) {
+          setHiddenMessageIDs((current) => {
+            const next = new Set(current);
+            ids.forEach((id) => next.delete(id));
+            return next;
+          });
+        }
+        updateToast(toastID, `${copying ? "Copy" : "Move"} failed: ${messageFromError(err)}`, "error");
       }
     },
     [addToast, bootstrap?.csrf, updateToast]
@@ -299,7 +315,7 @@ export default function App() {
   if (!bootstrap) {
     return (
       <div className="auth-page">
-        <div className="auth-brand">rolltop</div>
+        <div className="auth-brand"><LogoMark />rolltop</div>
         {bootError ? <div className="error">{bootError}</div> : <div className="panel muted">Loading mail...</div>}
         <ToastStack toasts={toasts} onDismiss={removeToast} />
       </div>
@@ -338,7 +354,6 @@ export default function App() {
         buildLabel={bootstrap.build_label || ""}
         location={location}
         navigate={navigate}
-        logout={logout}
         onMoveMessages={moveMessages}
         openCompose={openCompose}
         refreshChrome={refreshBootstrap}
@@ -357,6 +372,7 @@ export default function App() {
           hiddenMessageIDs={hiddenMessageIDs}
           openCompose={openCompose}
           refreshChrome={refreshBootstrap}
+          logout={logout}
           addToast={addToast}
         />
       </AppShell>

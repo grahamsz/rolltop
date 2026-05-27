@@ -827,6 +827,76 @@ func (s *Server) apiBulkMoveMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "queued": false, "moved": moved, "mailbox": dest.Name})
 }
 
+// apiBulkCopyMessages copies messages by appending their raw RFC822 bodies to a
+// destination IMAP mailbox. Unlike move, copy may target another account because
+// the source message remains untouched and the destination receives a new UID.
+func (s *Server) apiBulkCopyMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	if s.syncer == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "IMAP sync is not configured")
+		return
+	}
+	var in struct {
+		MessageIDs []int64 `json:"message_ids"`
+		MailboxID  int64   `json:"mailbox_id"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if len(in.MessageIDs) == 0 || len(in.MessageIDs) > 1000 || in.MailboxID <= 0 {
+		writeAPIError(w, http.StatusBadRequest, "select messages and a destination folder")
+		return
+	}
+	dest, err := s.store.GetMailboxForUser(r.Context(), cu.User.ID, in.MailboxID)
+	if store.IsNotFound(err) {
+		writeAPIError(w, http.StatusBadRequest, "destination folder is no longer available")
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	refreshDest := func() {
+		if s.syncRunner != nil {
+			s.syncRunner.StartAccountMailboxes(cu.User.ID, dest.AccountID, []string{dest.Name})
+		}
+	}
+	if len(in.MessageIDs) > 5 {
+		run, err := s.syncer.StartCopyMessages(r.Context(), cu.User.ID, in.MessageIDs, in.MailboxID, refreshDest)
+		if err != nil {
+			if store.IsNotFound(err) {
+				writeAPIError(w, http.StatusBadRequest, "copy source or destination is no longer available")
+				return
+			}
+			writeAPIError(w, http.StatusBadGateway, "could not start bulk copy")
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "queued": true, "run_id": run.ID, "mailbox": dest.Name})
+		return
+	}
+	copied, err := s.syncer.CopyMessages(r.Context(), cu.User.ID, in.MessageIDs, in.MailboxID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			writeAPIError(w, http.StatusBadRequest, "copy source or destination is no longer available")
+			return
+		}
+		writeAPIError(w, http.StatusBadGateway, "could not copy messages")
+		return
+	}
+	refreshDest()
+	writeJSON(w, map[string]any{"ok": true, "queued": false, "copied": copied, "mailbox": dest.Name})
+}
+
 func (s *Server) apiSetMessageStarred(w http.ResponseWriter, r *http.Request, id int64) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)

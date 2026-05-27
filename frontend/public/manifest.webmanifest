@@ -5,14 +5,14 @@
   "start_url": "/mail",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f8fafc",
-  "theme_color": "#f8fafc",
+  "background_color": "#f2f0eb",
+  "theme_color": "#f2f0eb",
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "/icon.svg?v=transparent-logo-v2",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }

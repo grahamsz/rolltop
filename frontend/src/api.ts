@@ -202,7 +202,7 @@ export const api = {
     if (highlightQuery.trim()) params.set("q", highlightQuery.trim());
     const q = params.toString() ? `?${params}` : "";
     return getJSON<{
-      message: { id: number; subject: string; mailbox_id: number };
+      message: { id: number; account_id: number; subject: string; mailbox_id: number };
       thread: ThreadMessage[];
       compose_from: string;
       from_identities: ComposeIdentity[];
@@ -235,6 +235,11 @@ export const api = {
     postJSON<{ ok: boolean; mailbox: string }>(`/api/messages/${id}/move`, csrf, { mailbox_id: mailboxID }),
   bulkMoveMessages: (csrf: string, ids: number[], mailboxID: number) =>
     postJSON<{ ok: boolean; queued: boolean; moved?: number; run_id?: number; mailbox: string }>("/api/messages/bulk-move", csrf, {
+      message_ids: ids,
+      mailbox_id: mailboxID
+    }),
+  bulkCopyMessages: (csrf: string, ids: number[], mailboxID: number) =>
+    postJSON<{ ok: boolean; queued: boolean; copied?: number; run_id?: number; mailbox: string }>("/api/messages/bulk-copy", csrf, {
       message_ids: ids,
       mailbox_id: mailboxID
     }),

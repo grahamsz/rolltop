@@ -105,7 +105,7 @@
   font-weight: 700;
 
   &:hover:not(:disabled) {
-    background: rgba(229, 169, 40, .18);
+    background: rgba(183, 179, 170, .22);
     border-color: transparent;
   }
 
@@ -553,8 +553,8 @@
   }
 
   &.matched {
-    border-color: rgba(229, 169, 40, .72);
-    background: rgba(229, 169, 40, .14);
+    border-color: rgba(183, 179, 170, .72);
+    background: rgba(183, 179, 170, .18);
     color: var(--text);
   }
 }
@@ -702,7 +702,7 @@
 
     &.found {
       border-color: var(--accent-soft);
-      background: rgba(229, 169, 40, .22);
+      background: rgba(183, 179, 170, .26);
     }
 
     &.missing,

@@ -50,6 +50,7 @@ export type Mailbox = {
 /** Message is the API's compact message record used in lists and thread cards. */
 export type Message = {
   id: number;
+  account_id: number;
   mailbox_id: number;
   subject: string;
   from_addr: string;

@@ -88,6 +88,7 @@ type apiMailIdentity struct {
 
 type apiMessage struct {
 	ID             int64  `json:"id"`
+	AccountID      int64  `json:"account_id"`
 	MailboxID      int64  `json:"mailbox_id"`
 	Subject        string `json:"subject"`
 	FromAddr       string `json:"from_addr"`

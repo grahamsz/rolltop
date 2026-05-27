@@ -17,11 +17,13 @@ export type Toast = {
   message: string;
 };
 
-/** MoveTarget identifies the destination mailbox for drag/drop message moves. */
+/** MoveTarget identifies the destination mailbox for drag/drop message transfers. */
 export type MoveTarget = {
   id: number;
   name: string;
 };
+
+export type MessageTransferAction = "move" | "copy";
 
 /** DatePrefs is the subset of user preferences required by date-formatting helpers. */
 export type DatePrefs = Pick<User, "date_locale" | "date_format">;
@@ -51,8 +53,7 @@ export type AppShellProps = {
   buildLabel: string;
   location: LocationState;
   navigate: Navigate;
-  logout: () => void;
-  onMoveMessages: (messageIDs: number[], mailbox: MoveTarget) => void;
+  onMoveMessages: (messageIDs: number[], mailbox: MoveTarget, action?: MessageTransferAction) => void;
   openCompose: (query?: string) => void;
   refreshChrome: RefreshChrome;
   notificationsEnabled: boolean;

@@ -64,7 +64,7 @@
 
   &:hover {
     background: #fff;
-    box-shadow: inset 3px 0 0 var(--accent-warm), 0 1px 0 rgba(11, 127, 120, .12);
+    box-shadow: inset 3px 0 0 var(--accent-warm), 0 1px 0 rgba(196, 107, 68, .12);
   }
 
   &.selected {
@@ -140,7 +140,7 @@
   width: 320px;
   max-width: 320px;
   padding: 10px 12px;
-  border: 1px solid rgba(11, 127, 120, .25);
+  border: 1px solid rgba(196, 107, 68, .25);
   border-radius: 8px;
   background: #fff;
   color: var(--text);
@@ -231,7 +231,7 @@
   }
 
   &:hover {
-    background: rgba(229, 169, 40, .14);
+    background: rgba(183, 179, 170, .18);
     color: var(--accent-warm-strong);
   }
 
@@ -319,8 +319,8 @@
   }
 
   &.matched {
-    border-color: rgba(229, 169, 40, .58);
-    background: rgba(229, 169, 40, .16);
+    border-color: rgba(183, 179, 170, .58);
+    background: rgba(183, 179, 170, .20);
     color: var(--text);
   }
 
@@ -330,7 +330,7 @@
 }
 
 .search-hit {
-  background: rgba(229, 169, 40, .26);
+  background: rgba(183, 179, 170, .28);
   color: var(--text);
   border-radius: 3px;
   padding: 0 1px;

@@ -46,6 +46,29 @@
   align-items: start;
 }
 
+.profile-settings-headline {
+  align-items: center;
+
+  .secondary {
+    flex: 0 0 auto;
+  }
+}
+
+.profile-account-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+
+  strong,
+  small {
+    @include truncate;
+  }
+
+  small {
+    color: var(--muted);
+  }
+}
+
 .content-head .icon-button {
   @include icon-button(30px);
   background: transparent;

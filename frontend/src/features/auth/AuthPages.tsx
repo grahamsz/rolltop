@@ -6,6 +6,7 @@ import type { FormEvent } from "react";
 import { api } from "../../api";
 import type { Bootstrap } from "../../types";
 import { messageFromError } from "../../lib/errors";
+import { LogoMark } from "../../components/Icon";
 
 /** SetupPage creates the first local user and then asks App to refresh bootstrap state. */
 export function SetupPage({
@@ -40,7 +41,7 @@ export function SetupPage({
 
   return (
     <main className="auth-page">
-      <div className="auth-brand">rolltop</div>
+      <div className="auth-brand"><LogoMark />rolltop</div>
       <form className="panel" onSubmit={submit}>
         <h1>First-run setup</h1>
         {error ? <div className="error">{error}</div> : null}
@@ -104,7 +105,7 @@ export function LoginPage({
 
   return (
     <main className="auth-page">
-      <div className="auth-brand">rolltop</div>
+      <div className="auth-brand"><LogoMark />rolltop</div>
       <form className="panel" onSubmit={submit}>
         <h1>Sign in</h1>
         {error ? <div className="error">{error}</div> : null}

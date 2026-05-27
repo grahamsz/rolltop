@@ -546,6 +546,7 @@ export function SettingsView({
   location,
   navigate,
   refreshChrome,
+  logout,
   addToast
 }: {
   csrf: string;
@@ -555,6 +556,7 @@ export function SettingsView({
   location: LocationState;
   navigate: (url: string) => void;
   refreshChrome: () => Promise<Bootstrap | null>;
+  logout: () => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const route = settingsRouteFromPath(location.path);
@@ -1330,6 +1332,26 @@ export function SettingsView({
     );
   }
 
+  function renderProfileSettings() {
+    const displayName = user.name || user.email;
+    return (
+      <section className="panel profile-settings">
+        <div className="panel-headline profile-settings-headline">
+          <div>
+            <h2>Profile</h2>
+            <div className="muted">Signed in as {displayName}</div>
+          </div>
+          <button className="secondary" type="button" onClick={logout}>Log out</button>
+        </div>
+        <div className="profile-account-summary">
+          <span className="settings-field-label">Account</span>
+          <strong>{displayName}</strong>
+          <small>{user.email}</small>
+        </div>
+      </section>
+    );
+  }
+
   function renderDisplaySettings() {
     return (
       <form className="panel display-settings" onSubmit={saveProfile}>
@@ -1784,6 +1806,7 @@ export function SettingsView({
       </div>
       {loading ? <div className="panel muted">Loading settings...</div> : null}
       {notice ? <div className="notice">{notice}</div> : null}
+      {renderProfileSettings()}
       <div className="settings-server-index">
         {renderIMAPList()}
         {renderSMTPList()}

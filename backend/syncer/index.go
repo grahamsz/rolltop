@@ -23,6 +23,9 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 	}
 	date := parsed.Date
 	if date.IsZero() {
+		date = item.Date
+	}
+	if date.IsZero() {
 		date = item.InternalDate
 	}
 

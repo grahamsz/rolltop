@@ -26,6 +26,7 @@ export function RouteView({
   hiddenMessageIDs,
   openCompose,
   refreshChrome,
+  logout,
   addToast
 }: {
   csrf: string;
@@ -39,6 +40,7 @@ export function RouteView({
   hiddenMessageIDs: Set<number>;
   openCompose: (query?: string) => void;
   refreshChrome: () => Promise<Bootstrap | null>;
+  logout: () => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   if (location.path === "/search" || location.path.startsWith("/search/")) {
@@ -66,7 +68,7 @@ export function RouteView({
     return <ContactsView csrf={csrf} addToast={addToast} />;
   }
   if (location.path === "/settings/account" || location.path.startsWith("/settings/account/")) {
-    return <SettingsView csrf={csrf} user={user} mailboxes={mailboxes} activeSyncRuns={activeSyncRuns} location={location} navigate={navigate} refreshChrome={refreshChrome} addToast={addToast} />;
+    return <SettingsView csrf={csrf} user={user} mailboxes={mailboxes} activeSyncRuns={activeSyncRuns} location={location} navigate={navigate} refreshChrome={refreshChrome} logout={logout} addToast={addToast} />;
   }
   if (location.path === "/admin/users" && user.is_admin) {
     return <AdminUsersView csrf={csrf} refreshChrome={refreshChrome} addToast={addToast} />;

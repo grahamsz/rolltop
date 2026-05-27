@@ -22,6 +22,7 @@ type fakeFetcher struct {
 	messages      map[int64][]syncer.FetchedMessage
 	calls         []int64
 	fetchUIDCalls [][]uint32
+	appendDate    time.Time
 }
 
 type cancelingFetcher struct {
@@ -107,7 +108,11 @@ func (f *fakeFetcher) AppendMessage(ctx context.Context, account store.MailAccou
 			highest = msg.UID
 		}
 	}
-	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: highest + 1, InternalDate: date, Size: int64(len(raw)), Flags: []string{"\\Seen"}, Raw: raw}
+	internalDate := date
+	if !f.appendDate.IsZero() {
+		internalDate = f.appendDate
+	}
+	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: highest + 1, InternalDate: internalDate, Size: int64(len(raw)), Flags: []string{"\\Seen"}, Raw: raw}
 	f.messages[account.UserID] = append(f.messages[account.UserID], msg)
 	return msg, nil
 }
@@ -877,6 +882,200 @@ func TestOnDemandFetchCachesRawBlobButPlainFetchDoesNot(t *testing.T) {
 	}
 }
 
+func TestCopyMessageAcrossAccountsAppendsAndStoresDestination(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchSvc, err := search.Open(filepath.Join(dir, "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchSvc.Close()
+	user, err := db.CreateUser(ctx, "copy@example.test", "Copy", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceAccount, err := db.CreateMailAccount(ctx, store.MailAccount{UserID: user.ID, Email: "source@example.test", Host: "imap.source.test", Port: 993, Username: "source", EncryptedPassword: "secret", UseTLS: true, Mailbox: store.DefaultMailboxPattern})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destAccount, err := db.CreateMailAccount(ctx, store.MailAccount{UserID: user.ID, Email: "demo@example.test", Host: "imap.demo.test", Port: 993, Username: "demo", EncryptedPassword: "secret", UseTLS: true, Mailbox: store.DefaultMailboxPattern})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceMailbox, err := db.GetOrCreateMailbox(ctx, user.ID, sourceAccount.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destMailbox, err := db.GetOrCreateMailbox(ctx, user.ID, destAccount.ID, "Demo Spam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteBlob, err := db.CreateBlob(ctx, store.BlobRecord{UserID: user.ID, Kind: "message-remote", Path: "remote/source.eml", SHA256: "remote", Size: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceRaw := []byte(rawMessage("spam@example.test", "Demo spam copy", "spam body", false))
+	sourceMessage, err := db.CreateMessage(ctx, store.CreateMessage{
+		UserID:          user.ID,
+		AccountID:       sourceAccount.ID,
+		MailboxID:       sourceMailbox.ID,
+		BlobID:          remoteBlob.ID,
+		MessageIDHeader: "<demo-spam-copy@example.test>",
+		Subject:         "Demo spam copy",
+		FromAddr:        "spam@example.test",
+		Date:            time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+		InternalDate:    time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+		UID:             42,
+		BodyText:        store.MessageBodyPreview("spam body", store.DefaultMessageBodyPreviewBytes),
+		IsRead:          false,
+		IsStarred:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &fakeFetcher{messages: map[int64][]syncer.FetchedMessage{
+		user.ID: {{Mailbox: "INBOX", UID: 42, InternalDate: sourceMessage.InternalDate, Raw: sourceRaw}},
+	}}
+	service := &syncer.Service{Store: db, Blobs: blob.New(dir), Search: searchSvc, Fetcher: fetcher}
+
+	copied, err := service.CopyMessages(ctx, user.ID, []int64{sourceMessage.ID}, destMailbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied != 1 {
+		t.Fatalf("copied = %d, want 1", copied)
+	}
+	if _, err := db.GetMessageForUser(ctx, user.ID, sourceMessage.ID); err != nil {
+		t.Fatalf("source message missing after copy: %v", err)
+	}
+	destMessages, err := db.ListMessagesForMailbox(ctx, user.ID, destMailbox.ID, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(destMessages) != 1 {
+		t.Fatalf("destination messages = %d, want 1", len(destMessages))
+	}
+	copiedMessage := destMessages[0]
+	if copiedMessage.AccountID != destAccount.ID || copiedMessage.MailboxID != destMailbox.ID || copiedMessage.Subject != "Demo spam copy" {
+		t.Fatalf("copied message = %+v, want dest account/mailbox with original subject", copiedMessage)
+	}
+	if copiedMessage.IsRead || !copiedMessage.IsStarred {
+		t.Fatalf("copied flags read=%v starred=%v, want unread/starred", copiedMessage.IsRead, copiedMessage.IsStarred)
+	}
+}
+
+func TestCopyMessagesPreservesSourceDateWhenDestinationUsesAppendDate(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchSvc, err := search.Open(filepath.Join(dir, "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchSvc.Close()
+	user, err := db.CreateUser(ctx, "copy-date@example.test", "Copy Date", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceAccount, err := db.CreateMailAccount(ctx, store.MailAccount{UserID: user.ID, Email: "source-date@example.test", Host: "imap.source.test", Port: 993, Username: "source-date", EncryptedPassword: "secret", UseTLS: true, Mailbox: store.DefaultMailboxPattern})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destAccount, err := db.CreateMailAccount(ctx, store.MailAccount{UserID: user.ID, Email: "dest-date@example.test", Host: "imap.dest.test", Port: 993, Username: "dest-date", EncryptedPassword: "secret", UseTLS: true, Mailbox: store.DefaultMailboxPattern})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceMailbox, err := db.GetOrCreateMailbox(ctx, user.ID, sourceAccount.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destMailbox, err := db.GetOrCreateMailbox(ctx, user.ID, destAccount.ID, "Copied")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDate := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	newDate := time.Date(2026, 1, 3, 9, 0, 0, 0, time.UTC)
+	appendDate := time.Date(2026, 5, 27, 9, 0, 0, 0, time.UTC)
+	oldRaw := []byte(rawMessageNoDate("old@example.test", "Old no date", "old body"))
+	newRaw := []byte(rawMessageNoDate("new@example.test", "New no date", "new body"))
+	oldBlob, err := db.CreateBlob(ctx, store.BlobRecord{UserID: user.ID, Kind: "message-remote", Path: "remote/old-no-date.eml", SHA256: "old", Size: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newBlob, err := db.CreateBlob(ctx, store.BlobRecord{UserID: user.ID, Kind: "message-remote", Path: "remote/new-no-date.eml", SHA256: "new", Size: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldMessage, err := db.CreateMessage(ctx, store.CreateMessage{
+		UserID:       user.ID,
+		AccountID:    sourceAccount.ID,
+		MailboxID:    sourceMailbox.ID,
+		BlobID:       oldBlob.ID,
+		Subject:      "Old no date",
+		FromAddr:     "old@example.test",
+		Date:         oldDate,
+		InternalDate: oldDate,
+		UID:          10,
+		BodyText:     store.MessageBodyPreview("old body", store.DefaultMessageBodyPreviewBytes),
+		IsRead:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newMessage, err := db.CreateMessage(ctx, store.CreateMessage{
+		UserID:       user.ID,
+		AccountID:    sourceAccount.ID,
+		MailboxID:    sourceMailbox.ID,
+		BlobID:       newBlob.ID,
+		Subject:      "New no date",
+		FromAddr:     "new@example.test",
+		Date:         newDate,
+		InternalDate: newDate,
+		UID:          11,
+		BodyText:     store.MessageBodyPreview("new body", store.DefaultMessageBodyPreviewBytes),
+		IsRead:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &fakeFetcher{
+		messages: map[int64][]syncer.FetchedMessage{
+			user.ID: {
+				{Mailbox: "INBOX", UID: oldMessage.UID, InternalDate: oldMessage.InternalDate, Raw: oldRaw},
+				{Mailbox: "INBOX", UID: newMessage.UID, InternalDate: newMessage.InternalDate, Raw: newRaw},
+			},
+		},
+		appendDate: appendDate,
+	}
+	service := &syncer.Service{Store: db, Blobs: blob.New(dir), Search: searchSvc, Fetcher: fetcher}
+
+	if _, err := service.CopyMessages(ctx, user.ID, []int64{newMessage.ID, oldMessage.ID}, destMailbox.ID); err != nil {
+		t.Fatal(err)
+	}
+	destMessages, err := db.ListMessagesForMailbox(ctx, user.ID, destMailbox.ID, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(destMessages) != 2 {
+		t.Fatalf("destination messages = %d, want 2", len(destMessages))
+	}
+	if destMessages[0].Subject != "New no date" || !destMessages[0].Date.Equal(newDate) {
+		t.Fatalf("first copied message = %q %s, want New no date at %s", destMessages[0].Subject, destMessages[0].Date, newDate)
+	}
+	if destMessages[1].Subject != "Old no date" || !destMessages[1].Date.Equal(oldDate) {
+		t.Fatalf("second copied message = %q %s, want Old no date at %s", destMessages[1].Subject, destMessages[1].Date, oldDate)
+	}
+}
+
 func account(userID int64, encryptedPassword string) store.MailAccount {
 	return store.MailAccount{
 		UserID:              userID,
@@ -896,4 +1095,8 @@ func rawMessage(from, subject, body string, withAttachment bool) string {
 		return fmt.Sprintf("From: %s\r\nTo: archive@example.test\r\nSubject: %s\r\nDate: Fri, 01 May 2026 12:00:00 +0000\r\nMessage-ID: <%s@example.test>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n", from, subject, strings.ReplaceAll(subject, " ", "-"), body)
 	}
 	return fmt.Sprintf("From: %s\r\nTo: archive@example.test\r\nSubject: %s\r\nDate: Fri, 01 May 2026 12:00:00 +0000\r\nMessage-ID: <%s@example.test>\r\nContent-Type: multipart/mixed; boundary=mailmirror-test\r\n\r\n--mailmirror-test\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n--mailmirror-test\r\nContent-Type: text/plain; name=\"note.txt\"\r\nContent-Disposition: attachment; filename=\"note.txt\"\r\nContent-Transfer-Encoding: base64\r\n\r\nbm90ZSBib2R5\r\n--mailmirror-test--\r\n", from, subject, strings.ReplaceAll(subject, " ", "-"), body)
+}
+
+func rawMessageNoDate(from, subject, body string) string {
+	return fmt.Sprintf("From: %s\r\nTo: archive@example.test\r\nSubject: %s\r\nMessage-ID: <%s@example.test>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n", from, subject, strings.ReplaceAll(subject, " ", "-"), body)
 }

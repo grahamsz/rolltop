@@ -61,6 +61,9 @@
   .auth-brand::after {
     content: "_";
     display: inline-block;
+    align-self: flex-end;
+    line-height: .82;
+    transform: translateY(1px);
     color: var(--accent);
     animation: matrix-cursor-blink 1s steps(1, end) infinite;
   }
@@ -79,10 +82,21 @@
     letter-spacing: .04em;
   }
 
-  .brand .icon,
-  .auth-brand .icon {
-    margin-right: 9px;
+  .brand .brand-logo,
+  .auth-brand .brand-logo {
+    margin-right: 17px;
     filter: drop-shadow(0 0 10px rgba(0, 245, 160, .55));
+  }
+
+  .brand .brand-logo path,
+  .auth-brand .brand-logo path {
+    display: none;
+  }
+
+  .brand .brand-logo path:nth-of-type(2),
+  .auth-brand .brand-logo path:nth-of-type(2) {
+    display: block;
+    stroke: #fff;
   }
 
   .sidebar {

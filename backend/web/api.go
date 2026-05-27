@@ -71,6 +71,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiAdminRemoteImageBlocklist(w, r)
 	case path == "messages/bulk-move":
 		s.apiBulkMoveMessages(w, r)
+	case path == "messages/bulk-copy":
+		s.apiBulkCopyMessages(w, r)
 	case strings.HasPrefix(path, "messages/"):
 		s.apiMessagePath(w, r, strings.TrimPrefix(path, "messages/"))
 	case strings.HasPrefix(path, "sync-runs/"):

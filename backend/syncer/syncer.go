@@ -39,6 +39,7 @@ type MailboxPlan struct {
 type FetchedMessage struct {
 	Mailbox      string
 	UID          uint32
+	Date         time.Time
 	InternalDate time.Time
 	Size         int64
 	Flags        []string

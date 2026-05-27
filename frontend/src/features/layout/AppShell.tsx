@@ -4,9 +4,9 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import type { DragEvent, FormEvent, MouseEvent, ReactNode } from "react";
 import { api } from "../../api";
-import type { AppShellProps, LocationState, MoveTarget } from "../../appTypes";
+import type { AppShellProps, LocationState, MessageTransferAction, MoveTarget } from "../../appTypes";
 import type { Bootstrap, Mailbox, SyncRun, User } from "../../types";
-import { Icon } from "../../components/Icon";
+import { Icon, LogoMark } from "../../components/Icon";
 import { folderTree, nodeContainsMailbox, type FolderNode } from "../../lib/folders";
 import { mailRoute, mailURL, searchRoute, searchURL, currentLocation } from "../../lib/routes";
 import { createPluginSet } from "../../plugins/registry";
@@ -34,7 +34,6 @@ export function AppShell({
   enabledPlugins,
   location,
   navigate,
-  logout,
   onMoveMessages,
   openCompose,
   refreshChrome,
@@ -57,7 +56,6 @@ export function AppShell({
         enabledPlugins={enabledPlugins}
         location={location}
         navigate={navigate}
-        logout={logout}
         notificationsEnabled={notificationsEnabled}
         toggleNotifications={toggleNotifications}
         onMenu={() => setMobileSidebarOpen(true)}
@@ -156,7 +154,6 @@ function Topbar({
   enabledPlugins,
   location,
   navigate,
-  logout,
   notificationsEnabled,
   toggleNotifications,
   onMenu
@@ -166,7 +163,6 @@ function Topbar({
   enabledPlugins: string[];
   location: LocationState;
   navigate: (url: string) => void;
-  logout: () => void;
   notificationsEnabled: boolean;
   toggleNotifications: () => Promise<void>;
   onMenu: () => void;
@@ -212,8 +208,8 @@ function Topbar({
           navigate("/mail");
         }}
       >
-        <Icon name="mailmirror" />
-        rolltop
+        <LogoMark />
+        <span className="brand-wordmark">rolltop</span>
       </a>
       <form className="top-search" onSubmit={submit}>
         <Icon name="search" />
@@ -251,7 +247,6 @@ function Topbar({
           </button>
         ) : null}
         <span className="user-chip">{user.name || user.email}</span>
-        <button className="secondary" type="button" onClick={logout}>Logout</button>
       </nav>
     </header>
   );
@@ -292,7 +287,7 @@ function Sidebar({
   navigate: (url: string) => void;
   openCompose: (query?: string) => void;
   refreshChrome: () => Promise<Bootstrap | null>;
-  onMoveMessages: (messageIDs: number[], mailbox: MoveTarget) => void;
+  onMoveMessages: (messageIDs: number[], mailbox: MoveTarget, action?: MessageTransferAction) => void;
   mobileOpen: boolean;
   onClose: () => void;
 }) {
@@ -313,7 +308,7 @@ function Sidebar({
 
   function canAcceptDraggedMessages(event: DragEvent) {
     const types = Array.from(event.dataTransfer.types);
-    return types.includes("application/x-mailmirror-messages") || types.includes("application/x-mailmirror-message");
+    return types.includes("application/x-mailmirror-message-transfer") || types.includes("application/x-mailmirror-messages") || types.includes("application/x-mailmirror-message");
   }
 
   function onDragEnter(event: DragEvent, mailboxID: number) {
@@ -322,10 +317,14 @@ function Sidebar({
     setDropID(mailboxID);
   }
 
+  function dragCopyRequested(event: DragEvent) {
+    return event.ctrlKey || event.metaKey || event.dataTransfer.dropEffect === "copy";
+  }
+
   function onDragOver(event: DragEvent, mailboxID: number) {
     if (!canAcceptDraggedMessages(event)) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
+    event.dataTransfer.dropEffect = dragCopyRequested(event) ? "copy" : "move";
     setDropID(mailboxID);
   }
 
@@ -338,9 +337,23 @@ function Sidebar({
   function onDrop(event: DragEvent, mailbox: Mailbox) {
     event.preventDefault();
     setDropID(null);
+    const transfer = event.dataTransfer.getData("application/x-mailmirror-message-transfer");
     const bulk = event.dataTransfer.getData("application/x-mailmirror-messages");
     let ids: number[] = [];
-    if (bulk) {
+    let sourceAccountIDs: number[] = [];
+    if (transfer) {
+      try {
+        const parsed = JSON.parse(transfer) as { ids?: unknown; account_ids?: unknown };
+        if (Array.isArray(parsed.ids)) ids = parsed.ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0);
+        if (Array.isArray(parsed.account_ids)) {
+          sourceAccountIDs = parsed.account_ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0);
+        }
+      } catch {
+        ids = [];
+        sourceAccountIDs = [];
+      }
+    }
+    if (ids.length === 0 && bulk) {
       try {
         const parsed = JSON.parse(bulk) as unknown;
         if (Array.isArray(parsed)) ids = parsed.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0);
@@ -354,7 +367,8 @@ function Sidebar({
       if (Number.isFinite(messageID) && messageID > 0) ids = [messageID];
     }
     if (ids.length > 0) {
-      onMoveMessages(ids, { id: mailbox.id, name: mailbox.name });
+      const crossAccount = sourceAccountIDs.some((accountID) => mailbox.account_id > 0 && accountID !== mailbox.account_id);
+      onMoveMessages(ids, { id: mailbox.id, name: mailbox.name }, crossAccount || dragCopyRequested(event) ? "copy" : "move");
     }
   }
 

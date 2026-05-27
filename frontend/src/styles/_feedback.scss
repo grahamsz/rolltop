@@ -10,6 +10,16 @@
   font-weight: 700;
   margin-bottom: 18px;
   color: var(--accent-strong);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+
+  .brand-logo {
+    width: 42px;
+    height: 44px;
+    flex: none;
+    display: block;
+  }
 }
 
 .error {
@@ -37,11 +47,11 @@
   gap: 12px;
   margin: 0 0 16px;
   padding: 14px 16px;
-  border: 1px solid #f0ae5d;
+  border: 1px solid #d2a088;
   border-left: 5px solid var(--accent-warm);
   border-radius: 8px;
-  background: #fff7d9;
-  color: #4e3423;
+  background: #f7e7df;
+  color: #44291f;
   box-shadow: 0 2px 8px rgba(94, 55, 18, .14);
 
   > .icon {
@@ -57,7 +67,7 @@
   }
 
   strong {
-    color: #2c1d17;
+    color: #151f2e;
     font-size: 15px;
   }
 

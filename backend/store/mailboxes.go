@@ -547,7 +547,12 @@ func defaultMailboxIcon(name string, role string) string {
 }
 
 func defaultMailboxShowInAllMail(role string) bool {
-	return normalizeMailboxRole(role) != "trash"
+	switch normalizeMailboxRole(role) {
+	case "drafts", "trash":
+		return false
+	default:
+		return true
+	}
 }
 
 func localMailboxSyncPercent(localMessages, totalMessages int) int {

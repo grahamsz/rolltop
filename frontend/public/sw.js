@@ -1,5 +1,5 @@
-const STATIC_CACHE = "rolltop-static-v1";
-const STATIC_ASSETS = ["/", "/mail", "/manifest.webmanifest", "/icon.svg"];
+const STATIC_CACHE = "rolltop-static-v3";
+const STATIC_ASSETS = ["/", "/mail", "/manifest.webmanifest", "/icon.svg", "/icon.svg?v=transparent-logo-v2"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(STATIC_CACHE).then((cache) => cache.addAll(STATIC_ASSETS)));

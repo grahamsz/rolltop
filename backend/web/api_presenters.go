@@ -191,6 +191,7 @@ func (s *Server) accountCredentialNotice(ctx context.Context, userID int64) (boo
 func apiMessageFromRecord(msg store.MessageRecord, snippet string) apiMessage {
 	return apiMessage{
 		ID:             msg.ID,
+		AccountID:      msg.AccountID,
 		MailboxID:      msg.MailboxID,
 		Subject:        msg.Subject,
 		FromAddr:       msg.FromAddr,
