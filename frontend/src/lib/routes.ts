@@ -44,22 +44,22 @@ export function mailURL(mailboxID: string | number | null, page = 1): string {
   return mailboxID ? `/mailbox/${mailboxID}${suffix}` : `/mail${suffix}`;
 }
 
-/** Parse /search/q/:query/pN slugs into search state; sort is currently always best. */
-export function searchRoute(path: string): { query: string; sort: string; page: number } {
+/** Parse /search/q/:query/pN slugs into search state. */
+export function searchRoute(path: string): { query: string; page: number } {
   const parts = path.split("/").filter(Boolean);
   if (parts[0] === "search" && parts[1]?.startsWith("p")) {
-    return { query: "", sort: "best", page: positiveInt(parts[1], 1) };
+    return { query: "", page: positiveInt(parts[1], 1) };
   }
-  if (parts[0] !== "search" || parts[1] !== "q") return { query: "", sort: "best", page: 1 };
+  if (parts[0] !== "search" || parts[1] !== "q") return { query: "", page: 1 };
   const query = decodePathSegment(parts[2]);
   let page = 1;
   for (const part of parts.slice(3)) {
     if (part.startsWith("p")) page = positiveInt(part, page);
   }
-  return { query, sort: "best", page };
+  return { query, page };
 }
 
-/** searchURL builds the friendly best-match search URL for a query/page pair. */
+/** searchURL builds the friendly search URL for a query/page pair. */
 export function searchURL(query: string, page = 1): string {
   const trimmed = query.trim();
   if (!trimmed) return page > 1 ? `/search/p${page}` : "/search";

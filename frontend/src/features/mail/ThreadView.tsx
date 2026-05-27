@@ -794,13 +794,33 @@ function SearchExplanationPanel({ state, onClose }: { state: SearchExplanationSt
           </div>
           {data.field_matches && data.field_matches.length > 0 ? (
             <div className="search-explanation-section">
-              <span className="search-explanation-label">Fields</span>
-              <div className="search-explanation-chips">
+              <span className="search-explanation-label">Matched Sections</span>
+              <div className="search-explanation-contributions">
                 {data.field_matches.map((match) => (
-                  <span className="search-explanation-chip" key={match.field}>
-                    {searchFieldLabel(match.field)}{match.terms.length > 0 ? `: ${match.terms.join(", ")}` : ""}
-                  </span>
+                  <div className="search-explanation-contribution" key={match.field}>
+                    <strong>{searchFieldLabel(match.field)}</strong>
+                    <span>{match.terms.length > 0 ? match.terms.join(", ") : "Matched"}</span>
+                  </div>
                 ))}
+              </div>
+            </div>
+          ) : null}
+          {data.score_effect ? (
+            <div className="search-explanation-section">
+              <span className="search-explanation-label">Rank Score</span>
+              <div className="search-explanation-score">
+                <div>
+                  <strong>{formatSearchScore(data.score_effect.final_score)}</strong>
+                  <span>final score</span>
+                </div>
+                <div>
+                  <strong>{formatSearchScore(data.score_effect.baseline_score)}</strong>
+                  <span>without recency/sender nudges</span>
+                </div>
+                <div className={data.score_effect.delta >= 0 ? "positive" : "negative"}>
+                  <strong>{formatSignedSearchScore(data.score_effect.delta)}</strong>
+                  <span>nudge effect</span>
+                </div>
               </div>
             </div>
           ) : null}
@@ -820,7 +840,7 @@ function SearchExplanationPanel({ state, onClose }: { state: SearchExplanationSt
           ) : null}
           {data.raw ? (
             <details className="search-explanation-raw">
-              <summary>Scoring detail</summary>
+              <summary>Debug scorer tree</summary>
               <ScoreExplanationTree node={data.raw} />
             </details>
           ) : null}
@@ -885,6 +905,12 @@ function formatSearchScore(value: number): string {
   if (Math.abs(value) >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
   if (Math.abs(value) >= 10) return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
   return value.toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+function formatSignedSearchScore(value: number): string {
+  const formatted = formatSearchScore(value);
+  if (!Number.isFinite(value) || value === 0) return formatted;
+  return value > 0 ? `+${formatted}` : formatted;
 }
 
 // QuotedDetails lazy-renders the full body iframe only after the user asks for

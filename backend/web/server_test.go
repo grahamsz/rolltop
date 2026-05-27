@@ -90,11 +90,11 @@ func TestAPIMailCachedETagShortCircuitsBeforeStore(t *testing.T) {
 func TestAPISearchCachedETagShortCircuitsBeforeSearch(t *testing.T) {
 	user := store.User{ID: 43, Email: "search-cache.test", Name: "Search Cache"}
 	server := &Server{mailListCache: newMailListCache()}
-	key := mailListCacheKey{UserID: user.ID, Page: 2, Search: true, Query: "needle", Sort: string(search.SortBest)}
+	key := mailListCacheKey{UserID: user.ID, Page: 2, Search: true, Query: "needle"}
 	etag := `"cached-search-page"`
 	server.rememberMailListETag(key, etag, server.mailListGeneration(user.ID))
 
-	req := httptest.NewRequest(http.MethodGet, "/api/search?q=needle&page=2&sort=best", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=needle&page=2", nil)
 	req.Header.Set("If-None-Match", etag)
 	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: user}))
 	rec := httptest.NewRecorder()
@@ -136,7 +136,7 @@ func TestAPISearchWritesTimingHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := &Server{store: db, search: searchSvc, mailListCache: newMailListCache()}
-	req := httptest.NewRequest(http.MethodGet, "/api/search?q=needle&page=1&sort=best", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=needle&page=1", nil)
 	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: user}))
 	rec := httptest.NewRecorder()
 
@@ -152,7 +152,7 @@ func TestAPISearchWritesTimingHeaders(t *testing.T) {
 		}
 	}
 	stats := rec.Header().Get("X-MailMirror-Search-Stats")
-	for _, part := range []string{"cache=miss", "sort=best", "page=1", "batches=1", "raw_hits=0", "seeds=0"} {
+	for _, part := range []string{"cache=miss", "page=1", "batches=1", "raw_hits=0", "seeds=0"} {
 		if !strings.Contains(stats, part) {
 			t.Fatalf("search stats %q missing %q", stats, part)
 		}

@@ -251,21 +251,21 @@ func TestFakeSyncTenantIsolation(t *testing.T) {
 	if _, err := db.GetSyncRunForUser(ctx, user2.ID, run1.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("user2 guessed user1 sync run: %v", err)
 	}
-	ids, err := searchSvc.Search(ctx, user2.ID, "tenant one", search.SortBest, 10, 0)
+	ids, err := searchSvc.Search(ctx, user2.ID, "tenant one", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 0 {
 		t.Fatalf("user2 search returned user1 hits: %v", ids)
 	}
-	ids, err = searchSvc.Search(ctx, user1.ID, "has:attachment filename:note.txt", search.SortBest, 10, 0)
+	ids, err = searchSvc.Search(ctx, user1.ID, "has:attachment filename:note.txt", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 1 || ids[0] != messages1[0].ID {
 		t.Fatalf("user1 attachment search = %v", ids)
 	}
-	ids, err = searchSvc.Search(ctx, user1.ID, "is:read", search.SortBest, 10, 0)
+	ids, err = searchSvc.Search(ctx, user1.ID, "is:read", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,11 +276,11 @@ func TestFakeSyncTenantIsolation(t *testing.T) {
 	if _, err := service.SyncUser(ctx, user2.ID); err != nil {
 		t.Fatal(err)
 	}
-	user1Hits, err := searchSvc.Search(ctx, user1.ID, "shared needle", search.SortBest, 10, 0)
+	user1Hits, err := searchSvc.Search(ctx, user1.ID, "shared needle", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	user2Hits, err := searchSvc.Search(ctx, user2.ID, "shared needle", search.SortBest, 10, 0)
+	user2Hits, err := searchSvc.Search(ctx, user2.ID, "shared needle", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestRepairMailboxSearchIndexIndexesMissingIDsWhenCountsMatch(t *testing.T) 
 	if count != 1 {
 		t.Fatalf("search count = %d", count)
 	}
-	ids, err := searchSvc.Search(ctx, user.ID, "needleonly", search.SortBest, 10, 0)
+	ids, err := searchSvc.Search(ctx, user.ID, "needleonly", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +467,7 @@ func TestRepairMailboxSearchIndexIndexesMissingIDsWhenCountsMatch(t *testing.T) 
 	if savedRun.CurrentMailbox != mailbox.Name {
 		t.Fatalf("current mailbox = %q, want %q", savedRun.CurrentMailbox, mailbox.Name)
 	}
-	ids, err = searchSvc.Search(ctx, user.ID, "needleonly", search.SortBest, 10, 0)
+	ids, err = searchSvc.Search(ctx, user.ID, "needleonly", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

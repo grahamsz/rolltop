@@ -354,14 +354,18 @@
 }
 
 .search-explanation-chips,
-.search-explanation-boosts {
+.search-explanation-boosts,
+.search-explanation-contributions,
+.search-explanation-score {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
 }
 
 .search-explanation-chip,
-.search-explanation-boost {
+.search-explanation-boost,
+.search-explanation-contribution,
+.search-explanation-score > div {
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface);
@@ -369,6 +373,32 @@
 
 .search-explanation-chip {
   padding: 5px 8px;
+}
+
+.search-explanation-contribution,
+.search-explanation-score > div {
+  padding: 7px 9px;
+  display: grid;
+  gap: 2px;
+  min-width: 150px;
+
+  span {
+    color: var(--muted);
+  }
+}
+
+.search-explanation-score {
+  > div {
+    min-width: 170px;
+  }
+
+  .positive strong {
+    color: var(--accent-strong);
+  }
+
+  .negative strong {
+    color: var(--danger, #a33a2b);
+  }
 }
 
 .search-explanation-boost {

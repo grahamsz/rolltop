@@ -156,8 +156,8 @@ function mailListURL(mailboxID: string | null, page: number) {
   return `/api/mail?${q}`;
 }
 
-function searchListURL(query: string, sort: string, page: number) {
-  const q = new URLSearchParams({ q: query, sort, page: String(page) });
+function searchListURL(query: string, page: number) {
+  const q = new URLSearchParams({ q: query, page: String(page) });
   return `/api/search?${q}`;
 }
 
@@ -186,10 +186,10 @@ export const api = {
     cachedJSON<MailListResponse>(mailListURL(mailboxID, page)),
   prefetchMail: (mailboxID: string | null, page: number) =>
     prefetchJSON<MailListResponse>(mailListURL(mailboxID, page)),
-  search: (query: string, sort: string, page: number) =>
-    getJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(searchListURL(query, sort, page)),
-  prefetchSearch: (query: string, sort: string, page: number) =>
-    prefetchJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(searchListURL(query, sort, page)),
+  search: (query: string, page: number) =>
+    getJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(searchListURL(query, page)),
+  prefetchSearch: (query: string, page: number) =>
+    prefetchJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(searchListURL(query, page)),
   brandIcons: (domains: string[]) => {
     const q = new URLSearchParams();
     domains.slice(0, 40).forEach((domain) => q.append("domain", domain));

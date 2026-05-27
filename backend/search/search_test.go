@@ -27,21 +27,21 @@ func TestOpenPerUserKeepsDuplicateMessageIDsSeparate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ids, err := svc.Search(ctx, 1, "alpha", SortRecent, 10, 0)
+	ids, err := svc.Search(ctx, 1, "alpha", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 1 || ids[0] != 1 {
 		t.Fatalf("user 1 ids = %v", ids)
 	}
-	ids, err = svc.Search(ctx, 2, "alpha", SortRecent, 10, 0)
+	ids, err = svc.Search(ctx, 2, "alpha", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 0 {
 		t.Fatalf("user 2 alpha ids = %v", ids)
 	}
-	ids, err = svc.Search(ctx, 2, "beta", SortRecent, 10, 0)
+	ids, err = svc.Search(ctx, 2, "beta", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,16 +200,23 @@ func TestSearchRecentStillAppliesTerms(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ids, err := svc.Search(ctx, 1, "alpha", SortRecent, 10, 0)
+	ids, err := svc.Search(ctx, 1, "alpha", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 2 || ids[0] != 3 || ids[1] != 1 {
+	if len(ids) != 2 {
+		t.Fatalf("ids = %v", ids)
+	}
+	seen := map[int64]bool{}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	if !seen[1] || !seen[3] {
 		t.Fatalf("ids = %v", ids)
 	}
 }
 
-func TestSearchRecentStillAppliesGmailOperators(t *testing.T) {
+func TestSearchAppliesAttachmentOperator(t *testing.T) {
 	ctx := context.Background()
 	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
 	if err != nil {
@@ -226,11 +233,18 @@ func TestSearchRecentStillAppliesGmailOperators(t *testing.T) {
 	if err := svc.IndexMessage(ctx, store.MessageRecord{ID: 3, UserID: 1, Subject: "newer attachment", HasAttachments: true, Date: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)}, []AttachmentDoc{{Filename: "three.txt"}}); err != nil {
 		t.Fatal(err)
 	}
-	ids, err := svc.Search(ctx, 1, "has:attachment", SortRecent, 10, 0)
+	ids, err := svc.Search(ctx, 1, "has:attachment", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 2 || ids[0] != 3 || ids[1] != 1 {
+	if len(ids) != 2 {
+		t.Fatalf("ids = %v", ids)
+	}
+	seen := map[int64]bool{}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	if !seen[1] || !seen[3] {
 		t.Fatalf("ids = %v", ids)
 	}
 }
@@ -254,7 +268,7 @@ func TestSearchStarredOperatorsAreTenantScoped(t *testing.T) {
 		}
 	}
 
-	ids, err := svc.Search(ctx, 1, "alpha is:starred", SortRecent, 10, 0)
+	ids, err := svc.Search(ctx, 1, "alpha is:starred", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +276,7 @@ func TestSearchStarredOperatorsAreTenantScoped(t *testing.T) {
 		t.Fatalf("starred ids = %v", ids)
 	}
 
-	ids, err = svc.Search(ctx, 1, "alpha is:notstarred", SortRecent, 10, 0)
+	ids, err = svc.Search(ctx, 1, "alpha is:notstarred", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +284,7 @@ func TestSearchStarredOperatorsAreTenantScoped(t *testing.T) {
 		t.Fatalf("not starred ids = %v", ids)
 	}
 
-	ids, err = svc.Search(ctx, 2, "alpha is:starred", SortRecent, 10, 0)
+	ids, err = svc.Search(ctx, 2, "alpha is:starred", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +312,7 @@ func TestSearchLanguageOperatorIsTenantScoped(t *testing.T) {
 		}
 	}
 
-	ids, err := svc.Search(ctx, 1, "lang:fr", SortRecent, 10, 0)
+	ids, err := svc.Search(ctx, 1, "lang:fr", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +320,7 @@ func TestSearchLanguageOperatorIsTenantScoped(t *testing.T) {
 		t.Fatalf("fr ids = %v", ids)
 	}
 
-	ids, err = svc.Search(ctx, 1, "lang:fr facture", SortRecent, 10, 0)
+	ids, err = svc.Search(ctx, 1, "lang:fr facture", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +340,7 @@ func TestSearchMatchesCompoundedSpacing(t *testing.T) {
 	if err := svc.IndexMessage(ctx, store.MessageRecord{ID: 1, UserID: 1, Subject: "River Rise notice", BodyText: "water level update", Date: time.Now()}, nil); err != nil {
 		t.Fatal(err)
 	}
-	ids, err := svc.Search(ctx, 1, "riverrise", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "riverrise", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +348,7 @@ func TestSearchMatchesCompoundedSpacing(t *testing.T) {
 		t.Fatalf("ids = %v", ids)
 	}
 
-	ids, err = svc.Search(ctx, 1, "riverrse", SortBest, 10, 0)
+	ids, err = svc.Search(ctx, 1, "riverrse", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +376,7 @@ func TestSearchPlainMultiWordRequiresAllTerms(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ids, err := svc.Search(ctx, 1, "dark room", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "dark room", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +409,7 @@ func TestSearchHitsReportsActualMatchedTerms(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	hits, err := svc.SearchHitsWithOptions(ctx, 1, "darkk room", SortBest, 10, 0, SearchOptions{})
+	hits, err := svc.SearchHitsWithOptions(ctx, 1, "darkk room", 10, 0, SearchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +488,7 @@ func TestSearchPrioritizesCompactPhraseOverFuzzyRecency(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ids, err := svc.Search(ctx, 1, "darkroom", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "darkroom", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +520,7 @@ func TestSearchDoesNotSplitShortCompactWordIntoFuzzyFragments(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ids, err := svc.Search(ctx, 1, "ilford", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "ilford", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +548,7 @@ func TestSearchDoesNotSplitCompactWordIntoThreeLetterFragments(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ids, err := svc.Search(ctx, 1, "housing", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "housing", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +576,7 @@ func TestQuotedCompactWordDoesNotSplitOrFuzzyMatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ids, err := svc.Search(ctx, 1, `"darkroom"`, SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, `"darkroom"`, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,14 +596,14 @@ func TestSearchOptionsCanDisableFuzzyMatching(t *testing.T) {
 	if err := svc.IndexMessage(ctx, store.MessageRecord{ID: 1, UserID: 1, Subject: "darkroom supplies", Date: time.Now()}, nil); err != nil {
 		t.Fatal(err)
 	}
-	ids, err := svc.Search(ctx, 1, "darkrom", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "darkrom", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 1 || ids[0] != 1 {
 		t.Fatalf("default fuzzy ids = %v", ids)
 	}
-	ids, err = svc.SearchWithOptions(ctx, 1, "darkrom", SortBest, 10, 0, SearchOptions{Behavior: SearchBehavior{Fuzzy: "off"}})
+	ids, err = svc.SearchWithOptions(ctx, 1, "darkrom", 10, 0, SearchOptions{Behavior: SearchBehavior{Fuzzy: "off"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -609,14 +623,14 @@ func TestSearchOptionsCanExcludeAttachmentText(t *testing.T) {
 	if err := svc.IndexMessage(ctx, store.MessageRecord{ID: 1, UserID: 1, Subject: "plain note", Date: time.Now(), HasAttachments: true}, []AttachmentDoc{{Filename: "report.pdf", ContentType: "application/pdf", Text: "peculiarterm"}}); err != nil {
 		t.Fatal(err)
 	}
-	ids, err := svc.Search(ctx, 1, "peculiarterm", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "peculiarterm", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 1 || ids[0] != 1 {
 		t.Fatalf("default attachment ids = %v", ids)
 	}
-	ids, err = svc.SearchWithOptions(ctx, 1, "peculiarterm", SortBest, 10, 0, SearchOptions{Behavior: SearchBehavior{AttachmentWeight: "off"}})
+	ids, err = svc.SearchWithOptions(ctx, 1, "peculiarterm", 10, 0, SearchOptions{Behavior: SearchBehavior{AttachmentWeight: "off"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -645,7 +659,7 @@ func TestSearchMatchesFromDomain(t *testing.T) {
 	}
 
 	for _, query := range []string{"mxroute.com", "from:mxroute.com", "from:@mxroute.com"} {
-		ids, err := svc.Search(ctx, 1, query, SortBest, 10, 0)
+		ids, err := svc.Search(ctx, 1, query, 10, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -675,7 +689,7 @@ func TestSearchFromFullEmailRequiresLocalAndDomain(t *testing.T) {
 		}
 	}
 
-	ids, err := svc.Search(ctx, 1, "from:target.sender@example.com", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "from:target.sender@example.com", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -723,7 +737,7 @@ func TestSearchPrioritizesExactSenderAndSubjectCompound(t *testing.T) {
 		}
 	}
 
-	ids, err := svc.Search(ctx, 1, "northstar", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "northstar", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +780,7 @@ func TestSearchBestBlendsRecencyForBroadTerms(t *testing.T) {
 		}
 	}
 
-	ids, err := svc.Search(ctx, 1, "hello", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "hello", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -795,7 +809,7 @@ func TestSearchNormalRecencyPromotesRecentComparableMatches(t *testing.T) {
 		}
 	}
 
-	ids, err := svc.SearchWithOptions(ctx, 1, "housing", SortBest, 10, 0, SearchOptions{Behavior: SearchBehavior{RecencyBias: "normal"}})
+	ids, err := svc.SearchWithOptions(ctx, 1, "housing", 10, 0, SearchOptions{Behavior: SearchBehavior{RecencyBias: "normal"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -823,7 +837,7 @@ func TestSearchStrongRecencyOverpowersVeryOldDenseMatches(t *testing.T) {
 		}
 	}
 
-	ids, err := svc.SearchWithOptions(ctx, 1, "housing", SortBest, 10, 0, SearchOptions{Behavior: SearchBehavior{RecencyBias: "strong"}})
+	ids, err := svc.SearchWithOptions(ctx, 1, "housing", 10, 0, SearchOptions{Behavior: SearchBehavior{RecencyBias: "strong"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -850,7 +864,7 @@ func TestSearchBoostsReadSenders(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ids, err := svc.SearchWithOptions(ctx, 1, "status", SortBest, 10, 0, SearchOptions{
+	ids, err := svc.SearchWithOptions(ctx, 1, "status", 10, 0, SearchOptions{
 		SenderBoosts: []SenderBoost{{Sender: "known@example.com", Boost: 6}},
 	})
 	if err != nil {
@@ -879,21 +893,21 @@ func TestSearchDateOperators(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ids, err := svc.Search(ctx, 1, "invoice after:2025/01/01", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "invoice after:2025/01/01", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 1 || ids[0] != 2 {
 		t.Fatalf("after ids = %v", ids)
 	}
-	ids, err = svc.Search(ctx, 1, "invoice before:2025/01/01", SortBest, 10, 0)
+	ids, err = svc.Search(ctx, 1, "invoice before:2025/01/01", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 1 || ids[0] != 1 {
 		t.Fatalf("before ids = %v", ids)
 	}
-	ids, err = svc.Search(ctx, 1, "year:2025", SortBest, 10, 0)
+	ids, err = svc.Search(ctx, 1, "year:2025", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -922,7 +936,7 @@ func TestSearchPlainNegatedTermExcludesMatches(t *testing.T) {
 		}
 	}
 
-	ids, err := svc.Search(ctx, 1, "longmont -spavia", SortBest, 10, 0)
+	ids, err := svc.Search(ctx, 1, "longmont -spavia", 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -940,9 +954,10 @@ func TestSearchSenderNameBeatsOlderBodyMentions(t *testing.T) {
 	defer svc.Close()
 
 	now := time.Now().UTC()
+	today := dayBoundary(now, false)
 	messages := []store.MessageRecord{
-		{ID: 1, UserID: 1, Subject: "Old notes", BodyText: strings.Repeat("nick ", 80), FromAddr: "Archive <archive@example.test>", Date: now.AddDate(-5, 0, 0)},
-		{ID: 2, UserID: 1, Subject: "Checking In", BodyText: "All good. nbk Nick Koncilja", FromAddr: "\"Nick Koncilja\" <nick@riverrise.com>", Date: now.Add(-30 * time.Minute)},
+		{ID: 1, UserID: 1, Subject: "Old notes", BodyText: strings.Repeat("nick ", 80), FromAddr: "Archive <archive@example.test>", Date: today.AddDate(-5, 0, 0)},
+		{ID: 2, UserID: 1, Subject: "Checking In", BodyText: "All good. nbk Nick Koncilja", FromAddr: "\"Nick Koncilja\" <nick@riverrise.com>", Date: today.Add(12 * time.Hour)},
 	}
 	for _, msg := range messages {
 		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
@@ -950,7 +965,7 @@ func TestSearchSenderNameBeatsOlderBodyMentions(t *testing.T) {
 		}
 	}
 
-	ids, err := svc.SearchWithOptions(ctx, 1, "nick", SortBest, 10, 0, SearchOptions{Behavior: SearchBehavior{RecencyBias: "normal"}})
+	ids, err := svc.SearchWithOptions(ctx, 1, "nick", 10, 0, SearchOptions{Behavior: SearchBehavior{RecencyBias: "normal"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -967,5 +982,17 @@ func TestSearchSenderNameBeatsOlderBodyMentions(t *testing.T) {
 	}
 	if len(hit.Terms) == 0 {
 		t.Fatalf("expected highlight terms for hit: %+v", hit)
+	}
+
+	boostedScore, ok, err := svc.ScoreMessageWithOptions(ctx, 1, 2, "nick after:today", SearchOptions{Behavior: SearchBehavior{RecencyBias: "normal"}})
+	if err != nil || !ok {
+		t.Fatalf("boosted score ok=%v err=%v", ok, err)
+	}
+	baselineScore, ok, err := svc.ScoreMessageWithOptions(ctx, 1, 2, "nick after:today", SearchOptions{Behavior: SearchBehavior{RecencyBias: "none", SenderBoost: false, SenderBoostSet: true}})
+	if err != nil || !ok {
+		t.Fatalf("baseline score ok=%v err=%v", ok, err)
+	}
+	if boostedScore <= baselineScore {
+		t.Fatalf("expected recency nudge to raise score: boosted=%v baseline=%v", boostedScore, baselineScore)
 	}
 }

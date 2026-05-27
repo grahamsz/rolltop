@@ -8,15 +8,14 @@ import (
 const mailListCacheMaxEntries = 512
 
 // mailListCacheKey identifies one cached conversation-list response. Mailbox
-// pages use MailboxID; search pages set Search plus normalized Query and Sort
-// so a browser ETag is only reused for the exact same result slice.
+// pages use MailboxID; search pages set Search plus normalized Query so a
+// browser ETag is only reused for the exact same result slice.
 type mailListCacheKey struct {
 	UserID    int64
 	MailboxID int64
 	Page      int
 	Search    bool
 	Query     string
-	Sort      string
 }
 
 type mailListCacheEntry struct {

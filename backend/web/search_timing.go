@@ -33,7 +33,7 @@ func (t *searchTiming) measure(target *time.Duration) func() {
 	}
 }
 
-func writeSearchTimingHeaders(w http.ResponseWriter, timing *searchTiming, sortMode string, page int) {
+func writeSearchTimingHeaders(w http.ResponseWriter, timing *searchTiming, page int) {
 	if timing == nil {
 		return
 	}
@@ -48,7 +48,6 @@ func writeSearchTimingHeaders(w http.ResponseWriter, timing *searchTiming, sortM
 	}, ", "))
 	w.Header().Set("X-MailMirror-Search-Stats", strings.Join([]string{
 		"cache=miss",
-		"sort=" + safeSearchHeaderToken(sortMode),
 		"page=" + strconv.Itoa(page),
 		"batches=" + strconv.Itoa(timing.batches),
 		"raw_hits=" + strconv.Itoa(timing.rawHits),

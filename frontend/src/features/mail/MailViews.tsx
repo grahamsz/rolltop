@@ -348,14 +348,14 @@ export function SearchView({
     setHasNext(false);
     setError("");
     api
-      .search(query, "best", page)
+      .search(query, page)
       .then((data) => {
         if (cancelled) return;
         loadedKey.current = searchKey;
         setConversations(data.conversations);
         setHasPrev(data.has_prev);
         setHasNext(data.has_next);
-        if (data.has_next) api.prefetchSearch(query, "best", page + 1);
+        if (data.has_next) api.prefetchSearch(query, page + 1);
       })
       .catch((err) => {
         if (!cancelled) {

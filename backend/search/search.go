@@ -50,14 +50,6 @@ type MessageIndexDocument struct {
 	Attachments []AttachmentDoc
 }
 
-// SortMode selects between best-match ranking and strict recent-date ordering.
-type SortMode string
-
-const (
-	SortBest   SortMode = "best"
-	SortRecent SortMode = "recent"
-)
-
 const maxCompoundFieldBytes = 128 * 1024
 const minSplitFragmentLength = 4
 
@@ -612,14 +604,14 @@ func (s *Service) CountUserMessages(ctx context.Context, userID int64) (int, err
 }
 
 // Search runs a query and returns matching message IDs with default options.
-func (s *Service) Search(ctx context.Context, userID int64, queryText string, sortMode SortMode, limit, offset int) ([]int64, error) {
-	return s.SearchWithOptions(ctx, userID, queryText, sortMode, limit, offset, SearchOptions{})
+func (s *Service) Search(ctx context.Context, userID int64, queryText string, limit, offset int) ([]int64, error) {
+	return s.SearchWithOptions(ctx, userID, queryText, limit, offset, SearchOptions{})
 }
 
 // SearchWithOptions returns only IDs for list-building callers that will hydrate
 // full conversations from SQLite.
-func (s *Service) SearchWithOptions(ctx context.Context, userID int64, queryText string, sortMode SortMode, limit, offset int, opts SearchOptions) ([]int64, error) {
-	res, err := s.search(ctx, userID, queryText, sortMode, limit, offset, opts, false)
+func (s *Service) SearchWithOptions(ctx context.Context, userID int64, queryText string, limit, offset int, opts SearchOptions) ([]int64, error) {
+	res, err := s.search(ctx, userID, queryText, limit, offset, opts, false)
 	if err != nil {
 		return nil, err
 	}
@@ -636,8 +628,8 @@ func (s *Service) SearchWithOptions(ctx context.Context, userID int64, queryText
 
 // SearchHitsWithOptions asks Bleve for term locations so the UI can show what
 // matched in snippets, attachments, and the message-detail iframe.
-func (s *Service) SearchHitsWithOptions(ctx context.Context, userID int64, queryText string, sortMode SortMode, limit, offset int, opts SearchOptions) ([]Hit, error) {
-	res, err := s.search(ctx, userID, queryText, sortMode, limit, offset, opts, true)
+func (s *Service) SearchHitsWithOptions(ctx context.Context, userID int64, queryText string, limit, offset int, opts SearchOptions) ([]Hit, error) {
+	res, err := s.search(ctx, userID, queryText, limit, offset, opts, true)
 	if err != nil {
 		return nil, err
 	}
@@ -660,7 +652,7 @@ func (s *Service) MatchMessage(ctx context.Context, userID, messageID int64, que
 // MatchMessageWithOptions uses the same query-time behavior as the search results
 // list so message-detail highlighting stays consistent with the user's profile.
 func (s *Service) MatchMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, opts SearchOptions) (Hit, bool, error) {
-	result, ok, err := s.explainMessageWithOptions(ctx, userID, messageID, queryText, SortRecent, opts, false)
+	result, ok, err := s.explainMessageWithOptions(ctx, userID, messageID, queryText, opts, false)
 	if err != nil || !ok {
 		return Hit{}, ok, err
 	}
@@ -671,10 +663,18 @@ func (s *Service) MatchMessageWithOptions(ctx context.Context, userID, messageID
 // document and requests Bleve's scorer explanation. Message-detail UI calls this
 // on demand from the action menu, not during normal search result rendering.
 func (s *Service) ExplainMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, opts SearchOptions) (ExplanationResult, bool, error) {
-	return s.explainMessageWithOptions(ctx, userID, messageID, queryText, SortBest, opts, true)
+	return s.explainMessageWithOptions(ctx, userID, messageID, queryText, opts, true)
 }
 
-func (s *Service) explainMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, sortMode SortMode, opts SearchOptions, explain bool) (ExplanationResult, bool, error) {
+func (s *Service) ScoreMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, opts SearchOptions) (float64, bool, error) {
+	result, ok, err := s.explainMessageWithOptions(ctx, userID, messageID, queryText, opts, false)
+	if err != nil || !ok {
+		return 0, ok, err
+	}
+	return result.Score, true, nil
+}
+
+func (s *Service) explainMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, opts SearchOptions, explain bool) (ExplanationResult, bool, error) {
 	select {
 	case <-ctx.Done():
 		return ExplanationResult{}, false, ctx.Err()
@@ -686,7 +686,7 @@ func (s *Service) explainMessageWithOptions(ctx context.Context, userID, message
 	}
 	docID := strconv.FormatInt(messageID, 10)
 	docQuery := bleve.NewDocIDQuery([]string{docID})
-	query := bleve.NewConjunctionQuery(buildQuery(userID, queryText, sortMode, opts), docQuery)
+	query := bleve.NewConjunctionQuery(buildQuery(userID, queryText, opts), docQuery)
 	req := bleve.NewSearchRequestOptions(query, 1, 0, false)
 	req.IncludeLocations = true
 	req.Explain = explain
@@ -714,7 +714,7 @@ func (s *Service) explainMessageWithOptions(ctx context.Context, userID, message
 
 // search applies pagination bounds, builds the tenant-scoped query, optionally
 // asks for term locations, and leaves result hydration to web/store layers.
-func (s *Service) search(ctx context.Context, userID int64, queryText string, sortMode SortMode, limit, offset int, opts SearchOptions, includeLocations bool) (*bleve.SearchResult, error) {
+func (s *Service) search(ctx context.Context, userID int64, queryText string, limit, offset int, opts SearchOptions, includeLocations bool) (*bleve.SearchResult, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -726,12 +726,9 @@ func (s *Service) search(ctx context.Context, userID int64, queryText string, so
 	if offset < 0 {
 		offset = 0
 	}
-	query := buildQuery(userID, queryText, sortMode, opts)
+	query := buildQuery(userID, queryText, opts)
 	req := bleve.NewSearchRequestOptions(query, limit, offset, false)
 	req.IncludeLocations = includeLocations
-	if sortMode == SortRecent {
-		req.SortBy([]string{"-date"})
-	}
 	index, err := s.indexForUser(userID)
 	if err != nil {
 		return nil, err
@@ -741,8 +738,8 @@ func (s *Service) search(ctx context.Context, userID int64, queryText string, so
 
 // buildQuery is the high-level search grammar bridge. It turns Gmail-like filters
 // into required clauses, text into fuzzy/compound matching clauses, and best-match
-// mode into a Boolean query with recency and sender-history boosts.
-func buildQuery(userID int64, queryText string, sortMode SortMode, opts SearchOptions) blevequery.Query {
+// ranking into a Boolean query with recency and sender-history boosts.
+func buildQuery(userID int64, queryText string, opts SearchOptions) blevequery.Query {
 	parsed := parseQuery(queryText)
 	behavior := opts.Behavior.normalized()
 	parts := []blevequery.Query{}
@@ -810,12 +807,6 @@ func buildQuery(userID int64, queryText string, sortMode SortMode, opts SearchOp
 	}
 	mustNot := negatedTextQueries(parsed.NegatedText, behavior)
 	must := bleve.NewConjunctionQuery(parts...)
-	if sortMode != SortBest {
-		if len(mustNot) == 0 {
-			return must
-		}
-		return blevequery.NewBooleanQuery([]blevequery.Query{must}, nil, mustNot)
-	}
 	should := recencyBoostQueries(time.Now().UTC(), behavior)
 	if behavior.SenderBoost {
 		should = append(should, senderBoostQueries(opts.SenderBoosts)...)
@@ -1333,13 +1324,13 @@ func recencyBoostQueries(now time.Time, behavior normalizedSearchBehavior) []ble
 		age   time.Duration
 		boost float64
 	}{
-		{36 * time.Hour, 5000},
-		{7 * 24 * time.Hour, 2500},
-		{30 * 24 * time.Hour, 1200},
-		{90 * 24 * time.Hour, 700},
-		{180 * 24 * time.Hour, 400},
-		{365 * 24 * time.Hour, 220},
-		{730 * 24 * time.Hour, 60},
+		{36 * time.Hour, 8},
+		{7 * 24 * time.Hour, 5},
+		{30 * 24 * time.Hour, 3},
+		{90 * 24 * time.Hour, 2},
+		{180 * 24 * time.Hour, 1.25},
+		{365 * 24 * time.Hour, 0.75},
+		{730 * 24 * time.Hour, 0.35},
 	}
 	switch behavior.RecencyBias {
 	case "light":
@@ -1347,24 +1338,24 @@ func recencyBoostQueries(now time.Time, behavior normalizedSearchBehavior) []ble
 			age   time.Duration
 			boost float64
 		}{
-			{36 * time.Hour, 35},
-			{7 * 24 * time.Hour, 18},
-			{30 * 24 * time.Hour, 9},
-			{180 * 24 * time.Hour, 4},
-			{730 * 24 * time.Hour, 1.5},
+			{36 * time.Hour, 2.5},
+			{7 * 24 * time.Hour, 1.5},
+			{30 * 24 * time.Hour, 0.8},
+			{180 * 24 * time.Hour, 0.35},
+			{730 * 24 * time.Hour, 0.15},
 		}
 	case "strong":
 		buckets = []struct {
 			age   time.Duration
 			boost float64
 		}{
-			{36 * time.Hour, 50000},
-			{7 * 24 * time.Hour, 25000},
-			{30 * 24 * time.Hour, 12000},
-			{90 * 24 * time.Hour, 7000},
-			{180 * 24 * time.Hour, 4000},
-			{365 * 24 * time.Hour, 2200},
-			{730 * 24 * time.Hour, 600},
+			{36 * time.Hour, 25},
+			{7 * 24 * time.Hour, 16},
+			{30 * 24 * time.Hour, 10},
+			{90 * 24 * time.Hour, 6},
+			{180 * 24 * time.Hour, 3.5},
+			{365 * 24 * time.Hour, 2},
+			{730 * 24 * time.Hour, 0.8},
 		}
 	}
 	out := make([]blevequery.Query, 0, len(buckets))

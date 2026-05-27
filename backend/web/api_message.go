@@ -189,6 +189,12 @@ type apiSearchBoost struct {
 	Boost       float64 `json:"boost,omitempty"`
 }
 
+type apiSearchScoreEffect struct {
+	FinalScore    float64 `json:"final_score"`
+	BaselineScore float64 `json:"baseline_score"`
+	Delta         float64 `json:"delta"`
+}
+
 type apiScoreExplanation struct {
 	Value    float64                `json:"value"`
 	Message  string                 `json:"message"`
@@ -259,6 +265,11 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 		})
 		return
 	}
+	scoreEffect, err := s.searchScoreEffect(r.Context(), cu.User.ID, msg.ID, query, opts, result.Score)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
 	writeJSON(w, map[string]any{
 		"matched":       true,
 		"query":         query,
@@ -266,9 +277,27 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 		"terms":         result.Terms,
 		"fields":        result.Fields,
 		"field_matches": apiSearchFieldMatches(result.FieldMatches),
+		"score_effect":  scoreEffect,
 		"boosts":        apiSearchBoosts(cu.User, msg, senderBoost),
 		"raw":           apiScoreExplanationFromRaw(result.Raw, 0),
 	})
+}
+
+func (s *Server) searchScoreEffect(ctx context.Context, userID, messageID int64, query string, opts search.SearchOptions, finalScore float64) (*apiSearchScoreEffect, error) {
+	baselineOpts := opts
+	baselineOpts.SenderBoosts = nil
+	baselineOpts.Behavior.RecencyBias = "none"
+	baselineOpts.Behavior.SenderBoost = false
+	baselineOpts.Behavior.SenderBoostSet = true
+	baselineScore, ok, err := s.search.ScoreMessageWithOptions(ctx, userID, messageID, query, baselineOpts)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return &apiSearchScoreEffect{
+		FinalScore:    finalScore,
+		BaselineScore: baselineScore,
+		Delta:         finalScore - baselineScore,
+	}, nil
 }
 
 func (s *Server) searchExplanationOptions(ctx context.Context, user store.User, msg store.MessageRecord) (search.SearchOptions, *apiSearchBoost) {
@@ -337,7 +366,7 @@ func apiRecencySearchBoost(user store.User, msg store.MessageRecord) *apiSearchB
 			return &apiSearchBoost{
 				Kind:        "recency",
 				Label:       "Recent mail",
-				Description: fmt.Sprintf("Message date is within %s; recency profile is %s. The raw Bleve range weight is intentionally hidden because it is not comparable to the final score.", bucket.label, bias),
+				Description: fmt.Sprintf("Message date is within %s; recency profile is %s. This nudge contributes to the final rank score but is not required for matching.", bucket.label, bias),
 				Value:       fmt.Sprintf("%s freshness bucket", bucket.label),
 			}
 		}
@@ -370,48 +399,44 @@ func formatSearchBoostNumber(value float64) string {
 func recencyExplanationBuckets(bias string) []struct {
 	age   time.Duration
 	label string
-	boost float64
 } {
 	switch bias {
 	case "light":
 		return []struct {
 			age   time.Duration
 			label string
-			boost float64
 		}{
-			{36 * time.Hour, "36 hours", 35},
-			{7 * 24 * time.Hour, "7 days", 18},
-			{30 * 24 * time.Hour, "30 days", 9},
-			{180 * 24 * time.Hour, "180 days", 4},
-			{730 * 24 * time.Hour, "2 years", 1.5},
+			{36 * time.Hour, "36 hours"},
+			{7 * 24 * time.Hour, "7 days"},
+			{30 * 24 * time.Hour, "30 days"},
+			{180 * 24 * time.Hour, "180 days"},
+			{730 * 24 * time.Hour, "2 years"},
 		}
 	case "strong":
 		return []struct {
 			age   time.Duration
 			label string
-			boost float64
 		}{
-			{36 * time.Hour, "36 hours", 50000},
-			{7 * 24 * time.Hour, "7 days", 25000},
-			{30 * 24 * time.Hour, "30 days", 12000},
-			{90 * 24 * time.Hour, "90 days", 7000},
-			{180 * 24 * time.Hour, "180 days", 4000},
-			{365 * 24 * time.Hour, "1 year", 2200},
-			{730 * 24 * time.Hour, "2 years", 600},
+			{36 * time.Hour, "36 hours"},
+			{7 * 24 * time.Hour, "7 days"},
+			{30 * 24 * time.Hour, "30 days"},
+			{90 * 24 * time.Hour, "90 days"},
+			{180 * 24 * time.Hour, "180 days"},
+			{365 * 24 * time.Hour, "1 year"},
+			{730 * 24 * time.Hour, "2 years"},
 		}
 	default:
 		return []struct {
 			age   time.Duration
 			label string
-			boost float64
 		}{
-			{36 * time.Hour, "36 hours", 5000},
-			{7 * 24 * time.Hour, "7 days", 2500},
-			{30 * 24 * time.Hour, "30 days", 1200},
-			{90 * 24 * time.Hour, "90 days", 700},
-			{180 * 24 * time.Hour, "180 days", 400},
-			{365 * 24 * time.Hour, "1 year", 220},
-			{730 * 24 * time.Hour, "2 years", 60},
+			{36 * time.Hour, "36 hours"},
+			{7 * 24 * time.Hour, "7 days"},
+			{30 * 24 * time.Hour, "30 days"},
+			{90 * 24 * time.Hour, "90 days"},
+			{180 * 24 * time.Hour, "180 days"},
+			{365 * 24 * time.Hour, "1 year"},
+			{730 * 24 * time.Hour, "2 years"},
 		}
 	}
 }

@@ -144,6 +144,7 @@ export type SearchExplanation = {
   terms?: string[];
   fields?: string[];
   field_matches?: SearchFieldMatch[];
+  score_effect?: SearchScoreEffect;
   boosts?: SearchBoost[];
   raw?: ScoreExplanationNode;
 };
@@ -159,6 +160,12 @@ export type SearchBoost = {
   description: string;
   value?: string;
   boost?: number;
+};
+
+export type SearchScoreEffect = {
+  final_score: number;
+  baseline_score: number;
+  delta: number;
 };
 
 export type ScoreExplanationNode = {

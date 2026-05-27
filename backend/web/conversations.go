@@ -138,8 +138,8 @@ func (s *Server) conversationViewsFromSeeds(ctx context.Context, userID int64, s
 	return out, nil
 }
 
-func (s *Server) searchConversationSeeds(ctx context.Context, userID int64, q string, sortMode search.SortMode, page, pageSize int, opts search.SearchOptions, own map[string]bool) ([]store.MessageRecord, error) {
-	seeds, err := s.searchConversationSeedHits(ctx, userID, q, sortMode, page, pageSize, opts, own, searchMailboxFilter{}, nil)
+func (s *Server) searchConversationSeeds(ctx context.Context, userID int64, q string, page, pageSize int, opts search.SearchOptions, own map[string]bool) ([]store.MessageRecord, error) {
+	seeds, err := s.searchConversationSeedHits(ctx, userID, q, page, pageSize, opts, own, searchMailboxFilter{}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +150,7 @@ func (s *Server) searchConversationSeeds(ctx context.Context, userID int64, q st
 	return messages, nil
 }
 
-func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q string, sortMode search.SortMode, page, pageSize int, opts search.SearchOptions, own map[string]bool, mailboxFilter searchMailboxFilter, timing *searchTiming) ([]conversationSeed, error) {
+func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q string, page, pageSize int, opts search.SearchOptions, own map[string]bool, mailboxFilter searchMailboxFilter, timing *searchTiming) ([]conversationSeed, error) {
 	searchQuery, starFilter := stripStarSearchOperators(q)
 	targetStart := (page - 1) * pageSize
 	targetEnd := targetStart + pageSize + 1
@@ -160,7 +160,7 @@ func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q
 	const batchSize = 100
 	for len(unique) < targetEnd {
 		bleveStart := time.Now()
-		hits, err := s.search.SearchHitsWithOptions(ctx, userID, searchQuery, sortMode, batchSize, rawOffset, opts)
+		hits, err := s.search.SearchHitsWithOptions(ctx, userID, searchQuery, batchSize, rawOffset, opts)
 		if timing != nil {
 			timing.bleve += time.Since(bleveStart)
 			timing.batches++

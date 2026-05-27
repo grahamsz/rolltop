@@ -113,15 +113,8 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "Language search is disabled.")
 		return
 	}
-	sortMode := search.SortMode(r.URL.Query().Get("sort"))
-	if sortMode != search.SortRecent {
-		sortMode = search.SortBest
-	}
-	if searchQuery == "" && mailboxFilter.enabled {
-		sortMode = search.SortRecent
-	}
 	page := pageFromRequest(r)
-	cacheKey := mailListCacheKey{UserID: cu.User.ID, Page: page, Search: true, Query: q, Sort: string(sortMode)}
+	cacheKey := mailListCacheKey{UserID: cu.User.ID, Page: page, Search: true, Query: q}
 	if s.writeSearchNotModifiedIfFresh(w, r, cacheKey) {
 		return
 	}
@@ -137,7 +130,7 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 		seeds = conversationSeedsFromMessages(messages)
 	} else {
 		opts := searchOptionsForUser(cu.User)
-		if sortMode == search.SortBest && searchSenderBoostEnabledForUser(cu.User) {
+		if searchSenderBoostEnabledForUser(cu.User) {
 			senderDone := timing.measure(&timing.sender)
 			stats, statsErr := s.store.ListReadSenderStatsForUser(r.Context(), cu.User.ID, 40)
 			senderDone()
@@ -147,7 +140,7 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		seeds, err = s.searchConversationSeedHits(r.Context(), cu.User.ID, searchQuery, sortMode, page, pageSize, opts, own, mailboxFilter, timing)
+		seeds, err = s.searchConversationSeedHits(r.Context(), cu.User.ID, searchQuery, page, pageSize, opts, own, mailboxFilter, timing)
 	}
 	if err != nil {
 		s.serverError(w, err)
@@ -165,14 +158,13 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 	if hasNext {
 		conversations = conversations[:pageSize]
 	}
-	writeSearchTimingHeaders(w, timing, string(sortMode), page)
+	writeSearchTimingHeaders(w, timing, page)
 	etag, ok := writeJSONCachedWithETag(w, r, map[string]any{
 		"conversations": apiConversations(conversations),
 		"page":          page,
 		"has_prev":      page > 1,
 		"has_next":      hasNext,
 		"query":         q,
-		"sort":          string(sortMode),
 	})
 	if ok {
 		s.rememberMailListETag(cacheKey, etag, generation)
