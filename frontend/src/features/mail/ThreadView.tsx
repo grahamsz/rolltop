@@ -830,10 +830,10 @@ function SearchExplanationPanel({ state, onClose }: { state: SearchExplanationSt
               <div className="search-explanation-score">
                 <div>
                   <strong>{formatSearchScore(data.score)}</strong>
-                  <span>Bleve score for this exact query</span>
+                  <span>Final Bleve rank score for this exact query</span>
                 </div>
               </div>
-              <p className="search-explanation-note">Boosts below are part of this query. Raw scores from different query shapes are not directly comparable.</p>
+              <p className="search-explanation-note">Text-match terms and ranking boosts both contribute to the final rank score. Raw scores from different query shapes are not directly comparable.</p>
             </div>
           ) : null}
           {data.boosts && data.boosts.length > 0 ? (

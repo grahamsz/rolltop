@@ -103,6 +103,21 @@ export function HighlightedText({ text, query, terms = [] }: { text: string; que
   );
 }
 
+function highlightImageAltMatches(doc: Document, pattern: RegExp) {
+  for (const image of Array.from(doc.images)) {
+    const alt = image.getAttribute("alt") || "";
+    pattern.lastIndex = 0;
+    if (alt && pattern.test(alt)) {
+      image.classList.add("mailmirror-search-image-hit");
+      image.setAttribute("data-mailmirror-alt-hit", "true");
+    } else {
+      image.classList.remove("mailmirror-search-image-hit");
+      image.removeAttribute("data-mailmirror-alt-hit");
+    }
+  }
+  pattern.lastIndex = 0;
+}
+
 /** Highlight search terms inside a sandboxed email iframe after it has loaded. */
 export function highlightEmailDocument(doc: Document | null | undefined, query: string, terms: string[] = []) {
   if (!doc || (!query.trim() && terms.length === 0)) return;
@@ -113,9 +128,10 @@ export function highlightEmailDocument(doc: Document | null | undefined, query: 
   if (!doc.head.querySelector("[data-mailmirror-highlight-style]")) {
     const style = doc.createElement("style");
     style.setAttribute("data-mailmirror-highlight-style", "true");
-    style.textContent = "mark.mailmirror-search-hit{background:rgba(229,169,40,.26);color:#202426;border-radius:3px;padding:0 1px;box-shadow:none}html[data-mailmirror-theme=\"classic_dark\"] mark.mailmirror-search-hit,html[data-mailmirror-theme=\"matrix\"] mark.mailmirror-search-hit{background:rgba(224,182,77,.28);color:#f5fff8}";
+    style.textContent = "mark.mailmirror-search-hit{background:rgba(229,169,40,.26);color:#202426;border-radius:3px;padding:0 1px;box-shadow:none}img.mailmirror-search-image-hit{outline:2px solid rgba(229,169,40,.92)!important;outline-offset:2px!important;box-shadow:0 0 0 4px rgba(229,169,40,.20)!important;border-radius:4px}html[data-mailmirror-theme=\"classic_dark\"] mark.mailmirror-search-hit,html[data-mailmirror-theme=\"matrix\"] mark.mailmirror-search-hit{background:rgba(224,182,77,.28);color:#f5fff8}html[data-mailmirror-theme=\"classic_dark\"] img.mailmirror-search-image-hit,html[data-mailmirror-theme=\"matrix\"] img.mailmirror-search-image-hit{outline-color:rgba(224,182,77,.95)!important;box-shadow:0 0 0 4px rgba(224,182,77,.22)!important}";
     doc.head.appendChild(style);
   }
+  highlightImageAltMatches(doc, pattern);
   const blocked = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "TEXTAREA", "MARK"]);
   const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {

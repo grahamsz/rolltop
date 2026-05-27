@@ -374,7 +374,7 @@ func (s *Server) searchExplanationOptions(ctx context.Context, user store.User, 
 				Kind:        "sender",
 				Label:       "Familiar sender",
 				Description: fmt.Sprintf("%d of %d messages from this sender are read.", stat.ReadCount, stat.TotalCount),
-				Value:       fmt.Sprintf("sender weight %sx", formatSearchBoostNumber(stat.Boost)),
+				Value:       "sender history",
 				Boost:       stat.Boost,
 			}
 		}
@@ -517,48 +517,20 @@ func recencyExplanationBuckets(bias string) []struct {
 	label string
 	boost float64
 } {
-	switch bias {
-	case "light":
-		return []struct {
+	buckets := search.RecencyRankBuckets(bias)
+	out := make([]struct {
+		age   time.Duration
+		label string
+		boost float64
+	}, 0, len(buckets))
+	for _, bucket := range buckets {
+		out = append(out, struct {
 			age   time.Duration
 			label string
 			boost float64
-		}{
-			{36 * time.Hour, "36 hours", 2.5},
-			{7 * 24 * time.Hour, "7 days", 1.5},
-			{30 * 24 * time.Hour, "30 days", 0.8},
-			{180 * 24 * time.Hour, "180 days", 0.35},
-			{730 * 24 * time.Hour, "2 years", 0.15},
-		}
-	case "strong":
-		return []struct {
-			age   time.Duration
-			label string
-			boost float64
-		}{
-			{36 * time.Hour, "36 hours", 80},
-			{7 * 24 * time.Hour, "7 days", 52},
-			{30 * 24 * time.Hour, "30 days", 32},
-			{90 * 24 * time.Hour, "90 days", 18},
-			{180 * 24 * time.Hour, "180 days", 9},
-			{365 * 24 * time.Hour, "1 year", 3},
-			{730 * 24 * time.Hour, "2 years", 0.8},
-		}
-	default:
-		return []struct {
-			age   time.Duration
-			label string
-			boost float64
-		}{
-			{36 * time.Hour, "36 hours", 35},
-			{7 * 24 * time.Hour, "7 days", 24},
-			{30 * 24 * time.Hour, "30 days", 15},
-			{90 * 24 * time.Hour, "90 days", 8},
-			{180 * 24 * time.Hour, "180 days", 4},
-			{365 * 24 * time.Hour, "1 year", 1.5},
-			{730 * 24 * time.Hour, "2 years", 0.4},
-		}
+		}{age: bucket.Age, label: bucket.Label, boost: bucket.Boost})
 	}
+	return out
 }
 
 func apiScoreExplanationFromRaw(raw *search.ScoreExplanation, depth int) *apiScoreExplanation {

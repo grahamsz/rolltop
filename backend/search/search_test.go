@@ -909,6 +909,42 @@ func TestSearchExplicitDateFilterDisablesRecencyBoost(t *testing.T) {
 	}
 }
 
+func TestSearchStrongRecencyPutsCurrentSenderAboveOlderTripleFieldMatches(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	now := time.Now().UTC()
+	messages := []store.MessageRecord{
+		{ID: 1, UserID: 1, Subject: "Re: Graham / Nick Introduction", FromAddr: `"Nick Koncilja" <nick@riverrise.com>`, BodyText: strings.Repeat("nick introduction ", 40), Date: now.AddDate(0, -10, 0)},
+		{ID: 2, UserID: 1, Subject: "Re: Checking In", FromAddr: `"Nick Koncilja" <nick@riverrise.com>`, BodyText: "I can talk now. Nick Koncilja", Date: now.Add(-10 * time.Hour)},
+	}
+	for _, msg := range messages {
+		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rawIDs, err := svc.SearchWithOptions(ctx, 1, "nick", 10, 0, SearchOptions{Behavior: SearchBehavior{RecencyBias: "none", SenderBoost: false, SenderBoostSet: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rawIDs) != 2 || rawIDs[0] != 1 {
+		t.Fatalf("raw ids = %v", rawIDs)
+	}
+
+	boostedIDs, err := svc.SearchWithOptions(ctx, 1, "nick", 10, 0, SearchOptions{Behavior: SearchBehavior{RecencyBias: "strong", SenderBoost: false, SenderBoostSet: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(boostedIDs) != 2 || boostedIDs[0] != 2 {
+		t.Fatalf("strong recency ids = %v", boostedIDs)
+	}
+}
+
 func TestSearchStrongRecencyOverpowersVeryOldDenseMatches(t *testing.T) {
 	ctx := context.Background()
 	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))

@@ -647,7 +647,6 @@ function MessageList({
       {visible.map((conversation, index) => {
         const msg = conversation.message;
         const matchTerms = conversation.match_terms || [];
-        const matchQueryTerms = conversation.match_query_terms || [];
         const href = messageURL(msg.id, searchQuery, matchTerms, returnURL, searchQuery ? msg.id : 0);
         const attachmentNames = conversation.attachment_names || [];
         const attachmentMatches = conversation.attachment_matches || [];
@@ -707,15 +706,8 @@ function MessageList({
                     query={searchQuery}
                     terms={matchTerms}
                   />
-                  {conversation.attachment_content_matched ? <span>content matched</span> : null}
                 </span>
               ) : conversation.has_attachments ? <Icon name="attach_file" /> : null}
-              {searchQuery && matchQueryTerms.length > 0 ? (
-                <span className="query-term-preview" title={`Bleve terms: ${matchQueryTerms.join(", ")}`}>
-                  {matchQueryTerms.slice(0, 4).join(", ")}
-                  {matchQueryTerms.length > 4 ? ` +${matchQueryTerms.length - 4}` : ""}
-                </span>
-              ) : null}
             </span>
             <span className="date">{displayTime(msg.date, datePrefs)}</span>
           </div>

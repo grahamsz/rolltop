@@ -83,9 +83,20 @@ type normalizedSearchBehavior struct {
 	CompactSplitting bool
 }
 
+// RecencyRankBucket describes the query-time freshness nudge added to the
+// Bleve text score. The values are deliberately in the same order of magnitude
+// as normal text-match scores; old exact matches can still win, but a current
+// direct hit should not be buried under years-old bulk mail.
+type RecencyRankBucket struct {
+	Age   time.Duration
+	Label string
+	Boost float64
+}
+
 // Hit is a search result with the terms/fields Bleve reported for highlighting.
 type Hit struct {
 	ID         int64
+	Score      float64
 	Terms      []string
 	Fields     []string
 	QueryTerms []string
@@ -200,11 +211,37 @@ func (b normalizedSearchBehavior) attachmentBoostScale() float64 {
 	}
 }
 
-func (b normalizedSearchBehavior) recencyBoostScale() float64 {
-	if b.RecencyBias == "none" {
-		return 0
+func RecencyRankBuckets(bias string) []RecencyRankBucket {
+	switch normalizeChoice(bias, "normal", "none", "light", "normal", "strong") {
+	case "none":
+		return nil
+	case "light":
+		return []RecencyRankBucket{
+			{Age: 36 * time.Hour, Label: "36 hours", Boost: 0.2},
+			{Age: 7 * 24 * time.Hour, Label: "7 days", Boost: 0.12},
+			{Age: 30 * 24 * time.Hour, Label: "30 days", Boost: 0.07},
+			{Age: 180 * 24 * time.Hour, Label: "180 days", Boost: 0.03},
+			{Age: 730 * 24 * time.Hour, Label: "2 years", Boost: 0.01},
+		}
+	case "strong":
+		return []RecencyRankBucket{
+			{Age: 36 * time.Hour, Label: "36 hours", Boost: 1.6},
+			{Age: 7 * 24 * time.Hour, Label: "7 days", Boost: 1.15},
+			{Age: 30 * 24 * time.Hour, Label: "30 days", Boost: 0.75},
+			{Age: 90 * 24 * time.Hour, Label: "90 days", Boost: 0.4},
+			{Age: 180 * 24 * time.Hour, Label: "180 days", Boost: 0.22},
+			{Age: 365 * 24 * time.Hour, Label: "1 year", Boost: 0.1},
+			{Age: 730 * 24 * time.Hour, Label: "2 years", Boost: 0.02},
+		}
+	default:
+		return []RecencyRankBucket{
+			{Age: 36 * time.Hour, Label: "36 hours", Boost: 0.45},
+			{Age: 7 * 24 * time.Hour, Label: "7 days", Boost: 0.25},
+			{Age: 30 * 24 * time.Hour, Label: "30 days", Boost: 0.14},
+			{Age: 180 * 24 * time.Hour, Label: "180 days", Boost: 0.06},
+			{Age: 730 * 24 * time.Hour, Label: "2 years", Boost: 0.03},
+		}
 	}
-	return 1
 }
 
 // Open creates or opens a single combined Bleve index. Tests use this mode; the
@@ -701,7 +738,7 @@ func (s *Service) SearchHitsWithOptions(ctx context.Context, userID int64, query
 		if err != nil {
 			return nil, fmt.Errorf("parse search hit id: %w", err)
 		}
-		hits = append(hits, Hit{ID: id, Terms: hitMatchTerms(queryText, hit.Locations), Fields: hitMatchFields(hit.Locations), QueryTerms: hitMatchQueryTerms(queryText, hit.Locations)})
+		hits = append(hits, Hit{ID: id, Score: hit.Score, Terms: hitMatchTerms(queryText, hit.Locations), Fields: hitMatchFields(hit.Locations), QueryTerms: hitMatchQueryTerms(queryText, hit.Locations)})
 	}
 	return hits, nil
 }
@@ -718,7 +755,7 @@ func (s *Service) MatchMessageWithOptions(ctx context.Context, userID, messageID
 	if err != nil || !ok {
 		return Hit{}, ok, err
 	}
-	return Hit{ID: result.ID, Terms: result.Terms, Fields: result.Fields, QueryTerms: result.QueryTerms}, true, nil
+	return Hit{ID: result.ID, Score: result.Score, Terms: result.Terms, Fields: result.Fields, QueryTerms: result.QueryTerms}, true, nil
 }
 
 // ExplainMessageWithOptions re-runs the same best-match query against one
@@ -829,7 +866,7 @@ func (s *Service) search(ctx context.Context, userID int64, queryText string, li
 
 // buildQuery is the high-level search grammar bridge. It turns Gmail-like filters
 // into required clauses, text into fuzzy/compound matching clauses, and best-match
-// ranking into a Boolean query with recency and sender-history boosts.
+// ranking into sender-history should clauses plus a custom-score recency nudge.
 func buildQuery(userID int64, queryText string, opts SearchOptions) blevequery.Query {
 	parsed := parseQuery(queryText)
 	behavior := opts.Behavior.normalized()
@@ -898,17 +935,104 @@ func buildQuery(userID int64, queryText string, opts SearchOptions) blevequery.Q
 	}
 	mustNot := negatedTextQueries(parsed.NegatedText, behavior)
 	must := bleve.NewConjunctionQuery(parts...)
+	base := blevequery.Query(must)
 	var should []blevequery.Query
-	if parsed.After.IsZero() && parsed.Before.IsZero() {
-		should = recencyBoostQueries(time.Now().UTC(), behavior)
-	}
 	if behavior.SenderBoost {
 		should = append(should, senderBoostQueries(opts.SenderBoosts)...)
 	}
-	if len(should) == 0 && len(mustNot) == 0 {
-		return must
+	if len(should) > 0 || len(mustNot) > 0 {
+		base = blevequery.NewBooleanQuery([]blevequery.Query{must}, should, mustNot)
 	}
-	return blevequery.NewBooleanQuery([]blevequery.Query{must}, should, mustNot)
+	if parsed.After.IsZero() && parsed.Before.IsZero() {
+		base = recencyScoreQuery(base, time.Now().UTC(), behavior)
+	}
+	return base
+}
+
+func recencyScoreQuery(query blevequery.Query, now time.Time, behavior normalizedSearchBehavior) blevequery.Query {
+	if query == nil || now.IsZero() {
+		return query
+	}
+	buckets := RecencyRankBuckets(behavior.RecencyBias)
+	if len(buckets) == 0 {
+		return query
+	}
+	return blevequery.NewCustomScoreQueryWithScorer(query, func(match *blevesearch.DocumentMatch) float64 {
+		messageTime, ok := documentMatchDate(match.Fields["date"])
+		if !ok {
+			return match.Score
+		}
+		return match.Score + recencyRankBoostForDate(now, messageTime, buckets)
+	}, []string{"date"}, nil)
+}
+
+func recencyRankBoostForDate(now, messageTime time.Time, buckets []RecencyRankBucket) float64 {
+	if now.IsZero() || messageTime.IsZero() {
+		return 0
+	}
+	age := now.Sub(messageTime)
+	if age < 0 {
+		age = 0
+	}
+	for _, bucket := range buckets {
+		if age <= bucket.Age {
+			return bucket.Boost
+		}
+	}
+	return 0
+}
+
+func documentMatchDate(value any) (time.Time, bool) {
+	switch v := value.(type) {
+	case time.Time:
+		return v, !v.IsZero()
+	case string:
+		return parseDocumentMatchDateString(v)
+	case []string:
+		for _, item := range v {
+			if parsed, ok := parseDocumentMatchDateString(item); ok {
+				return parsed, true
+			}
+		}
+	case []any:
+		for _, item := range v {
+			if parsed, ok := documentMatchDate(item); ok {
+				return parsed, true
+			}
+		}
+	case float64:
+		if v > 0 {
+			return time.Unix(0, int64(v)).UTC(), true
+		}
+	case int64:
+		if v > 0 {
+			return time.Unix(0, v).UTC(), true
+		}
+	case int:
+		if v > 0 {
+			return time.Unix(0, int64(v)).UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+func parseDocumentMatchDateString(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	if ns, err := strconv.ParseInt(value, 10, 64); err == nil && ns > 0 {
+		if ns > 1_000_000_000_000 {
+			return time.Unix(0, ns).UTC(), true
+		}
+		return time.Unix(ns, 0).UTC(), true
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05 -0700 MST", "2006-01-02 15:04:05 -0700"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 
 func senderBoostQueries(boosts []SenderBoost) []blevequery.Query {
@@ -1557,62 +1681,6 @@ func termConjunction(field string, terms []string) blevequery.Query {
 		parts = append(parts, q)
 	}
 	return bleve.NewConjunctionQuery(parts...)
-}
-
-func recencyBoostQueries(now time.Time, behavior normalizedSearchBehavior) []blevequery.Query {
-	if now.IsZero() {
-		return nil
-	}
-	scale := behavior.recencyBoostScale()
-	if scale <= 0 {
-		return nil
-	}
-	buckets := []struct {
-		age   time.Duration
-		boost float64
-	}{
-		{36 * time.Hour, 35},
-		{7 * 24 * time.Hour, 24},
-		{30 * 24 * time.Hour, 15},
-		{90 * 24 * time.Hour, 8},
-		{180 * 24 * time.Hour, 4},
-		{365 * 24 * time.Hour, 1.5},
-		{730 * 24 * time.Hour, 0.4},
-	}
-	switch behavior.RecencyBias {
-	case "light":
-		buckets = []struct {
-			age   time.Duration
-			boost float64
-		}{
-			{36 * time.Hour, 2.5},
-			{7 * 24 * time.Hour, 1.5},
-			{30 * 24 * time.Hour, 0.8},
-			{180 * 24 * time.Hour, 0.35},
-			{730 * 24 * time.Hour, 0.15},
-		}
-	case "strong":
-		buckets = []struct {
-			age   time.Duration
-			boost float64
-		}{
-			{36 * time.Hour, 80},
-			{7 * 24 * time.Hour, 52},
-			{30 * 24 * time.Hour, 32},
-			{90 * 24 * time.Hour, 18},
-			{180 * 24 * time.Hour, 9},
-			{365 * 24 * time.Hour, 3},
-			{730 * 24 * time.Hour, 0.8},
-		}
-	}
-	out := make([]blevequery.Query, 0, len(buckets))
-	for _, bucket := range buckets {
-		q := bleve.NewDateRangeQuery(now.Add(-bucket.age), time.Time{})
-		q.SetField("date")
-		q.SetBoost(bucket.boost * scale)
-		out = append(out, q)
-	}
-	return out
 }
 
 func exactCompactQueries(joined string, behavior normalizedSearchBehavior) []blevequery.Query {
