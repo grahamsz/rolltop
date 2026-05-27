@@ -648,7 +648,7 @@ function MessageList({
         const msg = conversation.message;
         const matchTerms = conversation.match_terms || [];
         const matchQueryTerms = conversation.match_query_terms || [];
-        const href = messageURL(msg.id, searchQuery, matchTerms, returnURL);
+        const href = messageURL(msg.id, searchQuery, matchTerms, returnURL, searchQuery ? msg.id : 0);
         const attachmentNames = conversation.attachment_names || [];
         const attachmentMatches = conversation.attachment_matches || [];
         const selected = selectedIDs.has(msg.id);

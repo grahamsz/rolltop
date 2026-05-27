@@ -1568,13 +1568,13 @@ func recencyBoostQueries(now time.Time, behavior normalizedSearchBehavior) []ble
 		age   time.Duration
 		boost float64
 	}{
-		{36 * time.Hour, 8},
-		{7 * 24 * time.Hour, 5},
-		{30 * 24 * time.Hour, 3},
-		{90 * 24 * time.Hour, 2},
-		{180 * 24 * time.Hour, 1.25},
-		{365 * 24 * time.Hour, 0.75},
-		{730 * 24 * time.Hour, 0.35},
+		{36 * time.Hour, 35},
+		{7 * 24 * time.Hour, 24},
+		{30 * 24 * time.Hour, 15},
+		{90 * 24 * time.Hour, 8},
+		{180 * 24 * time.Hour, 4},
+		{365 * 24 * time.Hour, 1.5},
+		{730 * 24 * time.Hour, 0.4},
 	}
 	switch behavior.RecencyBias {
 	case "light":
@@ -1593,12 +1593,12 @@ func recencyBoostQueries(now time.Time, behavior normalizedSearchBehavior) []ble
 			age   time.Duration
 			boost float64
 		}{
-			{36 * time.Hour, 25},
-			{7 * 24 * time.Hour, 16},
-			{30 * 24 * time.Hour, 10},
-			{90 * 24 * time.Hour, 6},
-			{180 * 24 * time.Hour, 3.5},
-			{365 * 24 * time.Hour, 2},
+			{36 * time.Hour, 80},
+			{7 * 24 * time.Hour, 52},
+			{30 * 24 * time.Hour, 32},
+			{90 * 24 * time.Hour, 18},
+			{180 * 24 * time.Hour, 9},
+			{365 * 24 * time.Hour, 3},
 			{730 * 24 * time.Hour, 0.8},
 		}
 	}

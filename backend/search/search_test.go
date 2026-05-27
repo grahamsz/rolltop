@@ -853,6 +853,34 @@ func TestSearchNormalRecencyPromotesRecentComparableMatches(t *testing.T) {
 	}
 }
 
+func TestSearchNormalRecencyBeatsOlderSubjectOnlyAdvantage(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	now := time.Now()
+	msgs := []store.MessageRecord{
+		{ID: 1, UserID: 1, Subject: "CedarRoot", FromAddr: `"Nick Koncilja" <nick@riverrise.com>`, ToAddr: `"Nick Koncilja" <nick@riverrise.com>`, BodyText: "nick", Date: now.AddDate(0, 0, -26)},
+		{ID: 2, UserID: 1, Subject: "Nick update", FromAddr: `"Nick Koncilja" <nick@riverrise.com>`, ToAddr: "graham@example.test", BodyText: "nick", Date: now.AddDate(0, -10, 0)},
+	}
+	for _, msg := range msgs {
+		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ids, err := svc.SearchWithOptions(ctx, 1, "nick", 10, 0, SearchOptions{Behavior: SearchBehavior{RecencyBias: "normal"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != 1 {
+		t.Fatalf("normal recency ids = %v", ids)
+	}
+}
+
 func TestSearchStrongRecencyOverpowersVeryOldDenseMatches(t *testing.T) {
 	ctx := context.Background()
 	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))

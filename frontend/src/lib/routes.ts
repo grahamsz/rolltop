@@ -85,11 +85,12 @@ export function messageBackURL(location: LocationState): string {
 }
 
 /** messageURL builds a message-detail URL with search highlight terms and back target. */
-export function messageURL(messageID: number, searchQuery = "", matchTerms: string[] = [], backURL = ""): string {
+export function messageURL(messageID: number, searchQuery = "", matchTerms: string[] = [], backURL = "", searchHitID = 0): string {
   const query = searchQuery.trim();
-  if (!query && matchTerms.length === 0 && !backURL) return `/messages/${messageID}`;
+  if (!query && matchTerms.length === 0 && !backURL && !searchHitID) return `/messages/${messageID}`;
   const params = new URLSearchParams();
   if (query) params.set("q", query);
+  if (searchHitID > 0) params.set("hit", String(searchHitID));
   matchTerms.slice(0, 10).forEach((term) => {
     if (term.trim()) params.append("term", term.trim());
   });
@@ -101,6 +102,13 @@ export function messageURL(messageID: number, searchQuery = "", matchTerms: stri
 export function messageHighlightQuery(location: LocationState): string {
   const params = new URLSearchParams(location.search);
   return params.get("q") || params.get("highlight") || "";
+}
+
+/** messageSearchHitID returns the exact Bleve hit that opened this message view. */
+export function messageSearchHitID(location: LocationState): number {
+  const raw = new URLSearchParams(location.search).get("hit") || "";
+  const id = Number.parseInt(raw, 10);
+  return Number.isFinite(id) && id > 0 ? id : 0;
 }
 
 /** messageHighlightTerms returns explicit Bleve-reported terms carried by a message URL. */

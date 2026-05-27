@@ -251,18 +251,42 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusBadRequest, "search query has no explainable text")
 		return
 	}
+	exactHitID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("hit")), 10, 64)
 	threadMessages, err := s.store.ListThreadMessagesForUser(r.Context(), cu.User.ID, msg)
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
-	candidateIDs := make([]int64, 0, len(threadMessages))
+	candidateIDs := make([]int64, 0, len(threadMessages)+2)
+	candidateMessages := make([]store.MessageRecord, 0, len(threadMessages)+2)
 	messagesByID := map[int64]store.MessageRecord{}
-	for _, threadMsg := range threadMessages {
-		messagesByID[threadMsg.ID] = threadMsg
-		if mailboxFilter.matches(threadMsg) {
-			candidateIDs = append(candidateIDs, threadMsg.ID)
+	seenCandidates := map[int64]bool{}
+	appendCandidate := func(candidate store.MessageRecord) {
+		if candidate.ID == 0 || seenCandidates[candidate.ID] || !mailboxFilter.matches(candidate) {
+			return
 		}
+		seenCandidates[candidate.ID] = true
+		candidateIDs = append(candidateIDs, candidate.ID)
+		candidateMessages = append(candidateMessages, candidate)
+		messagesByID[candidate.ID] = candidate
+	}
+
+	// Prefer explaining the message whose menu the user opened. The optional hit
+	// parameter is only a fallback that ties a conversation view back to the exact
+	// Bleve result row that opened it.
+	appendCandidate(msg)
+	if exactHitID > 0 && exactHitID != msg.ID {
+		hitMsg, err := s.store.GetMessageForUser(r.Context(), cu.User.ID, exactHitID)
+		if err != nil && !store.IsNotFound(err) {
+			s.serverError(w, err)
+			return
+		}
+		if err == nil {
+			appendCandidate(hitMsg)
+		}
+	}
+	for _, threadMsg := range threadMessages {
+		appendCandidate(threadMsg)
 	}
 	if len(candidateIDs) == 0 {
 		writeJSON(w, map[string]any{
@@ -272,29 +296,42 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 		})
 		return
 	}
-	opts, _ := s.searchExplanationOptions(r.Context(), cu.User, msg)
-	result, matched, err := s.search.ExplainMessagesWithOptions(r.Context(), cu.User.ID, candidateIDs, query, opts)
-	if err != nil {
-		s.serverError(w, err)
+	if _, repairErr := s.ensureSearchDocuments(r.Context(), cu.User.ID, candidateMessages); repairErr != nil {
+		s.serverError(w, repairErr)
 		return
 	}
-	if !matched {
-		if repaired, repairErr := s.ensureSearchDocuments(r.Context(), cu.User.ID, threadMessages); repairErr != nil {
-			s.serverError(w, repairErr)
+	opts, _ := s.searchExplanationOptions(r.Context(), cu.User, msg)
+	var result search.ExplanationResult
+	var matched bool
+	if seenCandidates[msg.ID] {
+		result, matched, err = s.search.ExplainMessageWithOptions(r.Context(), cu.User.ID, msg.ID, query, opts)
+		if err != nil {
+			s.serverError(w, err)
 			return
-		} else if repaired > 0 {
-			result, matched, err = s.search.ExplainMessagesWithOptions(r.Context(), cu.User.ID, candidateIDs, query, opts)
-			if err != nil {
-				s.serverError(w, err)
-				return
-			}
+		}
+	}
+	if !matched && exactHitID > 0 && exactHitID != msg.ID && seenCandidates[exactHitID] {
+		result, matched, err = s.search.ExplainMessageWithOptions(r.Context(), cu.User.ID, exactHitID, query, opts)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+	}
+	if !matched {
+		result, matched, err = s.search.ExplainMessagesWithOptions(r.Context(), cu.User.ID, candidateIDs, query, opts)
+		if err != nil {
+			s.serverError(w, err)
+			return
 		}
 	}
 	if !matched {
 		writeJSON(w, map[string]any{
-			"matched": false,
-			"query":   query,
-			"reason":  "Bleve did not match any message in this conversation for the current query. The local SQLite copy is present, but the query still did not match after a lightweight search-index repair.",
+			"matched":      false,
+			"query":        query,
+			"message_ids":  candidateIDs,
+			"requested_id": msg.ID,
+			"hit_id":       exactHitID,
+			"reason":       "Bleve did not match any checked message for the current query. The local SQLite copy is present, but the query still did not match after a lightweight search-index repair.",
 		})
 		return
 	}
@@ -434,6 +471,7 @@ func apiRecencySearchBoost(user store.User, msg store.MessageRecord) *apiSearchB
 				Label:       "Recent mail",
 				Description: fmt.Sprintf("Message date is within %s; recency profile is %s. This nudge contributes to the final rank score but is not required for matching.", bucket.label, bias),
 				Value:       fmt.Sprintf("%s freshness bucket", bucket.label),
+				Boost:       bucket.boost,
 			}
 		}
 	}
@@ -465,44 +503,48 @@ func formatSearchBoostNumber(value float64) string {
 func recencyExplanationBuckets(bias string) []struct {
 	age   time.Duration
 	label string
+	boost float64
 } {
 	switch bias {
 	case "light":
 		return []struct {
 			age   time.Duration
 			label string
+			boost float64
 		}{
-			{36 * time.Hour, "36 hours"},
-			{7 * 24 * time.Hour, "7 days"},
-			{30 * 24 * time.Hour, "30 days"},
-			{180 * 24 * time.Hour, "180 days"},
-			{730 * 24 * time.Hour, "2 years"},
+			{36 * time.Hour, "36 hours", 2.5},
+			{7 * 24 * time.Hour, "7 days", 1.5},
+			{30 * 24 * time.Hour, "30 days", 0.8},
+			{180 * 24 * time.Hour, "180 days", 0.35},
+			{730 * 24 * time.Hour, "2 years", 0.15},
 		}
 	case "strong":
 		return []struct {
 			age   time.Duration
 			label string
+			boost float64
 		}{
-			{36 * time.Hour, "36 hours"},
-			{7 * 24 * time.Hour, "7 days"},
-			{30 * 24 * time.Hour, "30 days"},
-			{90 * 24 * time.Hour, "90 days"},
-			{180 * 24 * time.Hour, "180 days"},
-			{365 * 24 * time.Hour, "1 year"},
-			{730 * 24 * time.Hour, "2 years"},
+			{36 * time.Hour, "36 hours", 80},
+			{7 * 24 * time.Hour, "7 days", 52},
+			{30 * 24 * time.Hour, "30 days", 32},
+			{90 * 24 * time.Hour, "90 days", 18},
+			{180 * 24 * time.Hour, "180 days", 9},
+			{365 * 24 * time.Hour, "1 year", 3},
+			{730 * 24 * time.Hour, "2 years", 0.8},
 		}
 	default:
 		return []struct {
 			age   time.Duration
 			label string
+			boost float64
 		}{
-			{36 * time.Hour, "36 hours"},
-			{7 * 24 * time.Hour, "7 days"},
-			{30 * 24 * time.Hour, "30 days"},
-			{90 * 24 * time.Hour, "90 days"},
-			{180 * 24 * time.Hour, "180 days"},
-			{365 * 24 * time.Hour, "1 year"},
-			{730 * 24 * time.Hour, "2 years"},
+			{36 * time.Hour, "36 hours", 35},
+			{7 * 24 * time.Hour, "7 days", 24},
+			{30 * 24 * time.Hour, "30 days", 15},
+			{90 * 24 * time.Hour, "90 days", 8},
+			{180 * 24 * time.Hour, "180 days", 4},
+			{365 * 24 * time.Hour, "1 year", 1.5},
+			{730 * 24 * time.Hour, "2 years", 0.4},
 		}
 	}
 }

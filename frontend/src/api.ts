@@ -219,9 +219,10 @@ export const api = {
       source: "imap" | "local_blob" | "local" | "indexed" | "preview" | string;
     }>(`/api/messages/${id}/load-status`),
   messageOriginal: (id: number) => getJSON<MessageOriginalSource>(`/api/messages/${id}/original`),
-  searchExplanation: (id: number, query: string) => {
+  searchExplanation: (id: number, query: string, hitID = 0) => {
     const params = new URLSearchParams();
     params.set("q", query.trim());
+    if (hitID > 0) params.set("hit", String(hitID));
     return getJSON<SearchExplanation>(`/api/messages/${id}/search-explanation?${params}`);
   },
   trustImages: (csrf: string, id: number) => postJSON<{ ok: boolean }>(`/api/messages/${id}/images/trust`, csrf),

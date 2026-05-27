@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -236,6 +238,95 @@ func TestAPISearchRepairsRecentMissingSearchDocument(t *testing.T) {
 	}
 	if !indexed[msg.ID] {
 		t.Fatal("expected search request to repair missing Bleve document")
+	}
+}
+
+func TestAPIMessageSearchExplanationRepairsAndPrefersClickedMessage(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchSvc, err := search.Open(filepath.Join(dir, "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchSvc.Close()
+
+	user, err := db.CreateUser(ctx, "thread-search@example.test", "Thread Search", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.UpsertMailAccount(ctx, store.MailAccount{UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993, Username: user.Email, EncryptedPassword: "encrypted", Mailbox: "INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadKey := "thread-nick-explanation"
+	base := time.Now().UTC()
+	firstBlob, err := db.CreateBlob(ctx, store.BlobRecord{UserID: user.ID, Kind: "message", Path: "messages/nick-first.eml", SHA256: "nick-first-sha", Size: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clickedBlob, err := db.CreateBlob(ctx, store.BlobRecord{UserID: user.ID, Kind: "message", Path: "messages/nick-clicked.eml", SHA256: "nick-clicked-sha", Size: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdBlob, err := db.CreateBlob(ctx, store.BlobRecord{UserID: user.ID, Kind: "message", Path: "messages/nick-third.eml", SHA256: "nick-third-sha", Size: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := db.CreateMessage(ctx, store.CreateMessage{
+		UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: firstBlob.ID, ThreadKey: threadKey,
+		Subject: "Checking In", FromAddr: `"Nick Koncilja" <nick@riverrise.com>`, ToAddr: user.Email, Date: base, UID: 201, BodyText: "Hey Graham, checking in. Nick",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clicked, err := db.CreateMessage(ctx, store.CreateMessage{
+		UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: clickedBlob.ID, ThreadKey: threadKey,
+		Subject: "Re: Checking In", FromAddr: `"Graham Stewart" <graham@example.test>`, ToAddr: `"Nick Koncilja" <nick@riverrise.com>`, Date: base.Add(6 * time.Minute), UID: 202, BodyText: "I sent the check.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.CreateMessage(ctx, store.CreateMessage{
+		UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: thirdBlob.ID, ThreadKey: threadKey,
+		Subject: "Re: Checking In", FromAddr: `"Nick Koncilja" <nick@riverrise.com>`, ToAddr: user.Email, Date: base.Add(25 * time.Minute), UID: 203, BodyText: "All good.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := &Server{store: db, search: searchSvc, mailListCache: newMailListCache()}
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/messages/%d/search-explanation?q=nick&hit=%d", clicked.ID, first.ID), nil)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: user}))
+	rec := httptest.NewRecorder()
+
+	server.apiMessageSearchExplanation(rec, req, clicked.ID)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Matched            bool     `json:"matched"`
+		MessageID          int64    `json:"message_id"`
+		RequestedMessageID int64    `json:"requested_message_id"`
+		Fields             []string `json:"fields"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Matched || payload.MessageID != clicked.ID || payload.RequestedMessageID != clicked.ID {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if !slices.Contains(payload.Fields, "to") {
+		t.Fatalf("fields = %v, want to", payload.Fields)
 	}
 }
 

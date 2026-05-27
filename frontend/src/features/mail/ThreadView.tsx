@@ -11,7 +11,7 @@ import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime } from "../../lib/format";
 import { HighlightedText, highlightEmailDocument } from "../../lib/searchHighlight";
-import { messageBackURL, messageHighlightQuery, messageHighlightTerms } from "../../lib/routes";
+import { messageBackURL, messageHighlightQuery, messageHighlightTerms, messageSearchHitID } from "../../lib/routes";
 import { ComposeBox } from "../compose/ComposeViews";
 import { AttachmentPreviewSlot } from "../../plugins/attachmentPreview";
 import { brandDomainKeyForThread, loadBrandIconsForDomains } from "../../plugins/bimiBrandIcons";
@@ -229,6 +229,7 @@ export function ThreadView({
   const id = location.path.split("/").pop() || "";
   const highlightQuery = messageHighlightQuery(location);
   const highlightTerms = messageHighlightTerms(location);
+  const searchHitID = messageSearchHitID(location);
   const [thread, setThread] = useState<ThreadMessage[]>([]);
   const [subject, setSubject] = useState("");
   const [mailboxID, setMailboxID] = useState<number | null>(null);
@@ -409,7 +410,7 @@ export function ThreadView({
       [messageID]: { open: true, loading: true, error: "", data: null }
     }));
     try {
-      const data = await api.searchExplanation(messageID, query);
+      const data = await api.searchExplanation(messageID, query, searchHitID);
       setSearchExplanations((items) => ({
         ...items,
         [messageID]: { open: true, loading: false, error: "", data }
@@ -843,7 +844,9 @@ function SearchExplanationPanel({ state, onClose }: { state: SearchExplanationSt
                   <div className="search-explanation-boost" key={`${boost.kind}:${boost.label}`}>
                     <strong>{boost.label}</strong>
                     <span>{boost.description}</span>
-                    {boost.value ? <code>{boost.value}</code> : boost.boost !== undefined ? <code>boost {formatSearchScore(boost.boost)}</code> : null}
+                    {boost.value || boost.boost !== undefined ? (
+                      <code>{boost.value || "boost"}{boost.boost !== undefined ? ` / boost ${formatSearchScore(boost.boost)}` : ""}</code>
+                    ) : null}
                   </div>
                 ))}
               </div>
