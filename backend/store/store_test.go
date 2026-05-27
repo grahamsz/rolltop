@@ -814,6 +814,49 @@ func TestMailAccountsAndIdentitiesStayScopedByUser(t *testing.T) {
 	}
 }
 
+func TestDeleteSMTPAccountForUserUnlinksIdentities(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "smtp-remove@example.test", "SMTP Remove", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	smtp, err := db.CreateSMTPAccount(ctx, SMTPAccount{UserID: user.ID, Label: "Primary SMTP", Host: "smtp.remove.test", Port: 587, Username: user.Email, EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateContact(ctx, user.ID, Contact{DisplayName: "SMTP Remove", IsMe: true, IsPrimary: true, Emails: []ContactEmail{{Email: user.Email, IsPrimary: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	identities, err := db.ListMailIdentitiesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(identities) != 1 || identities[0].SMTPAccountID != smtp.ID {
+		t.Fatalf("identities before delete = %+v, want smtp id %d", identities, smtp.ID)
+	}
+	if err := db.DeleteSMTPAccountForUser(ctx, user.ID, smtp.ID); err != nil {
+		t.Fatalf("delete smtp: %v", err)
+	}
+	if _, err := db.GetSMTPAccountForUser(ctx, user.ID, smtp.ID); !IsNotFound(err) {
+		t.Fatalf("deleted smtp lookup err = %v, want not found", err)
+	}
+	identities, err = db.ListMailIdentitiesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(identities) != 1 || identities[0].SMTPAccountID != 0 {
+		t.Fatalf("identities after delete = %+v, want default smtp", identities)
+	}
+	if err := db.DeleteSMTPAccountForUser(ctx, user.ID, smtp.ID); !IsNotFound(err) {
+		t.Fatalf("delete missing smtp err = %v, want not found", err)
+	}
+}
+
 func testMailbox(t *testing.T, ctx context.Context, db *Store) (User, MailAccount, Mailbox, BlobRecord) {
 	t.Helper()
 	user, err := db.CreateUser(ctx, "mail@example.test", "Mail", "hash", false)

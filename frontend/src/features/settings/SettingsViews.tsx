@@ -66,7 +66,7 @@ function statDetail(value: unknown): string {
 
 function imapDeletePrompt(estimate: AccountPurgeEstimate): string {
   return [
-    `Delete the local IMAP server "${estimate.account_name}" from MailMirror?`,
+    `Remove the IMAP server "${estimate.account_name}" from MailMirror?`,
     "",
     "This does not delete any messages from the remote IMAP server.",
     "MailMirror will hide the server now, then purge local SQLite rows, message bodies, and full-text index documents in the background.",
@@ -78,6 +78,10 @@ function imapDeletePrompt(estimate: AccountPurgeEstimate): string {
     "",
     `Type ${estimate.account_name} to confirm.`
   ].join("\n");
+}
+
+function smtpDeleteConfirmationName(account: SMTPAccount): string {
+  return account.label.trim() || account.host.trim() || "SMTP server";
 }
 
 function hasStorageIndexBreakdown(value: StorageIndexBreakdownView): boolean {
@@ -521,6 +525,7 @@ export function SettingsView({
   const [editingFolderID, setEditingFolderID] = useState<number | null>(null);
   const [folderDraft, setFolderDraft] = useState<FolderSettingsDraft | null>(null);
   const [deletingAccountID, setDeletingAccountID] = useState<number | null>(null);
+  const [deletingSMTPID, setDeletingSMTPID] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadStorage = useCallback(async () => {
@@ -738,6 +743,41 @@ export function SettingsView({
     }
   }
 
+  async function deleteSelectedSMTPAccount() {
+    if (!selectedSMTP || deletingSMTPID) return;
+    const expected = smtpDeleteConfirmationName(selectedSMTP);
+    setDeletingSMTPID(selectedSMTP.id);
+    try {
+      const typed = window.prompt([
+        `Remove the SMTP server "${expected}" from MailMirror?`,
+        "",
+        "This does not delete messages or Me identities.",
+        "Identities using this SMTP server will be set back to Default.",
+        "",
+        `Type ${expected} to confirm.`
+      ].join("\n"));
+      if (typed === null) return;
+      if (typed.trim() !== expected) {
+        addToast("SMTP server name did not match. Nothing was removed.", "error");
+        return;
+      }
+      await api.deleteSMTPAccount(csrf, selectedSMTP.id);
+      addToast(`Removed ${expected}. Identities using it now use Default.`);
+      setSMTPAccounts((current) => current.filter((item) => item.id !== selectedSMTP.id));
+      setIdentities((current) => current.map((identity) => identity.smtp_account_id === selectedSMTP.id ? { ...identity, smtp_account_id: 0 } : identity));
+      setSelectedSMTPID(null);
+      setSMTPForm(emptySMTPFormForUser(user));
+      navigate("/settings/account");
+      await refreshChrome();
+      await load();
+    } catch (err) {
+      addToast(messageFromError(err), "error");
+    } finally {
+      setDeletingSMTPID(null);
+    }
+  }
+
+
   async function saveIdentity(identity: MailIdentity) {
     try {
       const data = await api.saveMailIdentity(csrf, identity);
@@ -783,11 +823,11 @@ export function SettingsView({
       const typed = window.prompt(imapDeletePrompt(estimate));
       if (typed === null) return;
       if (typed.trim() !== expected) {
-        addToast("IMAP server name did not match. Nothing was deleted.", "error");
+        addToast("IMAP server name did not match. Nothing was removed.", "error");
         return;
       }
       await api.deleteIMAPAccount(csrf, account.id, typed.trim());
-      addToast(`Deleting ${expected} locally. Remote IMAP mail is untouched.`);
+      addToast(`Removing ${expected} locally. Remote IMAP mail is untouched.`);
       setIMAPAccounts((current) => current.filter((item) => item.id !== account.id));
       setFolders((current) => current.filter((folder) => folder.mailbox.account_id !== account.id));
       setSelectedAccountID(null);
@@ -1590,7 +1630,7 @@ export function SettingsView({
             <button>Save IMAP server</button>
             {account ? (
               <button className="danger secondary" type="button" disabled={deletingAccountID === account.id} onClick={deleteSelectedIMAPAccount}>
-                <Icon name="delete" />{deletingAccountID === account.id ? "Deleting..." : "Delete local server"}
+                <Icon name="delete" />{deletingAccountID === account.id ? "Removing..." : "Remove IMAP Server"}
               </button>
             ) : null}
           </div>
@@ -1626,7 +1666,14 @@ export function SettingsView({
               <label><input type="checkbox" checked={smtpForm.use_tls} onChange={(event) => setSMTPField("use_tls", event.target.checked)} /> Use TLS / STARTTLS</label>
             </section>
           </div>
-          <div className="actions"><button>Save SMTP server</button></div>
+          <div className="actions split-actions">
+            <button>Save SMTP server</button>
+            {selectedSMTP ? (
+              <button className="danger secondary" type="button" disabled={deletingSMTPID === selectedSMTP.id} onClick={deleteSelectedSMTPAccount}>
+                <Icon name="delete" />{deletingSMTPID === selectedSMTP.id ? "Removing..." : "Remove SMTP Server"}
+              </button>
+            ) : null}
+          </div>
         </form>
         {renderSMTPIdentitySettings()}
       </>

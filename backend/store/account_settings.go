@@ -90,6 +90,40 @@ func (s *Store) ListSMTPAccountsForUser(ctx context.Context, userID int64) ([]SM
 	return out, rows.Err()
 }
 
+// DeleteSMTPAccountForUser removes one outgoing server and clears identity assignments that pointed at it.
+func (s *Store) DeleteSMTPAccountForUser(ctx context.Context, userID, id int64) error {
+	if id <= 0 {
+		return ErrNotFound
+	}
+	tx, err := s.mustDataDB(ctx, userID).BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	rollback := func() error {
+		_ = tx.Rollback()
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE mail_identities SET smtp_account_id = 0, updated_at = ? WHERE user_id = ? AND smtp_account_id = ?`, nowUnix(), userID, id); err != nil {
+		return rollback()
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM smtp_accounts WHERE user_id = ? AND id = ?`, userID, id)
+	if err != nil {
+		return rollback()
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return rollback()
+	}
+	if n == 0 {
+		err = ErrNotFound
+		return rollback()
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) firstSMTPAccountID(ctx context.Context, userID int64) int64 {
 	var id int64
 	_ = s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT id FROM smtp_accounts WHERE user_id = ? ORDER BY id LIMIT 1`, userID).Scan(&id)

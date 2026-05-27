@@ -350,6 +350,53 @@ func TestMailListCachedETagInvalidatesOnUserChange(t *testing.T) {
 	}
 }
 
+func TestDeleteSMTPAccountEndpointUnlinksIdentities(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "smtp-api@example.test", "SMTP API", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	smtp, err := db.CreateSMTPAccount(ctx, store.SMTPAccount{UserID: user.ID, Label: "API SMTP", Host: "smtp.api.test", Port: 587, Username: user.Email, EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateContact(ctx, user.ID, store.Contact{DisplayName: "SMTP API", IsMe: true, IsPrimary: true, Emails: []store.ContactEmail{{Email: user.Email, IsPrimary: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if identities, err := db.ListMailIdentitiesForUser(ctx, user.ID); err != nil || len(identities) != 1 || identities[0].SMTPAccountID != smtp.ID {
+		t.Fatalf("identities before delete = %+v err=%v", identities, err)
+	}
+	server := &Server{store: db, masterKey: []byte("12345678901234567890123456789012")}
+	csrfBase := "smtp-delete-csrf-base"
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/account/smtp/%d", smtp.ID), nil)
+	req.AddCookie(&http.Cookie{Name: csrfCookie, Value: csrfBase})
+	req.Header.Set("X-CSRF-Token", server.csrfForBase(csrfBase))
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: user}))
+	rec := httptest.NewRecorder()
+
+	server.handleAPI(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE smtp status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := db.GetSMTPAccountForUser(ctx, user.ID, smtp.ID); !store.IsNotFound(err) {
+		t.Fatalf("deleted smtp lookup err = %v, want not found", err)
+	}
+	identities, err := db.ListMailIdentitiesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(identities) != 1 || identities[0].SMTPAccountID != 0 {
+		t.Fatalf("identities after delete = %+v, want default smtp", identities)
+	}
+}
+
 func TestSetupCreatesFirstAdmin(t *testing.T) {
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))

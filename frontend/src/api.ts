@@ -342,6 +342,8 @@ export const api = {
     postJSON<{ ok: boolean; queued: boolean; run_id: number; estimate: AccountPurgeEstimate }>(`/api/account/imap/${id}/delete`, csrf, { confirm }),
   saveSMTPAccount: (csrf: string, account: Record<string, unknown>) =>
     postJSON<{ ok: boolean; smtp_account: SMTPAccount }>("/api/account/smtp", csrf, account),
+  deleteSMTPAccount: (csrf: string, id: number) =>
+    deleteJSON<{ ok: boolean }>(`/api/account/smtp/${id}`, csrf),
   saveMailIdentity: (csrf: string, identity: Record<string, unknown>) =>
     postJSON<{ ok: boolean; identity: MailIdentity; identities: MailIdentity[] }>("/api/account/identities", csrf, identity),
   syncAccount: (csrf: string) => postJSON<{ ok: boolean }>("/api/account/sync", csrf),

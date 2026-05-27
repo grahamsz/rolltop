@@ -457,6 +457,38 @@ func firstPositive(values ...int) int {
 	return 0
 }
 
+func (s *Server) apiSMTPAccountPath(w http.ResponseWriter, r *http.Request, path string) {
+	id, err := strconv.ParseInt(strings.Trim(path, "/"), 10, 64)
+	if err != nil || id <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		methodNotAllowed(w)
+		return
+	}
+	s.apiDeleteSMTPAccount(w, r, id)
+}
+
+func (s *Server) apiDeleteSMTPAccount(w http.ResponseWriter, r *http.Request, accountID int64) {
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	if err := s.store.DeleteSMTPAccountForUser(r.Context(), cu.User.ID, accountID); err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
+		s.serverError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
 // apiSMTPAccount saves an outgoing server. Identities are managed separately so
 // multiple Me addresses can point at the same SMTP account.
 func (s *Server) apiSMTPAccount(w http.ResponseWriter, r *http.Request) {
