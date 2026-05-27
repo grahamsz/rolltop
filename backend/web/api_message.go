@@ -181,6 +181,20 @@ type apiSearchFieldMatch struct {
 	Terms []string `json:"terms"`
 }
 
+type apiSearchTermContribution struct {
+	Field         string  `json:"field"`
+	Section       string  `json:"section"`
+	Term          string  `json:"term"`
+	QueryTerm     string  `json:"query_term"`
+	Score         float64 `json:"score"`
+	TermFrequency float64 `json:"term_frequency,omitempty"`
+	FieldNorm     float64 `json:"field_norm,omitempty"`
+	IDF           float64 `json:"idf,omitempty"`
+	QueryWeight   float64 `json:"query_weight,omitempty"`
+	Boost         float64 `json:"boost,omitempty"`
+	QueryNorm     float64 `json:"query_norm,omitempty"`
+}
+
 type apiSearchBoost struct {
 	Kind        string  `json:"kind"`
 	Label       string  `json:"label"`
@@ -190,9 +204,17 @@ type apiSearchBoost struct {
 }
 
 type apiSearchScoreEffect struct {
-	FinalScore    float64 `json:"final_score"`
-	BaselineScore float64 `json:"baseline_score"`
-	Delta         float64 `json:"delta"`
+	FinalScore    float64                     `json:"final_score"`
+	BaselineScore float64                     `json:"baseline_score"`
+	Delta         float64                     `json:"delta"`
+	BoostEffects  []apiSearchScoreBoostEffect `json:"boost_effects,omitempty"`
+}
+
+type apiSearchScoreBoostEffect struct {
+	Kind         string  `json:"kind"`
+	Label        string  `json:"label"`
+	ScoreWithout float64 `json:"score_without"`
+	Delta        float64 `json:"delta"`
 }
 
 type apiScoreExplanation struct {
@@ -243,16 +265,29 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusBadRequest, "search query has no explainable text")
 		return
 	}
-	if !mailboxFilter.matches(msg) {
+	threadMessages, err := s.store.ListThreadMessagesForUser(r.Context(), cu.User.ID, msg)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	candidateIDs := make([]int64, 0, len(threadMessages))
+	messagesByID := map[int64]store.MessageRecord{}
+	for _, threadMsg := range threadMessages {
+		messagesByID[threadMsg.ID] = threadMsg
+		if mailboxFilter.matches(threadMsg) {
+			candidateIDs = append(candidateIDs, threadMsg.ID)
+		}
+	}
+	if len(candidateIDs) == 0 {
 		writeJSON(w, map[string]any{
 			"matched": false,
 			"query":   query,
-			"reason":  "Message is outside the search mailbox filter.",
+			"reason":  "No message in this conversation is inside the search mailbox filter.",
 		})
 		return
 	}
-	opts, senderBoost := s.searchExplanationOptions(r.Context(), cu.User, msg)
-	result, matched, err := s.search.ExplainMessageWithOptions(r.Context(), cu.User.ID, msg.ID, query, opts)
+	opts, _ := s.searchExplanationOptions(r.Context(), cu.User, msg)
+	result, matched, err := s.search.ExplainMessagesWithOptions(r.Context(), cu.User.ID, candidateIDs, query, opts)
 	if err != nil {
 		s.serverError(w, err)
 		return
@@ -261,43 +296,87 @@ func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, map[string]any{
 			"matched": false,
 			"query":   query,
-			"reason":  "Bleve did not match this message for the current query.",
+			"reason":  "Bleve did not match any message in this conversation for the current query.",
 		})
 		return
 	}
-	scoreEffect, err := s.searchScoreEffect(r.Context(), cu.User.ID, msg.ID, query, opts, result.Score)
+	explainedMsg := messagesByID[result.ID]
+	if explainedMsg.ID == 0 {
+		explainedMsg = msg
+	}
+	opts, senderBoost := s.searchExplanationOptions(r.Context(), cu.User, explainedMsg)
+	scoreEffect, err := s.searchScoreEffect(r.Context(), cu.User.ID, result.ID, query, opts, result.Score)
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{
-		"matched":       true,
-		"query":         query,
-		"score":         result.Score,
-		"terms":         result.Terms,
-		"fields":        result.Fields,
-		"field_matches": apiSearchFieldMatches(result.FieldMatches),
-		"score_effect":  scoreEffect,
-		"boosts":        apiSearchBoosts(cu.User, msg, senderBoost),
-		"raw":           apiScoreExplanationFromRaw(result.Raw, 0),
+		"matched":              true,
+		"query":                query,
+		"message_id":           result.ID,
+		"requested_message_id": msg.ID,
+		"score":                result.Score,
+		"terms":                result.Terms,
+		"query_terms":          result.QueryTerms,
+		"fields":               result.Fields,
+		"field_matches":        apiSearchFieldMatches(result.FieldMatches),
+		"term_contributions":   apiSearchTermContributions(result.TermContributions),
+		"score_effect":         scoreEffect,
+		"boosts":               apiSearchBoosts(cu.User, explainedMsg, senderBoost),
+		"raw":                  apiScoreExplanationFromRaw(result.Raw, 0),
 	})
 }
 
 func (s *Server) searchScoreEffect(ctx context.Context, userID, messageID int64, query string, opts search.SearchOptions, finalScore float64) (*apiSearchScoreEffect, error) {
-	baselineOpts := opts
-	baselineOpts.SenderBoosts = nil
-	baselineOpts.Behavior.RecencyBias = "none"
-	baselineOpts.Behavior.SenderBoost = false
-	baselineOpts.Behavior.SenderBoostSet = true
+	baselineOpts := searchOptionsWithoutRecency(searchOptionsWithoutSender(opts))
 	baselineScore, ok, err := s.search.ScoreMessageWithOptions(ctx, userID, messageID, query, baselineOpts)
 	if err != nil || !ok {
 		return nil, err
 	}
-	return &apiSearchScoreEffect{
+	effect := &apiSearchScoreEffect{
 		FinalScore:    finalScore,
 		BaselineScore: baselineScore,
 		Delta:         finalScore - baselineScore,
-	}, nil
+	}
+	withoutRecencyScore, ok, err := s.search.ScoreMessageWithOptions(ctx, userID, messageID, query, searchOptionsWithoutRecency(opts))
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		effect.BoostEffects = append(effect.BoostEffects, apiSearchScoreBoostEffect{
+			Kind:         "recency",
+			Label:        "Recent mail",
+			ScoreWithout: withoutRecencyScore,
+			Delta:        finalScore - withoutRecencyScore,
+		})
+	}
+	withoutSenderScore, ok, err := s.search.ScoreMessageWithOptions(ctx, userID, messageID, query, searchOptionsWithoutSender(opts))
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		effect.BoostEffects = append(effect.BoostEffects, apiSearchScoreBoostEffect{
+			Kind:         "sender",
+			Label:        "Familiar sender",
+			ScoreWithout: withoutSenderScore,
+			Delta:        finalScore - withoutSenderScore,
+		})
+	}
+	return effect, nil
+}
+
+func searchOptionsWithoutRecency(opts search.SearchOptions) search.SearchOptions {
+	out := opts
+	out.Behavior.RecencyBias = "none"
+	return out
+}
+
+func searchOptionsWithoutSender(opts search.SearchOptions) search.SearchOptions {
+	out := opts
+	out.SenderBoosts = nil
+	out.Behavior.SenderBoost = false
+	out.Behavior.SenderBoostSet = true
+	return out
 }
 
 func (s *Server) searchExplanationOptions(ctx context.Context, user store.User, msg store.MessageRecord) (search.SearchOptions, *apiSearchBoost) {
@@ -332,6 +411,53 @@ func apiSearchFieldMatches(matches []search.FieldTermMatch) []apiSearchFieldMatc
 		out = append(out, apiSearchFieldMatch{Field: match.Field, Terms: match.Terms})
 	}
 	return out
+}
+
+func apiSearchTermContributions(contributions []search.TermContribution) []apiSearchTermContribution {
+	out := make([]apiSearchTermContribution, 0, len(contributions))
+	for _, contribution := range contributions {
+		out = append(out, apiSearchTermContribution{
+			Field:         contribution.Field,
+			Section:       apiSearchFieldLabel(contribution.Field),
+			Term:          contribution.Term,
+			QueryTerm:     contribution.QueryTerm,
+			Score:         contribution.Score,
+			TermFrequency: contribution.TermFrequency,
+			FieldNorm:     contribution.FieldNorm,
+			IDF:           contribution.IDF,
+			QueryWeight:   contribution.QueryWeight,
+			Boost:         contribution.Boost,
+			QueryNorm:     contribution.QueryNorm,
+		})
+	}
+	return out
+}
+
+func apiSearchFieldLabel(field string) string {
+	switch field {
+	case "subject", "subject_compound":
+		return "Subject"
+	case "from", "from_compound", "from_domain":
+		return "Sender"
+	case "to":
+		return "To"
+	case "cc":
+		return "Cc"
+	case "body":
+		return "Body"
+	case "attachment_names":
+		return "Attachment name"
+	case "attachment_types":
+		return "Attachment type"
+	case "attachments":
+		return "Attachment text"
+	case "compound":
+		return "Joined words"
+	case "message_id":
+		return "Message ID"
+	default:
+		return strings.ReplaceAll(field, "_", " ")
+	}
 }
 
 func apiSearchBoosts(user store.User, msg store.MessageRecord, senderBoost *apiSearchBoost) []apiSearchBoost {

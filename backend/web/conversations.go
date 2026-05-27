@@ -14,9 +14,10 @@ import (
 )
 
 type conversationSeed struct {
-	Message     store.MessageRecord
-	MatchTerms  []string
-	MatchFields []string
+	Message         store.MessageRecord
+	MatchTerms      []string
+	MatchFields     []string
+	MatchQueryTerms []string
 }
 
 func (s *Server) conversationViews(ctx context.Context, userID int64, seeds []store.MessageRecord, own map[string]bool) ([]conversationView, error) {
@@ -71,12 +72,13 @@ func stripStarSearchOperators(query string) (string, *bool) {
 
 func (s *Server) conversationViewsFromSeeds(ctx context.Context, userID int64, seeds []conversationSeed, own map[string]bool, query string) ([]conversationView, error) {
 	type group struct {
-		messages []store.MessageRecord
-		seen     map[int64]bool
-		seed     store.MessageRecord
-		hasSeed  bool
-		terms    []string
-		fields   []string
+		messages   []store.MessageRecord
+		seen       map[int64]bool
+		seed       store.MessageRecord
+		hasSeed    bool
+		terms      []string
+		fields     []string
+		queryTerms []string
 	}
 	threadKeys := make([]string, 0, len(seeds))
 	for _, seed := range seeds {
@@ -108,6 +110,7 @@ func (s *Server) conversationViewsFromSeeds(ctx context.Context, userID int64, s
 		}
 		g.terms = mergeTerms(g.terms, seed.MatchTerms)
 		g.fields = mergeFields(g.fields, seed.MatchFields)
+		g.queryTerms = mergeFields(g.queryTerms, seed.MatchQueryTerms)
 		for _, msg := range thread {
 			if g.seen[msg.ID] {
 				continue
@@ -131,6 +134,7 @@ func (s *Server) conversationViewsFromSeeds(ctx context.Context, userID int64, s
 			view.Snippet = searchResultSnippet(query, group.terms, group.seed, view.Snippet)
 			view.MatchTerms = group.terms
 			view.MatchFields = group.fields
+			view.MatchQueryTerms = group.queryTerms
 			view.AttachmentMatches, view.AttachmentContentMatched = s.conversationAttachmentMatches(ctx, userID, group.messages, group.terms, group.fields, query)
 		}
 		out = append(out, view)
@@ -175,10 +179,12 @@ func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q
 		ids := make([]int64, 0, len(hits))
 		termsByID := map[int64][]string{}
 		fieldsByID := map[int64][]string{}
+		queryTermsByID := map[int64][]string{}
 		for _, hit := range hits {
 			ids = append(ids, hit.ID)
 			termsByID[hit.ID] = hit.Terms
 			fieldsByID[hit.ID] = hit.Fields
+			queryTermsByID[hit.ID] = hit.QueryTerms
 		}
 		hydrateStart := time.Now()
 		messages, err := s.store.ListMessagesByIDsForUser(ctx, userID, ids)
@@ -200,7 +206,7 @@ func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q
 				continue
 			}
 			seen[key] = true
-			unique = append(unique, conversationSeed{Message: msg, MatchTerms: termsByID[msg.ID], MatchFields: fieldsByID[msg.ID]})
+			unique = append(unique, conversationSeed{Message: msg, MatchTerms: termsByID[msg.ID], MatchFields: fieldsByID[msg.ID], MatchQueryTerms: queryTermsByID[msg.ID]})
 			if len(unique) >= targetEnd {
 				break
 			}

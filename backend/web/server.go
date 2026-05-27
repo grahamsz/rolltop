@@ -143,6 +143,7 @@ type conversationView struct {
 	Snippet                  string
 	MatchTerms               []string
 	MatchFields              []string
+	MatchQueryTerms          []string
 	CanReplyAll              bool
 }
 

@@ -107,6 +107,7 @@ type apiConversation struct {
 	AttachmentContentMatched bool       `json:"attachment_content_matched,omitempty"`
 	Snippet                  string     `json:"snippet"`
 	MatchTerms               []string   `json:"match_terms,omitempty"`
+	MatchQueryTerms          []string   `json:"match_query_terms,omitempty"`
 }
 
 type apiAttachment struct {

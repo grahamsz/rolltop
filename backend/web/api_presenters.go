@@ -213,6 +213,7 @@ func apiConversations(conversations []conversationView) []apiConversation {
 			AttachmentContentMatched: conv.AttachmentContentMatched,
 			Snippet:                  conv.Snippet,
 			MatchTerms:               conv.MatchTerms,
+			MatchQueryTerms:          conv.MatchQueryTerms,
 		})
 	}
 	return out

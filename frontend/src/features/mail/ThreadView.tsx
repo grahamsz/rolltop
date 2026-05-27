@@ -6,7 +6,7 @@ import type { MouseEvent, ReactNode } from "react";
 import { Star } from "@phosphor-icons/react";
 import { api } from "../../api";
 import type { DatePrefs, LocationState, Toast } from "../../appTypes";
-import type { Bootstrap, ComposeForm, ComposeIdentity, HeaderDetail, Mailbox, MessageOriginalSource, ScoreExplanationNode, SearchExplanation, ThreadMessage } from "../../types";
+import type { Bootstrap, ComposeForm, ComposeIdentity, HeaderDetail, Mailbox, MessageOriginalSource, SearchExplanation, ThreadMessage } from "../../types";
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime } from "../../lib/format";
@@ -764,6 +764,7 @@ export function ThreadView({
 
 function SearchExplanationPanel({ state, onClose }: { state: SearchExplanationState; onClose: () => void }) {
   const data = state.data;
+  const explainedDifferentMessage = data?.matched && data.message_id && data.requested_message_id && data.message_id !== data.requested_message_id;
   return (
     <section className="search-explanation" aria-live="polite">
       <div className="search-explanation-head">
@@ -778,18 +779,19 @@ function SearchExplanationPanel({ state, onClose }: { state: SearchExplanationSt
       {state.loading ? <p>Loading scoring details...</p> : null}
       {state.error ? <p className="error-text">{state.error}</p> : null}
       {!state.loading && !state.error && data && !data.matched ? (
-        <p>{data.reason || "This message did not match the current search."}</p>
+        <p>{data.reason || "No message in this conversation matched the current search."}</p>
       ) : null}
       {!state.loading && !state.error && data?.matched ? (
         <>
+          {explainedDifferentMessage ? <p className="search-explanation-note">Explaining the message in this conversation that actually matched the search result.</p> : null}
           <div className="search-explanation-grid">
             <div>
               <span className="search-explanation-label">Query</span>
               <p>{data.query}</p>
             </div>
             <div>
-              <span className="search-explanation-label">Matched Terms</span>
-              <p>{data.terms && data.terms.length > 0 ? data.terms.join(", ") : "No highlightable text terms reported"}</p>
+              <span className="search-explanation-label">Bleve Terms</span>
+              <p>{data.query_terms && data.query_terms.length > 0 ? data.query_terms.join(", ") : "No field-qualified text terms reported"}</p>
             </div>
           </div>
           {data.field_matches && data.field_matches.length > 0 ? (
@@ -800,6 +802,22 @@ function SearchExplanationPanel({ state, onClose }: { state: SearchExplanationSt
                   <div className="search-explanation-contribution" key={match.field}>
                     <strong>{searchFieldLabel(match.field)}</strong>
                     <span>{match.terms.length > 0 ? match.terms.join(", ") : "Matched"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {data.term_contributions && data.term_contributions.length > 0 ? (
+            <div className="search-explanation-section">
+              <span className="search-explanation-label">Scoring Terms</span>
+              <div className="search-explanation-term-list">
+                {data.term_contributions.map((item) => (
+                  <div className="search-explanation-term" key={`${item.query_term}:${item.score}`}>
+                    <div>
+                      <code>{item.query_term}</code>
+                      <strong>{formatSearchScore(item.score)}</strong>
+                    </div>
+                    <span>{item.section}{contributionDetailParts(item).length > 0 ? ` / ${contributionDetailParts(item).join(" / ")}` : ""}</span>
                   </div>
                 ))}
               </div>
@@ -819,8 +837,14 @@ function SearchExplanationPanel({ state, onClose }: { state: SearchExplanationSt
                 </div>
                 <div className={data.score_effect.delta >= 0 ? "positive" : "negative"}>
                   <strong>{formatSignedSearchScore(data.score_effect.delta)}</strong>
-                  <span>nudge effect</span>
+                  <span>combined nudge effect</span>
                 </div>
+                {(data.score_effect.boost_effects || []).map((effect) => (
+                  <div className={effect.delta >= 0 ? "positive" : "negative"} key={effect.kind}>
+                    <strong>{formatSignedSearchScore(effect.delta)}</strong>
+                    <span>{effect.label}; without it {formatSearchScore(effect.score_without)}</span>
+                  </div>
+                ))}
               </div>
             </div>
           ) : null}
@@ -838,36 +862,20 @@ function SearchExplanationPanel({ state, onClose }: { state: SearchExplanationSt
               </div>
             </div>
           ) : null}
-          {data.raw ? (
-            <details className="search-explanation-raw">
-              <summary>Debug scorer tree</summary>
-              <ScoreExplanationTree node={data.raw} />
-            </details>
-          ) : null}
         </>
       ) : null}
     </section>
   );
 }
 
-function ScoreExplanationTree({ node }: { node: ScoreExplanationNode }) {
-  return (
-    <div className="score-node">
-      <div>
-        {node.value !== undefined ? <code>{formatSearchScore(node.value)}</code> : null}
-        <span>{node.message || "scorer node"}</span>
-      </div>
-      {node.children && node.children.length > 0 ? (
-        <ul>
-          {node.children.map((child, index) => (
-            <li key={`${child.message}:${index}`}>
-              <ScoreExplanationTree node={child} />
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  );
+function contributionDetailParts(item: NonNullable<SearchExplanation["term_contributions"]>[number]): string[] {
+  const parts: string[] = [];
+  if (item.term_frequency) parts.push(`tf ${formatSearchScore(item.term_frequency)}`);
+  if (item.idf) parts.push(`idf ${formatSearchScore(item.idf)}`);
+  if (item.field_norm) parts.push(`norm ${formatSearchScore(item.field_norm)}`);
+  if (item.query_weight) parts.push(`query weight ${formatSearchScore(item.query_weight)}`);
+  if (item.boost && item.boost !== 1) parts.push(`boost ${formatSearchScore(item.boost)}`);
+  return parts;
 }
 
 function searchFieldLabel(field: string): string {

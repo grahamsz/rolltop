@@ -85,15 +85,33 @@ type normalizedSearchBehavior struct {
 
 // Hit is a search result with the terms/fields Bleve reported for highlighting.
 type Hit struct {
-	ID     int64
-	Terms  []string
-	Fields []string
+	ID         int64
+	Terms      []string
+	Fields     []string
+	QueryTerms []string
 }
 
 // FieldTermMatch groups the concrete indexed terms Bleve reported by indexed field.
 type FieldTermMatch struct {
 	Field string
 	Terms []string
+}
+
+// TermContribution is a flattened, human-readable scorer summary extracted from
+// the Bleve explanation tree. QueryTerm keeps the full field-qualified Bleve term
+// such as "body:housing" so result rows and explanation panels can show
+// the exact indexed field/term pair that contributed to ranking.
+type TermContribution struct {
+	Field         string
+	Term          string
+	QueryTerm     string
+	Score         float64
+	TermFrequency float64
+	FieldNorm     float64
+	IDF           float64
+	QueryWeight   float64
+	Boost         float64
+	QueryNorm     float64
 }
 
 // ScoreExplanation is Bleve's scorer tree for one hit. It is intentionally
@@ -103,12 +121,14 @@ type ScoreExplanation = blevesearch.Explanation
 // ExplanationResult is a single-document search explanation. Locations drive
 // human-readable match labels while Raw preserves Bleve's scorer tree for debug UI.
 type ExplanationResult struct {
-	ID           int64
-	Score        float64
-	Terms        []string
-	Fields       []string
-	FieldMatches []FieldTermMatch
-	Raw          *ScoreExplanation
+	ID                int64
+	Score             float64
+	Terms             []string
+	Fields            []string
+	QueryTerms        []string
+	FieldMatches      []FieldTermMatch
+	TermContributions []TermContribution
+	Raw               *ScoreExplanation
 }
 
 // SenderBoost increases rank for senders the user historically reads.
@@ -639,7 +659,7 @@ func (s *Service) SearchHitsWithOptions(ctx context.Context, userID int64, query
 		if err != nil {
 			return nil, fmt.Errorf("parse search hit id: %w", err)
 		}
-		hits = append(hits, Hit{ID: id, Terms: hitMatchTerms(queryText, hit.Locations), Fields: hitMatchFields(hit.Locations)})
+		hits = append(hits, Hit{ID: id, Terms: hitMatchTerms(queryText, hit.Locations), Fields: hitMatchFields(hit.Locations), QueryTerms: hitMatchQueryTerms(queryText, hit.Locations)})
 	}
 	return hits, nil
 }
@@ -656,7 +676,7 @@ func (s *Service) MatchMessageWithOptions(ctx context.Context, userID, messageID
 	if err != nil || !ok {
 		return Hit{}, ok, err
 	}
-	return Hit{ID: result.ID, Terms: result.Terms, Fields: result.Fields}, true, nil
+	return Hit{ID: result.ID, Terms: result.Terms, Fields: result.Fields, QueryTerms: result.QueryTerms}, true, nil
 }
 
 // ExplainMessageWithOptions re-runs the same best-match query against one
@@ -664,6 +684,14 @@ func (s *Service) MatchMessageWithOptions(ctx context.Context, userID, messageID
 // on demand from the action menu, not during normal search result rendering.
 func (s *Service) ExplainMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, opts SearchOptions) (ExplanationResult, bool, error) {
 	return s.explainMessageWithOptions(ctx, userID, messageID, queryText, opts, true)
+}
+
+// ExplainMessagesWithOptions runs the same query against a bounded set of local
+// message IDs and returns the highest-scoring matching message. Message-detail
+// explanations use this for grouped conversations so the panel can explain the
+// exact Bleve hit that made the conversation appear in search results.
+func (s *Service) ExplainMessagesWithOptions(ctx context.Context, userID int64, messageIDs []int64, queryText string, opts SearchOptions) (ExplanationResult, bool, error) {
+	return s.explainMessageIDsWithOptions(ctx, userID, messageIDs, queryText, opts, true)
 }
 
 func (s *Service) ScoreMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, opts SearchOptions) (float64, bool, error) {
@@ -675,17 +703,32 @@ func (s *Service) ScoreMessageWithOptions(ctx context.Context, userID, messageID
 }
 
 func (s *Service) explainMessageWithOptions(ctx context.Context, userID, messageID int64, queryText string, opts SearchOptions, explain bool) (ExplanationResult, bool, error) {
+	return s.explainMessageIDsWithOptions(ctx, userID, []int64{messageID}, queryText, opts, explain)
+}
+
+func (s *Service) explainMessageIDsWithOptions(ctx context.Context, userID int64, messageIDs []int64, queryText string, opts SearchOptions, explain bool) (ExplanationResult, bool, error) {
 	select {
 	case <-ctx.Done():
 		return ExplanationResult{}, false, ctx.Err()
 	default:
 	}
 	queryText = strings.TrimSpace(queryText)
-	if userID == 0 || messageID == 0 || queryText == "" {
+	if userID == 0 || len(messageIDs) == 0 || queryText == "" {
 		return ExplanationResult{}, false, nil
 	}
-	docID := strconv.FormatInt(messageID, 10)
-	docQuery := bleve.NewDocIDQuery([]string{docID})
+	docIDs := make([]string, 0, len(messageIDs))
+	seenDocIDs := map[int64]bool{}
+	for _, messageID := range messageIDs {
+		if messageID == 0 || seenDocIDs[messageID] {
+			continue
+		}
+		seenDocIDs[messageID] = true
+		docIDs = append(docIDs, strconv.FormatInt(messageID, 10))
+	}
+	if len(docIDs) == 0 {
+		return ExplanationResult{}, false, nil
+	}
+	docQuery := bleve.NewDocIDQuery(docIDs)
 	query := bleve.NewConjunctionQuery(buildQuery(userID, queryText, opts), docQuery)
 	req := bleve.NewSearchRequestOptions(query, 1, 0, false)
 	req.IncludeLocations = true
@@ -702,13 +745,19 @@ func (s *Service) explainMessageWithOptions(ctx context.Context, userID, message
 		return ExplanationResult{}, false, nil
 	}
 	hit := res.Hits[0]
+	matchedID, err := strconv.ParseInt(hit.ID, 10, 64)
+	if err != nil {
+		return ExplanationResult{}, false, fmt.Errorf("parse explain hit id: %w", err)
+	}
 	return ExplanationResult{
-		ID:           messageID,
-		Score:        hit.Score,
-		Terms:        hitMatchTerms(queryText, hit.Locations),
-		Fields:       hitMatchFields(hit.Locations),
-		FieldMatches: hitMatchFieldTerms(queryText, hit.Locations),
-		Raw:          hit.Expl,
+		ID:                matchedID,
+		Score:             hit.Score,
+		Terms:             hitMatchTerms(queryText, hit.Locations),
+		Fields:            hitMatchFields(hit.Locations),
+		QueryTerms:        hitMatchQueryTerms(queryText, hit.Locations),
+		FieldMatches:      hitMatchFieldTerms(queryText, hit.Locations),
+		TermContributions: scoreTermContributions(queryText, hit.Expl),
+		Raw:               hit.Expl,
 	}, true, nil
 }
 
@@ -1170,6 +1219,159 @@ func hitMatchFieldTerms(queryText string, locations blevesearch.FieldTermLocatio
 		out = append(out, FieldTermMatch{Field: field, Terms: terms})
 	}
 	return out
+}
+
+func hitMatchQueryTerms(queryText string, locations blevesearch.FieldTermLocationMap) []string {
+	matches := hitMatchFieldTerms(queryText, locations)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, match := range matches {
+		for _, term := range match.Terms {
+			queryTerm := match.Field + ":" + term
+			if seen[queryTerm] {
+				continue
+			}
+			seen[queryTerm] = true
+			out = append(out, queryTerm)
+		}
+	}
+	if len(out) > 12 {
+		out = out[:12]
+	}
+	return out
+}
+
+var explanationFieldTermRE = regexp.MustCompile(`^(?:weight|fieldWeight|queryWeight)\(([^:()\s]+):([^\s\)^]+)`)
+var explanationTermFreqRE = regexp.MustCompile(`termFreq\(([^:()\s]+):([^\)=]+)\)=([0-9.]+)`)
+
+func scoreTermContributions(queryText string, raw *ScoreExplanation) []TermContribution {
+	if raw == nil {
+		return nil
+	}
+	needles := queryNeedles(parseQuery(queryText))
+	if len(needles) == 0 {
+		return nil
+	}
+	byTerm := map[string]*TermContribution{}
+	var walk func(*ScoreExplanation)
+	walk = func(node *ScoreExplanation) {
+		if node == nil {
+			return
+		}
+		message := strings.TrimSpace(node.Message)
+		if strings.HasPrefix(message, "weight(") || strings.HasPrefix(message, "fieldWeight(") {
+			field, term, ok := explanationFieldTerm(message)
+			if ok && matchTermField(field) && termRelevantToQuery(term, needles) {
+				contribution := explanationNodeContribution(node, field, term)
+				mergeTermContribution(byTerm, contribution)
+				if strings.HasPrefix(message, "weight(") {
+					return
+				}
+			}
+		}
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+	walk(raw)
+	if len(byTerm) == 0 {
+		return nil
+	}
+	out := make([]TermContribution, 0, len(byTerm))
+	for _, contribution := range byTerm {
+		out = append(out, *contribution)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score == out[j].Score {
+			return out[i].QueryTerm < out[j].QueryTerm
+		}
+		return out[i].Score > out[j].Score
+	})
+	if len(out) > 12 {
+		out = out[:12]
+	}
+	return out
+}
+
+func explanationFieldTerm(message string) (string, string, bool) {
+	matches := explanationFieldTermRE.FindStringSubmatch(message)
+	if len(matches) < 3 {
+		matches = explanationTermFreqRE.FindStringSubmatch(message)
+	}
+	if len(matches) < 3 {
+		return "", "", false
+	}
+	field := strings.TrimSpace(matches[1])
+	term := strings.TrimSpace(strings.ToLower(matches[2]))
+	if i := strings.Index(term, "^"); i >= 0 {
+		term = term[:i]
+	}
+	term = strings.Trim(term, `"`)
+	if field == "" || term == "" {
+		return "", "", false
+	}
+	return field, term, true
+}
+
+func explanationNodeContribution(node *ScoreExplanation, field, term string) TermContribution {
+	out := TermContribution{Field: field, Term: term, QueryTerm: field + ":" + term, Score: node.Value}
+	var scan func(*ScoreExplanation)
+	scan = func(item *ScoreExplanation) {
+		if item == nil {
+			return
+		}
+		message := strings.TrimSpace(item.Message)
+		switch {
+		case strings.HasPrefix(message, "tf("):
+			out.TermFrequency = maxFloat(out.TermFrequency, item.Value)
+		case strings.HasPrefix(message, "fieldNorm("):
+			out.FieldNorm = maxFloat(out.FieldNorm, item.Value)
+		case strings.HasPrefix(message, "idf("):
+			out.IDF = maxFloat(out.IDF, item.Value)
+		case message == "boost":
+			out.Boost = maxFloat(out.Boost, item.Value)
+		case message == "queryNorm":
+			out.QueryNorm = maxFloat(out.QueryNorm, item.Value)
+		case strings.HasPrefix(message, "queryWeight("):
+			out.QueryWeight = maxFloat(out.QueryWeight, item.Value)
+		}
+		for _, child := range item.Children {
+			scan(child)
+		}
+	}
+	for _, child := range node.Children {
+		scan(child)
+	}
+	return out
+}
+
+func mergeTermContribution(byTerm map[string]*TermContribution, next TermContribution) {
+	if next.QueryTerm == "" {
+		return
+	}
+	current := byTerm[next.QueryTerm]
+	if current == nil {
+		copy := next
+		byTerm[next.QueryTerm] = &copy
+		return
+	}
+	current.Score += next.Score
+	current.TermFrequency = maxFloat(current.TermFrequency, next.TermFrequency)
+	current.FieldNorm = maxFloat(current.FieldNorm, next.FieldNorm)
+	current.IDF = maxFloat(current.IDF, next.IDF)
+	current.QueryWeight = maxFloat(current.QueryWeight, next.QueryWeight)
+	current.Boost = maxFloat(current.Boost, next.Boost)
+	current.QueryNorm = maxFloat(current.QueryNorm, next.QueryNorm)
+}
+
+func maxFloat(a, b float64) float64 {
+	if b > a {
+		return b
+	}
+	return a
 }
 
 type queryNeedle struct {

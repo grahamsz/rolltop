@@ -349,6 +349,11 @@
   color: var(--text);
 }
 
+.search-explanation-note {
+  margin-bottom: 8px !important;
+  color: var(--muted) !important;
+}
+
 .search-explanation-section {
   margin-top: 10px;
 }
@@ -360,6 +365,36 @@
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
+}
+
+.search-explanation-term-list {
+  display: grid;
+  gap: 6px;
+}
+
+.search-explanation-term {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 7px 9px;
+  display: grid;
+  gap: 3px;
+
+  > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: baseline;
+  }
+
+  code {
+    color: var(--accent-strong);
+    font-size: 12px;
+  }
+
+  span {
+    color: var(--muted);
+  }
 }
 
 .search-explanation-chip,

@@ -240,6 +240,22 @@
   font-weight: 400;
 }
 
+
+.query-term-preview {
+  @include truncate;
+  flex: none;
+  max-width: min(300px, 28%);
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid rgba(34, 102, 99, .22);
+  border-radius: 6px;
+  color: var(--accent-strong);
+  background: rgba(34, 102, 99, .08);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .attachment-preview {
   @include truncate;
   flex: none;

@@ -73,6 +73,7 @@ export type Conversation = {
   attachment_content_matched?: boolean;
   snippet: string;
   match_terms?: string[];
+  match_query_terms?: string[];
 };
 
 /** Attachment is message attachment metadata plus optional preview/search match details. */
@@ -141,9 +142,13 @@ export type SearchExplanation = {
   query: string;
   reason?: string;
   score?: number;
+  message_id?: number;
+  requested_message_id?: number;
   terms?: string[];
+  query_terms?: string[];
   fields?: string[];
   field_matches?: SearchFieldMatch[];
+  term_contributions?: SearchTermContribution[];
   score_effect?: SearchScoreEffect;
   boosts?: SearchBoost[];
   raw?: ScoreExplanationNode;
@@ -152,6 +157,20 @@ export type SearchExplanation = {
 export type SearchFieldMatch = {
   field: string;
   terms: string[];
+};
+
+export type SearchTermContribution = {
+  field: string;
+  section: string;
+  term: string;
+  query_term: string;
+  score: number;
+  term_frequency?: number;
+  field_norm?: number;
+  idf?: number;
+  query_weight?: number;
+  boost?: number;
+  query_norm?: number;
 };
 
 export type SearchBoost = {
@@ -165,6 +184,14 @@ export type SearchBoost = {
 export type SearchScoreEffect = {
   final_score: number;
   baseline_score: number;
+  delta: number;
+  boost_effects?: SearchScoreBoostEffect[];
+};
+
+export type SearchScoreBoostEffect = {
+  kind: string;
+  label: string;
+  score_without: number;
   delta: number;
 };
 

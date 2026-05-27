@@ -453,6 +453,12 @@ func TestExplainMessageWithOptionsReturnsScoreLocationsAndRawTree(t *testing.T) 
 	if len(result.FieldMatches) == 0 {
 		t.Fatalf("field matches = %#v", result.FieldMatches)
 	}
+	if len(result.QueryTerms) == 0 {
+		t.Fatalf("query terms = %#v", result.QueryTerms)
+	}
+	if len(result.TermContributions) == 0 {
+		t.Fatalf("term contributions = %#v", result.TermContributions)
+	}
 	found := false
 	for _, match := range result.FieldMatches {
 		for _, term := range match.Terms {
@@ -466,6 +472,35 @@ func TestExplainMessageWithOptionsReturnsScoreLocationsAndRawTree(t *testing.T) 
 	}
 	if _, ok, err := svc.ExplainMessageWithOptions(ctx, 2, 10, "housing", SearchOptions{}); err != nil || ok {
 		t.Fatalf("cross-user explain ok=%v err=%v", ok, err)
+	}
+}
+
+func TestExplainMessagesWithOptionsReturnsBestCandidate(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	messages := []store.MessageRecord{
+		{ID: 20, UserID: 1, Subject: "checking in", BodyText: "No searched term here.", Date: time.Now()},
+		{ID: 21, UserID: 1, Subject: "checking in", BodyText: "Nick mentioned the fund notice twice. Nick is available today.", Date: time.Now()},
+	}
+	for _, msg := range messages {
+		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, ok, err := svc.ExplainMessagesWithOptions(ctx, 1, []int64{20, 21}, "nick", SearchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || result.ID != 21 {
+		t.Fatalf("result ok=%v id=%d", ok, result.ID)
+	}
+	if len(result.QueryTerms) == 0 {
+		t.Fatalf("query terms = %#v", result.QueryTerms)
 	}
 }
 
