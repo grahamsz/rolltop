@@ -115,8 +115,11 @@ func TestAPISearchCachedETagShortCircuitsBeforeSearch(t *testing.T) {
 	if got := rec.Header().Get("Server-Timing"); !strings.Contains(got, "cache") {
 		t.Fatalf("server timing = %q", got)
 	}
+	if got := rec.Header().Get("X-Rolltop-Search-Stats"); got != "cache=hit" {
+		t.Fatalf("rolltop search stats = %q", got)
+	}
 	if got := rec.Header().Get("X-MailMirror-Search-Stats"); got != "cache=hit" {
-		t.Fatalf("search stats = %q", got)
+		t.Fatalf("legacy search stats = %q", got)
 	}
 }
 
@@ -153,7 +156,10 @@ func TestAPISearchWritesTimingHeaders(t *testing.T) {
 			t.Fatalf("server timing %q missing %q", serverTiming, part)
 		}
 	}
-	stats := rec.Header().Get("X-MailMirror-Search-Stats")
+	stats := rec.Header().Get("X-Rolltop-Search-Stats")
+	if legacy := rec.Header().Get("X-MailMirror-Search-Stats"); legacy != stats {
+		t.Fatalf("legacy search stats = %q, want %q", legacy, stats)
+	}
 	for _, part := range []string{"cache=miss", "page=1", "batches=1", "raw_hits=0", "seeds=0"} {
 		if !strings.Contains(stats, part) {
 			t.Fatalf("search stats %q missing %q", stats, part)
@@ -418,6 +424,12 @@ func TestSetupCreatesFirstAdmin(t *testing.T) {
 	handler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/bootstrap", nil))
 	if get.Code != http.StatusOK {
 		t.Fatalf("GET /api/bootstrap status = %d", get.Code)
+	}
+	if got := get.Header().Get("X-Rolltop-Version"); got == "" {
+		t.Fatal("missing X-Rolltop-Version header")
+	}
+	if got := get.Header().Get("Link"); !strings.Contains(got, "https://rolltop.app") {
+		t.Fatalf("Link header = %q, want rolltop.app", got)
 	}
 	var bootstrap struct {
 		UsersExist bool   `json:"users_exist"`

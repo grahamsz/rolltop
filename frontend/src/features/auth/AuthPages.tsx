@@ -40,7 +40,7 @@ export function SetupPage({
 
   return (
     <main className="auth-page">
-      <div className="auth-brand">mailmirror</div>
+      <div className="auth-brand">rolltop</div>
       <form className="panel" onSubmit={submit}>
         <h1>First-run setup</h1>
         {error ? <div className="error">{error}</div> : null}
@@ -104,7 +104,7 @@ export function LoginPage({
 
   return (
     <main className="auth-page">
-      <div className="auth-brand">mailmirror</div>
+      <div className="auth-brand">rolltop</div>
       <form className="panel" onSubmit={submit}>
         <h1>Sign in</h1>
         {error ? <div className="error">{error}</div> : null}

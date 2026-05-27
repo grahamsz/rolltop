@@ -140,6 +140,7 @@ func apiMailIdentityFromStore(identity store.MailIdentity) apiMailIdentity {
 		ContactID:       identity.ContactID,
 		ContactEmailID:  identity.ContactEmailID,
 		SMTPAccountID:   identity.SMTPAccountID,
+		IMAPAccountID:   identity.IMAPAccountID,
 		SentMailboxID:   identity.SentMailboxID,
 		DraftsMailboxID: identity.DraftsMailboxID,
 		Email:           identity.Email,

@@ -516,7 +516,7 @@ func (f *Fetcher) MoveMessage(ctx context.Context, account store.MailAccount, so
 		return fmt.Errorf("check IMAP MOVE support: %w", err)
 	}
 	if !ok {
-		return fmt.Errorf("IMAP server does not support MOVE; MailMirror will not emulate move with copy/delete")
+		return fmt.Errorf("IMAP server does not support MOVE; Rolltop will not emulate move with copy/delete")
 	}
 	seqset := new(imap.SeqSet)
 	seqset.AddNum(uid)

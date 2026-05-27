@@ -1,4 +1,4 @@
-// File overview: MailMirror process entrypoint and startup coordinator. The
+// File overview: Rolltop process entrypoint and startup coordinator. The
 // binary starts an HTTP listener first, serves a temporary startup page while
 // schema migrations and service initialization run, then swaps in the real web
 // handler. After readiness it owns background loops for sync polling, IMAP IDLE,
@@ -61,7 +61,7 @@ type startupState struct {
 }
 
 func newStartupState() *startupState {
-	return &startupState{snapshot: startupSnapshot{Phase: "Starting", Detail: "Preparing MailMirror", Total: 1, StartedAt: time.Now().UTC().Format(time.RFC3339)}}
+	return &startupState{snapshot: startupSnapshot{Phase: "Starting", Detail: "Preparing Rolltop", Total: 1, StartedAt: time.Now().UTC().Format(time.RFC3339)}}
 }
 
 func (s *startupState) update(phase, detail string, done, total int) {
@@ -86,7 +86,7 @@ func (s *startupState) ready() {
 	s.mu.Lock()
 	s.snapshot.Ready = true
 	s.snapshot.Phase = "Ready"
-	s.snapshot.Detail = "MailMirror is ready"
+	s.snapshot.Detail = "Rolltop is ready"
 	s.snapshot.Done = 1
 	s.snapshot.Total = 1
 	s.mu.Unlock()
@@ -163,7 +163,7 @@ func writeStartupHTML(w http.ResponseWriter, snapshot startupSnapshot) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MailMirror starting</title>
+<title>Rolltop starting</title>
 <style>
 :root{color-scheme:light dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#eef2ee;color:#111827}body{margin:0;min-height:100vh;display:grid;place-items:center;background:linear-gradient(180deg,#f7f8f5,#e7ede8)}.panel{width:min(520px,calc(100vw - 40px));border:1px solid #cbd5cf;border-radius:10px;background:#fff;box-shadow:0 18px 60px rgba(17,24,39,.18);padding:28px}.brand{font-weight:800;font-size:28px;letter-spacing:0}.phase{margin-top:18px;font-size:15px;font-weight:700}.detail{margin-top:6px;color:#52615b;line-height:1.45}.bar{height:8px;background:#e7ece8;border-radius:999px;overflow:hidden;margin-top:22px}.fill{height:100%%;width:%d%%;background:#d9703f;transition:width .25s ease}.error{margin-top:18px;color:#8a2f1b;font-weight:700}@media (prefers-color-scheme:dark){:root{background:#111815;color:#eef2ee}body{background:#111815}.panel{background:#17211d;border-color:#314039}.detail{color:#b8c4be}.bar{background:#26342f}}</style>
 <script>
@@ -172,7 +172,7 @@ async function poll(){try{const r=await fetch('/api/startup',{cache:'no-store'})
 </head>
 <body>
 <main class="panel">
-<div class="brand">MailMirror</div>
+<div class="brand">Rolltop</div>
 <div class="phase">%s</div>
 <div class="detail">%s</div>
 <div class="bar"><div class="fill"></div></div>
@@ -221,7 +221,7 @@ func run() error {
 	}
 	serverErr := make(chan error, 1)
 	go func() {
-		log.Printf("mailmirror starting on %s", cfg.Addr)
+		log.Printf("rolltop starting on %s", cfg.Addr)
 		err := server.ListenAndServe()
 		if errors.Is(err, http.ErrServerClosed) {
 			serverErr <- nil
@@ -233,7 +233,7 @@ func run() error {
 	app, err := startApp(ctx, cfg, startup)
 	if err != nil {
 		startup.fail(err)
-		log.Printf("mailmirror startup failed: %v", err)
+		log.Printf("rolltop startup failed: %v", err)
 		select {
 		case <-ctx.Done():
 		case listenErr := <-serverErr:
@@ -247,7 +247,7 @@ func run() error {
 	defer app.close()
 	gate.setHandler(app.handler)
 	startup.ready()
-	log.Printf("mailmirror ready on %s", cfg.Addr)
+	log.Printf("rolltop ready on %s", cfg.Addr)
 
 	select {
 	case <-ctx.Done():

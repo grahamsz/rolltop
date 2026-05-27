@@ -66,10 +66,10 @@ function statDetail(value: unknown): string {
 
 function imapDeletePrompt(estimate: AccountPurgeEstimate): string {
   return [
-    `Remove the IMAP server "${estimate.account_name}" from MailMirror?`,
+    `Remove the IMAP server "${estimate.account_name}" from Rolltop?`,
     "",
     "This does not delete any messages from the remote IMAP server.",
-    "MailMirror will hide the server now, then purge local SQLite rows, message bodies, and full-text index documents in the background.",
+    "Rolltop will hide the server now, then purge local SQLite rows, message bodies, and full-text index documents in the background.",
     "",
     `Folders: ${formatStatCount(estimate.mailbox_count)}`,
     `Message headers: ${formatStatCount(estimate.message_count)}`,
@@ -137,14 +137,29 @@ function identityAccountMatches(identity: MailIdentity, account: Account | undef
   return [account.email, account.username, account.smtp_username].some((value) => keys.has(normalizeIdentityKey(value || "")));
 }
 
+function imapAccountLabel(account: Account) {
+  return account.label || account.email || account.host || "IMAP server";
+}
+
+function smtpAccountLabel(account: SMTPAccount) {
+  return account.label || account.username || account.host || "SMTP server";
+}
+
 function mailboxChoiceLabel(mailbox: Mailbox, accounts: Account[]) {
   const account = accounts.find((item) => item.id === mailbox.account_id);
-  const accountLabel = account?.label || mailbox.account_label || account?.email || mailbox.account_email || "IMAP";
+  const accountLabel = account ? imapAccountLabel(account) : mailbox.account_label || mailbox.account_email || "IMAP";
   return `${accountLabel} / ${mailbox.name}`;
+}
+
+function firstMailboxIDForAccountRole(mailboxes: Mailbox[], accountID: number, role: string) {
+  return mailboxes.find((mailbox) => mailbox.account_id === accountID && mailbox.role === role)?.id || 0;
 }
 
 function identityMailboxChoices(identity: MailIdentity, role: string, mailboxes: Mailbox[], accounts: Account[], smtpAccounts: SMTPAccount[]) {
   const roleMatches = mailboxes.filter((mailbox) => mailbox.role === role);
+  if (identity.imap_account_id) {
+    return roleMatches.filter((mailbox) => mailbox.account_id === identity.imap_account_id);
+  }
   const smtp = smtpAccounts.find((item) => item.id === identity.smtp_account_id);
   const matchingAccount = roleMatches.filter((mailbox) => identityAccountMatches(identity, accounts.find((account) => account.id === mailbox.account_id), smtp));
   return matchingAccount.length > 0 ? matchingAccount : roleMatches;
@@ -210,8 +225,24 @@ function IdentityMailboxFields({
 }) {
   const sentChoices = identityMailboxChoices(identity, "sent", mailboxes, accounts, smtpAccounts);
   const draftsChoices = identityMailboxChoices(identity, "drafts", mailboxes, accounts, smtpAccounts);
+
+  function changeIMAPAccount(accountID: number) {
+    updateIdentity(identity.id, {
+      imap_account_id: accountID,
+      sent_mailbox_id: accountID ? firstMailboxIDForAccountRole(mailboxes, accountID, "sent") : 0,
+      drafts_mailbox_id: accountID ? firstMailboxIDForAccountRole(mailboxes, accountID, "drafts") : 0
+    });
+  }
+
   return (
     <div className="identity-mailbox-fields">
+      <div>
+        <label>IMAP server</label>
+        <select value={identity.imap_account_id || 0} onChange={(event) => changeIMAPAccount(Number(event.target.value))}>
+          <option value={0}>Automatic</option>
+          {accounts.map((account) => <option key={account.id} value={account.id}>{imapAccountLabel(account)}</option>)}
+        </select>
+      </div>
       <div>
         <label>Sent Mail folder</label>
         <select value={identity.sent_mailbox_id || 0} onChange={(event) => updateIdentity(identity.id, { sent_mailbox_id: Number(event.target.value) })}>
@@ -339,7 +370,7 @@ function emptySMTPFormForUser(user: User) {
 }
 
 type SettingsRoute = {
-  kind: "main" | "imap" | "smtp";
+  kind: "main" | "imap" | "smtp" | "identities";
   id: number | null;
   isNew: boolean;
 };
@@ -349,6 +380,7 @@ type FolderSettingsDraft = Pick<Mailbox, "sync_mode" | "role" | "icon" | "show_i
 // Settings uses real URL subpages for IMAP/SMTP editing so refresh/back keeps
 // the selected server instead of returning to the settings index.
 function settingsRouteFromPath(path: string): SettingsRoute {
+  if (path === "/settings/account/identities") return { kind: "identities", id: null, isNew: false };
   if (path === "/settings/account/imap/new") return { kind: "imap", id: null, isNew: true };
   if (path === "/settings/account/smtp/new") return { kind: "smtp", id: null, isNew: true };
   const imap = path.match(/^\/settings\/account\/imap\/(\d+)$/);
@@ -365,7 +397,7 @@ function percentValue(value: number | undefined) {
 }
 
 const syncModeChoices = [
-  { value: "auto", label: "Auto", description: "Sync automatically when MailMirror refreshes this account." },
+  { value: "auto", label: "Auto", description: "Sync automatically when Rolltop refreshes this account." },
   { value: "manual", label: "Manual", description: "Keep the folder available, but sync only when requested." },
   { value: "never", label: "Never", description: "Do not sync this folder." },
   { value: "inherit", label: "Inherit", description: "Use the nearest parent folder sync mode." }
@@ -749,7 +781,7 @@ export function SettingsView({
     setDeletingSMTPID(selectedSMTP.id);
     try {
       const typed = window.prompt([
-        `Remove the SMTP server "${expected}" from MailMirror?`,
+        `Remove the SMTP server "${expected}" from Rolltop?`,
         "",
         "This does not delete messages or Me identities.",
         "Identities using this SMTP server will be set back to Default.",
@@ -830,6 +862,7 @@ export function SettingsView({
       addToast(`Removing ${expected} locally. Remote IMAP mail is untouched.`);
       setIMAPAccounts((current) => current.filter((item) => item.id !== account.id));
       setFolders((current) => current.filter((folder) => folder.mailbox.account_id !== account.id));
+      setIdentities((current) => current.map((identity) => identity.imap_account_id === account.id ? { ...identity, imap_account_id: 0, sent_mailbox_id: 0, drafts_mailbox_id: 0 } : identity));
       setSelectedAccountID(null);
       setAccount(null);
       navigate("/settings/account");
@@ -883,7 +916,7 @@ export function SettingsView({
     return [
       `Purge the full-text index for ${folder.mailbox.name}?`,
       "",
-      "This removes only MailMirror's local full-text search documents for this folder.",
+      "This removes only Rolltop's local full-text search documents for this folder.",
       "It does not delete local message references or messages from your IMAP server.",
       "The next sync will rebuild missing full-text entries before fetching new mail."
     ].join("\n");
@@ -893,7 +926,7 @@ export function SettingsView({
     return [
       `Purge local references and the full-text index for ${folder.mailbox.name}?`,
       "",
-      "This removes MailMirror's local message references, raw-message cache, and full-text search documents for this folder.",
+      "This removes Rolltop's local message references, raw-message cache, and full-text search documents for this folder.",
       "It does not delete messages from your IMAP server.",
       "The next sync will refetch this folder from IMAP and rebuild the local full-text index."
     ].join("\n");
@@ -1068,6 +1101,26 @@ export function SettingsView({
     );
   }
 
+  function renderIdentitySummary() {
+    const primary = identities.find((identity) => identity.is_primary) || identities[0] || null;
+    return (
+      <section className="panel account-list-panel">
+        <div className="panel-headline">
+          <div>
+            <h2>Identities</h2>
+            <div className="muted">Outgoing names, SMTP server, IMAP server, and Sent/Drafts folders.</div>
+          </div>
+          <button className="secondary" type="button" onClick={() => navigate("/settings/account/identities")}><Icon name="group" />Manage</button>
+        </div>
+        <button className="server-row" type="button" onClick={() => navigate("/settings/account/identities")}>
+          <span className="server-row-icon"><Icon name="group" /></span>
+          <strong>{identities.length === 1 ? "1 identity" : `${identities.length} identities`}</strong>
+          <small>{primary ? `${primary.display_name || primary.email} · ${primary.email}` : "No Me identities configured"}</small>
+        </button>
+      </section>
+    );
+  }
+
   // Folder settings render from the same tree model as the sidebar, with
   // maintenance actions and editable options separated from the read-only row.
   function renderFolderItems(nodes: FolderNode[], depth = 0): ReactNode[] {
@@ -1162,7 +1215,7 @@ export function SettingsView({
     return (
       <section className="panel identity-settings-panel">
         <h2>Identities</h2>
-        <div className="muted">These are your Me contact email addresses. Each identity can choose an SMTP server and signature line here.</div>
+        <div className="muted">These are your Me contact email addresses. Each identity can choose SMTP, IMAP, Sent/Drafts folders, and a signature line here.</div>
         <div className="identity-list">
           {identities.length === 0 ? <div className="muted">No Me identities yet. Mark a contact as Me to add one.</div> : null}
           {identities.map((identity) => (
@@ -1174,10 +1227,10 @@ export function SettingsView({
                   <input value={identity.email} readOnly />
                 </div>
                 <div>
-                  <label>SMTP server</label>
+                  <label>Outbound SMTP server</label>
                   <select value={identity.smtp_account_id || 0} onChange={(event) => updateIdentity(identity.id, { smtp_account_id: Number(event.target.value) })}>
                     <option value={0}>Default</option>
-                    {smtpAccounts.map((smtp) => <option value={smtp.id} key={smtp.id}>{smtp.label || smtp.host}</option>)}
+                    {smtpAccounts.map((smtp) => <option value={smtp.id} key={smtp.id}>{smtpAccountLabel(smtp)}</option>)}
                   </select>
                 </div>
                 <label className="identity-primary"><input type="checkbox" checked={identity.is_primary} onChange={(event) => updateIdentity(identity.id, { is_primary: event.target.checked })} /> Primary</label>
@@ -1190,63 +1243,6 @@ export function SettingsView({
               <div className="actions"><button className="secondary" type="button" onClick={() => saveIdentity(identity)}>Save identity</button></div>
             </div>
           ))}
-        </div>
-      </section>
-    );
-  }
-
-  // SMTP detail pages show identities under the selected outgoing server so the
-  // user can edit assignment and signature without jumping back to contacts.
-  function renderSMTPIdentitySettings() {
-    const savedServerID = selectedSMTPID || 0;
-    return (
-      <section className="panel smtp-identity-settings identity-settings-panel">
-        <div className="panel-headline">
-          <div>
-            <h2>Outgoing identities</h2>
-            <div className="muted">Choose which Me identities send through this SMTP server, and adjust their signature lines here.</div>
-          </div>
-        </div>
-        {!savedServerID ? <div className="notice subtle">Save this SMTP server before assigning identities to it.</div> : null}
-        <div className="identity-list">
-          {identities.length === 0 ? <div className="muted">No Me identities yet. Mark a contact as Me to add one.</div> : null}
-          {identities.map((identity) => {
-            const assignedHere = savedServerID > 0 && identity.smtp_account_id === savedServerID;
-            return (
-              <div className={`identity-row smtp-identity-row ${assignedHere ? "assigned" : ""}`} key={identity.id}>
-                <div className="identity-main smtp-identity-main">
-                  <Field label="Display name" value={identity.display_name} onChange={(value) => updateIdentity(identity.id, { display_name: value })} />
-                  <div>
-                    <label>Email</label>
-                    <input value={identity.email} readOnly />
-                  </div>
-                  <div>
-                    <label>Outgoing server</label>
-                    <select value={identity.smtp_account_id || 0} disabled={!savedServerID} onChange={(event) => updateIdentity(identity.id, { smtp_account_id: Number(event.target.value) })}>
-                      <option value={0}>Default</option>
-                      {smtpAccounts.map((smtp) => <option value={smtp.id} key={smtp.id}>{smtp.label || smtp.host}</option>)}
-                    </select>
-                  </div>
-                  <label className="identity-primary"><input type="checkbox" checked={identity.is_primary} onChange={(event) => updateIdentity(identity.id, { is_primary: event.target.checked })} /> Primary</label>
-                </div>
-                <label className="identity-assignment">
-                  <input
-                    type="checkbox"
-                    checked={assignedHere}
-                    disabled={!savedServerID}
-                    onChange={(event) => updateIdentity(identity.id, { smtp_account_id: event.target.checked ? savedServerID : 0 })}
-                  />
-                  Use this SMTP server
-                </label>
-                <IdentityMailboxFields identity={identity} accounts={imapAccounts} smtpAccounts={smtpAccounts} mailboxes={allFolderMailboxes} updateIdentity={updateIdentity} />
-                <div>
-                  <label>Signature</label>
-                  <RichSignatureEditor value={identity.signature} onChange={(value) => updateIdentity(identity.id, { signature: value })} />
-                </div>
-                <div className="actions"><button className="secondary" type="button" onClick={() => saveIdentity(identity)}>Save identity</button></div>
-              </div>
-            );
-          })}
         </div>
       </section>
     );
@@ -1402,7 +1398,7 @@ export function SettingsView({
       <section className="panel license-panel">
         <h2>License</h2>
         <p>
-          MailMirror is free software licensed under the GNU Affero General Public License version 3 or later.
+          Rolltop is free software licensed under the GNU Affero General Public License version 3 or later.
           You may run, study, share, and modify it under that license.
         </p>
         <p>
@@ -1519,7 +1515,7 @@ export function SettingsView({
 
             <section className="folder-edit-section folder-edit-section-wide folder-purge-section">
               <span className="settings-field-label">Local purge</span>
-              <div className="folder-purge-note">These actions only change MailMirror's local cache. They never delete messages from your IMAP server.</div>
+              <div className="folder-purge-note">These actions only change Rolltop's local cache. They never delete messages from your IMAP server.</div>
               <div className="folder-purge-actions">
                 <button
                   className="secondary folder-purge-button"
@@ -1585,6 +1581,22 @@ export function SettingsView({
           </tbody>
         </table>
       </section>
+    );
+  }
+
+  if (route.kind === "identities") {
+    return (
+      <>
+        <div className="content-head">
+          <div className="list-head-main">
+            <button className="icon-button" type="button" onClick={() => navigate("/settings/account")} title="Back to settings"><Icon name="arrow_back" /></button>
+            <h1>Identities</h1>
+          </div>
+        </div>
+        {loading ? <div className="panel muted">Loading settings...</div> : null}
+        {notice ? <div className="notice">{notice}</div> : null}
+        {renderIdentitySettings()}
+      </>
     );
   }
 
@@ -1675,7 +1687,6 @@ export function SettingsView({
             ) : null}
           </div>
         </form>
-        {renderSMTPIdentitySettings()}
       </>
     );
   }
@@ -1690,6 +1701,7 @@ export function SettingsView({
       <div className="settings-server-index">
         {renderIMAPList()}
         {renderSMTPList()}
+        {renderIdentitySummary()}
       </div>
       {renderDisplaySettings()}
       {renderSearchSettings()}

@@ -79,6 +79,7 @@ type MailIdentity struct {
 	ContactID       int64
 	ContactEmailID  int64
 	SMTPAccountID   int64
+	IMAPAccountID   int64
 	SentMailboxID   int64
 	DraftsMailboxID int64
 	Email           string

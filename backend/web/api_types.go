@@ -77,6 +77,7 @@ type apiMailIdentity struct {
 	ContactID       int64  `json:"contact_id"`
 	ContactEmailID  int64  `json:"contact_email_id"`
 	SMTPAccountID   int64  `json:"smtp_account_id"`
+	IMAPAccountID   int64  `json:"imap_account_id"`
 	SentMailboxID   int64  `json:"sent_mailbox_id"`
 	DraftsMailboxID int64  `json:"drafts_mailbox_id"`
 	Email           string `json:"email"`

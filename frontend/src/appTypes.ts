@@ -46,6 +46,9 @@ export type AppShellProps = {
   enabledPlugins: string[];
   serverStartedAt: string;
   serverUptimeSeconds: number;
+  buildVersion: string;
+  buildDate: string;
+  buildLabel: string;
   location: LocationState;
   navigate: Navigate;
   logout: () => void;

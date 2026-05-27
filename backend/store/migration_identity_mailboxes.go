@@ -42,6 +42,9 @@ func ensureIdentityMailboxColumns(ctx context.Context, s *Store) error {
 }
 
 func seedIdentityMailboxChoices(ctx context.Context, s *Store) error {
+	if err := ensureIdentityIMAPColumn(ctx, s); err != nil {
+		return err
+	}
 	users, err := s.ListUsers(ctx)
 	if err != nil {
 		return err

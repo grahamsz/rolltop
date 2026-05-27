@@ -26,6 +26,9 @@ export function AppShell({
   syncRunning,
   serverStartedAt,
   serverUptimeSeconds,
+  buildVersion,
+  buildDate,
+  buildLabel,
   accountNeedsPassword,
   accountNotice,
   enabledPlugins,
@@ -71,6 +74,9 @@ export function AppShell({
           syncRunning={syncRunning}
           serverStartedAt={serverStartedAt}
           serverUptimeSeconds={serverUptimeSeconds}
+          buildVersion={buildVersion}
+          buildDate={buildDate}
+          buildLabel={buildLabel}
           currentPath={location.path}
           navigate={navigate}
           openCompose={openCompose}
@@ -130,6 +136,16 @@ function formatUptime(totalSeconds: number) {
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${Math.max(1, minutes)}m`;
+}
+
+function buildDisplayLabel(version: string, buildDate: string, fallbackLabel: string) {
+  const trimmedVersion = version.trim();
+  if (trimmedVersion && trimmedVersion.toLowerCase() !== "latest") return trimmedVersion;
+  const parsed = Date.parse(buildDate || "");
+  if (Number.isFinite(parsed)) {
+    return `built ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(parsed)}`;
+  }
+  return fallbackLabel.trim();
 }
 
 // Topbar owns the search input because search is global navigation, not part of
@@ -197,7 +213,7 @@ function Topbar({
         }}
       >
         <Icon name="mailmirror" />
-        mailmirror
+        rolltop
       </a>
       <form className="top-search" onSubmit={submit}>
         <Icon name="search" />
@@ -251,6 +267,9 @@ function Sidebar({
   syncRunning,
   serverStartedAt,
   serverUptimeSeconds,
+  buildVersion,
+  buildDate,
+  buildLabel,
   currentPath,
   navigate,
   openCompose,
@@ -266,6 +285,9 @@ function Sidebar({
   syncRunning: boolean;
   serverStartedAt: string;
   serverUptimeSeconds: number;
+  buildVersion: string;
+  buildDate: string;
+  buildLabel: string;
   currentPath: string;
   navigate: (url: string) => void;
   openCompose: (query?: string) => void;
@@ -277,6 +299,8 @@ function Sidebar({
   const [dropID, setDropID] = useState<number | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const uptimeLabel = useServerUptimeLabel(serverStartedAt, serverUptimeSeconds);
+  const releaseLabel = buildDisplayLabel(buildVersion, buildDate, buildLabel);
+  const uptimeParts = [uptimeLabel ? `Up ${uptimeLabel}` : "", releaseLabel].filter(Boolean);
   const activeMailbox = mailRoute(currentPath).mailboxID;
   const allMailActive = (currentPath === "/mail" || currentPath.startsWith("/mail/")) && !activeMailbox;
   const accountGroups = useMemo(() => sidebarAccountGroups(mailboxes), [mailboxes]);
@@ -434,9 +458,9 @@ function Sidebar({
         </a>
       </div>
       <SidebarSync csrf={csrf} latest={latestSyncRun} activeRuns={activeSyncRuns} running={syncRunning} refreshChrome={refreshChrome} />
-      {uptimeLabel ? (
+      {uptimeParts.length > 0 ? (
         <div className="sidebar-uptime" title={serverStartedAt ? `Started ${new Date(serverStartedAt).toLocaleString()}` : "Server uptime"}>
-          Up {uptimeLabel}
+          {uptimeParts.join(" · ")}
         </div>
       ) : null}
       <div className="sidebar-license">

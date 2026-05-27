@@ -1,7 +1,7 @@
 {
-  "name": "MailMirror",
-  "short_name": "MailMirror",
-  "description": "Local email mirror, search, and compose",
+  "name": "Rolltop",
+  "short_name": "Rolltop",
+  "description": "Self-hosted email mirror, search, and compose",
   "start_url": "/mail",
   "scope": "/",
   "display": "standalone",

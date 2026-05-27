@@ -31,15 +31,18 @@ jobs:
           else
             version="latest"
           fi
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          binary="mailmirror-${version}-linux-amd64"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rolltop"
+          binary="rolltop-${version}-linux-amd64"
           {
-            echo "MAILMIRROR_VERSION=$version"
-            echo "MAILMIRROR_IMAGE=$image"
-            echo "MAILMIRROR_BINARY=$binary"
+            echo "ROLLTOP_VERSION=$version"
+            echo "ROLLTOP_BUILD_DATE=$build_date"
+            echo "ROLLTOP_IMAGE=$image"
+            echo "ROLLTOP_BINARY=$binary"
           } >> "$GITHUB_ENV"
           {
             echo "version=$version"
+            echo "build_date=$build_date"
             echo "image=$image"
             echo "binary=$binary"
             echo "docker_tags=${image}:${version}"
@@ -160,7 +163,7 @@ jobs:
             echo "### Go Documentation"
             echo
             echo "Packages: ${package_count}"
-            echo "Artifact: `godoc-${MAILMIRROR_VERSION}`"
+            echo "Artifact: `godoc-${ROLLTOP_VERSION}`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Go Documentation
@@ -181,7 +184,7 @@ jobs:
       - name: Build Backend Binary
         run: |
           mkdir -p build-artifacts
-          CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o "build-artifacts/${MAILMIRROR_BINARY}" ./cmd/mailmirror
+          CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w -X mailmirror/backend/buildinfo.Version=${ROLLTOP_VERSION} -X mailmirror/backend/buildinfo.BuildDate=${ROLLTOP_BUILD_DATE} -X mailmirror/backend/buildinfo.Commit=${GITHUB_SHA}" -o "build-artifacts/${ROLLTOP_BINARY}" ./cmd/mailmirror
 
       - name: Upload Backend Binary
         uses: actions/upload-artifact@v4
@@ -193,10 +196,16 @@ jobs:
       - name: Build Docker Image
         run: |
           docker build \
+            --build-arg "ROLLTOP_VERSION=${ROLLTOP_VERSION}" \
+            --build-arg "ROLLTOP_BUILD_DATE=${ROLLTOP_BUILD_DATE}" \
+            --build-arg "ROLLTOP_COMMIT=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.title=Rolltop" \
+            --label "org.opencontainers.image.url=https://rolltop.app" \
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --label "org.opencontainers.image.version=${MAILMIRROR_VERSION}" \
-            -t "${MAILMIRROR_IMAGE}:${MAILMIRROR_VERSION}" \
+            --label "org.opencontainers.image.created=${ROLLTOP_BUILD_DATE}" \
+            --label "org.opencontainers.image.version=${ROLLTOP_VERSION}" \
+            -t "${ROLLTOP_IMAGE}:${ROLLTOP_VERSION}" \
             .
 
       - name: Log In To GHCR
@@ -209,14 +218,14 @@ jobs:
       - name: Publish Docker Image
         if: github.event_name != 'pull_request'
         run: |
-          docker push "${MAILMIRROR_IMAGE}:${MAILMIRROR_VERSION}"
+          docker push "${ROLLTOP_IMAGE}:${ROLLTOP_VERSION}"
 
       - name: Docker Image Summary
         run: |
           {
             echo "### Docker Image"
             echo
-            echo "Image: \`${MAILMIRROR_IMAGE}:${MAILMIRROR_VERSION}\`"
+            echo "Image: \`${ROLLTOP_IMAGE}:${ROLLTOP_VERSION}\`"
             if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
               echo "Published: no (pull request build)"
             else

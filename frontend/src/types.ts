@@ -335,6 +335,10 @@ export type Bootstrap = {
   enabled_plugins?: string[];
   server_started_at?: string;
   server_uptime_seconds?: number;
+  build_version?: string;
+  build_date?: string;
+  build_label?: string;
+  public_site_url?: string;
 };
 
 /** ChromeEvent is the SSE payload used to refresh folders and sync status. */
@@ -345,6 +349,10 @@ export type ChromeEvent = {
   sync_running: boolean;
   server_started_at?: string;
   server_uptime_seconds?: number;
+  build_version?: string;
+  build_date?: string;
+  build_label?: string;
+  public_site_url?: string;
 };
 
 /** ComposeExistingAttachment is an already-stored attachment that compose can reuse without a new upload. */
@@ -423,6 +431,7 @@ export type MailIdentity = {
   contact_id: number;
   contact_email_id: number;
   smtp_account_id: number;
+  imap_account_id: number;
   sent_mailbox_id: number;
   drafts_mailbox_id: number;
   email: string;

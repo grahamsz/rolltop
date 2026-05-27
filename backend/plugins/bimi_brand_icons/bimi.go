@@ -230,7 +230,7 @@ func (r Resolver) fetchSVG(ctx context.Context, rawURL string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Accept", "image/svg+xml, image/*;q=0.5")
-	req.Header.Set("User-Agent", "MailMirror/1.0 BIMI")
+	req.Header.Set("User-Agent", "Rolltop/1.0 BIMI")
 	res, err := clientCopy.Do(req)
 	if err != nil {
 		return "", err

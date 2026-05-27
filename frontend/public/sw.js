@@ -1,4 +1,4 @@
-const STATIC_CACHE = "mailmirror-static-v7";
+const STATIC_CACHE = "rolltop-static-v1";
 const STATIC_ASSETS = ["/", "/mail", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {

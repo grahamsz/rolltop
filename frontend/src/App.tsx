@@ -186,7 +186,7 @@ export default function App() {
     if (!notificationsEnabled || !("Notification" in window) || Notification.permission !== "granted" || count <= 0) return;
     const sender = displayNotificationSender(run?.latest_new_from || "");
     const subject = truncateNotificationText(run?.latest_new_subject || "", 110);
-    const title = sender ? `MailMirror - ${sender}` : "MailMirror";
+    const title = sender ? `Rolltop - ${sender}` : "Rolltop";
     const fallback = count === 1 ? "1 new message synced." : `${count} new messages synced.`;
     const body = subject
       ? count === 1 ? subject : `${count} new messages synced. Latest: ${subject}`
@@ -228,7 +228,11 @@ export default function App() {
           latest_sync_run: chrome.latest_sync_run,
           active_sync_runs: chrome.active_sync_runs || [],
           server_started_at: chrome.server_started_at || current.server_started_at,
-          server_uptime_seconds: chrome.server_uptime_seconds ?? current.server_uptime_seconds
+          server_uptime_seconds: chrome.server_uptime_seconds ?? current.server_uptime_seconds,
+          build_version: chrome.build_version || current.build_version,
+          build_date: chrome.build_date || current.build_date,
+          build_label: chrome.build_label || current.build_label,
+          public_site_url: chrome.public_site_url || current.public_site_url
         } : current);
         if (chrome.latest_sync_run) {
           const previous = lastNotify.current;
@@ -295,7 +299,7 @@ export default function App() {
   if (!bootstrap) {
     return (
       <div className="auth-page">
-        <div className="auth-brand">mailmirror</div>
+        <div className="auth-brand">rolltop</div>
         {bootError ? <div className="error">{bootError}</div> : <div className="panel muted">Loading mail...</div>}
         <ToastStack toasts={toasts} onDismiss={removeToast} />
       </div>
@@ -329,6 +333,9 @@ export default function App() {
         enabledPlugins={bootstrap.enabled_plugins || []}
         serverStartedAt={bootstrap.server_started_at || ""}
         serverUptimeSeconds={bootstrap.server_uptime_seconds || 0}
+        buildVersion={bootstrap.build_version || ""}
+        buildDate={bootstrap.build_date || ""}
+        buildLabel={bootstrap.build_label || ""}
         location={location}
         navigate={navigate}
         logout={logout}

@@ -425,7 +425,7 @@ func (s *Server) ensureMailAccountOnboarding(ctx context.Context, user store.Use
 	if _, err := s.store.EnsureMeContactForEmail(ctx, user.ID, account.Email, firstNonEmpty(user.Name, account.Label, account.Email)); err != nil && !store.IsNotFound(err) {
 		return err
 	}
-	return nil
+	return s.store.EnsureMailIdentityMailboxDefaults(ctx, user.ID)
 }
 
 // inferredSMTPHost converts common imap.example.com hosts to smtp.example.com
@@ -557,8 +557,8 @@ func (s *Server) apiSMTPAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "smtp_account": apiSMTPAccountFromStore(account)})
 }
 
-// apiMailIdentity updates a Me-contact-backed outgoing identity: SMTP server,
-// display name, primary flag, and signature line.
+// apiMailIdentity updates a Me-contact-backed outgoing identity: server choices,
+// display name, primary flag, folder choices, and signature line.
 func (s *Server) apiMailIdentity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -576,11 +576,14 @@ func (s *Server) apiMailIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identity, err := s.store.UpdateMailIdentityForUser(r.Context(), cu.User.ID, store.MailIdentity{
-		ID:            in.ID,
-		SMTPAccountID: in.SMTPAccountID,
-		DisplayName:   in.DisplayName,
-		Signature:     in.Signature,
-		IsPrimary:     in.IsPrimary,
+		ID:              in.ID,
+		SMTPAccountID:   in.SMTPAccountID,
+		IMAPAccountID:   in.IMAPAccountID,
+		SentMailboxID:   in.SentMailboxID,
+		DraftsMailboxID: in.DraftsMailboxID,
+		DisplayName:     in.DisplayName,
+		Signature:       in.Signature,
+		IsPrimary:       in.IsPrimary,
 	})
 	if store.IsNotFound(err) {
 		http.NotFound(w, r)

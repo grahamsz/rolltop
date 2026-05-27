@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"mailmirror/backend/auth"
+	"mailmirror/backend/buildinfo"
 	mmcrypto "mailmirror/backend/crypto"
 	"mailmirror/backend/store"
 )
@@ -16,11 +17,16 @@ func (s *Server) apiBootstrap(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	info := buildinfo.Current()
 	resp := map[string]any{
 		"users_exist":           s.usersExist(r.Context()),
 		"csrf":                  s.csrfToken(w, r),
 		"server_started_at":     timeString(s.startedAt),
 		"server_uptime_seconds": int(time.Since(s.startedAt).Seconds()),
+		"build_version":         info.Version,
+		"build_date":            info.BuildDate,
+		"build_label":           info.Label,
+		"public_site_url":       info.PublicSiteURL,
 	}
 	if cu, ok := current(r); ok {
 		resp["user"] = safeUser(cu.User)

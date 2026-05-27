@@ -814,6 +814,126 @@ func TestMailAccountsAndIdentitiesStayScopedByUser(t *testing.T) {
 	}
 }
 
+func TestMailIdentityDefaultsChooseMatchingIMAPAndFolders(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "identity-default@example.test", "Identity Default", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAccount, err := db.CreateMailAccount(ctx, MailAccount{UserID: user.ID, Email: "other@example.test", Host: "imap.other.test", Port: 993, Username: "other", EncryptedPassword: "secret", UseTLS: true, Mailbox: "INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testRoleMailbox(t, ctx, db, user.ID, otherAccount.ID, "Sent", "sent"); err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, MailAccount{UserID: user.ID, Email: user.Email, Host: "imap.identity.test", Port: 993, Username: user.Email, EncryptedPassword: "secret", UseTLS: true, Mailbox: "INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent, err := testRoleMailbox(t, ctx, db, user.ID, account.ID, "Sent", "sent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drafts, err := testRoleMailbox(t, ctx, db, user.ID, account.ID, "Drafts", "drafts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	smtp, err := db.CreateSMTPAccount(ctx, SMTPAccount{UserID: user.ID, Label: "Identity SMTP", Host: "smtp.identity.test", Port: 587, Username: user.Email, EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateContact(ctx, user.ID, Contact{DisplayName: "Identity Default", IsMe: true, IsPrimary: true, Emails: []ContactEmail{{Email: user.Email, IsPrimary: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	identities, err := db.ListMailIdentitiesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(identities) != 1 {
+		t.Fatalf("identities = %+v, want one", identities)
+	}
+	identity := identities[0]
+	if identity.SMTPAccountID != smtp.ID || identity.IMAPAccountID != account.ID || identity.SentMailboxID != sent.ID || identity.DraftsMailboxID != drafts.ID {
+		t.Fatalf("identity defaults = %+v, want smtp=%d imap=%d sent=%d drafts=%d", identity, smtp.ID, account.ID, sent.ID, drafts.ID)
+	}
+}
+
+func TestUpdateMailIdentityValidatesIMAPAndMailboxScope(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "identity-scope@example.test", "Identity Scope", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateUser(ctx, "identity-scope-other@example.test", "Other", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := db.CreateMailAccount(ctx, MailAccount{UserID: user.ID, Email: user.Email, Host: "imap.first.test", Port: 993, Username: user.Email, EncryptedPassword: "secret", UseTLS: true, Mailbox: "INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSent, err := testRoleMailbox(t, ctx, db, user.ID, first.ID, "Sent", "sent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.CreateMailAccount(ctx, MailAccount{UserID: user.ID, Email: "alias@example.test", Host: "imap.second.test", Port: 993, Username: "alias", EncryptedPassword: "secret", UseTLS: true, Mailbox: "INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSent, err := testRoleMailbox(t, ctx, db, user.ID, second.ID, "Sent", "sent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDrafts, err := testRoleMailbox(t, ctx, db, user.ID, second.ID, "Drafts", "drafts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAccount, err := db.CreateMailAccount(ctx, MailAccount{UserID: other.ID, Email: other.Email, Host: "imap.other.test", Port: 993, Username: other.Email, EncryptedPassword: "secret", UseTLS: true, Mailbox: "INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateContact(ctx, user.ID, Contact{DisplayName: "Identity Scope", IsMe: true, IsPrimary: true, Emails: []ContactEmail{{Email: user.Email, IsPrimary: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	identities, err := db.ListMailIdentitiesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(identities) != 1 {
+		t.Fatalf("identities = %+v, want one", identities)
+	}
+	updated, err := db.UpdateMailIdentityForUser(ctx, user.ID, MailIdentity{
+		ID:              identities[0].ID,
+		IMAPAccountID:   second.ID,
+		SentMailboxID:   secondSent.ID,
+		DraftsMailboxID: secondDrafts.ID,
+		DisplayName:     "Scoped Identity",
+	})
+	if err != nil {
+		t.Fatalf("update identity: %v", err)
+	}
+	if updated.IMAPAccountID != second.ID || updated.SentMailboxID != secondSent.ID || updated.DraftsMailboxID != secondDrafts.ID {
+		t.Fatalf("updated identity = %+v, want second account folders", updated)
+	}
+	if _, err := db.UpdateMailIdentityForUser(ctx, user.ID, MailIdentity{ID: identities[0].ID, IMAPAccountID: second.ID, SentMailboxID: firstSent.ID, DraftsMailboxID: secondDrafts.ID, DisplayName: "bad"}); !IsNotFound(err) {
+		t.Fatalf("cross-account sent folder err = %v, want not found", err)
+	}
+	if _, err := db.UpdateMailIdentityForUser(ctx, user.ID, MailIdentity{ID: identities[0].ID, IMAPAccountID: otherAccount.ID, DisplayName: "bad"}); !IsNotFound(err) {
+		t.Fatalf("cross-user imap link err = %v, want not found", err)
+	}
+}
+
 func TestDeleteSMTPAccountForUserUnlinksIdentities(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
@@ -855,6 +975,25 @@ func TestDeleteSMTPAccountForUserUnlinksIdentities(t *testing.T) {
 	if err := db.DeleteSMTPAccountForUser(ctx, user.ID, smtp.ID); !IsNotFound(err) {
 		t.Fatalf("delete missing smtp err = %v, want not found", err)
 	}
+}
+
+func testRoleMailbox(t *testing.T, ctx context.Context, db *Store, userID, accountID int64, name, role string) (Mailbox, error) {
+	t.Helper()
+	mailbox, err := db.GetOrCreateMailbox(ctx, userID, accountID, name)
+	if err != nil {
+		return Mailbox{}, err
+	}
+	if err := db.UpdateMailboxSettings(ctx, userID, mailbox.ID, MailboxSettings{
+		SyncMode:        mailbox.SyncMode,
+		Role:            role,
+		Icon:            mailbox.Icon,
+		ShowInSidebar:   true,
+		ShowInAllMail:   mailbox.ShowInAllMail,
+		IncludeInSearch: true,
+	}); err != nil {
+		return Mailbox{}, err
+	}
+	return db.GetMailboxForUser(ctx, userID, mailbox.ID)
 }
 
 func testMailbox(t *testing.T, ctx context.Context, db *Store) (User, MailAccount, Mailbox, BlobRecord) {

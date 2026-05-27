@@ -406,6 +406,7 @@ func (s *Server) composeFromLabel(ctx context.Context, cu currentUser) string {
 type composeIdentity struct {
 	ID              int64
 	SMTPAccountID   int64
+	IMAPAccountID   int64
 	SentMailboxID   int64
 	DraftsMailboxID int64
 	Signature       string
@@ -459,6 +460,7 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 			out = append(out, composeIdentity{
 				ID:              identity.ContactEmailID,
 				SMTPAccountID:   identity.SMTPAccountID,
+				IMAPAccountID:   identity.IMAPAccountID,
 				SentMailboxID:   identity.SentMailboxID,
 				DraftsMailboxID: identity.DraftsMailboxID,
 				Signature:       identity.Signature,
@@ -474,8 +476,10 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 		}
 	}
 	email := ""
+	var imapAccountID int64
 	if account, err := s.store.GetMailAccount(ctx, cu.User.ID); err == nil && strings.TrimSpace(account.Email) != "" {
 		email = strings.TrimSpace(account.Email)
+		imapAccountID = account.ID
 	} else {
 		email = strings.TrimSpace(cu.User.Email)
 	}
@@ -484,11 +488,12 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 	}
 	label := strings.TrimSpace(cu.User.Name)
 	return []composeIdentity{{
-		ID:        0,
-		Label:     firstNonEmpty(label, email),
-		Email:     email,
-		Header:    contactAddressHeader(label, email),
-		IsPrimary: true,
+		ID:            0,
+		IMAPAccountID: imapAccountID,
+		Label:         firstNonEmpty(label, email),
+		Email:         email,
+		Header:        contactAddressHeader(label, email),
+		IsPrimary:     true,
 	}}
 }
 
@@ -633,6 +638,9 @@ func (s *Server) sentMailboxForIdentity(ctx context.Context, userID int64, ident
 		if mailbox.Role != "sent" {
 			return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("selected Sent folder for %s is no longer marked as Sent", identity.Email)
 		}
+		if identity.IMAPAccountID > 0 && mailbox.AccountID != identity.IMAPAccountID {
+			return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("selected Sent folder for %s is not on the identity IMAP server", identity.Email)
+		}
 		account, err := s.store.GetMailAccountForUser(ctx, userID, mailbox.AccountID)
 		if err != nil {
 			return store.MailAccount{}, store.Mailbox{}, err
@@ -671,13 +679,16 @@ func (s *Server) draftsMailboxForIdentity(ctx context.Context, userID int64, ide
 		if mailbox.Role != "drafts" {
 			return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("selected Drafts folder for %s is no longer marked as Drafts", identity.Email)
 		}
+		if identity.IMAPAccountID > 0 && mailbox.AccountID != identity.IMAPAccountID {
+			return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("selected Drafts folder for %s is not on the identity IMAP server", identity.Email)
+		}
 		account, err := s.store.GetMailAccountForUser(ctx, userID, mailbox.AccountID)
 		if err != nil {
 			return store.MailAccount{}, store.Mailbox{}, err
 		}
 		return account, mailbox, nil
 	}
-	candidates := mailAccountCandidatesForAddress(accounts, identity.Email)
+	candidates := mailAccountCandidatesForIdentity(accounts, identity, store.SMTPAccount{})
 	if len(candidates) == 0 {
 		return store.MailAccount{}, store.Mailbox{}, fmt.Errorf("no IMAP account matches the %s identity", identity.Email)
 	}
@@ -694,6 +705,14 @@ func (s *Server) draftsMailboxForIdentity(ctx context.Context, userID int64, ide
 }
 
 func mailAccountCandidatesForIdentity(accounts []store.MailAccount, identity composeIdentity, smtpAccount store.SMTPAccount) []store.MailAccount {
+	if identity.IMAPAccountID > 0 {
+		for _, account := range accounts {
+			if account.ID == identity.IMAPAccountID {
+				return []store.MailAccount{account}
+			}
+		}
+		return nil
+	}
 	keys := map[string]bool{}
 	for _, value := range []string{identity.Email, smtpAccount.Username} {
 		if key := store.NormalizeContactEmail(value); key != "" {
