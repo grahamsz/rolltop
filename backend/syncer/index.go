@@ -18,7 +18,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 	if err != nil {
 		parsed = mailparse.ParsedMessage{
 			Subject: fmt.Sprintf("Unparseable message UID %d", item.UID),
-			Text:    fmt.Sprintf("Rolltop stored the raw message, but could not parse its MIME body: %v. Download the raw .eml to inspect it.", err),
+			Text:    fmt.Sprintf("rolltop stored the raw message, but could not parse its MIME body: %v. Download the raw .eml to inspect it.", err),
 		}
 	}
 	date := parsed.Date

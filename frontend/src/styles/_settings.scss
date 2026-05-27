@@ -178,6 +178,11 @@
   }
 }
 
+.identity-editor {
+  display: grid;
+  gap: 12px;
+}
+
 .identity-main {
   display: grid;
   grid-template-columns: minmax(150px, 1fr) minmax(180px, 1fr) minmax(160px, .8fr) auto;

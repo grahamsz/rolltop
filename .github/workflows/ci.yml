@@ -199,7 +199,7 @@ jobs:
             --build-arg "ROLLTOP_VERSION=${ROLLTOP_VERSION}" \
             --build-arg "ROLLTOP_BUILD_DATE=${ROLLTOP_BUILD_DATE}" \
             --build-arg "ROLLTOP_COMMIT=${GITHUB_SHA}" \
-            --label "org.opencontainers.image.title=Rolltop" \
+            --label "org.opencontainers.image.title=rolltop" \
             --label "org.opencontainers.image.url=https://rolltop.app" \
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \

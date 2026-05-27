@@ -557,8 +557,8 @@ func (s *Server) apiSMTPAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "smtp_account": apiSMTPAccountFromStore(account)})
 }
 
-// apiMailIdentity updates a Me-contact-backed outgoing identity: server choices,
-// display name, primary flag, folder choices, and signature line.
+// apiMailIdentity creates or updates a Me-contact-backed outgoing identity:
+// server choices, display name, primary flag, folder choices, and signature line.
 func (s *Server) apiMailIdentity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -575,16 +575,24 @@ func (s *Server) apiMailIdentity(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	identity, err := s.store.UpdateMailIdentityForUser(r.Context(), cu.User.ID, store.MailIdentity{
+	identityInput := store.MailIdentity{
 		ID:              in.ID,
 		SMTPAccountID:   in.SMTPAccountID,
 		IMAPAccountID:   in.IMAPAccountID,
 		SentMailboxID:   in.SentMailboxID,
 		DraftsMailboxID: in.DraftsMailboxID,
+		Email:           in.Email,
 		DisplayName:     in.DisplayName,
 		Signature:       in.Signature,
 		IsPrimary:       in.IsPrimary,
-	})
+	}
+	var identity store.MailIdentity
+	var err error
+	if in.ID == 0 {
+		identity, err = s.store.CreateMailIdentityForUser(r.Context(), cu.User.ID, identityInput)
+	} else {
+		identity, err = s.store.UpdateMailIdentityForUser(r.Context(), cu.User.ID, identityInput)
+	}
 	if store.IsNotFound(err) {
 		http.NotFound(w, r)
 		return

@@ -276,13 +276,13 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; child-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: http: https: cid:; form-action 'self'; base-uri 'none'")
 		w.Header().Set("Link", `<https://rolltop.app>; rel="home"`)
-		w.Header().Set("X-Rolltop-Version", info.Version)
-		w.Header().Set("X-Rolltop-Release", info.Label)
+		w.Header().Set("X-rolltop-Version", info.Version)
+		w.Header().Set("X-rolltop-Release", info.Label)
 		if info.BuildDate != "" {
-			w.Header().Set("X-Rolltop-Build-Date", info.BuildDate)
+			w.Header().Set("X-rolltop-Build-Date", info.BuildDate)
 		}
 		if info.Commit != "" {
-			w.Header().Set("X-Rolltop-Commit", info.Commit)
+			w.Header().Set("X-rolltop-Commit", info.Commit)
 		}
 		next.ServeHTTP(w, r)
 	})

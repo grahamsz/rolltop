@@ -115,7 +115,7 @@ func TestAPISearchCachedETagShortCircuitsBeforeSearch(t *testing.T) {
 	if got := rec.Header().Get("Server-Timing"); !strings.Contains(got, "cache") {
 		t.Fatalf("server timing = %q", got)
 	}
-	if got := rec.Header().Get("X-Rolltop-Search-Stats"); got != "cache=hit" {
+	if got := rec.Header().Get("X-rolltop-Search-Stats"); got != "cache=hit" {
 		t.Fatalf("rolltop search stats = %q", got)
 	}
 	if got := rec.Header().Get("X-MailMirror-Search-Stats"); got != "cache=hit" {
@@ -156,7 +156,7 @@ func TestAPISearchWritesTimingHeaders(t *testing.T) {
 			t.Fatalf("server timing %q missing %q", serverTiming, part)
 		}
 	}
-	stats := rec.Header().Get("X-Rolltop-Search-Stats")
+	stats := rec.Header().Get("X-rolltop-Search-Stats")
 	if legacy := rec.Header().Get("X-MailMirror-Search-Stats"); legacy != stats {
 		t.Fatalf("legacy search stats = %q, want %q", legacy, stats)
 	}
@@ -356,6 +356,85 @@ func TestMailListCachedETagInvalidatesOnUserChange(t *testing.T) {
 	}
 }
 
+func TestCreateMailIdentityEndpointCreatesMeIdentity(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "identity-api@example.test", "Identity API", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, store.MailAccount{UserID: user.ID, Email: "alias-api@example.test", Host: "imap.alias-api.test", Port: 993, Username: "alias-api@example.test", EncryptedPassword: "secret", UseTLS: true, Mailbox: "INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Sent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxSettings(ctx, user.ID, sent.ID, store.MailboxSettings{SyncMode: sent.SyncMode, Role: "sent", Icon: sent.Icon, ShowInSidebar: true, ShowInAllMail: sent.ShowInAllMail, IncludeInSearch: true}); err != nil {
+		t.Fatal(err)
+	}
+	sent, err = db.GetMailboxForUser(ctx, user.ID, sent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drafts, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Drafts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxSettings(ctx, user.ID, drafts.ID, store.MailboxSettings{SyncMode: drafts.SyncMode, Role: "drafts", Icon: drafts.Icon, ShowInSidebar: true, ShowInAllMail: drafts.ShowInAllMail, IncludeInSearch: true}); err != nil {
+		t.Fatal(err)
+	}
+	drafts, err = db.GetMailboxForUser(ctx, user.ID, drafts.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	smtp, err := db.CreateSMTPAccount(ctx, store.SMTPAccount{UserID: user.ID, Label: "Alias API SMTP", Host: "smtp.alias-api.test", Port: 587, Username: "alias-api@example.test", EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: db, masterKey: []byte("12345678901234567890123456789012")}
+	body := bytes.NewBufferString(fmt.Sprintf(`{"email":"alias-api@example.test","display_name":"Alias API","smtp_account_id":%d,"imap_account_id":%d,"sent_mailbox_id":%d,"drafts_mailbox_id":%d,"signature":"<p>Alias API</p>","is_primary":true}`, smtp.ID, account.ID, sent.ID, drafts.ID))
+	req := httptest.NewRequest(http.MethodPost, "/api/account/identities", body)
+	req.Header.Set("Content-Type", "application/json")
+	csrfBase := "identity-create-csrf-base"
+	req.AddCookie(&http.Cookie{Name: csrfCookie, Value: csrfBase})
+	req.Header.Set("X-CSRF-Token", server.csrfForBase(csrfBase))
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: user}))
+	rec := httptest.NewRecorder()
+
+	server.handleAPI(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST identity status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Identity   apiMailIdentity   `json:"identity"`
+		Identities []apiMailIdentity `json:"identities"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Identity.ID == 0 || payload.Identity.Email != "alias-api@example.test" || payload.Identity.DisplayName != "Alias API" || payload.Identity.SMTPAccountID != smtp.ID || payload.Identity.IMAPAccountID != account.ID || payload.Identity.SentMailboxID != sent.ID || payload.Identity.DraftsMailboxID != drafts.ID {
+		t.Fatalf("identity response = %+v", payload.Identity)
+	}
+	if len(payload.Identities) != 1 {
+		t.Fatalf("identities response = %+v", payload.Identities)
+	}
+	contacts, err := db.ListMeContactsForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contacts) != 1 || !contacts[0].IsMe || len(contacts[0].Emails) != 1 || contacts[0].Emails[0].Email != "alias-api@example.test" {
+		t.Fatalf("me contacts after identity create = %+v", contacts)
+	}
+}
+
 func TestDeleteSMTPAccountEndpointUnlinksIdentities(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -425,8 +504,8 @@ func TestSetupCreatesFirstAdmin(t *testing.T) {
 	if get.Code != http.StatusOK {
 		t.Fatalf("GET /api/bootstrap status = %d", get.Code)
 	}
-	if got := get.Header().Get("X-Rolltop-Version"); got == "" {
-		t.Fatal("missing X-Rolltop-Version header")
+	if got := get.Header().Get("X-rolltop-Version"); got == "" {
+		t.Fatal("missing X-rolltop-Version header")
 	}
 	if got := get.Header().Get("Link"); !strings.Contains(got, "https://rolltop.app") {
 		t.Fatalf("Link header = %q, want rolltop.app", got)

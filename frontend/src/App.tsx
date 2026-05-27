@@ -186,7 +186,7 @@ export default function App() {
     if (!notificationsEnabled || !("Notification" in window) || Notification.permission !== "granted" || count <= 0) return;
     const sender = displayNotificationSender(run?.latest_new_from || "");
     const subject = truncateNotificationText(run?.latest_new_subject || "", 110);
-    const title = sender ? `Rolltop - ${sender}` : "Rolltop";
+    const title = sender ? `rolltop - ${sender}` : "rolltop";
     const fallback = count === 1 ? "1 new message synced." : `${count} new messages synced.`;
     const body = subject
       ? count === 1 ? subject : `${count} new messages synced. Latest: ${subject}`

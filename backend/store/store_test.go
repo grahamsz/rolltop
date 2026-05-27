@@ -864,6 +864,49 @@ func TestMailIdentityDefaultsChooseMatchingIMAPAndFolders(t *testing.T) {
 	}
 }
 
+func TestCreateMailIdentityForUserCreatesMeIdentity(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "identity-create@example.test", "Identity Create", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, MailAccount{UserID: user.ID, Email: "alias@example.test", Host: "imap.alias.test", Port: 993, Username: "alias@example.test", EncryptedPassword: "secret", UseTLS: true, Mailbox: "INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent, err := testRoleMailbox(t, ctx, db, user.ID, account.ID, "Sent", "sent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drafts, err := testRoleMailbox(t, ctx, db, user.ID, account.ID, "Drafts", "drafts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	smtp, err := db.CreateSMTPAccount(ctx, SMTPAccount{UserID: user.ID, Label: "Alias SMTP", Host: "smtp.alias.test", Port: 587, Username: "alias@example.test", EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := db.CreateMailIdentityForUser(ctx, user.ID, MailIdentity{Email: "alias@example.test", DisplayName: "Alias Sender", SMTPAccountID: smtp.ID, IMAPAccountID: account.ID, SentMailboxID: sent.ID, DraftsMailboxID: drafts.ID, Signature: "<p>Alias</p>"})
+	if err != nil {
+		t.Fatalf("create identity: %v", err)
+	}
+	if identity.ID == 0 || identity.Email != "alias@example.test" || identity.DisplayName != "Alias Sender" || identity.SMTPAccountID != smtp.ID || identity.IMAPAccountID != account.ID || identity.SentMailboxID != sent.ID || identity.DraftsMailboxID != drafts.ID {
+		t.Fatalf("created identity = %+v", identity)
+	}
+	contacts, err := db.ListMeContactsForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contacts) != 1 || !contacts[0].IsMe || len(contacts[0].Emails) != 1 || contacts[0].Emails[0].Email != "alias@example.test" {
+		t.Fatalf("me contacts after identity create = %+v", contacts)
+	}
+}
+
 func TestUpdateMailIdentityValidatesIMAPAndMailboxScope(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))

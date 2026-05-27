@@ -17,8 +17,8 @@ func TestStartupGateServesStartupHTMLForAppRoutes(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", res.Code, http.StatusOK)
 	}
-	if !strings.Contains(res.Body.String(), "Rolltop") {
-		t.Fatalf("startup body did not contain Rolltop branding")
+	if !strings.Contains(res.Body.String(), "rolltop") {
+		t.Fatalf("startup body did not contain rolltop branding")
 	}
 }
 

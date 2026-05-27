@@ -686,7 +686,7 @@ export function ThreadView({
                   {item.body_preview_only ? (
                     <div className="body-notice">
                       <Icon name="report" />
-                      <span>Showing the indexed preview only. Rolltop could not fetch the full original from IMAP.</span>
+                      <span>Showing the indexed preview only. rolltop could not fetch the full original from IMAP.</span>
                       <button className="secondary" type="button" onClick={() => navigate("/settings/account")}>Account settings</button>
                     </div>
                   ) : null}

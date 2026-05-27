@@ -214,6 +214,50 @@ func (s *Store) ListMailIdentitiesForUser(ctx context.Context, userID int64) ([]
 	return out, rows.Err()
 }
 
+// CreateMailIdentityForUser creates or promotes a Me-contact email, then applies
+// identity-level server, folder, primary, and signature settings to the synced row.
+func (s *Store) CreateMailIdentityForUser(ctx context.Context, userID int64, in MailIdentity) (MailIdentity, error) {
+	email := strings.TrimSpace(in.Email)
+	key := NormalizeContactEmail(email)
+	if key == "" {
+		return MailIdentity{}, errors.New("identity email is required")
+	}
+	display := trimLimit(in.DisplayName, 240)
+	if display == "" {
+		display = email
+	}
+	if _, err := s.EnsureMeContactForEmail(ctx, userID, email, display); err != nil {
+		return MailIdentity{}, err
+	}
+	identities, err := s.ListMailIdentitiesForUser(ctx, userID)
+	if err != nil {
+		return MailIdentity{}, err
+	}
+	for _, identity := range identities {
+		if NormalizeContactEmail(identity.Email) != key {
+			continue
+		}
+		next := identity
+		next.DisplayName = display
+		next.Signature = in.Signature
+		next.IsPrimary = in.IsPrimary || identity.IsPrimary
+		if in.SMTPAccountID > 0 {
+			next.SMTPAccountID = in.SMTPAccountID
+		}
+		if in.IMAPAccountID > 0 {
+			next.IMAPAccountID = in.IMAPAccountID
+		}
+		if in.SentMailboxID > 0 {
+			next.SentMailboxID = in.SentMailboxID
+		}
+		if in.DraftsMailboxID > 0 {
+			next.DraftsMailboxID = in.DraftsMailboxID
+		}
+		return s.UpdateMailIdentityForUser(ctx, userID, next)
+	}
+	return MailIdentity{}, ErrNotFound
+}
+
 // UpdateMailIdentityForUser updates server assignments, display name, signature, and primary state for one identity.
 func (s *Store) UpdateMailIdentityForUser(ctx context.Context, userID int64, in MailIdentity) (MailIdentity, error) {
 	if in.ID <= 0 {
