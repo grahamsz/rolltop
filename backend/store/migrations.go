@@ -21,6 +21,7 @@ const (
 	SystemSchemaVersion    = "system-001"
 	SystemSchemaVersion002 = "system-002"
 	SystemSchemaVersion003 = "system-003"
+	SystemSchemaVersion004 = "system-004"
 	UserSchemaVersion      = "user-001"
 	UserSchemaVersion002   = "user-002"
 	UserSchemaVersion003   = "user-003"
@@ -30,6 +31,8 @@ const (
 	UserSchemaVersion007   = "user-007"
 	UserSchemaVersion008   = "user-008"
 	UserSchemaVersion009   = "user-009"
+	UserSchemaVersion010   = "user-010"
+	UserSchemaVersion011   = "user-011"
 )
 
 // MigrationProgress is emitted while Store.OpenServerWithProgress and
@@ -79,11 +82,11 @@ func (s *Store) migrate(ctx context.Context, kind schemaKind, progress Migration
 	sets := make([]migrationSet, 0, 2)
 	switch kind {
 	case schemaSystem:
-		sets = append(sets, systemMigrationSet(), systemUserSearchPreferencesMigrationSet(), systemUserSearchRankingMigrationSet())
+		sets = append(sets, systemMigrationSet(), systemUserSearchPreferencesMigrationSet(), systemUserSearchRankingMigrationSet(), systemPasswordResetMigrationSet())
 	case schemaUser:
-		sets = append(sets, userMigrationSet(), userSearchPreferencesMigrationSet(), userSearchRankingMigrationSet(), userSenderStatsMigrationSet(), userSenderStatsTableMigrationSet(), userIdentityMailboxMigrationSet(), userIdentityIMAPMigrationSet(), userPGPMigrationSet(), userAutocryptMigrationSet())
+		sets = append(sets, userMigrationSet(), userBackupEmailMigrationSet(), userSearchPreferencesMigrationSet(), userSearchRankingMigrationSet(), userSenderStatsMigrationSet(), userSenderStatsTableMigrationSet(), userIdentityMailboxMigrationSet(), userIdentityIMAPMigrationSet(), userPGPMigrationSet(), userAutocryptMigrationSet(), userPGPPrivateKeyStorageMigrationSet())
 	default:
-		sets = append(sets, systemMigrationSet(), systemUserSearchPreferencesMigrationSet(), systemUserSearchRankingMigrationSet(), userMigrationSet(), userSearchPreferencesMigrationSet(), userSearchRankingMigrationSet(), userSenderStatsMigrationSet(), userSenderStatsTableMigrationSet(), userIdentityMailboxMigrationSet(), userIdentityIMAPMigrationSet(), userPGPMigrationSet(), userAutocryptMigrationSet())
+		sets = append(sets, systemMigrationSet(), systemUserSearchPreferencesMigrationSet(), systemUserSearchRankingMigrationSet(), systemPasswordResetMigrationSet(), userMigrationSet(), userBackupEmailMigrationSet(), userSearchPreferencesMigrationSet(), userSearchRankingMigrationSet(), userSenderStatsMigrationSet(), userSenderStatsTableMigrationSet(), userIdentityMailboxMigrationSet(), userIdentityIMAPMigrationSet(), userPGPMigrationSet(), userAutocryptMigrationSet(), userPGPPrivateKeyStorageMigrationSet())
 	}
 	for _, set := range sets {
 		if err := s.applyMigrationSet(ctx, set, progress); err != nil {

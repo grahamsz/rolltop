@@ -590,4 +590,53 @@
       color: var(--ok);
     }
   }
+
+  &.suggested {
+    border-color: color-mix(in srgb, var(--ok) 58%, transparent);
+
+    .pgp-security-option:not(:disabled) {
+      animation: pgp-soft-pulse 1.8s ease-in-out infinite;
+    }
+  }
+}
+
+.compose-pgp-send-choice {
+  margin: 0 12px 10px;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ok) 8%, var(--surface));
+  color: var(--text);
+  font-size: 13px;
+
+  span {
+    margin-right: auto;
+    font-weight: 700;
+  }
+
+  button {
+    min-height: 32px;
+    border-radius: 7px;
+    padding: 6px 10px;
+  }
+}
+
+@keyframes pgp-soft-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 0%, transparent);
+  }
+
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 22%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compose-pgp-bar.suggested .pgp-security-option:not(:disabled) {
+    animation: none;
+  }
 }

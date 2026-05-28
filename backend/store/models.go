@@ -9,6 +9,7 @@ type User struct {
 	ID                     int64
 	Email                  string
 	Name                   string
+	BackupEmail            string
 	PasswordHash           string
 	IsAdmin                bool
 	DateLocale             string
@@ -103,6 +104,7 @@ type IdentityPGPPrivateKey struct {
 	PublicKeyArmored      string
 	EncryptedPrivateKey   string
 	PrivateKeyArmored     string
+	PrivateKeyStorage     string
 	RevocationCertificate string
 	IsActiveSigning       bool
 	IsActiveEncryption    bool

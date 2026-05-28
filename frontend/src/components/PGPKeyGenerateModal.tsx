@@ -50,8 +50,7 @@ export function PGPKeyGenerateModal({
           <div>
             <h2>Generate PGP key</h2>
             <p>
-              This passphrase protects the new private key for {email || "this identity"}. rolltop stores a server-encrypted copy and sends it
-              back to this browser for unlock/export. Do not reuse your rolltop password.
+              This passphrase protects the new private key for {email || "this identity"}. rolltop saves the key using the storage choice selected in identity settings. Do not reuse your rolltop password.
             </p>
           </div>
           <button className="icon-action" type="button" title="Close" aria-label="Close" onClick={onCancel}>

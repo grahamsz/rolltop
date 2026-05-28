@@ -22,41 +22,15 @@ func TestLoadUsesRolltopDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadAcceptsLegacyMailmirrorEnv(t *testing.T) {
-	t.Setenv("MAILMIRROR_MASTER_KEY", testMasterKey)
-	t.Setenv("MAILMIRROR_DATA_DIR", "/legacy-data")
-	t.Setenv("MAILMIRROR_DB_PATH", "/legacy-data/mailmirror.db")
-	t.Setenv("MAILMIRROR_COOKIE_SECURE", "true")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DataDir != "/legacy-data" {
-		t.Fatalf("data dir = %q", cfg.DataDir)
-	}
-	if cfg.DatabasePath != filepath.Join("/legacy-data", "rolltop.db") {
-		t.Fatalf("database path = %q", cfg.DatabasePath)
-	}
-	if !cfg.CookieSecure {
-		t.Fatalf("cookie secure = false")
-	}
-}
-
-func TestLoadPrefersRolltopEnvOverLegacy(t *testing.T) {
+func TestLoadUsesRolltopDatabasePath(t *testing.T) {
 	t.Setenv("ROLLTOP_MASTER_KEY", testMasterKey)
-	t.Setenv("ROLLTOP_DATA_DIR", "/rolltop-data")
-	t.Setenv("ROLLTOP_DB_PATH", "/rolltop-data/mailmirror.db")
-	t.Setenv("MAILMIRROR_DATA_DIR", "/legacy-data")
+	t.Setenv("ROLLTOP_DB_PATH", "/rolltop-data/custom.db")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DataDir != "/rolltop-data" {
-		t.Fatalf("data dir = %q", cfg.DataDir)
-	}
-	if cfg.DatabasePath != filepath.Join("/rolltop-data", "rolltop.db") {
+	if cfg.DatabasePath != "/rolltop-data/custom.db" {
 		t.Fatalf("database path = %q", cfg.DatabasePath)
 	}
 }

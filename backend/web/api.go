@@ -19,6 +19,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiSetup(w, r)
 	case path == "login":
 		s.apiLogin(w, r)
+	case path == "password-reset/request":
+		s.apiPasswordResetRequest(w, r)
+	case path == "password-reset/complete":
+		s.apiPasswordResetComplete(w, r)
 	case path == "logout":
 		s.apiLogout(w, r)
 	case path == "profile":
@@ -69,6 +73,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiAccountFolder(w, r, strings.TrimPrefix(path, "account/folders/"))
 	case path == "admin/users":
 		s.apiAdminUsers(w, r)
+	case strings.HasPrefix(path, "admin/users/"):
+		s.apiAdminUserPath(w, r, strings.TrimPrefix(path, "admin/users/"))
+	case path == "admin/password-reset":
+		s.apiAdminPasswordResetSettings(w, r)
 	case path == "admin/plugins":
 		s.apiAdminPlugins(w, r)
 	case strings.HasPrefix(path, "admin/plugins/"):

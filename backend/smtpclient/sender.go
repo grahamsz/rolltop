@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"rolltop/backend/buildinfo"
 	mmcrypto "rolltop/backend/crypto"
 	"rolltop/backend/store"
 )
@@ -49,6 +50,8 @@ type Message struct {
 	AutocryptAddr    string
 	AutocryptKeyData string
 	PGPMIMEEncrypted bool
+	PGPMIMESigned    bool
+	PGPMIMESignature string
 	Attachments      []Attachment
 }
 
@@ -203,6 +206,7 @@ func buildRaw(msg Message, requireRecipients bool) ([]byte, []string, error) {
 	writeHeader(w, "Subject", mime.QEncoding.Encode("utf-8", strings.TrimSpace(msg.Subject)))
 	writeHeader(w, "Date", msg.Date.Format(time.RFC1123Z))
 	writeHeader(w, "Message-ID", msg.MessageID)
+	writeHeader(w, "X-Mailer", xMailerHeaderValue())
 	writeAutocryptHeader(w, msg.AutocryptAddr, msg.AutocryptKeyData)
 	if strings.TrimSpace(msg.InReplyTo) != "" {
 		writeHeader(w, "In-Reply-To", sanitizeHeaderValue(msg.InReplyTo))
@@ -221,6 +225,10 @@ func buildRaw(msg Message, requireRecipients bool) ([]byte, []string, error) {
 func writeRootBody(w *bufio.Writer, msg Message) {
 	if msg.PGPMIMEEncrypted {
 		writePGPMIMEEncryptedBody(w, msg)
+		return
+	}
+	if msg.PGPMIMESigned {
+		writePGPMIMESignedBody(w, msg)
 		return
 	}
 	inlineAttachments, regularAttachments := splitAttachments(msg.Attachments)
@@ -295,6 +303,34 @@ func writePGPMIMEEncryptedBody(w *bufio.Writer, msg Message) {
 	body := normalizeCRLF(msg.BodyText)
 	_, _ = w.WriteString(body)
 	if !strings.HasSuffix(body, "\r\n") {
+		_, _ = w.WriteString("\r\n")
+	}
+	_, _ = fmt.Fprintf(w, "--%s--\r\n", boundary)
+}
+
+func writePGPMIMESignedBody(w *bufio.Writer, msg Message) {
+	boundary := boundaryFor(msg, "pgp-signed")
+	writeHeader(w, "Content-Type", mime.FormatMediaType("multipart/signed", map[string]string{
+		"protocol": "application/pgp-signature",
+		"micalg":   "pgp-sha256",
+		"boundary": boundary,
+	}))
+	_, _ = w.WriteString("\r\n")
+	_, _ = fmt.Fprintf(w, "--%s\r\n", boundary)
+	entity := normalizeCRLF(msg.BodyText)
+	_, _ = w.WriteString(entity)
+	if !strings.HasSuffix(entity, "\r\n") {
+		_, _ = w.WriteString("\r\n")
+	}
+	_, _ = fmt.Fprintf(w, "--%s\r\n", boundary)
+	writeHeader(w, "Content-Type", mime.FormatMediaType("application/pgp-signature", map[string]string{"name": "signature.asc"}))
+	writeHeader(w, "Content-Description", "OpenPGP digital signature")
+	writeHeader(w, "Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": "signature.asc"}))
+	writeHeader(w, "Content-Transfer-Encoding", "7bit")
+	_, _ = w.WriteString("\r\n")
+	signature := normalizeCRLF(msg.PGPMIMESignature)
+	_, _ = w.WriteString(signature)
+	if !strings.HasSuffix(signature, "\r\n") {
 		_, _ = w.WriteString("\r\n")
 	}
 	_, _ = fmt.Fprintf(w, "--%s--\r\n", boundary)
@@ -468,6 +504,15 @@ func addressListString(addrs []*mail.Address) string {
 
 func writeHeader(w *bufio.Writer, name, value string) {
 	_, _ = fmt.Fprintf(w, "%s: %s\r\n", name, sanitizeHeaderValue(value))
+}
+
+func xMailerHeaderValue() string {
+	info := buildinfo.Current()
+	version := strings.TrimSpace(info.Version)
+	if version == "" {
+		version = "dev"
+	}
+	return "rolltop/" + version
 }
 
 func writeAutocryptHeader(w *bufio.Writer, addr, keyData string) {

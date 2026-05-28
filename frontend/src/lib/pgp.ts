@@ -2,7 +2,7 @@
 // dynamically imported so they are emitted as lazy chunks when the plugin is used.
 
 import type { ContactPGPKey, IdentityPGPPrivateKey } from "../types";
-import type { UnlockedPGPKey } from "../appTypes";
+import type { PGPUnlockState, UnlockedPGPKey } from "../appTypes";
 
 type OpenPGPModule = typeof import("openpgp");
 
@@ -26,14 +26,42 @@ export type PGPMessageOpenResult = {
   signaturePublicKeyAlgorithm?: string;
   encryptionKeyIDs?: string[];
   symmetricAlgorithm?: string;
+  protectedSubject?: string;
   autocryptGossip?: AutocryptGossipKey[];
 };
 
 type PublicKeyLike = Awaited<ReturnType<OpenPGPModule["readKey"]>>;
 
+export type SerializedUnlockedPGPKey = Omit<UnlockedPGPKey, "privateKey"> & {
+  private_key_armored: string;
+};
+
+export type SerializedPGPUnlockState = {
+  unlockedUntil: number;
+  keys: SerializedUnlockedPGPKey[];
+};
+
 export type AutocryptGossipKey = {
   email: string;
   publicKeyArmored: string;
+};
+
+export type PGPMIMEAttachmentInput = {
+  filename: string;
+  contentType: string;
+  contentID?: string;
+  inline?: boolean;
+  data: Uint8Array;
+};
+
+export type DecryptedMIMEAttachment = {
+  id: string;
+  filename: string;
+  contentType: string;
+  contentID: string;
+  inline: boolean;
+  size: number;
+  objectURL: string;
 };
 
 export async function unlockPrivateKey(key: IdentityPGPPrivateKey, passphrase: string): Promise<UnlockedPGPKey> {
@@ -43,16 +71,85 @@ export async function unlockPrivateKey(key: IdentityPGPPrivateKey, passphrase: s
     throw new Error("This private key is not passphrase-protected. Export it with a passphrase before importing it.");
   }
   const unlocked = await openpgp.decryptKey({ privateKey, passphrase });
+  const encryptionKeyID = await keyEncryptionKeyID(unlocked);
   return {
     id: key.id || 0,
     identity_id: key.identity_id,
     label: key.label || key.fingerprint || "PGP key",
     fingerprint: key.fingerprint,
     key_id: key.key_id || keyIDFromKey(privateKey),
+    encryption_key_id: encryptionKeyID,
     algorithm: keyAlgorithmSummary(privateKey),
     public_key_armored: key.public_key_armored,
     privateKey: unlocked
   };
+}
+
+export async function serializePGPUnlockState(state: PGPUnlockState): Promise<SerializedPGPUnlockState> {
+  if (!state.unlockedUntil || state.unlockedUntil <= Date.now()) return { unlockedUntil: 0, keys: [] };
+  const keys: SerializedUnlockedPGPKey[] = [];
+  for (const key of state.keys) {
+    const privateKey = key.privateKey as { armor?: () => string | Promise<string> };
+    const privateKeyArmored = await Promise.resolve(privateKey.armor?.() || "");
+    if (!privateKeyArmored.trim()) continue;
+    keys.push({
+      id: key.id,
+      identity_id: key.identity_id,
+      label: key.label,
+      fingerprint: key.fingerprint,
+      public_key_armored: key.public_key_armored,
+      algorithm: key.algorithm,
+      key_id: key.key_id,
+      encryption_key_id: key.encryption_key_id,
+      private_key_armored: privateKeyArmored
+    });
+  }
+  return { unlockedUntil: keys.length > 0 ? state.unlockedUntil : 0, keys };
+}
+
+export async function restorePGPUnlockState(state: SerializedPGPUnlockState): Promise<PGPUnlockState> {
+  if (!state.unlockedUntil || state.unlockedUntil <= Date.now()) return { unlockedUntil: 0, keys: [] };
+  const openpgp = await loadOpenPGP();
+  const keys: UnlockedPGPKey[] = [];
+  for (const item of state.keys || []) {
+    try {
+      const privateKey = await openpgp.readPrivateKey({ armoredKey: item.private_key_armored || "" });
+      keys.push({
+        id: item.id,
+        identity_id: item.identity_id,
+        label: item.label,
+        fingerprint: item.fingerprint,
+        public_key_armored: item.public_key_armored,
+        algorithm: item.algorithm,
+        key_id: item.key_id || keyIDFromKey(privateKey),
+        encryption_key_id: item.encryption_key_id || await keyEncryptionKeyID(privateKey),
+        privateKey
+      });
+    } catch {
+      // Ignore malformed or expired worker state; the tab can prompt again.
+    }
+  }
+  return { unlockedUntil: keys.length > 0 ? state.unlockedUntil : 0, keys };
+}
+
+export async function encryptionRecipientKeyIDsFromSource(source: string): Promise<string[]> {
+  const armored = extractArmoredMessage(source);
+  if (!armored) return [];
+  const openpgp = await loadOpenPGP();
+  const message = await openpgp.readMessage({ armoredMessage: armored });
+  return keyIDsFromObjects(message.getEncryptionKeyIDs?.());
+}
+
+export async function matchingPGPPrivateKeyIDForRecipients(keys: IdentityPGPPrivateKey[], recipientKeyIDs: string[]): Promise<number> {
+  const recipients = normalizedPGPKeyIDSet(recipientKeyIDs);
+  if (recipients.size === 0) return 0;
+  for (const key of keys) {
+    const candidateIDs = await identityPGPPrivateKeyIDs(key);
+    if (candidateIDs.some((id) => recipients.has(id))) {
+      return key.id || 0;
+    }
+  }
+  return 0;
 }
 
 export async function generatePrivateKey(name: string, email: string, passphrase: string): Promise<IdentityPGPPrivateKey> {
@@ -107,6 +204,23 @@ export async function publicKeyRecordFromArmored(publicKeyArmored: string, email
   };
 }
 
+export async function autocryptKeyRecordFromMessageSource(source: string, senderEmail = ""): Promise<ContactPGPKey | null> {
+  const expectedEmail = normalizedEmailAddress(senderEmail);
+  for (const value of rawHeaderValues(source, "Autocrypt")) {
+    const parsed = parseAutocryptHeaderValue(value);
+    if (!parsed) continue;
+    if (expectedEmail && normalizedEmailAddress(parsed.email) !== expectedEmail) continue;
+    const record = await publicKeyRecordFromArmored(parsed.publicKeyArmored);
+    return {
+      ...record,
+      email: parsed.email,
+      label: parsed.email || record.label,
+      is_preferred: true
+    };
+  }
+  return null;
+}
+
 export async function encryptMessageText(text: string, recipientKeys: ContactPGPKey[], signingKey?: UnlockedPGPKey): Promise<string> {
   const openpgp = await loadOpenPGP();
   const encryptionKeys: PublicKeyLike[] = [];
@@ -137,7 +251,37 @@ export async function signMessageText(text: string, signingKey: UnlockedPGPKey):
   return openpgp.sign({ message, signingKeys: signingKey.privateKey as never }) as Promise<string>;
 }
 
-export function pgpMIMEEntityFromBody(text: string, html: string): string {
+export async function signPGPMIMEEntity(entity: string, signingKey: UnlockedPGPKey): Promise<string> {
+  const openpgp = await loadOpenPGP();
+  const message = await openpgp.createMessage({ binary: new TextEncoder().encode(ensureTrailingCRLF(normalizeCRLFText(entity))) });
+  return openpgp.sign({
+    message,
+    signingKeys: signingKey.privateKey as never,
+    detached: true,
+    format: "armored"
+  } as never) as Promise<string>;
+}
+
+export function pgpMIMEEntityFromBody(text: string, html: string, attachments: PGPMIMEAttachmentInput[] = []): string {
+  const bodyEntity = pgpMIMEBodyEntity(text, html);
+  if (attachments.length === 0) return bodyEntity;
+  const boundary = `rolltop-pgp-mixed-${randomMIMEBoundaryToken()}`;
+  const parts = [
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    bodyEntity.trimEnd(),
+    ...attachments.flatMap((attachment) => [
+      `--${boundary}`,
+      pgpMIMEAttachmentEntity(attachment).trimEnd()
+    ]),
+    `--${boundary}--`,
+    ""
+  ];
+  return ensureTrailingCRLF(parts.join("\r\n"));
+}
+
+function pgpMIMEBodyEntity(text: string, html: string): string {
   if (html.trim()) {
     const boundary = `rolltop-pgp-alt-${randomMIMEBoundaryToken()}`;
     return ensureTrailingCRLF([
@@ -165,6 +309,22 @@ export function pgpMIMEEntityFromBody(text: string, html: string): string {
   ].join("\r\n"));
 }
 
+function pgpMIMEAttachmentEntity(attachment: PGPMIMEAttachmentInput): string {
+  const filename = sanitizeMIMEFilename(attachment.filename || "attachment");
+  const contentType = sanitizeContentType(attachment.contentType || "application/octet-stream");
+  const disposition = attachment.inline ? "inline" : "attachment";
+  const lines = [
+    `Content-Type: ${contentType}; name="${escapeMIMEQuotedValue(filename)}"`,
+    `Content-Transfer-Encoding: base64`
+  ];
+  if (attachment.contentID?.trim()) {
+    lines.push(`Content-ID: <${sanitizeContentID(attachment.contentID)}>`);
+  }
+  lines.push(`Content-Disposition: ${disposition}; filename="${escapeMIMEQuotedValue(filename)}"`);
+  lines.push("", base64Lines(attachment.data));
+  return ensureTrailingCRLF(lines.join("\r\n"));
+}
+
 export function addAutocryptGossipHeaders(payload: string, keys: ContactPGPKey[]): string {
   const seen = new Set<string>();
   const headers: string[] = [];
@@ -177,7 +337,30 @@ export function addAutocryptGossipHeaders(payload: string, keys: ContactPGPKey[]
     headers.push(`Autocrypt-Gossip: addr=${email}; prefer-encrypt=mutual; keydata=${keyData}`);
   }
   if (headers.length === 0) return payload;
-  return `${headers.join("\n")}\n\n${payload}`;
+  const foldedHeaders = headers.map(foldMIMEHeaderLine).join("\r\n");
+  const normalizedPayload = normalizeCRLFText(payload);
+  const splitAt = normalizedPayload.indexOf("\r\n\r\n");
+  if (splitAt >= 0 && /^[A-Za-z0-9-]+:/m.test(normalizedPayload.slice(0, splitAt))) {
+    return `${foldedHeaders}\r\n${normalizedPayload}`;
+  }
+  return `${foldedHeaders}\r\n\r\n${normalizedPayload}`;
+}
+
+function foldMIMEHeaderLine(line: string): string {
+  const normalized = line.replace(/[\r\n]+/g, " ").trim();
+  const maxLength = 78;
+  if (normalized.length <= maxLength) return normalized;
+  const lines: string[] = [];
+  let remaining = normalized;
+  while (remaining.length > maxLength) {
+    let breakAt = remaining.lastIndexOf(";", maxLength);
+    if (breakAt <= 0) breakAt = remaining.lastIndexOf(" ", maxLength);
+    if (breakAt <= 0) breakAt = maxLength;
+    lines.push(remaining.slice(0, breakAt + (remaining[breakAt] === ";" ? 1 : 0)).trimEnd());
+    remaining = remaining.slice(breakAt + (remaining[breakAt] === ";" ? 1 : 0)).trimStart();
+  }
+  if (remaining) lines.push(remaining);
+  return lines.map((part, index) => index === 0 ? part : ` ${part}`).join("\r\n");
 }
 
 export async function encryptionKeyRecordsForRecipients(recipientEmails: string[], candidateKeys: ContactPGPKey[]): Promise<ContactPGPKey[]> {
@@ -295,24 +478,37 @@ export async function decryptPGPSource(source: string, keys: UnlockedPGPKey[], v
   }
   const message = await openpgp.readMessage({ armoredMessage: armored });
   const encryptionKeyIDs = keyIDsFromObjects(message.getEncryptionKeyIDs?.());
+  const unlockedKeyIDs = await unlockedPGPKeyIDs(keys);
   let symmetricAlgorithm = "";
   try {
+    // OpenPGP.js mutates encrypted session-key packets during decryptSessionKeys.
+    // Parse a throwaway message so the actual decrypt below still has intact packets.
+    const sessionMessage = await openpgp.readMessage({ armoredMessage: armored });
     const sessionKeys = await openpgp.decryptSessionKeys({
-      message,
+      message: sessionMessage,
       decryptionKeys: keys.map((key) => key.privateKey as never)
     });
     symmetricAlgorithm = sessionKeys[0]?.algorithm || "";
   } catch {
     symmetricAlgorithm = "";
   }
-  const result = await openpgp.decrypt({
-    message,
-    decryptionKeys: keys.map((key) => key.privateKey as never),
-    verificationKeys: verificationKeys.length > 0 ? verificationKeys as never : undefined,
-    format: "utf8"
-  });
+  let result: { data?: unknown; signatures?: unknown };
+  try {
+    result = await openpgp.decrypt({
+      message,
+      decryptionKeys: keys.map((key) => key.privateKey as never),
+      verificationKeys: verificationKeys.length > 0 ? verificationKeys as never : undefined,
+      format: "utf8"
+    });
+  } catch (err) {
+    const detail = encryptionKeyIDs.length > 0 && unlockedKeyIDs.length > 0
+      ? ` The encrypted message lists recipient key ${formatKeyIDList(encryptionKeyIDs)}; the unlocked Rolltop key ${unlockedKeyIDs.length === 1 ? "is" : "IDs are"} ${formatKeyIDList(unlockedKeyIDs)}.`
+      : "";
+    throw new Error(`Could not decrypt this PGP message.${detail} ${pgpErrorMessage(err)}`.trim());
+  }
   const signature = await verificationState(openpgp, result.signatures);
   const openedText = stripAutocryptGossipHeaders(String(result.data || ""));
+  const protectedSubject = protectedSubjectFromMIME(openedText.text);
   return {
     text: openedText.text,
     encrypted: true,
@@ -320,22 +516,58 @@ export async function decryptPGPSource(source: string, keys: UnlockedPGPKey[], v
     signed: signature.signatureStatus !== "none",
     encryptionKeyIDs,
     symmetricAlgorithm,
+    protectedSubject,
     autocryptGossip: openedText.gossip,
     ...signature
   };
 }
 
-export async function decryptedHTMLDoc(content: string): Promise<string> {
+export async function decryptedHTMLDoc(content: string, attachments: DecryptedMIMEAttachment[] = []): Promise<string> {
   const decoded = decodedMIMEEntityForDisplay(content);
-  const display = decoded.html || decoded.text || content;
+  const cidURLs = cidURLMap(attachments);
+  const display = decoded.html ? replaceCIDReferences(decoded.html, cidURLs) : decoded.text || content;
   const html = (decoded.html || looksLikeHTML(display)) ? await sanitizeHTML(display) : `<div class="plaintext">${plainTextToHTML(display)}</div>`;
-  const csp = "default-src 'none'; img-src 'self' data: cid:; style-src 'unsafe-inline'; font-src data:";
+  const csp = "default-src 'none'; img-src 'self' data: blob: cid:; media-src 'self' data: blob: cid:; style-src 'unsafe-inline'; font-src data:";
   return `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${csp}"><style>html,body{margin:0;padding:0;background:#fff;color:#1f2328;font:14px/1.55 Arial,sans-serif;overflow:hidden}body{padding:18px}a{color:#245f80;text-decoration:none;border-bottom:1px solid #9cc5d8}.plaintext{white-space:pre-wrap;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere}table{max-width:100%}img{max-width:100%;height:auto}html[data-rolltop-theme="classic_dark"],html[data-rolltop-theme="classic_dark"] body{background:#151f1c!important;color:#e6eee9!important;color-scheme:dark}html[data-rolltop-theme="classic_dark"] body :where(div,p,span,blockquote,pre,td,th,li){background:transparent!important;color:inherit!important;border-color:rgba(174,190,183,.28)!important}html[data-rolltop-theme="classic_dark"] a{color:#8bd4c8!important;border-bottom-color:rgba(139,212,200,.5)!important}html[data-rolltop-theme="matrix"],html[data-rolltop-theme="matrix"] body{background:#06130d!important;color:#dcffe9!important;color-scheme:dark}html[data-rolltop-theme="matrix"] body :where(div,p,span,blockquote,pre,td,th,li){background:transparent!important;color:inherit!important;border-color:rgba(74,222,128,.24)!important}html[data-rolltop-theme="matrix"] a{color:#7dffbf!important;border-bottom-color:rgba(125,255,191,.5)!important}</style></head><body>${html}</body></html>`;
+}
+
+export function decryptedPlainText(content: string): string {
+  const decoded = decodedMIMEEntityForDisplay(content);
+  if (decoded.text?.trim()) return decoded.text;
+  if (decoded.html?.trim()) return htmlToPlainText(decoded.html);
+  return content;
+}
+
+export function decryptedMIMEAttachments(content: string): DecryptedMIMEAttachment[] {
+  const decoded = decodedMIMEEntityForDisplay(content);
+  return (decoded.attachments || []).map((attachment, index) => {
+    const data = new ArrayBuffer(attachment.data.byteLength);
+    new Uint8Array(data).set(attachment.data);
+    const blob = new Blob([data], { type: attachment.contentType || "application/octet-stream" });
+    return {
+      id: `${attachment.contentID || attachment.filename || "attachment"}-${index}`,
+      filename: attachment.filename || "attachment",
+      contentType: attachment.contentType || "application/octet-stream",
+      contentID: attachment.contentID,
+      inline: attachment.inline,
+      size: attachment.data.byteLength,
+      objectURL: URL.createObjectURL(blob)
+    };
+  });
 }
 
 type DecodedMIMEEntity = {
   html?: string;
   text?: string;
+  attachments?: DecodedMIMEAttachment[];
+};
+
+type DecodedMIMEAttachment = {
+  filename: string;
+  contentType: string;
+  contentID: string;
+  inline: boolean;
+  data: Uint8Array;
 };
 
 function decodedMIMEEntityForDisplay(value: string): DecodedMIMEEntity {
@@ -350,13 +582,18 @@ function decodedMIMEEntity(headers: Record<string, string>, body: string): Decod
   if (mediaType.startsWith("multipart/")) {
     const boundary = headerParams(contentType).boundary || "";
     if (!boundary) return {};
-    const out: DecodedMIMEEntity = {};
+    const out: DecodedMIMEEntity = { attachments: [] };
     for (const part of splitMultipartBody(body, boundary)) {
       const decoded = decodedMIMEEntityForDisplay(part);
       if (!out.html && decoded.html) out.html = decoded.html;
       if (!out.text && decoded.text) out.text = decoded.text;
+      if (decoded.attachments?.length) out.attachments?.push(...decoded.attachments);
     }
     return out;
+  }
+  const attachment = decodedAttachment(headers, body, mediaType);
+  if (attachment) {
+    return { attachments: [attachment] };
   }
   if (mediaType === "text/html") {
     return { html: decodeMIMEBody(headers, body) };
@@ -367,19 +604,77 @@ function decodedMIMEEntity(headers: Record<string, string>, body: string): Decod
   return {};
 }
 
+function protectedSubjectFromMIME(value: string): string {
+  const entity = splitMIMEEntity(value);
+  if (!entity) return "";
+  return protectedSubjectFromMIMEEntity(entity.headers, entity.body, 0);
+}
+
+function protectedSubjectFromMIMEEntity(headers: Record<string, string>, body: string, depth: number): string {
+  if (depth > 8) return "";
+  const direct = decodeMIMEHeaderValue(headers["subject"] || "");
+  if (direct) return direct;
+  const contentType = headers["content-type"] || "";
+  const mediaType = contentType.split(";")[0].trim().toLowerCase();
+  if (mediaType === "text/rfc822-headers") {
+    const subject = decodeMIMEHeaderValue(parseMIMEHeaderBlock(decodeMIMEBody(headers, body))["subject"] || "");
+    if (subject) return subject;
+  }
+  if (mediaType === "message/rfc822" || mediaType === "message/global") {
+    const nested = splitMIMEEntity(decodeMIMEBody(headers, body));
+    if (nested) return protectedSubjectFromMIMEEntity(nested.headers, nested.body, depth + 1);
+  }
+  if (mediaType.startsWith("multipart/")) {
+    const boundary = headerParams(contentType).boundary || "";
+    if (!boundary) return "";
+    for (const part of splitMultipartBody(body, boundary)) {
+      const nested = splitMIMEEntity(part);
+      if (!nested) continue;
+      const subject = protectedSubjectFromMIMEEntity(nested.headers, nested.body, depth + 1);
+      if (subject) return subject;
+    }
+  }
+  return "";
+}
+
+function decodedAttachment(headers: Record<string, string>, body: string, mediaType: string): DecodedMIMEAttachment | null {
+  const disposition = headers["content-disposition"] || "";
+  const dispositionType = disposition.split(";")[0].trim().toLowerCase();
+  const params = headerParams(disposition);
+  const typeParams = headerParams(headers["content-type"] || "");
+  const contentID = normalizeContentID(headers["content-id"] || "");
+  const filename = params.filename || typeParams.name || "";
+  const isAttachment = dispositionType === "attachment" || dispositionType === "inline" || contentID !== "" || (mediaType && !mediaType.startsWith("text/"));
+  if (!isAttachment) return null;
+  return {
+    filename: filename || contentID || "attachment",
+    contentType: mediaType || "application/octet-stream",
+    contentID,
+    inline: dispositionType === "inline" || contentID !== "",
+    data: decodeMIMEBodyBytes(headers, body)
+  };
+}
+
 function splitMIMEEntity(value: string): { headers: Record<string, string>; body: string } | null {
   const normalized = value.replace(/\r\n/g, "\n");
   const splitAt = normalized.indexOf("\n\n");
   if (splitAt < 0) return null;
   const headerBlock = normalized.slice(0, splitAt);
   if (!/^[A-Za-z0-9-]+:/m.test(headerBlock)) return null;
+  const headers = parseMIMEHeaderBlock(headerBlock);
+  return { headers, body: normalized.slice(splitAt + 2) };
+}
+
+function parseMIMEHeaderBlock(value: string): Record<string, string> {
+  const normalized = value.replace(/\r\n/g, "\n");
+  const headerBlock = normalized.split("\n\n", 1)[0] || "";
   const headers: Record<string, string> = {};
   for (const line of unfoldHeaderLines(headerBlock.split("\n"))) {
     const colon = line.indexOf(":");
     if (colon <= 0) continue;
     headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
   }
-  return { headers, body: normalized.slice(splitAt + 2) };
+  return headers;
 }
 
 function splitMultipartBody(body: string, boundary: string): string[] {
@@ -475,6 +770,82 @@ function decodeMIMEBody(headers: Record<string, string>, body: string): string {
   if (encoding.includes("quoted-printable")) return decodeQuotedPrintable(body);
   if (encoding.includes("base64")) return decodeBase64Text(body);
   return body;
+}
+
+function decodeMIMEBodyBytes(headers: Record<string, string>, body: string): Uint8Array {
+  const encoding = (headers["content-transfer-encoding"] || "").toLowerCase();
+  if (encoding.includes("base64")) return base64ToBytes(body);
+  if (encoding.includes("quoted-printable")) return new TextEncoder().encode(decodeQuotedPrintable(body));
+  return new TextEncoder().encode(body);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const compact = value.replace(/[^A-Za-z0-9+/=]/g, "");
+  if (!compact) return new Uint8Array();
+  try {
+    const binary = atob(compact);
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    return out;
+  } catch {
+    return new TextEncoder().encode(value);
+  }
+}
+
+function base64Lines(value: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < value.length; i += chunk) {
+    binary += String.fromCharCode(...value.slice(i, i + chunk));
+  }
+  return (btoa(binary).match(/.{1,76}/g) || [""]).join("\r\n");
+}
+
+function sanitizeMIMEFilename(value: string): string {
+  const cleaned = value.trim().replace(/\0/g, "").replace(/[\\/\r\n"]/g, "_");
+  return cleaned || "attachment";
+}
+
+function sanitizeContentType(value: string): string {
+  const cleaned = value.trim().replace(/[\r\n]/g, "");
+  return /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(cleaned) ? cleaned : "application/octet-stream";
+}
+
+function escapeMIMEQuotedValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+}
+
+function sanitizeContentID(value: string): string {
+  return value.trim().replace(/^<|>$/g, "").replace(/[\r\n<>]/g, "");
+}
+
+function normalizeContentID(value: string): string {
+  return sanitizeContentID(value).toLowerCase();
+}
+
+function cidURLMap(attachments: DecryptedMIMEAttachment[]): Map<string, string> {
+  const out = new Map<string, string>();
+  attachments.forEach((attachment) => {
+    const key = normalizeContentID(attachment.contentID);
+    if (key) out.set(key, attachment.objectURL);
+  });
+  return out;
+}
+
+function replaceCIDReferences(html: string, cidURLs: Map<string, string>): string {
+  if (cidURLs.size === 0) return html;
+  return html.replace(/cid:([^"'\s>)]+)/gi, (match, raw: string) => {
+    const key = normalizeContentID(decodeURIComponentSafe(raw));
+    return cidURLs.get(key) || match;
+  });
+}
+
+function decodeURIComponentSafe(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 export function pgpPassphraseIssues(passphrase: string, identityValues: string[]): string[] {
@@ -590,6 +961,34 @@ function decodeBase64Text(value: string): string {
   }
 }
 
+function decodeMIMEHeaderValue(value: string): string {
+  const normalized = value
+    .replace(/\r?\n[ \t]+/g, " ")
+    .replace(/(=\?[^?]+\?[bqBQ]\?[^?]*\?=)\s+(?==\?[^?]+\?[bqBQ]\?)/g, "$1");
+  return normalized.replace(/=\?([^?]+)\?([bqBQ])\?([^?]*)\?=/g, (match, charset: string, encoding: string, encoded: string) => {
+    try {
+      const bytes = encoding.toLowerCase() === "b" ? base64ToBytes(encoded) : qEncodedHeaderBytes(encoded);
+      return new TextDecoder(charset).decode(bytes);
+    } catch {
+      return match;
+    }
+  }).trim();
+}
+
+function qEncodedHeaderBytes(value: string): Uint8Array {
+  const out: number[] = [];
+  const normalized = value.replace(/_/g, " ");
+  for (let i = 0; i < normalized.length; i++) {
+    if (normalized[i] === "=" && /^[0-9a-f]{2}$/i.test(normalized.slice(i + 1, i + 3))) {
+      out.push(parseInt(normalized.slice(i + 1, i + 3), 16));
+      i += 2;
+      continue;
+    }
+    out.push(normalized.charCodeAt(i) & 0xff);
+  }
+  return new Uint8Array(out);
+}
+
 function assertPrivateKeyImportText(value: string) {
   const trimmed = value.trim();
   if (/-----BEGIN PGP PUBLIC KEY BLOCK-----/i.test(trimmed)) {
@@ -626,7 +1025,7 @@ function pgpBlockNotFoundError(source: string): Error {
     return new Error("PGP/MIME encrypted message detected, but no ASCII-armored encrypted payload was found.");
   }
   if (lower.includes("multipart/signed") || lower.includes("application/pgp-signature")) {
-    return new Error("Detached PGP/MIME signatures are detected, but this opener currently supports inline clear-signed PGP messages only.");
+    return new Error("PGP/MIME signature detected, but the signed body or detached signature part could not be read.");
   }
   return new Error("No PGP message block was found.");
 }
@@ -748,6 +1147,76 @@ function keyIDsFromObjects(values: unknown): string[] {
   return Array.from(new Set(out));
 }
 
+async function identityPGPPrivateKeyIDs(key: IdentityPGPPrivateKey): Promise<string[]> {
+  const out = [key.key_id || "", key.fingerprint?.slice(-16) || ""];
+  for (const armoredKey of [key.public_key_armored, key.private_key_armored || ""]) {
+    if (!armoredKey.trim()) continue;
+    try {
+      const openpgp = await loadOpenPGP();
+      const parsed = armoredKey.includes("BEGIN PGP PRIVATE KEY BLOCK")
+        ? await openpgp.readPrivateKey({ armoredKey })
+        : await openpgp.readKey({ armoredKey });
+      out.push(...keyIDsFromKeyMaterial(parsed));
+      out.push(await keyEncryptionKeyID(parsed));
+    } catch {
+      // A malformed optional key copy should not prevent matching metadata.
+    }
+  }
+  return Array.from(normalizedPGPKeyIDSet(out));
+}
+
+function normalizedPGPKeyIDSet(values: string[]): Set<string> {
+  return new Set(values.map((value) => value.replace(/\s+/g, "").toUpperCase()).filter((value) => value && !/^0+$/.test(value)));
+}
+
+async function unlockedPGPKeyIDs(keys: UnlockedPGPKey[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const key of keys) {
+    out.push(key.key_id || "", key.encryption_key_id || "", key.fingerprint?.slice(-16) || "");
+    out.push(...keyIDsFromKeyMaterial(key.privateKey));
+    out.push(await keyEncryptionKeyID(key.privateKey));
+    out.push(...await keyDecryptionKeyIDs(key.privateKey));
+  }
+  return Array.from(normalizedPGPKeyIDSet(out));
+}
+
+function keyIDsFromKeyMaterial(key: unknown): string[] {
+  const out = [keyIDFromKey(key)];
+  try {
+    const allKeys = (key as { getKeys?: () => unknown[] }).getKeys?.() || [];
+    for (const item of allKeys) {
+      out.push(keyIDFromKey(item));
+    }
+  } catch {
+    // Best-effort diagnostics only.
+  }
+  return out;
+}
+
+async function keyEncryptionKeyID(key: unknown): Promise<string> {
+  try {
+    const encryptionKey = await (key as { getEncryptionKey?: () => Promise<unknown> }).getEncryptionKey?.();
+    return keyIDFromKey(encryptionKey);
+  } catch {
+    return "";
+  }
+}
+
+async function keyDecryptionKeyIDs(key: unknown): Promise<string[]> {
+  try {
+    const decryptionKeys = await (key as { getDecryptionKeys?: () => Promise<unknown[]> }).getDecryptionKeys?.() || [];
+    return decryptionKeys.map((item) => keyIDFromKey(item));
+  } catch {
+    return [];
+  }
+}
+
+function formatKeyIDList(values: string[]): string {
+  const clean = Array.from(new Set(values.map((value) => value.replace(/\s+/g, "").toUpperCase()).filter(Boolean)));
+  if (clean.length === 0) return "unknown";
+  return clean.join(", ");
+}
+
 function stripAutocryptGossipHeaders(value: string): { text: string; gossip: AutocryptGossipKey[] } {
   const normalized = value.replace(/\r\n/g, "\n");
   const splitAt = normalized.indexOf("\n\n");
@@ -776,6 +1245,18 @@ function unfoldHeaderLines(lines: string[]): string[] {
     out.push(line);
   }
   return out;
+}
+
+function rawHeaderValues(source: string, headerName: string): string[] {
+  const normalized = source.replace(/\r\n/g, "\n");
+  const splitAt = normalized.indexOf("\n\n");
+  if (splitAt < 0) return [];
+  const headerBlock = normalized.slice(0, splitAt);
+  const prefix = headerName.toLowerCase() + ":";
+  return unfoldHeaderLines(headerBlock.split("\n"))
+    .filter((line) => line.toLowerCase().startsWith(prefix))
+    .map((line) => line.slice(prefix.length).trim())
+    .filter(Boolean);
 }
 
 function parseAutocryptHeaderValue(value: string): AutocryptGossipKey | null {
@@ -868,7 +1349,7 @@ async function sanitizeHTML(html: string): Promise<string> {
   return DOMPurify.sanitize(html, {
     FORBID_TAGS: ["script", "style", "form", "iframe", "object", "embed"],
     FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "style"],
-    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|cid):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|cid|blob):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i
   });
 }
 
@@ -878,6 +1359,13 @@ function looksLikeHTML(value: string): boolean {
 
 function plainTextToHTML(value: string): string {
   return escapeHTML(value).replace(/\n/g, "<br>");
+}
+
+function htmlToPlainText(value: string): string {
+  if (typeof document === "undefined") return value.replace(/<[^>]+>/g, " ");
+  const template = document.createElement("template");
+  template.innerHTML = value;
+  return template.content.textContent || "";
 }
 
 function escapeHTML(value: string): string {

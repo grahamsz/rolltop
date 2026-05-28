@@ -366,7 +366,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				log.Printf("reconcile mailbox user_id=%d mailbox=%s: %v", userID, mailboxName, err)
 			}
 		} else {
-			log.Printf("skip inline metadata sync user_id=%d mailbox=%s messages=%d limit=%d", userID, mailboxName, planned.Status.Messages, inlineMetadataSyncLimit)
+			log.Printf("defer large-folder metadata reconciliation user_id=%d mailbox=%s messages=%d threshold=%d", userID, mailboxName, planned.Status.Messages, inlineMetadataSyncLimit)
 		}
 		progress.MailboxesDone++
 		progress.CurrentMailbox = mailboxName

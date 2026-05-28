@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"rolltop/backend/mailparse"
 	"rolltop/backend/plugins"
 	oneclickunsubscribe "rolltop/backend/plugins/one_click_unsubscribe"
 	remoteimageblocklist "rolltop/backend/plugins/remote_image_blocklist"
@@ -1062,7 +1063,15 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 				}
 			}
 		}
+		threadMsg, err = s.ensureMessagePGPState(ctx, cu.User.ID, threadMsg)
+		if err != nil {
+			return nil, msg, err
+		}
 		allAttachments, err := s.store.ListAttachmentsForMessage(ctx, cu.User.ID, threadMsg.ID)
+		if err != nil {
+			return nil, msg, err
+		}
+		allAttachments, err = s.ensureMessageAttachments(ctx, cu.User.ID, threadMsg, allAttachments)
 		if err != nil {
 			return nil, msg, err
 		}
@@ -1120,6 +1129,59 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 		}
 	}
 	return threadViews, msg, nil
+}
+
+func (s *Server) ensureMessagePGPState(ctx context.Context, userID int64, msg store.MessageRecord) (store.MessageRecord, error) {
+	encrypted, signed := mailparse.DetectPGP([]byte(msg.BodyText + "\n" + msg.BodyHTML))
+	if !encrypted && !signed && strings.TrimSpace(msg.BlobPath) != "" {
+		raw, err := s.rawMessageBytes(ctx, userID, msg)
+		if err != nil {
+			return msg, nil
+		}
+		encrypted, signed = mailparse.DetectPGP(raw)
+	}
+	if encrypted == msg.IsEncrypted && signed == msg.IsSigned {
+		return msg, nil
+	}
+	if err := s.store.UpdateMessagePGPState(ctx, userID, msg.ID, encrypted, signed); err != nil {
+		return msg, err
+	}
+	msg.IsEncrypted = encrypted
+	msg.IsSigned = signed
+	return msg, nil
+}
+
+func (s *Server) ensureMessageAttachments(ctx context.Context, userID int64, msg store.MessageRecord, current []store.Attachment) ([]store.Attachment, error) {
+	if len(current) > 0 || !msg.HasAttachments {
+		return current, nil
+	}
+	raw, err := s.rawMessageBytes(ctx, userID, msg)
+	if err != nil {
+		return current, nil
+	}
+	parsed, err := mailparse.Parse(raw)
+	if err != nil || len(parsed.Files) == 0 {
+		return current, nil
+	}
+	if err := s.store.DeleteAttachmentsForMessage(ctx, userID, msg.ID); err != nil {
+		return nil, err
+	}
+	for _, file := range parsed.Files {
+		if _, err := s.store.CreateAttachment(ctx, store.Attachment{
+			UserID:      userID,
+			MessageID:   msg.ID,
+			BlobID:      msg.BlobID,
+			Filename:    file.Filename,
+			ContentType: file.ContentType,
+			ContentID:   file.ContentID,
+			IsInline:    file.IsInline,
+			Size:        int64(len(file.Data)),
+			BlobPath:    "",
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return s.store.ListAttachmentsForMessage(ctx, userID, msg.ID)
 }
 
 type threadSearchMatch struct {

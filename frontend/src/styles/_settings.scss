@@ -69,6 +69,37 @@
   }
 }
 
+.profile-backup-email,
+.admin-reset-settings {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  max-width: 520px;
+
+  small {
+    color: var(--muted);
+    display: block;
+    font-size: 12px;
+    font-weight: 650;
+    margin-top: 4px;
+  }
+
+  button {
+    justify-self: start;
+  }
+}
+
+.admin-user-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+
+  input {
+    min-width: 160px;
+  }
+}
+
 .content-head .icon-button {
   @include icon-button(30px);
   background: transparent;
@@ -1076,6 +1107,43 @@
   gap: 6px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.identity-pgp-storage-choice {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+
+  > strong {
+    font-size: 13px;
+  }
+
+  label {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px;
+    align-items: start;
+    margin: 0;
+  }
+
+  input {
+    margin-top: 3px;
+  }
+
+  span {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  small {
+    color: var(--muted);
+    font-weight: 600;
+    line-height: 1.35;
+  }
 }
 
 .identity-pgp-key-menu-panel {

@@ -9,9 +9,9 @@ import type { DatePrefs, LocationState, PGPUnlockState, Toast } from "../../appT
 import type { Attachment, Bootstrap, ComposeForm, ComposeIdentity, ContactPGPKey, HeaderDetail, Mailbox, MessageOriginalSource, SearchExplanation, ThreadMessage } from "../../types";
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
-import { displayDateTime, displayTime } from "../../lib/format";
-import { decryptedHTMLDoc, decryptPGPSource, publicKeyRecordFromArmored } from "../../lib/pgp";
-import type { AutocryptGossipKey, PGPMessageOpenResult, PGPSignatureStatus } from "../../lib/pgp";
+import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
+import { autocryptKeyRecordFromMessageSource, decryptedHTMLDoc, decryptedMIMEAttachments, decryptedPlainText, decryptPGPSource, encryptionRecipientKeyIDsFromSource, publicKeyRecordFromArmored } from "../../lib/pgp";
+import type { AutocryptGossipKey, DecryptedMIMEAttachment, PGPMessageOpenResult, PGPSignatureStatus } from "../../lib/pgp";
 import { ENCRYPTED_PREVIEW_TEXT, pgpPreviewText } from "../../lib/pgpPreview";
 import { HighlightedText, highlightEmailDocument } from "../../lib/searchHighlight";
 import { messageBackURL, messageHighlightQuery, messageHighlightTerms, messageSearchHitID } from "../../lib/routes";
@@ -55,6 +55,9 @@ type PGPBodyState = {
   signatureStatus?: PGPSignatureStatus;
   signatureDetail?: string;
   securityDetails?: string[];
+  quoteText?: string;
+  protectedSubject?: string;
+  decryptedAttachments?: DecryptedMIMEAttachment[];
 };
 
 type PGPVerificationKeys = {
@@ -73,6 +76,10 @@ type AttachmentPGPImportState = {
 
 const PGP_ATTACHMENT_AUTO_PARSE_BYTES = 1024;
 const PGP_ATTACHMENT_IMPORT_BYTES = 16 * 1024;
+
+function revokeDecryptedMIMEAttachments(items: DecryptedMIMEAttachment[] | undefined) {
+  (items || []).forEach((attachment) => URL.revokeObjectURL(attachment.objectURL));
+}
 
 function shouldShowLoadStatus(status: MessageLoadStatus | null): status is MessageLoadStatus {
   return Boolean(status && (status.imap_fetch_count > 0 || status.source === "local_blob" || status.source === "local"));
@@ -188,6 +195,18 @@ function PGPEncryptionPill({
         : hasUnlockedKey
           ? "An unlocked PGP key is available. Click to try decrypting this message."
           : "No unlocked PGP key is available. Click to unlock a key in this browser.";
+  const detailLines = [detail, ...(state?.securityDetails || [])].filter(Boolean);
+  if (decrypted && detailLines.length > 1) {
+    return (
+      <details className={`pgp-signature-pill pgp-encryption-pill ${statusClass}`} onClick={(event) => event.stopPropagation()}>
+        <summary title={detailLines.join("\n")}>
+          <Icon name="lock_open" weight="bold" />
+          {label}
+        </summary>
+        <PGPPillDetailPanel lines={detailLines} />
+      </details>
+    );
+  }
   return (
     <button className={`pgp-status-pill encrypted ${statusClass}`} type="button" title={detail} onClick={(event) => { event.stopPropagation(); onOpen(); }}>
       <Icon name={decrypted ? "lock_open" : "lock"} weight={decrypted ? "bold" : "regular"} />
@@ -223,34 +242,107 @@ function PGPSignaturePill({ encrypted, state }: { encrypted: boolean; state?: PG
         <Icon name="signature" weight={status === "verified" ? "bold" : "regular"} />
         {label}
       </summary>
-      <div className="pgp-signature-detail">
-        {detailLines.map((line) => <div key={line}>{line}</div>)}
-      </div>
+      <PGPPillDetailPanel lines={detailLines} />
     </details>
   );
 }
 
-function PGPDetailsBlock({ state }: { state?: PGPBodyState }) {
-  const details = state?.securityDetails?.filter(Boolean) || [];
-  if (details.length === 0) return null;
+function PGPPillDetailPanel({ lines }: { lines: string[] }) {
+  const summaryLines: string[] = [];
+  const rowLines: Array<{ label: string; value: string }> = [];
+  for (const line of lines) {
+    const colon = line.indexOf(": ");
+    if (colon > 0) {
+      rowLines.push({ label: line.slice(0, colon), value: line.slice(colon + 2) });
+    } else {
+      summaryLines.push(line);
+    }
+  }
   return (
-    <details className="pgp-detail-block" onClick={(event) => event.stopPropagation()}>
-      <summary>
-        <Icon name="key" />
-        PGP details
-      </summary>
-      <dl>
-        {details.map((detail) => {
-          const [label, ...rest] = detail.split(": ");
-          return (
-            <Fragment key={detail}>
-              <dt>{rest.length > 0 ? label : "Detail"}</dt>
-              <dd>{rest.length > 0 ? rest.join(": ") : detail}</dd>
+    <div className="pgp-signature-detail">
+      {summaryLines.map((line) => <div className="pgp-pill-detail-summary" key={line}>{line}</div>)}
+      {rowLines.length > 0 ? (
+        <dl className="pgp-pill-detail-rows">
+          {rowLines.map((row) => (
+            <Fragment key={`${row.label}:${row.value}`}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
             </Fragment>
-          );
-        })}
-      </dl>
-    </details>
+          ))}
+        </dl>
+      ) : null}
+    </div>
+  );
+}
+
+function PGPImportStatusAction({
+  state,
+  fallbackEmail,
+  onImport
+}: {
+  state?: AttachmentPGPImportState;
+  fallbackEmail: string;
+  onImport: () => void;
+}) {
+  if (!state || state.status === "ignored") return null;
+  if (state.status === "checking") {
+    return <span className="attachment-preview-link">Checking key</span>;
+  }
+  if (state.status === "candidate" || state.status === "ready") {
+    return (
+      <button
+        className="attachment-preview-link"
+        type="button"
+        title={`Import PGP public key for ${state.email || fallbackEmail}`}
+        onClick={onImport}
+      >
+        Import key
+      </button>
+    );
+  }
+  if (state.status === "importing") {
+    return <span className="attachment-preview-link">Importing</span>;
+  }
+  if (state.status === "imported") {
+    return <span className="attachment-preview-link">Key imported</span>;
+  }
+  if (state.status === "error") {
+    return (
+      <button
+        className="attachment-preview-link"
+        type="button"
+        title={state.error || "Import failed"}
+        onClick={onImport}
+      >
+        Retry key
+      </button>
+    );
+  }
+  return null;
+}
+
+function PGPKeyDiscoveryAttachment({
+  kind,
+  email,
+  state,
+  onImport
+}: {
+  kind: string;
+  email: string;
+  state?: AttachmentPGPImportState;
+  onImport: () => void;
+}) {
+  return (
+    <div className="attachment-group pgp-key-attachment-group">
+      <span className="attachment pgp-key-attachment">
+        <Icon name="key" />
+        <span>
+          <strong>{email || "Unknown email"}</strong>
+          <small>{kind}</small>
+        </span>
+      </span>
+      <PGPImportStatusAction state={state} fallbackEmail={email} onImport={onImport} />
+    </div>
   );
 }
 
@@ -263,6 +355,23 @@ function pgpOpenStatus(result: PGPMessageOpenResult, signatureStatus = result.si
   if (signatureStatus === "invalid") return "Signature does not match the saved sender key.";
   if (signatureStatus === "unverified") return "Signature could not be verified because no saved sender key is available.";
   return "PGP content opened.";
+}
+
+function pgpPublicKeysMatch(left: ContactPGPKey, right: ContactPGPKey): boolean {
+  const leftArmor = left.public_key_armored.trim();
+  const rightArmor = right.public_key_armored.trim();
+  if (leftArmor && rightArmor && leftArmor === rightArmor) return true;
+  const leftFingerprint = (left.fingerprint || "").replace(/\s+/g, "").toUpperCase();
+  const rightFingerprint = (right.fingerprint || "").replace(/\s+/g, "").toUpperCase();
+  if (leftFingerprint && rightFingerprint && leftFingerprint === rightFingerprint) return true;
+  const leftKeyID = (left.key_id || "").replace(/\s+/g, "").toUpperCase();
+  const rightKeyID = (right.key_id || "").replace(/\s+/g, "").toUpperCase();
+  return Boolean(leftKeyID && rightKeyID && leftKeyID === rightKeyID);
+}
+
+function pgpKeyDiscoveryID(email: string, key: ContactPGPKey, index = 0): string {
+  const stableID = key.fingerprint || key.key_id || String(index);
+  return `${email.trim().toLowerCase()}:${stableID.replace(/\s+/g, "").toUpperCase()}`;
 }
 
 function pgpSignatureState(item: ThreadMessage, result: PGPMessageOpenResult, keys: PGPVerificationKeys): Pick<PGPBodyState, "signatureStatus" | "signatureDetail"> {
@@ -304,6 +413,7 @@ function pgpSecurityDetails(item: ThreadMessage, result: PGPMessageOpenResult, s
     if (unlockedKey) {
       const parts = [unlockedKey.label, shortPGPDetailValue(unlockedKey.fingerprint || unlockedKey.key_id || ""), unlockedKey.algorithm].filter(Boolean);
       details.push(`Unlocked key: ${parts.join(" · ")}`);
+      if (unlockedKey.encryption_key_id) details.push(`Unlocked encryption key ID: ${shortPGPDetailValue(unlockedKey.encryption_key_id)}`);
     }
   } else if (item.message.is_signed || result.signed) {
     details.push(`OpenPGP mode: ${result.pgpMime ? "Detached PGP/MIME signature" : "Clear-signed inline message"}`);
@@ -340,6 +450,84 @@ function formatPGPAlgorithm(value: string) {
     .replace(/^rsaEncryptSign$/i, "RSA")
     .replace(/^ecdh$/i, "ECDH")
     .replace(/^ecdsa$/i, "ECDSA");
+}
+
+function replySubjectForProtectedSubject(value: string) {
+  const subject = value.trim();
+  if (!subject) return "";
+  return /^re\s*:/i.test(subject) ? subject : `Re: ${subject}`;
+}
+
+function identityIDForMessageRecipients(item: ThreadMessage, identities: ComposeIdentity[], source = "") {
+  const messageEmails = new Set([
+    ...emailAddressesFromText(item.message.to_addr),
+    ...emailAddressesFromText(item.message.cc_addr),
+    ...emailAddressesFromText(item.recipient_line),
+    ...emailAddressesFromMessageHeaders(source)
+  ]);
+  if (messageEmails.size === 0) return 0;
+  const identity = identities.find((candidate) => messageEmails.has(candidate.email.trim().toLowerCase()));
+  return identity?.pgp_identity_id || 0;
+}
+
+function emailAddressesFromMessageHeaders(source: string): string[] {
+  const splitAt = source.search(/\r?\n\r?\n/);
+  if (splitAt < 0) return [];
+  const headerBlock = source.slice(0, splitAt);
+  const wanted = new Set(["delivered-to", "envelope-to", "x-original-to", "apparently-to", "to", "cc"]);
+  const out: string[] = [];
+  for (const line of headerBlock.replace(/\r\n/g, "\n").split(/\n(?=[!-9;-~]+:)/)) {
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    const name = line.slice(0, colon).trim().toLowerCase();
+    if (!wanted.has(name)) continue;
+    out.push(...emailAddressesFromText(line.slice(colon + 1)));
+  }
+  return out;
+}
+
+function emailAddressesFromText(value: string): string[] {
+  const matches = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+  return Array.from(new Set(matches.map((email) => email.trim().toLowerCase()).filter(Boolean)));
+}
+
+function quotedReplyBodyForThreadMessage(item: ThreadMessage, bodyText: string): string {
+  const quoteText = bodyText.trim()
+    ? bodyText
+    : "[Encrypted message not quoted. Decrypt it in rolltop before replying to include the plaintext quote.]";
+  const lines = ["", ""];
+  const date = replyQuoteDate(item.message.date);
+  if (date || item.message.from_addr.trim()) {
+    lines.push(`On ${[date, item.message.from_addr.trim()].filter(Boolean).join(", ")} wrote:`);
+  }
+  for (const line of quoteText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n")) {
+    lines.push(`> ${line}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function replyQuoteDate(value: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).formatToParts(date);
+  const lookup = new Map(parts.map((part) => [part.type, part.value]));
+  const datePart = [lookup.get("month"), lookup.get("day"), lookup.get("year")].filter(Boolean).join(" ");
+  const timePart = [lookup.get("hour"), lookup.get("minute")].filter(Boolean).join(":");
+  const dayPeriod = lookup.get("dayPeriod") || "";
+  return [datePart.replace(/^([A-Za-z]+) (\d+) (.+)$/, "$1 $2, $3"), [timePart, dayPeriod].filter(Boolean).join(" ")].filter(Boolean).join(" at ");
+}
+
+function compactPGPPreviewText(value: string): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= 180) return compact;
+  return `${compact.slice(0, 179).trimEnd()}...`;
 }
 
 type RangePagerProps = {
@@ -434,10 +622,11 @@ export function ThreadView({
   refreshChrome: () => Promise<Bootstrap | null>;
   openCompose: (query?: string) => void;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void) => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const id = location.path.split("/").pop() || "";
+  const currentMessageID = Number(id) || 0;
   const highlightQuery = messageHighlightQuery(location);
   const highlightTerms = messageHighlightTerms(location);
   const searchHitID = messageSearchHitID(location);
@@ -454,6 +643,8 @@ export function ThreadView({
   const [originalSource, setOriginalSource] = useState<OriginalSourceState | null>(null);
   const [pgpBodies, setPGPBodies] = useState<Record<number, PGPBodyState>>({});
   const [pgpAttachmentImports, setPGPAttachmentImports] = useState<Record<number, AttachmentPGPImportState>>({});
+  const [autocryptImports, setAutocryptImports] = useState<Record<number, AttachmentPGPImportState>>({});
+  const [autocryptGossipImports, setAutocryptGossipImports] = useState<Record<number, Record<string, AttachmentPGPImportState>>>({});
   const [searchExplanations, setSearchExplanations] = useState<Record<number, SearchExplanationState>>({});
   const [loadStatus, setLoadStatus] = useState<MessageLoadStatus | null>(null);
   const [error, setError] = useState("");
@@ -469,8 +660,16 @@ export function ThreadView({
   const brandDomainKey = useMemo(() => brandDomainKeyForThread(thread, pluginSet), [thread, pluginSet]);
   const [brandIcons, setBrandIcons] = useState<Record<string, string>>({});
   const autoPGPVerificationRef = useRef<Set<string>>(new Set());
-  const pgpAttachmentChecksRef = useRef<Set<number>>(new Set());
   const pgpWasUnlockedRef = useRef(false);
+  const pgpBodiesRef = useRef<Record<number, PGPBodyState>>({});
+
+  useEffect(() => {
+    pgpBodiesRef.current = pgpBodies;
+  }, [pgpBodies]);
+
+  useEffect(() => () => {
+    Object.values(pgpBodiesRef.current).forEach((body) => revokeDecryptedMIMEAttachments(body.decryptedAttachments));
+  }, []);
 
   // Loading is split into a quick status probe and the actual message request.
   // The status dialog is delayed slightly to avoid flashing for local conversations.
@@ -480,10 +679,12 @@ export function ThreadView({
       setError("");
       setLoadStatus(null);
       setOriginalSource(null);
+      Object.values(pgpBodiesRef.current).forEach((body) => revokeDecryptedMIMEAttachments(body.decryptedAttachments));
       setPGPBodies({});
       setPGPAttachmentImports({});
+      setAutocryptImports({});
+      setAutocryptGossipImports({});
       autoPGPVerificationRef.current = new Set();
-      pgpAttachmentChecksRef.current = new Set();
       setSearchExplanations({});
       let statusTimer = 0;
       try {
@@ -536,12 +737,19 @@ export function ThreadView({
     if (!pgpEnabled || loading) return;
     for (const item of thread) {
       for (const attachment of item.attachments) {
-        if (!attachment.pgp_public_key_candidate || pgpAttachmentChecksRef.current.has(attachment.id)) continue;
-        pgpAttachmentChecksRef.current.add(attachment.id);
+        if (!attachment.pgp_public_key_candidate || pgpAttachmentImports[attachment.id]) continue;
         void checkPGPPublicKeyAttachment(item, attachment);
       }
     }
-  }, [loading, pgpEnabled, thread]);
+  }, [loading, pgpAttachmentImports, pgpEnabled, thread]);
+
+  useEffect(() => {
+    if (!pgpEnabled || loading) return;
+    for (const item of thread) {
+      if (autocryptImports[item.message.id]) continue;
+      void checkAutocryptPublicKey(item);
+    }
+  }, [autocryptImports, loading, pgpEnabled, thread]);
 
   useEffect(() => {
     if (!pgpEnabled || loading) return;
@@ -570,7 +778,10 @@ export function ThreadView({
       if (encryptedIDs.size > 0) {
         setPGPBodies((current) => {
           const next = { ...current };
-          encryptedIDs.forEach((messageID) => delete next[messageID]);
+          encryptedIDs.forEach((messageID) => {
+            revokeDecryptedMIMEAttachments(next[messageID]?.decryptedAttachments);
+            delete next[messageID];
+          });
           return next;
         });
       }
@@ -635,9 +846,13 @@ export function ThreadView({
         return;
       }
       const key = await publicKeyRecordFromArmored(text, email);
+      if (await savedPGPPublicKeyExists(email, key)) {
+        setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ignored" } }));
+        return;
+      }
       setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ready", email, key } }));
-    } catch {
-      setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ignored" } }));
+    } catch (err) {
+      setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "error", email, error: messageFromError(err) } }));
     }
   }
 
@@ -662,6 +877,86 @@ export function ThreadView({
     }
   }
 
+  async function checkAutocryptPublicKey(item: ThreadMessage) {
+    const email = item.sender_email.trim();
+    const messageID = item.message.id;
+    if (!email) {
+      setAutocryptImports((current) => ({ ...current, [messageID]: { status: "ignored" } }));
+      return;
+    }
+    setAutocryptImports((current) => ({ ...current, [messageID]: { status: "checking", email } }));
+    try {
+      const original = await api.messageOriginal(messageID);
+      const key = await autocryptKeyRecordFromMessageSource(original.source, email);
+      if (!key) {
+        setAutocryptImports((current) => ({ ...current, [messageID]: { status: "ignored" } }));
+        return;
+      }
+      if (await savedPGPPublicKeyExists(key.email || email, key)) {
+        setAutocryptImports((current) => ({ ...current, [messageID]: { status: "ignored" } }));
+        return;
+      }
+      setAutocryptImports((current) => ({ ...current, [messageID]: { status: "ready", email: key.email || email, key } }));
+    } catch {
+      setAutocryptImports((current) => ({ ...current, [messageID]: { status: "ignored" } }));
+    }
+  }
+
+  async function importAutocryptPGPPublicKey(item: ThreadMessage) {
+    const messageID = item.message.id;
+    let state = autocryptImports[messageID];
+    if (!state || state.status === "ignored" || state.status === "imported" || state.status === "checking") return;
+    setAutocryptImports((current) => ({ ...current, [messageID]: { ...state, status: "importing" } }));
+    try {
+      let key = state.key;
+      const email = state.email || item.sender_email.trim();
+      if (!key) {
+        const original = await api.messageOriginal(messageID);
+        key = await autocryptKeyRecordFromMessageSource(original.source, email) || undefined;
+        if (!key) throw new Error("This message no longer contains a usable Autocrypt public key.");
+        state = { ...state, email: key.email || email, key };
+      }
+      await api.savePGPPublicKey(csrf, { ...key, email: state.email || key.email, is_preferred: true });
+      setAutocryptImports((current) => ({ ...current, [messageID]: { ...state, status: "imported" } }));
+      addToast(`PGP public key imported for ${state.email || key.email}.`);
+    } catch (err) {
+      setAutocryptImports((current) => ({ ...current, [messageID]: { ...state, status: "error", error: messageFromError(err) } }));
+      addToast(messageFromError(err), "error");
+    }
+  }
+
+  async function importAutocryptGossipPGPPublicKey(messageID: number, discoveryID: string) {
+    const state = autocryptGossipImports[messageID]?.[discoveryID];
+    if (!state || state.status === "ignored" || state.status === "imported" || state.status === "checking" || !state.key) return;
+    setAutocryptGossipImports((current) => ({
+      ...current,
+      [messageID]: {
+        ...(current[messageID] || {}),
+        [discoveryID]: { ...state, status: "importing" }
+      }
+    }));
+    try {
+      await api.savePGPPublicKey(csrf, { ...state.key, email: state.email || state.key.email, is_preferred: true });
+      setAutocryptGossipImports((current) => ({
+        ...current,
+        [messageID]: {
+          ...(current[messageID] || {}),
+          [discoveryID]: { ...state, status: "imported" }
+        }
+      }));
+      addToast(`PGP public key imported for ${state.email || state.key.email}.`);
+    } catch (err) {
+      setAutocryptGossipImports((current) => ({
+        ...current,
+        [messageID]: {
+          ...(current[messageID] || {}),
+          [discoveryID]: { ...state, status: "error", error: messageFromError(err) }
+        }
+      }));
+      addToast(messageFromError(err), "error");
+    }
+  }
+
   async function fetchPGPKeyAttachmentText(attachment: Attachment): Promise<string> {
     if (attachment.size > PGP_ATTACHMENT_IMPORT_BYTES) {
       throw new Error("This PGP key attachment is too large to import from the message view.");
@@ -679,6 +974,15 @@ export function ThreadView({
       throw new Error("This attachment does not contain an ASCII-armored PGP public key.");
     }
     return text;
+  }
+
+  async function savedPGPPublicKeyExists(email: string, key: ContactPGPKey): Promise<boolean> {
+    try {
+      const existing = await api.pgpPublicKeys([email], true);
+      return (existing.keys || []).some((candidate) => pgpPublicKeysMatch(candidate, key));
+    } catch {
+      return false;
+    }
   }
 
   async function viewOriginal(event: MouseEvent<HTMLButtonElement>, item: ThreadMessage) {
@@ -710,24 +1014,35 @@ export function ThreadView({
     }
   }
 
-  async function saveAutocryptGossip(gossip: AutocryptGossipKey[] | undefined) {
+  async function stageAutocryptGossip(messageID: number, gossip: AutocryptGossipKey[] | undefined) {
     if (!pgpEnabled || !gossip || gossip.length === 0) return;
-    for (const item of gossip) {
+    const staged: Record<string, AttachmentPGPImportState> = {};
+    for (const [index, item] of gossip.entries()) {
       try {
         const record = await publicKeyRecordFromArmored(item.publicKeyArmored, item.email);
-        await api.savePGPPublicKey(csrf, record);
+        const email = record.email || item.email;
+        if (await savedPGPPublicKeyExists(email, record)) continue;
+        staged[pgpKeyDiscoveryID(email, record, index)] = { status: "ready", email, key: { ...record, email, is_preferred: true } };
       } catch {
         // Gossip is opportunistic key discovery. A malformed or duplicate key
         // should not interrupt reading the encrypted message.
       }
     }
+    if (Object.keys(staged).length === 0) return;
+    setAutocryptGossipImports((current) => {
+      const existing = current[messageID] || {};
+      return {
+        ...current,
+        [messageID]: { ...staged, ...existing }
+      };
+    });
   }
 
   async function openPGPMessage(item: ThreadMessage, options: { automatic?: boolean } = {}) {
     const messageID = item.message.id;
     if (item.message.is_encrypted && (pgpUnlock.keys.length === 0 || pgpUnlock.unlockedUntil <= Date.now())) {
       if (!options.automatic) {
-        openPGPUnlock();
+        await openPGPUnlockForMessage(item);
         addToast("Unlock a PGP key to decrypt this message.", "error");
       }
       return;
@@ -738,32 +1053,45 @@ export function ThreadView({
         loading: true,
         error: "",
         doc: current[messageID]?.doc || "",
+        quoteText: current[messageID]?.quoteText || "",
+        protectedSubject: current[messageID]?.protectedSubject || "",
         status: "",
         signatureStatus: current[messageID]?.signatureStatus || (item.message.is_signed ? "unverified" : "none"),
-        signatureDetail: current[messageID]?.signatureDetail || ""
+        signatureDetail: current[messageID]?.signatureDetail || "",
+        decryptedAttachments: current[messageID]?.decryptedAttachments || []
       }
     }));
+    let openedAttachments: DecryptedMIMEAttachment[] = [];
     try {
       const original = await api.messageOriginal(messageID);
       const verificationKeys = await pgpVerificationKeysForSender(item);
       const opened = await decryptPGPSource(original.source, item.message.is_encrypted ? pgpUnlock.keys : [], verificationKeys.armors);
       const signature = pgpSignatureState(item, opened, verificationKeys);
       const securityDetails = pgpSecurityDetails(item, opened, signature, verificationKeys, pgpUnlock);
-      await saveAutocryptGossip(opened.autocryptGossip);
-      const doc = await decryptedHTMLDoc(opened.text);
-      setPGPBodies((current) => ({
-        ...current,
-        [messageID]: {
-          loading: false,
-          error: "",
-          doc,
-          status: pgpOpenStatus(opened, signature.signatureStatus),
-          signatureStatus: signature.signatureStatus,
-          signatureDetail: signature.signatureDetail,
-          securityDetails
-        }
-      }));
+      await stageAutocryptGossip(messageID, opened.autocryptGossip);
+      openedAttachments = decryptedMIMEAttachments(opened.text);
+      const doc = await decryptedHTMLDoc(opened.text, openedAttachments);
+      const quoteText = decryptedPlainText(opened.text);
+      setPGPBodies((current) => {
+        revokeDecryptedMIMEAttachments(current[messageID]?.decryptedAttachments);
+        return {
+          ...current,
+          [messageID]: {
+            loading: false,
+            error: "",
+            doc,
+            quoteText,
+            protectedSubject: opened.protectedSubject || "",
+            status: pgpOpenStatus(opened, signature.signatureStatus),
+            signatureStatus: signature.signatureStatus,
+            signatureDetail: signature.signatureDetail,
+            securityDetails,
+            decryptedAttachments: openedAttachments
+          }
+        };
+      });
     } catch (err) {
+      revokeDecryptedMIMEAttachments(openedAttachments);
       const detail = messageFromError(err);
       setPGPBodies((current) => ({
         ...current,
@@ -771,11 +1099,26 @@ export function ThreadView({
           loading: false,
           error: item.message.is_encrypted || !options.automatic ? detail : "",
           doc: current[messageID]?.doc || "",
+          quoteText: current[messageID]?.quoteText || "",
+          protectedSubject: current[messageID]?.protectedSubject || "",
           status: "",
           signatureStatus: item.message.is_signed ? "unverified" : current[messageID]?.signatureStatus || "none",
-          signatureDetail: item.message.is_signed ? `rolltop could not verify this signature: ${detail}` : current[messageID]?.signatureDetail || ""
+          signatureDetail: item.message.is_signed ? `rolltop could not verify this signature: ${detail}` : current[messageID]?.signatureDetail || "",
+          decryptedAttachments: current[messageID]?.decryptedAttachments || []
         }
       }));
+    }
+  }
+
+  async function openPGPUnlockForMessage(item: ThreadMessage) {
+    try {
+      const original = await api.messageOriginal(item.message.id);
+      const recipientKeyIDs = await encryptionRecipientKeyIDsFromSource(original.source);
+      const identityID = identityIDForMessageRecipients(item, fromIdentities, original.source);
+      openPGPUnlock(identityID || undefined, undefined, recipientKeyIDs);
+    } catch {
+      const identityID = identityIDForMessageRecipients(item, fromIdentities);
+      openPGPUnlock(identityID || undefined);
     }
   }
 
@@ -868,9 +1211,18 @@ export function ThreadView({
     setExpanded((current) => new Set(current).add(item.message.id));
     try {
       const data = await api.compose(`${replyAll ? "reply_all" : "reply"}=${item.message.id}`);
+      const protectedSubject = pgpBodies[item.message.id]?.protectedSubject || "";
+      const compose = item.message.is_encrypted
+        ? {
+            ...data.compose,
+            subject: protectedSubject ? replySubjectForProtectedSubject(protectedSubject) : data.compose.subject,
+            body: quotedReplyBodyForThreadMessage(item, pgpBodies[item.message.id]?.quoteText || ""),
+            body_html: ""
+          }
+        : data.compose;
       setComposeFrom(data.compose_from);
       setFromIdentities(data.from_identities || []);
-      setInlineReply(data.compose);
+      setInlineReply(compose);
     } catch (err) {
       addToast(messageFromError(err), "error");
     }
@@ -884,6 +1236,8 @@ export function ThreadView({
       return next;
     });
   }
+
+  const displaySubject = pgpBodies[currentMessageID]?.protectedSubject || subject;
 
   async function toggleThreadStar(event: MouseEvent<HTMLButtonElement>, item: ThreadMessage) {
     event.stopPropagation();
@@ -909,7 +1263,7 @@ export function ThreadView({
             <Icon name="arrow_back" />
           </button>
           <h1 className="thread-title">
-            <HighlightedText text={subject} query={highlightQuery} terms={highlightTerms} />
+            <HighlightedText text={displaySubject} query={highlightQuery} terms={highlightTerms} />
           </h1>
           {mailbox ? <span className="label-pill">{mailbox.name}</span> : null}
         </div>
@@ -978,10 +1332,18 @@ export function ThreadView({
             const senderVisual = senderVisualURL(item, brandIcons, pluginSet);
             const unsubscribeSent = unsubscribeSentLabel(item);
             const pgpBody = pgpBodies[item.message.id];
+            const decryptedAttachments = pgpBody?.decryptedAttachments || [];
             const pgpMessage = pgpEnabled && (item.message.is_encrypted || item.message.is_signed);
             const pgpSignatureVisible = Boolean(item.message.is_signed || (pgpBody?.signatureStatus && pgpBody.signatureStatus !== "none"));
-            const previewText = pgpPreviewText(item.snippet, item.message.is_encrypted, item.message.is_signed);
+            const encryptedPreviewLocked = item.message.is_encrypted && !pgpBody?.doc;
+            const decryptedPreviewText = item.message.is_encrypted && pgpBody?.quoteText ? compactPGPPreviewText(pgpBody.quoteText) : "";
+            const previewText = decryptedPreviewText || pgpPreviewText(item.snippet, item.message.is_encrypted, item.message.is_signed);
             const hasUnlockedPGPKey = pgpUnlock.keys.length > 0 && pgpUnlock.unlockedUntil > Date.now();
+            const autocryptImport = autocryptImports[item.message.id];
+            const showAutocryptImport = Boolean(pgpEnabled && autocryptImport && !["ignored", "checking"].includes(autocryptImport.status));
+            const gossipImportEntries = Object.entries(autocryptGossipImports[item.message.id] || {})
+              .filter(([, state]) => !["ignored", "checking"].includes(state.status));
+            const showAttachments = item.attachments.length > 0 || decryptedAttachments.length > 0 || showAutocryptImport || gossipImportEntries.length > 0;
             return (
               <article className={`thread-card ${isExpanded ? "" : "collapsed"}`} key={item.message.id}>
                 <div
@@ -1018,7 +1380,7 @@ export function ThreadView({
                           state={pgpBody}
                           hasUnlockedKey={hasUnlockedPGPKey}
                           onOpen={() => {
-                            if (!hasUnlockedPGPKey) openPGPUnlock();
+                            if (!hasUnlockedPGPKey) void openPGPUnlockForMessage(item);
                             else void openPGPMessage(item);
                           }}
                         />
@@ -1031,8 +1393,8 @@ export function ThreadView({
                       highlightQuery={highlightQuery}
                       highlightTerms={highlightTerms}
                     />
-                    <div className={`thread-collapsed-snippet ${item.message.is_encrypted ? "encrypted-preview" : ""}`}>
-                      <HighlightedText text={previewText} query={item.message.is_encrypted ? "" : highlightQuery} terms={item.message.is_encrypted ? [] : highlightTerms} />
+                    <div className={`thread-collapsed-snippet ${encryptedPreviewLocked ? "encrypted-preview" : ""}`}>
+                      <HighlightedText text={previewText} query={encryptedPreviewLocked ? "" : highlightQuery} terms={encryptedPreviewLocked ? [] : highlightTerms} />
                     </div>
                   </div>
                   <div className="thread-meta">
@@ -1140,7 +1502,6 @@ export function ThreadView({
                       <span>{pgpBody.status}</span>
                     </div>
                   ) : null}
-                  {pgpMessage && pgpBody?.doc && !pgpSignatureVisible ? <PGPDetailsBlock state={pgpBody} /> : null}
                   {pgpMessage && item.message.is_encrypted && !pgpBody?.doc && !pgpBody?.loading && !pgpBody?.error ? (
                     <div className="body-notice pgp-body-notice encrypted-placeholder">
                       <Icon name="lock" />
@@ -1165,8 +1526,41 @@ export function ThreadView({
                     <QuotedDetails srcDoc={item.full_body_doc} highlightQuery={highlightQuery} highlightTerms={highlightTerms} />
                   ) : null}
                 </div>
-                {item.attachments.length > 0 ? (
+                {showAttachments ? (
                   <div className="attachments">
+                    {showAutocryptImport ? (
+                      <PGPKeyDiscoveryAttachment
+                        key={`autocrypt-${item.message.id}`}
+                        kind="Autocrypt public key"
+                        email={autocryptImport?.email || item.sender_email}
+                        state={autocryptImport}
+                        onImport={() => void importAutocryptPGPPublicKey(item)}
+                      />
+                    ) : null}
+                    {gossipImportEntries.map(([discoveryID, state]) => (
+                      <PGPKeyDiscoveryAttachment
+                        key={`gossip-${item.message.id}-${discoveryID}`}
+                        kind="Autocrypt-Gossip public key"
+                        email={state.email || state.key?.email || ""}
+                        state={state}
+                        onImport={() => void importAutocryptGossipPGPPublicKey(item.message.id, discoveryID)}
+                      />
+                    ))}
+                    {decryptedAttachments.map((attachment) => (
+                      <div className="attachment-group decrypted-attachment" key={`decrypted-${attachment.id}`}>
+                        <a
+                          className="attachment"
+                          href={attachment.objectURL}
+                          download={attachment.filename || "attachment"}
+                        >
+                          <Icon name="lock_open" />
+                          <span>
+                            <strong>{attachment.filename || "Attachment"}</strong>
+                            <small>{item.message.is_encrypted ? "Decrypted PGP attachment" : "Signed PGP/MIME attachment"} - {formatBytes(attachment.size)}</small>
+                          </span>
+                        </a>
+                      </div>
+                    ))}
                     {item.attachments.map((attachment) => (
                       <div className={`attachment-group ${attachment.matched ? "matched" : ""}`} key={attachment.id}>
                         <a
@@ -1182,44 +1576,12 @@ export function ThreadView({
                           />
                         </a>
                         <AttachmentPreviewSlot attachment={attachment} plugins={pluginSet} />
-                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "checking" ? (
-                          <span className="attachment-preview-link">Checking key</span>
-                        ) : null}
-                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "candidate" ? (
-                          <button
-                            className="attachment-preview-link"
-                            type="button"
-                            title={`Validate and import PGP public key for ${pgpAttachmentImports[attachment.id]?.email || item.sender_email}`}
-                            onClick={() => void importAttachmentPGPPublicKey(attachment)}
-                          >
-                            Import key
-                          </button>
-                        ) : null}
-                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "ready" ? (
-                          <button
-                            className="attachment-preview-link"
-                            type="button"
-                            title={`Import PGP public key for ${pgpAttachmentImports[attachment.id]?.email || item.sender_email}`}
-                            onClick={() => void importAttachmentPGPPublicKey(attachment)}
-                          >
-                            Import key
-                          </button>
-                        ) : null}
-                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "importing" ? (
-                          <span className="attachment-preview-link">Importing</span>
-                        ) : null}
-                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "imported" ? (
-                          <span className="attachment-preview-link">Key imported</span>
-                        ) : null}
-                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "error" ? (
-                          <button
-                            className="attachment-preview-link"
-                            type="button"
-                            title={pgpAttachmentImports[attachment.id]?.error || "Import failed"}
-                            onClick={() => void importAttachmentPGPPublicKey(attachment)}
-                          >
-                            Retry key
-                          </button>
+                        {pgpEnabled ? (
+                          <PGPImportStatusAction
+                            state={pgpAttachmentImports[attachment.id]}
+                            fallbackEmail={item.sender_email}
+                            onImport={() => void importAttachmentPGPPublicKey(attachment)}
+                          />
                         ) : null}
                       </div>
                     ))}

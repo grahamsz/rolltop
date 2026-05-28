@@ -71,9 +71,9 @@ func (s *Store) UpsertIdentityPGPPrivateKey(ctx context.Context, key IdentityPGP
 	}
 	if key.ID == 0 {
 		res, err := tx.ExecContext(ctx, `INSERT INTO identity_pgp_private_keys
-			(user_id, identity_id, label, fingerprint, key_id, user_ids, public_key_armored, encrypted_private_key, revocation_certificate, is_active_signing, is_active_encryption, is_decrypt_only, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			key.UserID, key.IdentityID, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, key.EncryptedPrivateKey, key.RevocationCertificate, boolInt(key.IsActiveSigning), boolInt(key.IsActiveEncryption), boolInt(key.IsDecryptOnly), ts, ts)
+			(user_id, identity_id, label, fingerprint, key_id, user_ids, public_key_armored, encrypted_private_key, private_key_storage, revocation_certificate, is_active_signing, is_active_encryption, is_decrypt_only, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			key.UserID, key.IdentityID, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, key.EncryptedPrivateKey, key.PrivateKeyStorage, key.RevocationCertificate, boolInt(key.IsActiveSigning), boolInt(key.IsActiveEncryption), boolInt(key.IsDecryptOnly), ts, ts)
 		if err != nil {
 			return rollback()
 		}
@@ -82,9 +82,9 @@ func (s *Store) UpsertIdentityPGPPrivateKey(ctx context.Context, key IdentityPGP
 			return rollback()
 		}
 	} else {
-		res, err := tx.ExecContext(ctx, `UPDATE identity_pgp_private_keys SET label = ?, fingerprint = ?, key_id = ?, user_ids = ?, public_key_armored = ?, encrypted_private_key = ?, revocation_certificate = ?, is_active_signing = ?, is_active_encryption = ?, is_decrypt_only = ?, updated_at = ?
+		res, err := tx.ExecContext(ctx, `UPDATE identity_pgp_private_keys SET label = ?, fingerprint = ?, key_id = ?, user_ids = ?, public_key_armored = ?, encrypted_private_key = ?, private_key_storage = ?, revocation_certificate = ?, is_active_signing = ?, is_active_encryption = ?, is_decrypt_only = ?, updated_at = ?
 			WHERE user_id = ? AND identity_id = ? AND id = ?`,
-			key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, key.EncryptedPrivateKey, key.RevocationCertificate, boolInt(key.IsActiveSigning), boolInt(key.IsActiveEncryption), boolInt(key.IsDecryptOnly), ts, key.UserID, key.IdentityID, key.ID)
+			key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, key.EncryptedPrivateKey, key.PrivateKeyStorage, key.RevocationCertificate, boolInt(key.IsActiveSigning), boolInt(key.IsActiveEncryption), boolInt(key.IsDecryptOnly), ts, key.UserID, key.IdentityID, key.ID)
 		if err != nil {
 			return rollback()
 		}
@@ -119,11 +119,13 @@ func (s *Store) DeleteIdentityPGPPrivateKeyForUser(ctx context.Context, userID, 
 	return nil
 }
 
-// ActiveIdentityPGPPublicKeyForUser returns the public key used by compose public-key attachment.
+// ActiveIdentityPGPPublicKeyForUser returns the active encryption public key used by compose,
+// Autocrypt, and public-key attachment.
 func (s *Store) ActiveIdentityPGPPublicKeyForUser(ctx context.Context, userID, identityID int64) (IdentityPGPPrivateKey, error) {
 	row := s.mustDataDB(ctx, userID).QueryRowContext(ctx, identityPGPPrivateKeySelectSQL()+`
 		WHERE user_id = ? AND identity_id = ?
-		ORDER BY is_active_signing DESC, is_active_encryption DESC, id
+			AND is_active_encryption = 1
+		ORDER BY is_active_signing DESC, id
 		LIMIT 1`, userID, identityID)
 	return scanIdentityPGPPrivateKey(row)
 }
@@ -286,7 +288,7 @@ func (s *Store) DeleteContactPGPPublicKeyForUser(ctx context.Context, userID, id
 }
 
 func identityPGPPrivateKeySelectSQL() string {
-	return `SELECT id, user_id, identity_id, label, fingerprint, key_id, user_ids, public_key_armored, encrypted_private_key, revocation_certificate, is_active_signing, is_active_encryption, is_decrypt_only, created_at, updated_at FROM identity_pgp_private_keys`
+	return `SELECT id, user_id, identity_id, label, fingerprint, key_id, user_ids, public_key_armored, encrypted_private_key, private_key_storage, revocation_certificate, is_active_signing, is_active_encryption, is_decrypt_only, created_at, updated_at FROM identity_pgp_private_keys`
 }
 
 func scanIdentityPGPPrivateKeys(rows *sql.Rows) ([]IdentityPGPPrivateKey, error) {
@@ -305,7 +307,7 @@ func scanIdentityPGPPrivateKey(row rowScanner) (IdentityPGPPrivateKey, error) {
 	var key IdentityPGPPrivateKey
 	var activeSigning, activeEncryption, decryptOnly int
 	var created, updated int64
-	err := row.Scan(&key.ID, &key.UserID, &key.IdentityID, &key.Label, &key.Fingerprint, &key.KeyID, &key.UserIDs, &key.PublicKeyArmored, &key.EncryptedPrivateKey, &key.RevocationCertificate, &activeSigning, &activeEncryption, &decryptOnly, &created, &updated)
+	err := row.Scan(&key.ID, &key.UserID, &key.IdentityID, &key.Label, &key.Fingerprint, &key.KeyID, &key.UserIDs, &key.PublicKeyArmored, &key.EncryptedPrivateKey, &key.PrivateKeyStorage, &key.RevocationCertificate, &activeSigning, &activeEncryption, &decryptOnly, &created, &updated)
 	key.IsActiveSigning = activeSigning != 0
 	key.IsActiveEncryption = activeEncryption != 0
 	key.IsDecryptOnly = decryptOnly != 0
@@ -348,6 +350,12 @@ func normalizeIdentityPGPPrivateKey(key IdentityPGPPrivateKey) IdentityPGPPrivat
 	key.UserIDs = trimLimit(key.UserIDs, 2000)
 	key.PublicKeyArmored = strings.TrimSpace(key.PublicKeyArmored)
 	key.EncryptedPrivateKey = strings.TrimSpace(key.EncryptedPrivateKey)
+	switch strings.ToLower(strings.TrimSpace(key.PrivateKeyStorage)) {
+	case "browser":
+		key.PrivateKeyStorage = "browser"
+	default:
+		key.PrivateKeyStorage = "server"
+	}
 	key.RevocationCertificate = strings.TrimSpace(key.RevocationCertificate)
 	if key.Label == "" {
 		key.Label = firstNonEmpty(key.KeyID, key.Fingerprint, "PGP key")

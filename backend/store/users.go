@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const userSelectColumns = `id, email, name, password_hash, is_admin, date_locale, date_format, theme, search_preset, search_recency_bias, search_fuzzy, search_sender_boost, search_sender_history, search_contact_boost, search_attachment_weight, search_compact_splitting, created_at, updated_at`
+const userSelectColumns = `id, email, name, backup_email, password_hash, is_admin, date_locale, date_format, theme, search_preset, search_recency_bias, search_fuzzy, search_sender_boost, search_sender_history, search_contact_boost, search_attachment_weight, search_compact_splitting, created_at, updated_at`
 
 type scanDest interface {
 	Scan(dest ...any) error
@@ -82,7 +82,7 @@ func scanUser(row scanDest) (User, error) {
 	var u User
 	var created, updated int64
 	var isAdmin, searchSenderBoost, searchCompactSplitting int
-	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &isAdmin, &u.DateLocale, &u.DateFormat, &u.Theme, &u.SearchPreset, &u.SearchRecencyBias, &u.SearchFuzzy, &searchSenderBoost, &u.SearchSenderHistory, &u.SearchContactBoost, &u.SearchAttachmentWeight, &searchCompactSplitting, &created, &updated)
+	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.BackupEmail, &u.PasswordHash, &isAdmin, &u.DateLocale, &u.DateFormat, &u.Theme, &u.SearchPreset, &u.SearchRecencyBias, &u.SearchFuzzy, &searchSenderBoost, &u.SearchSenderHistory, &u.SearchContactBoost, &u.SearchAttachmentWeight, &searchCompactSplitting, &created, &updated)
 	if err != nil {
 		return User{}, err
 	}
@@ -92,6 +92,7 @@ func scanUser(row scanDest) (User, error) {
 	u.CreatedAt = unixTime(created)
 	u.UpdatedAt = unixTime(updated)
 	normalizeUserPreferences(&u)
+	u.BackupEmail = cleanEmail(u.BackupEmail)
 	return u, nil
 }
 
@@ -104,6 +105,41 @@ func normalizeUserPreferences(u *User) {
 	u.SearchSenderHistory = normalizeUserSearchWeight(u.SearchSenderHistory, "normal")
 	u.SearchContactBoost = normalizeUserSearchWeight(u.SearchContactBoost, "normal")
 	u.SearchAttachmentWeight = normalizeUserSearchAttachmentWeight(u.SearchAttachmentWeight)
+}
+
+func (s *Store) UpdateUserBackupEmail(ctx context.Context, userID int64, backupEmail string) (User, error) {
+	backupEmail = cleanEmail(backupEmail)
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET backup_email = ?, updated_at = ? WHERE id = ?`, backupEmail, nowUnix(), userID)
+	if err != nil {
+		return User{}, err
+	}
+	updated, err := s.GetUserByID(ctx, userID)
+	if err != nil {
+		return User{}, err
+	}
+	if err := s.mirrorCachedUser(ctx, updated); err != nil {
+		return User{}, err
+	}
+	return updated, nil
+}
+
+func (s *Store) UpdateUserPasswordHash(ctx context.Context, userID int64, passwordHash string) error {
+	if strings.TrimSpace(passwordHash) == "" {
+		return errors.New("password hash is required")
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, passwordHash, nowUnix(), userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID)
+	return err
 }
 
 // UpdateUserDisplayPreferences preserves the existing search preferences while
@@ -249,12 +285,12 @@ func (s *Store) GetSessionUser(ctx context.Context, tokenHash string) (Session, 
 	var isAdmin, searchSenderBoost, searchCompactSplitting int
 	err := s.db.QueryRowContext(ctx, `SELECT
 			s.id, s.user_id, s.token_hash, s.expires_at, s.created_at, s.last_seen_at,
-			u.id, u.email, u.name, u.password_hash, u.is_admin, u.date_locale, u.date_format, u.theme, u.search_preset, u.search_recency_bias, u.search_fuzzy, u.search_sender_boost, u.search_sender_history, u.search_contact_boost, u.search_attachment_weight, u.search_compact_splitting, u.created_at, u.updated_at
+			u.id, u.email, u.name, u.backup_email, u.password_hash, u.is_admin, u.date_locale, u.date_format, u.theme, u.search_preset, u.search_recency_bias, u.search_fuzzy, u.search_sender_boost, u.search_sender_history, u.search_contact_boost, u.search_attachment_weight, u.search_compact_splitting, u.created_at, u.updated_at
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ? AND s.expires_at > ?`, tokenHash, nowUnix()).
 		Scan(&sess.ID, &sess.UserID, &sess.TokenHash, &expires, &created, &lastSeen,
-			&u.ID, &u.Email, &u.Name, &u.PasswordHash, &isAdmin, &u.DateLocale, &u.DateFormat, &u.Theme, &u.SearchPreset, &u.SearchRecencyBias, &u.SearchFuzzy, &searchSenderBoost, &u.SearchSenderHistory, &u.SearchContactBoost, &u.SearchAttachmentWeight, &searchCompactSplitting, &userCreated, &userUpdated)
+			&u.ID, &u.Email, &u.Name, &u.BackupEmail, &u.PasswordHash, &isAdmin, &u.DateLocale, &u.DateFormat, &u.Theme, &u.SearchPreset, &u.SearchRecencyBias, &u.SearchFuzzy, &searchSenderBoost, &u.SearchSenderHistory, &u.SearchContactBoost, &u.SearchAttachmentWeight, &searchCompactSplitting, &userCreated, &userUpdated)
 	if err != nil {
 		return Session{}, User{}, err
 	}
@@ -266,6 +302,7 @@ func (s *Store) GetSessionUser(ctx context.Context, tokenHash string) (Session, 
 	u.SearchCompactSplitting = searchCompactSplitting != 0
 	u.CreatedAt = unixTime(userCreated)
 	u.UpdatedAt = unixTime(userUpdated)
+	u.BackupEmail = cleanEmail(u.BackupEmail)
 	normalizeUserPreferences(&u)
 	_, _ = s.db.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`, nowUnix(), sess.ID)
 	return sess, u, nil

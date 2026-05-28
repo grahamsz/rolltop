@@ -42,7 +42,7 @@ export function RouteView({
   openCompose: (query?: string) => void;
   refreshChrome: () => Promise<Bootstrap | null>;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void) => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const pgpEnabled = enabledPlugins.includes("client_side_pgp");

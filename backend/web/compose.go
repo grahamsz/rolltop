@@ -946,6 +946,8 @@ func (s *Server) saveComposeDraft(ctx context.Context, cu currentUser, form comp
 		MessageID:        messageID,
 		Date:             messageDate,
 		PGPMIMEEncrypted: form.PGPMIME && form.PGPEncrypted,
+		PGPMIMESigned:    form.PGPMIME && form.PGPSigned && !form.PGPEncrypted,
+		PGPMIMESignature: form.PGPSignature,
 		Attachments:      attachments,
 	}
 	if s.pluginEnabled(ctx, plugins.ClientSidePGP) {

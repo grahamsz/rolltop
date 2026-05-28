@@ -3,9 +3,12 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"net/mail"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"rolltop/backend/auth"
@@ -29,7 +32,7 @@ func (s *Server) apiAdminUsers(w http.ResponseWriter, r *http.Request) {
 		for _, user := range users {
 			out = append(out, safeUser(user))
 		}
-		writeJSON(w, map[string]any{"users": out})
+		writeJSON(w, map[string]any{"users": out, "password_reset_from_address": s.adminPasswordResetFromAddress(r.Context(), cu.User.Email)})
 	case http.MethodPost:
 		if !s.verifyCSRF(w, r) {
 			return
@@ -62,6 +65,123 @@ func (s *Server) apiAdminUsers(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (s *Server) apiAdminUserPath(w http.ResponseWriter, r *http.Request, rest string) {
+	cu, ok := s.requireAPIAdmin(w, r)
+	if !ok {
+		return
+	}
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "password" {
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		if !s.verifyCSRF(w, r) {
+			return
+		}
+		var in struct {
+			Password string `json:"password"`
+		}
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+		if len(in.Password) < 12 {
+			writeAPIError(w, http.StatusBadRequest, "Password must be at least 12 characters.")
+			return
+		}
+		hash, err := auth.HashPassword(in.Password)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+		if err := s.store.UpdateUserPasswordHash(r.Context(), id, hash); err != nil {
+			if store.IsNotFound(err) {
+				http.NotFound(w, r)
+				return
+			}
+			s.serverError(w, err)
+			return
+		}
+		_ = cu
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+	if len(parts) == 1 && r.Method == http.MethodDelete {
+		if !s.verifyCSRF(w, r) {
+			return
+		}
+		if id == cu.User.ID {
+			writeAPIError(w, http.StatusBadRequest, "You cannot delete the account you are currently using.")
+			return
+		}
+		if err := s.store.DeleteUser(r.Context(), id); err != nil {
+			if store.IsNotFound(err) {
+				http.NotFound(w, r)
+				return
+			}
+			s.serverError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (s *Server) apiAdminPasswordResetSettings(w http.ResponseWriter, r *http.Request) {
+	cu, ok := s.requireAPIAdmin(w, r)
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, map[string]any{"from_address": s.adminPasswordResetFromAddress(r.Context(), cu.User.Email)})
+	case http.MethodPost:
+		if !s.verifyCSRF(w, r) {
+			return
+		}
+		var in struct {
+			FromAddress string `json:"from_address"`
+		}
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+		from := strings.TrimSpace(in.FromAddress)
+		if from != "" {
+			addr, err := mail.ParseAddress(from)
+			if err != nil || strings.TrimSpace(addr.Address) == "" {
+				writeAPIError(w, http.StatusBadRequest, "Password Reset from address must be a valid email address.")
+				return
+			}
+			from = strings.ToLower(strings.TrimSpace(addr.Address))
+		}
+		if err := s.store.SetSystemSetting(r.Context(), passwordResetFromAddressSetting, from); err != nil {
+			s.serverError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "from_address": s.adminPasswordResetFromAddress(r.Context(), cu.User.Email)})
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (s *Server) adminPasswordResetFromAddress(ctx context.Context, fallback string) string {
+	value, err := s.store.GetSystemSetting(ctx, passwordResetFromAddressSetting)
+	if err == nil && strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func (s *Server) apiAdminPlugins(w http.ResponseWriter, r *http.Request) {

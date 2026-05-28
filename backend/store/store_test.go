@@ -60,72 +60,6 @@ func TestOpenServerStoresMailDataInUserDatabase(t *testing.T) {
 	}
 }
 
-func TestOpenRenamesLegacyDatabaseFiles(t *testing.T) {
-	dir := t.TempDir()
-	legacyPath := filepath.Join(dir, "mailmirror.db")
-	newPath := filepath.Join(dir, "rolltop.db")
-	if err := os.WriteFile(legacyPath, []byte{}, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacyPath+"-wal", []byte("wal"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := renameLegacyDatabaseFiles(newPath, schemaCombined); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(newPath); err != nil {
-		t.Fatalf("new database path missing: %v", err)
-	}
-	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
-		t.Fatalf("legacy database path still exists: %v", err)
-	}
-	if _, err := os.Stat(newPath + "-wal"); err != nil {
-		t.Fatalf("legacy WAL was not renamed: %v", err)
-	}
-}
-
-func TestOpenServerReplacesEmptySystemDatabaseWithLegacy(t *testing.T) {
-	ctx := context.Background()
-	dataDir := t.TempDir()
-	newPath := filepath.Join(dataDir, "rolltop.db")
-	legacyPath := filepath.Join(dataDir, "mailmirror.db")
-
-	empty, err := OpenServer(newPath, dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := empty.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	legacy, err := OpenServer(legacyPath, dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacy.CreateUser(ctx, "legacy@example.test", "Legacy", "hash", false); err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	db, err := OpenServer(newPath, dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	users, err := db.ListUsers(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(users) != 1 || users[0].Email != "legacy@example.test" {
-		t.Fatalf("users = %+v", users)
-	}
-	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
-		t.Fatalf("legacy database path still exists: %v", err)
-	}
-}
-
 func TestCreateBlobIsIdempotentForUserPath(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
@@ -977,6 +911,49 @@ func TestCreateMailIdentityForUserCreatesMeIdentity(t *testing.T) {
 	}
 	if len(contacts) != 1 || !contacts[0].IsMe || len(contacts[0].Emails) != 1 || contacts[0].Emails[0].Email != "alias@example.test" {
 		t.Fatalf("me contacts after identity create = %+v", contacts)
+	}
+}
+
+func TestIdentityPGPPrivateKeyCanUseBrowserStorageMetadata(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "pgp-browser@example.test", "PGP Browser", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := db.CreateMailIdentityForUser(ctx, user.ID, MailIdentity{Email: user.Email, DisplayName: "PGP Browser"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := db.UpsertIdentityPGPPrivateKey(ctx, IdentityPGPPrivateKey{
+		UserID:              user.ID,
+		IdentityID:          identity.ID,
+		Label:               user.Email,
+		Fingerprint:         "abc123",
+		KeyID:               "abc123",
+		UserIDs:             "PGP Browser <pgp-browser@example.test>",
+		PublicKeyArmored:    "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nx\n-----END PGP PUBLIC KEY BLOCK-----",
+		PrivateKeyStorage:   "browser",
+		IsActiveSigning:     true,
+		IsActiveEncryption:  true,
+		EncryptedPrivateKey: "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.PrivateKeyStorage != "browser" || saved.EncryptedPrivateKey != "" {
+		t.Fatalf("saved key storage = %#v", saved)
+	}
+	active, err := db.ActiveIdentityPGPPublicKeyForUser(ctx, user.ID, identity.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.PublicKeyArmored == "" || active.PrivateKeyStorage != "browser" {
+		t.Fatalf("active public key = %#v", active)
 	}
 }
 

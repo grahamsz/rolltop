@@ -460,6 +460,8 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 		MessageID:        smtpclient.NewMessageID(identity.Email),
 		Date:             time.Now(),
 		PGPMIMEEncrypted: form.PGPMIME && form.PGPEncrypted,
+		PGPMIMESigned:    form.PGPMIME && form.PGPSigned && !form.PGPEncrypted,
+		PGPMIMESignature: form.PGPSignature,
 		Attachments:      attachments,
 	}
 	if s.pluginEnabled(ctx, plugins.ClientSidePGP) {

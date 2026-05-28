@@ -232,6 +232,31 @@ func TestSendComposePGPMIMEEncryptedForm(t *testing.T) {
 	}
 }
 
+func TestSendComposePGPMIMESignedForm(t *testing.T) {
+	ctx := context.Background()
+	server, user, fromID, sender, _ := setupAutocryptComposeTest(t, ctx, true)
+	if _, err := server.sendCompose(ctx, currentUser{User: user}, composeForm{
+		To:             "recipient@example.test",
+		Subject:        "PGP/MIME signed",
+		Body:           "Content-Type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\nSigned text\r\n",
+		PGPSignature:   "-----BEGIN PGP SIGNATURE-----\n\nsignature\n-----END PGP SIGNATURE-----",
+		FromIdentityID: fromID,
+		PGPSigned:      true,
+		PGPMIME:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !sender.msg.PGPMIMESigned {
+		t.Fatal("sendCompose did not mark signed PGP form as PGP/MIME")
+	}
+	if sender.msg.PGPMIMESignature == "" {
+		t.Fatal("sendCompose did not preserve the detached PGP/MIME signature")
+	}
+	if sender.msg.PGPMIMEEncrypted {
+		t.Fatal("signed-only PGP/MIME form was marked encrypted")
+	}
+}
+
 func TestSendComposeRejectsOtherUserFromIdentity(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

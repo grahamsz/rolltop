@@ -7,9 +7,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"rolltop/backend/buildinfo"
 )
 
 func TestBuildRawOmitsBccHeaderAndIncludesRecipients(t *testing.T) {
+	oldVersion := buildinfo.Version
+	buildinfo.Version = "2026.05-test"
+	t.Cleanup(func() { buildinfo.Version = oldVersion })
 	raw, recipients, err := BuildRaw(Message{
 		From:      "Sender <sender@example.test>",
 		To:        []string{"one@example.test, Two <two@example.test>"},
@@ -34,6 +39,9 @@ func TestBuildRawOmitsBccHeaderAndIncludesRecipients(t *testing.T) {
 	}
 	if !bytes.Contains(raw, []byte("Message-ID: <id@example.test>\r\n")) {
 		t.Fatalf("raw message missing Message-ID:\n%s", raw)
+	}
+	if !bytes.Contains(raw, []byte("X-Mailer: rolltop/2026.05-test\r\n")) {
+		t.Fatalf("raw message missing X-Mailer:\n%s", raw)
 	}
 	if !bytes.Contains(raw, []byte("Line one\r\nLine two\r\n")) {
 		t.Fatalf("raw message body not CRLF normalized:\n%s", raw)
@@ -112,6 +120,38 @@ func TestBuildRawWithPGPMIMEEncryptedBody(t *testing.T) {
 	}
 	if strings.Contains(text, "Content-Type: text/plain") {
 		t.Fatalf("PGP/MIME encrypted body leaked a plain text body part:\n%s", text)
+	}
+}
+
+func TestBuildRawWithPGPMIMESignedBody(t *testing.T) {
+	raw, _, err := BuildRaw(Message{
+		From:             "sender@example.test",
+		To:               []string{"to@example.test"},
+		Subject:          "PGP MIME signed",
+		BodyText:         "Content-Type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\nSigned text\r\n",
+		PGPMIMESignature: "-----BEGIN PGP SIGNATURE-----\n\nsignature\n-----END PGP SIGNATURE-----",
+		MessageID:        "<pgp-mime-signed@example.test>",
+		Date:             time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
+		PGPMIMESigned:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		`Content-Type: multipart/signed; boundary=rolltop-pgp-signed-pgp-mime-signed-example-test; micalg=pgp-sha256; protocol="application/pgp-signature"`,
+		"Content-Type: text/plain; charset=\"utf-8\"\r\n",
+		"Signed text\r\n",
+		`Content-Type: application/pgp-signature; name=signature.asc`,
+		`Content-Disposition: attachment; filename=signature.asc`,
+		"-----BEGIN PGP SIGNATURE-----\r\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("PGP/MIME signed raw missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "-----BEGIN PGP SIGNED MESSAGE-----") {
+		t.Fatalf("PGP/MIME signed body used inline clear signing:\n%s", text)
 	}
 }
 

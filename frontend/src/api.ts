@@ -353,6 +353,7 @@ export const api = {
   storage: () => getJSON<StorageStats>("/api/storage"),
   plugins: () => getJSON<{ enabled: string[] }>("/api/plugins"),
   saveProfile: (csrf: string, profile: {
+    backup_email: string;
     date_locale: string;
     date_format: string;
     theme: string;
@@ -366,6 +367,10 @@ export const api = {
     search_compact_splitting: boolean;
   }) =>
     postJSON<{ user: User }>("/api/profile", csrf, profile),
+  requestPasswordReset: (csrf: string, email: string) =>
+    postJSON<{ ok: boolean }>("/api/password-reset/request", csrf, { email }),
+  completePasswordReset: (csrf: string, token: string, password: string) =>
+    postJSON<{ ok: boolean }>("/api/password-reset/complete", csrf, { token, password }),
   saveIMAPAccount: (csrf: string, account: Record<string, unknown>) =>
     postJSON<{ ok: boolean; account: Account }>("/api/account/imap", csrf, account),
   imapAccountPurgeEstimate: (id: number) =>
@@ -388,9 +393,15 @@ export const api = {
     postJSON<{ ok: boolean; queued: boolean; run_id: number }>(`/api/account/folders/${id}/search-index/purge`, csrf),
   purgeFolderLocalReferences: (csrf: string, id: number) =>
     postJSON<{ ok: boolean; queued: boolean; run_id: number }>(`/api/account/folders/${id}/local-references/purge`, csrf),
-  users: () => getJSON<{ users: User[] }>("/api/admin/users"),
+  users: () => getJSON<{ users: User[]; password_reset_from_address?: string }>("/api/admin/users"),
   createUser: (csrf: string, body: { email: string; name: string; password: string; is_admin: boolean }) =>
     postJSON<{ ok: boolean }>("/api/admin/users", csrf, body),
+  setUserPassword: (csrf: string, id: number, password: string) =>
+    postJSON<{ ok: boolean }>(`/api/admin/users/${id}/password`, csrf, { password }),
+  deleteUser: (csrf: string, id: number) =>
+    deleteJSON<{ ok: boolean }>(`/api/admin/users/${id}`, csrf),
+  savePasswordResetSettings: (csrf: string, fromAddress: string) =>
+    postJSON<{ ok: boolean; from_address: string }>("/api/admin/password-reset", csrf, { from_address: fromAddress }),
   adminPlugins: () => getJSON<{ plugins: PluginSetting[] }>("/api/admin/plugins"),
   setAdminPlugin: (csrf: string, id: string, enabled: boolean) =>
     postJSON<{ ok: boolean; plugins: PluginSetting[] }>(`/api/admin/plugins/${encodeURIComponent(id)}`, csrf, { enabled }),

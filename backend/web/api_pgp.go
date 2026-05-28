@@ -1,6 +1,6 @@
-// File overview: PGP key API endpoints. Private-key passphrases stay browser-only;
-// the backend stores master-key-encrypted armored private keys and serves them
-// back to the authenticated browser for unlock/export.
+// File overview: PGP key API endpoints. Private-key passphrases stay browser-only.
+// The server stores public-key metadata for identities and may store a
+// master-key-encrypted private key when the user chooses server storage.
 
 package web
 
@@ -33,7 +33,7 @@ func (s *Server) apiPGPPrivateKeys(w http.ResponseWriter, r *http.Request) {
 		}
 		out := make([]apiIdentityPGPPrivateKey, 0, len(keys))
 		for _, key := range keys {
-			if strings.TrimSpace(key.EncryptedPrivateKey) != "" {
+			if key.PrivateKeyStorage != "browser" && strings.TrimSpace(key.EncryptedPrivateKey) != "" {
 				plain, err := mmcrypto.DecryptString(s.masterKey, key.EncryptedPrivateKey)
 				if err != nil {
 					s.serverError(w, err)
@@ -61,12 +61,15 @@ func (s *Server) apiPGPPrivateKeys(w http.ResponseWriter, r *http.Request) {
 			KeyID:                 in.KeyID,
 			UserIDs:               in.UserIDs,
 			PublicKeyArmored:      in.PublicKeyArmored,
+			PrivateKeyStorage:     normalizePGPPrivateKeyStorage(in.PrivateKeyStorage),
 			RevocationCertificate: in.RevocationCertificate,
 			IsActiveSigning:       in.IsActiveSigning,
 			IsActiveEncryption:    in.IsActiveEncryption,
 			IsDecryptOnly:         in.IsDecryptOnly,
 		}
-		if strings.TrimSpace(in.PrivateKeyArmored) != "" {
+		if key.PrivateKeyStorage == "browser" {
+			key.EncryptedPrivateKey = ""
+		} else if strings.TrimSpace(in.PrivateKeyArmored) != "" {
 			encrypted, err := mmcrypto.EncryptString(s.masterKey, in.PrivateKeyArmored)
 			if err != nil {
 				s.serverError(w, err)
@@ -85,7 +88,7 @@ func (s *Server) apiPGPPrivateKeys(w http.ResponseWriter, r *http.Request) {
 			}
 			key.EncryptedPrivateKey = existing.EncryptedPrivateKey
 		}
-		if strings.TrimSpace(key.EncryptedPrivateKey) == "" {
+		if key.PrivateKeyStorage != "browser" && strings.TrimSpace(key.EncryptedPrivateKey) == "" {
 			writeAPIError(w, http.StatusBadRequest, "Private key is required.")
 			return
 		}
@@ -104,6 +107,11 @@ func (s *Server) apiPGPPrivateKeys(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		enableAutocrypt, err := s.shouldEnableAutocryptForNewIdentityPGPKey(r.Context(), cu.User.ID, key)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
 		saved, err := s.store.UpsertIdentityPGPPrivateKey(r.Context(), key)
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
@@ -113,7 +121,13 @@ func (s *Server) apiPGPPrivateKeys(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "Could not save PGP key.")
 			return
 		}
-		if strings.TrimSpace(saved.EncryptedPrivateKey) != "" {
+		if enableAutocrypt {
+			if err := s.enableIdentityAutocrypt(r.Context(), cu.User.ID, saved.IdentityID); err != nil {
+				s.serverError(w, err)
+				return
+			}
+		}
+		if saved.PrivateKeyStorage != "browser" && strings.TrimSpace(saved.EncryptedPrivateKey) != "" {
 			plain, err := mmcrypto.DecryptString(s.masterKey, saved.EncryptedPrivateKey)
 			if err != nil {
 				s.serverError(w, err)
@@ -125,6 +139,37 @@ func (s *Server) apiPGPPrivateKeys(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (s *Server) shouldEnableAutocryptForNewIdentityPGPKey(ctx context.Context, userID int64, key store.IdentityPGPPrivateKey) (bool, error) {
+	if key.ID != 0 || key.IdentityID == 0 || !key.IsActiveEncryption || key.IsDecryptOnly || strings.TrimSpace(key.PublicKeyArmored) == "" {
+		return false, nil
+	}
+	existing, err := s.store.ListIdentityPGPPrivateKeysForIdentity(ctx, userID, key.IdentityID)
+	if err != nil {
+		return false, err
+	}
+	return len(existing) == 0, nil
+}
+
+func (s *Server) enableIdentityAutocrypt(ctx context.Context, userID, identityID int64) error {
+	identity, err := s.store.GetMailIdentityForUser(ctx, userID, identityID)
+	if err != nil {
+		return err
+	}
+	if identity.AutocryptEnabled {
+		return nil
+	}
+	identity.AutocryptEnabled = true
+	_, err = s.store.UpdateMailIdentityForUser(ctx, userID, identity)
+	return err
+}
+
+func normalizePGPPrivateKeyStorage(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "browser") {
+		return "browser"
+	}
+	return "server"
 }
 
 func (s *Server) apiPGPPrivateKeyPath(w http.ResponseWriter, r *http.Request, rest string) {

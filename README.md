@@ -56,10 +56,6 @@ export ROLLTOP_WEBHOOK_TOKEN=""
 
 Use `ROLLTOP_COOKIE_SECURE=true` when serving over HTTPS.
 
-Existing `MAILMIRROR_*` environment variables are accepted temporarily as fallbacks. Prefer `ROLLTOP_*`; when both names are set, `ROLLTOP_*` wins.
-
-On startup, default database paths are renamed from `mailmirror.db` to `rolltop.db` when the new file does not already exist. This applies to both `/data/rolltop.db` and per-user `data/users/<id>/rolltop.db`, including SQLite `-wal`, `-shm`, and `-journal` sidecar files.
-
 ## Run Locally
 
 ```sh

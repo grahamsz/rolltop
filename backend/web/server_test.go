@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"rolltop/backend/plugins"
 	"rolltop/backend/search"
 	"rolltop/backend/store"
 )
@@ -426,6 +427,66 @@ func TestCreateMailIdentityEndpointCreatesMeIdentity(t *testing.T) {
 	}
 	if len(contacts) != 1 || !contacts[0].IsMe || len(contacts[0].Emails) != 1 || contacts[0].Emails[0].Email != "alias-api@example.test" {
 		t.Fatalf("me contacts after identity create = %+v", contacts)
+	}
+}
+
+func TestPGPPrivateKeyAPIAutocryptDefaultsOnForFirstIdentityKey(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetPluginEnabled(ctx, plugins.ClientSidePGP, true); err != nil {
+		t.Fatal(err)
+	}
+	user, err := db.CreateUser(ctx, "pgp-api@example.test", "PGP API", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := db.CreateMailIdentityForUser(ctx, user.ID, store.MailIdentity{
+		Email:            "pgp-api@example.test",
+		DisplayName:      "PGP API",
+		AutocryptEnabled: false,
+		IsPrimary:        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.AutocryptEnabled {
+		t.Fatal("test setup expected Autocrypt disabled")
+	}
+	server := &Server{store: db, masterKey: []byte("12345678901234567890123456789012")}
+	body := bytes.NewBufferString(fmt.Sprintf(`{
+		"identity_id":%d,
+		"label":"PGP API",
+		"fingerprint":"00112233445566778899AABBCCDDEEFF00112233",
+		"key_id":"CCDDEEFF00112233",
+		"user_ids":"PGP API <pgp-api@example.test>",
+		"public_key_armored":"-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nx\n-----END PGP PUBLIC KEY BLOCK-----",
+		"private_key_storage":"browser",
+		"is_active_signing":true,
+		"is_active_encryption":true
+	}`, identity.ID))
+	req := httptest.NewRequest(http.MethodPost, "/api/account/pgp/private-keys", body)
+	req.Header.Set("Content-Type", "application/json")
+	csrfBase := "pgp-key-csrf-base"
+	req.AddCookie(&http.Cookie{Name: csrfCookie, Value: csrfBase})
+	req.Header.Set("X-CSRF-Token", server.csrfForBase(csrfBase))
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: user}))
+	rec := httptest.NewRecorder()
+
+	server.handleAPI(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST PGP key status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	updated, err := db.GetMailIdentityForUser(ctx, user.ID, identity.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.AutocryptEnabled {
+		t.Fatal("first active identity PGP key did not enable Autocrypt by default")
 	}
 }
 

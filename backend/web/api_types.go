@@ -6,6 +6,7 @@ type apiUser struct {
 	ID                     int64  `json:"id"`
 	Email                  string `json:"email"`
 	Name                   string `json:"name"`
+	BackupEmail            string `json:"backup_email,omitempty"`
 	IsAdmin                bool   `json:"is_admin"`
 	DateLocale             string `json:"date_locale"`
 	DateFormat             string `json:"date_format"`
@@ -316,6 +317,7 @@ type apiIdentityPGPPrivateKey struct {
 	UserIDs               string `json:"user_ids"`
 	PublicKeyArmored      string `json:"public_key_armored"`
 	PrivateKeyArmored     string `json:"private_key_armored,omitempty"`
+	PrivateKeyStorage     string `json:"private_key_storage,omitempty"`
 	RevocationCertificate string `json:"revocation_certificate,omitempty"`
 	IsActiveSigning       bool   `json:"is_active_signing"`
 	IsActiveEncryption    bool   `json:"is_active_encryption"`

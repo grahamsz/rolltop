@@ -168,6 +168,7 @@ func (s *Server) apiProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in := struct {
+			BackupEmail            string `json:"backup_email"`
 			DateLocale             string `json:"date_locale"`
 			DateFormat             string `json:"date_format"`
 			Theme                  string `json:"theme"`
@@ -180,6 +181,7 @@ func (s *Server) apiProfile(w http.ResponseWriter, r *http.Request) {
 			SearchAttachmentWeight string `json:"search_attachment_weight"`
 			SearchCompactSplitting bool   `json:"search_compact_splitting"`
 		}{
+			BackupEmail:            cu.User.BackupEmail,
 			DateLocale:             cu.User.DateLocale,
 			DateFormat:             cu.User.DateFormat,
 			Theme:                  cu.User.Theme,
@@ -196,6 +198,9 @@ func (s *Server) apiProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		user, err := s.store.UpdateUserPreferences(r.Context(), cu.User.ID, in.DateLocale, in.DateFormat, in.Theme, in.SearchPreset, in.SearchRecencyBias, in.SearchFuzzy, in.SearchSenderHistory, in.SearchContactBoost, in.SearchAttachmentWeight, in.SearchSenderBoost, in.SearchCompactSplitting)
+		if err == nil && in.BackupEmail != cu.User.BackupEmail {
+			user, err = s.store.UpdateUserBackupEmail(r.Context(), cu.User.ID, in.BackupEmail)
+		}
 		if err != nil {
 			s.serverError(w, err)
 			return

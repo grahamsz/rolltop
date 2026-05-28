@@ -171,6 +171,7 @@ type composeForm struct {
 	PGPEncrypted         bool                        `json:"pgp_encrypted,omitempty"`
 	PGPSigned            bool                        `json:"pgp_signed,omitempty"`
 	PGPMIME              bool                        `json:"pgp_mime,omitempty"`
+	PGPSignature         string                      `json:"pgp_signature,omitempty"`
 	AttachPublicKey      bool                        `json:"attach_public_key,omitempty"`
 }
 

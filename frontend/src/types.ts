@@ -6,6 +6,7 @@ export type User = {
   id: number;
   email: string;
   name: string;
+  backup_email?: string;
   is_admin: boolean;
   date_locale: string;
   date_format: "mdy" | "dmy" | "ymd" | "locale" | string;
@@ -402,6 +403,7 @@ export type IdentityPGPPrivateKey = {
   user_ids: string;
   public_key_armored: string;
   private_key_armored?: string;
+  private_key_storage?: "server" | "browser" | string;
   revocation_certificate?: string;
   is_active_signing: boolean;
   is_active_encryption: boolean;
@@ -427,6 +429,7 @@ export type ComposeForm = {
   pgp_encrypted?: boolean;
   pgp_signed?: boolean;
   pgp_mime?: boolean;
+  pgp_signature?: string;
   attach_public_key?: boolean;
 };
 
