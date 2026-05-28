@@ -21,8 +21,8 @@ import (
 	blevesearch "github.com/blevesearch/bleve/v2/search"
 	blevequery "github.com/blevesearch/bleve/v2/search/query"
 
-	languagesearch "rolltop/backend/plugins/language_search"
 	"rolltop/backend/store"
+	languagesearch "rolltop/plugins/language_search/detector"
 )
 
 // Service owns Bleve indexes and query construction for either combined-test or per-user production mode.

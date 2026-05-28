@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"rolltop/backend/mailparse"
+	"rolltop/backend/plugins"
 	"rolltop/backend/store"
 )
 
@@ -30,6 +31,15 @@ func (s *Server) displayBodiesForMessage(ctx context.Context, userID int64, msg 
 	parsedText, parsedHTML, err := mailparse.ParseDisplayBody(bytes.NewReader(raw))
 	if err != nil {
 		return htmlBody, textBody, fallbackIsPreviewOnly(textBody)
+	}
+	state := plugins.MessageSecurityState{Encrypted: msg.IsEncrypted, Signed: msg.IsSigned}
+	if detected, handled, err := s.detectMessageSecurity(ctx, userID, raw, plugins.MessageBody{Purpose: "display", Text: parsedText, HTML: parsedHTML}); err == nil && handled {
+		state.Encrypted = state.Encrypted || detected.Encrypted
+		state.Signed = state.Signed || detected.Signed
+	}
+	if transform, err := s.transformMessageSecurityBody(ctx, userID, raw, state, plugins.MessageBody{Purpose: "display", Text: parsedText, HTML: parsedHTML}); err == nil && transform.Applied {
+		parsedText = transform.Body.Text
+		parsedHTML = transform.Body.HTML
 	}
 	if strings.TrimSpace(parsedHTML) != "" {
 		htmlBody = parsedHTML

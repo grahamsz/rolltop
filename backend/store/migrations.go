@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"rolltop/backend/plugins"
 )
 
 const (
@@ -80,20 +82,47 @@ type migrationStep struct {
 // tests using Open run both against a single database for convenience.
 func (s *Store) migrate(ctx context.Context, kind schemaKind, progress MigrationReporter) error {
 	sets := make([]migrationSet, 0, 2)
+	systemSets := []migrationSet{
+		systemMigrationSet(),
+		systemUserSearchPreferencesMigrationSet(),
+		systemUserSearchRankingMigrationSet(),
+		systemPasswordResetMigrationSet(),
+	}
+	userSets := []migrationSet{
+		userMigrationSet(),
+		userBackupEmailMigrationSet(),
+		userSearchPreferencesMigrationSet(),
+		userSearchRankingMigrationSet(),
+		userSenderStatsMigrationSet(),
+		userSenderStatsTableMigrationSet(),
+		userIdentityMailboxMigrationSet(),
+		userIdentityIMAPMigrationSet(),
+	}
 	switch kind {
 	case schemaSystem:
-		sets = append(sets, systemMigrationSet(), systemUserSearchPreferencesMigrationSet(), systemUserSearchRankingMigrationSet(), systemPasswordResetMigrationSet())
+		sets = append(sets, systemSets...)
 	case schemaUser:
-		sets = append(sets, userMigrationSet(), userBackupEmailMigrationSet(), userSearchPreferencesMigrationSet(), userSearchRankingMigrationSet(), userSenderStatsMigrationSet(), userSenderStatsTableMigrationSet(), userIdentityMailboxMigrationSet(), userIdentityIMAPMigrationSet(), userPGPMigrationSet(), userAutocryptMigrationSet(), userPGPPrivateKeyStorageMigrationSet())
+		sets = append(sets, userSets...)
 	default:
-		sets = append(sets, systemMigrationSet(), systemUserSearchPreferencesMigrationSet(), systemUserSearchRankingMigrationSet(), systemPasswordResetMigrationSet(), userMigrationSet(), userBackupEmailMigrationSet(), userSearchPreferencesMigrationSet(), userSearchRankingMigrationSet(), userSenderStatsMigrationSet(), userSenderStatsTableMigrationSet(), userIdentityMailboxMigrationSet(), userIdentityIMAPMigrationSet(), userPGPMigrationSet(), userAutocryptMigrationSet(), userPGPPrivateKeyStorageMigrationSet())
+		sets = append(sets, systemSets...)
+		sets = append(sets, userSets...)
 	}
 	for _, set := range sets {
 		if err := s.applyMigrationSet(ctx, set, progress); err != nil {
 			return err
 		}
 	}
-	return nil
+	switch kind {
+	case schemaSystem:
+		return s.applyPluginMigrationsForScope(ctx, plugins.ScopeSystem)
+	case schemaUser:
+		return s.applyPluginMigrationsForScope(ctx, plugins.ScopeUser)
+	default:
+		if err := s.applyPluginMigrationsForScope(ctx, plugins.ScopeSystem); err != nil {
+			return err
+		}
+		return s.applyPluginMigrationsForScope(ctx, plugins.ScopeUser)
+	}
 }
 
 // applyMigrationSet runs DDL inside a transaction, records the checksum, then

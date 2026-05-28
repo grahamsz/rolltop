@@ -5,19 +5,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../api";
 import type { DatePrefs, LocationState, Toast } from "../../appTypes";
-import type { Account, AccountPurgeEstimate, Bootstrap, IdentityPGPPrivateKey, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SyncFolder, SyncRun, User } from "../../types";
+import type { Account, AccountPurgeEstimate, Bootstrap, IdentityPGPPrivateKey, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SyncFolder, SyncRun, ThemeDefinition, User } from "../../types";
 import { Icon } from "../../components/Icon";
 import { Field, Stat } from "../../components/common";
-import { PGPKeyGenerateModal } from "../../components/PGPKeyGenerateModal";
-import { PGPKeyImportModal } from "../../components/PGPKeyImportModal";
 import { emptyAccountForm, accountToForm } from "../../lib/accountForm";
-import { deleteBrowserPGPPrivateKey, loadBrowserPGPPrivateKey, saveBrowserPGPPrivateKey } from "../../lib/browserPGPKeys";
 import { messageFromError } from "../../lib/errors";
-import { generatePrivateKey, pgpPassphraseIssues, pgpUserIDEmails, pgpUserIDsMatchEmail, privateKeyRecordFromArmoredSource } from "../../lib/pgp";
 import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
 import { folderParentNames, folderTree, type FolderNode } from "../../lib/folders";
 import { effectiveMailboxSyncMode, mergeSyncRuns } from "../../lib/sync";
 import { pluginIDs } from "../../plugins/registry";
+import type { ClientSidePGPPlugin } from "../../../../plugins/client_side_pgp/frontend/types";
 import { AdminRemoteImageBlocklist } from "../../plugins/remoteImageBlocklist/AdminRemoteImageBlocklist";
 import { PluginTogglePanel } from "./admin/PluginTogglePanel";
 
@@ -267,13 +264,21 @@ function IdentityMailboxFields({
   );
 }
 
-function profileFormForUser(user: User) {
+function fallbackThemes(): ThemeDefinition[] {
+  return [
+    { id: "classic", name: "Classic" },
+    { id: "classic_dark", name: "Classic Dark" }
+  ];
+}
+
+function profileFormForUser(user: User, availableThemes: ThemeDefinition[] = fallbackThemes()) {
   const defaults = searchPresetDefaults(user.search_preset || "balanced");
+  const themeIDs = new Set(availableThemes.map((theme) => theme.id));
   return {
     backup_email: user.backup_email || "",
     date_locale: user.date_locale || "",
     date_format: user.date_format || "mdy",
-    theme: ["classic_dark", "matrix"].includes(user.theme) ? user.theme : "classic",
+    theme: themeIDs.has(user.theme) ? user.theme : "classic",
     search_preset: ["strict", "balanced", "forgiving"].includes(user.search_preset) ? user.search_preset : defaults.search_preset,
     search_recency_bias: ["none", "light", "normal", "strong"].includes(user.search_recency_bias) ? user.search_recency_bias : defaults.search_recency_bias,
     search_fuzzy: ["off", "balanced", "forgiving"].includes(user.search_fuzzy) ? user.search_fuzzy : defaults.search_fuzzy,
@@ -551,20 +556,24 @@ export function SettingsView({
   user,
   mailboxes,
   activeSyncRuns,
+  availableThemes,
   location,
   navigate,
   refreshChrome,
   pgpEnabled,
+  pgpPlugin,
   addToast
 }: {
   csrf: string;
   user: User;
   mailboxes: Mailbox[];
   activeSyncRuns: SyncRun[];
+  availableThemes: ThemeDefinition[];
   location: LocationState;
   navigate: (url: string) => void;
   refreshChrome: () => Promise<Bootstrap | null>;
   pgpEnabled: boolean;
+  pgpPlugin?: ClientSidePGPPlugin;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const route = settingsRouteFromPath(location.path);
@@ -585,7 +594,7 @@ export function SettingsView({
   const [accountNeedsPassword, setAccountNeedsPassword] = useState(false);
   const [form, setForm] = useState(() => emptyAccountForm());
   const [smtpForm, setSMTPForm] = useState(() => emptySMTPForm());
-  const [profileForm, setProfileForm] = useState(() => profileFormForUser(user));
+  const [profileForm, setProfileForm] = useState(() => profileFormForUser(user, availableThemes));
   const [editingFolderID, setEditingFolderID] = useState<number | null>(null);
   const [folderDraft, setFolderDraft] = useState<FolderSettingsDraft | null>(null);
   const [deletingAccountID, setDeletingAccountID] = useState<number | null>(null);
@@ -612,13 +621,13 @@ export function SettingsView({
   }, []);
 
   const loadPGPKeys = useCallback(async () => {
-    if (!pgpEnabled) {
+    if (!pgpEnabled || !pgpPlugin) {
       setPGPKeys([]);
       return;
     }
-    const data = await api.pgpPrivateKeys();
+    const data = await pgpPlugin.privateKeys();
     setPGPKeys(data.keys || []);
-  }, [pgpEnabled]);
+  }, [pgpEnabled, pgpPlugin]);
 
   // The account endpoint returns several related tables at once. Loading derives
   // selected IMAP/SMTP rows from the route, then rebuilds form state from those
@@ -696,8 +705,9 @@ export function SettingsView({
   }, [addToast, loadPGPKeys]);
 
   useEffect(() => {
-    setProfileForm(profileFormForUser(user));
+    setProfileForm(profileFormForUser(user, availableThemes));
   }, [
+    availableThemes,
     user.date_locale,
     user.date_format,
     user.theme,
@@ -922,10 +932,11 @@ export function SettingsView({
     }
     setPGPSaving(true);
     try {
-      const parsed = await privateKeyRecordFromArmoredSource(armored);
-      const matchingIdentity = identities.find((identity) => pgpUserIDsMatchEmail(parsed.user_ids, identity.email));
+      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+      const parsed = await pgpPlugin.privateKeyRecordFromArmoredSource(armored);
+      const matchingIdentity = identities.find((identity) => pgpPlugin.pgpUserIDsMatchEmail(parsed.user_ids, identity.email));
       if (!matchingIdentity) {
-        const keyEmails = pgpUserIDEmails(parsed.user_ids);
+        const keyEmails = pgpPlugin.pgpUserIDEmails(parsed.user_ids);
         const detail = keyEmails.length > 0 ? ` It lists ${keyEmails.join(", ")}.` : "";
         throw new Error(`This private key is not for one of your profile email addresses.${detail}`);
       }
@@ -942,7 +953,7 @@ export function SettingsView({
         const duplicateIdentity = identities.find((identity) => identity.id === duplicate.identity_id);
         throw new Error(`This private key is already saved${duplicateIdentity?.email ? ` for ${duplicateIdentity.email}` : ""}.`);
       }
-      const saved = await api.savePGPPrivateKey(csrf, {
+      const saved = await pgpPlugin.savePrivateKey(csrf, {
         ...parsed,
         identity_id: identityDraft.id,
         label: identityDraft.email || firstPGPUserID(parsed.user_ids) || parsed.label || "PGP key",
@@ -954,10 +965,10 @@ export function SettingsView({
       });
       if (pgpPrivateKeyStorage === "browser") {
         try {
-          await saveBrowserPGPPrivateKey(user.id, saved.key, parsed.private_key_armored || "");
+          await pgpPlugin.saveBrowserPGPPrivateKey(user.id, saved.key, parsed.private_key_armored || "");
         } catch (err) {
           if (saved.key.id) {
-            await api.deletePGPPrivateKey(csrf, saved.key.id).catch(() => undefined);
+            await pgpPlugin.deletePrivateKey(csrf, saved.key.id).catch(() => undefined);
           }
           throw err;
         }
@@ -983,15 +994,19 @@ export function SettingsView({
       addToast("Save the identity before generating a PGP key.", "error");
       return;
     }
-    const issues = pgpPassphraseIssues(passphrase, identityPGPPassphraseValues());
+    if (!pgpPlugin) {
+      addToast("PGP plugin is still loading. Try again in a moment.", "error");
+      return;
+    }
+    const issues = pgpPlugin.pgpPassphraseIssues(passphrase, identityPGPPassphraseValues());
     if (issues.length > 0) {
       addToast(issues[0], "error");
       return;
     }
     setPGPGenerating(true);
     try {
-      const generated = await generatePrivateKey(identityDraft.display_name, identityDraft.email, passphrase);
-      const saved = await api.savePGPPrivateKey(csrf, {
+      const generated = await pgpPlugin.generatePrivateKey(identityDraft.display_name, identityDraft.email, passphrase);
+      const saved = await pgpPlugin.savePrivateKey(csrf, {
         ...generated,
         identity_id: identityDraft.id,
         label: generated.label || identityDraft.email || "PGP key",
@@ -1003,10 +1018,10 @@ export function SettingsView({
       });
       if (pgpPrivateKeyStorage === "browser") {
         try {
-          await saveBrowserPGPPrivateKey(user.id, saved.key, generated.private_key_armored || "");
+          await pgpPlugin.saveBrowserPGPPrivateKey(user.id, saved.key, generated.private_key_armored || "");
         } catch (err) {
           if (saved.key.id) {
-            await api.deletePGPPrivateKey(csrf, saved.key.id).catch(() => undefined);
+            await pgpPlugin.deletePrivateKey(csrf, saved.key.id).catch(() => undefined);
           }
           throw err;
         }
@@ -1030,9 +1045,10 @@ export function SettingsView({
     const storageLabel = key?.private_key_storage === "browser" ? "browser private key and server public-key metadata" : "PGP private key from rolltop";
     if (!window.confirm(`Remove this ${storageLabel}? Export it first if this is your only copy.`)) return;
     try {
-      await api.deletePGPPrivateKey(csrf, id);
+      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+      await pgpPlugin.deletePrivateKey(csrf, id);
       if (key?.private_key_storage === "browser") {
-        await deleteBrowserPGPPrivateKey(user.id, id).catch(() => undefined);
+        await pgpPlugin?.deleteBrowserPGPPrivateKey(user.id, id).catch(() => undefined);
       }
       setPGPKeys((current) => current.filter((key) => key.id !== id));
       addToast("PGP private key removed.");
@@ -1045,7 +1061,8 @@ export function SettingsView({
     let data = kind === "private" ? key.private_key_armored : kind === "public" ? key.public_key_armored : key.revocation_certificate;
     if (kind === "private" && key.private_key_storage === "browser" && !data?.trim() && key.id) {
       try {
-        data = await loadBrowserPGPPrivateKey(user.id, key.id);
+        if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+        data = await pgpPlugin.loadBrowserPGPPrivateKey(user.id, key.id);
       } catch (err) {
         addToast(messageFromError(err), "error");
         return;
@@ -1471,6 +1488,8 @@ export function SettingsView({
 
   function renderIdentityPGPSettings() {
     const keys = identityDraft.id ? pgpKeys.filter((key) => key.identity_id === identityDraft.id) : [];
+    const PGPKeyImportModal = pgpPlugin?.KeyImportModal;
+    const PGPKeyGenerateModal = pgpPlugin?.KeyGenerateModal;
     return (
       <section className="identity-pgp-settings">
         <div className="panel-headline">
@@ -1569,7 +1588,7 @@ export function SettingsView({
             </button>
           </section>
         </div>
-        {pgpPrivateImportOpen ? (
+        {pgpPrivateImportOpen && PGPKeyImportModal ? (
           <PGPKeyImportModal
             title="Import private key"
             description={pgpPrivateKeyStorage === "browser" ? "Paste, drop, or choose a passphrase-protected ASCII-armored PGP private key. rolltop saves the public key on the server and keeps the private key in this browser only." : "Paste, drop, or choose a passphrase-protected ASCII-armored PGP private key. rolltop stores a server-encrypted private-key copy for unlock/export in your browsers."}
@@ -1579,11 +1598,11 @@ export function SettingsView({
             onImport={(armored) => importIdentityPGPKey(armored)}
           />
         ) : null}
-        {pgpGenerateOpen ? (
+        {pgpGenerateOpen && PGPKeyGenerateModal ? (
           <PGPKeyGenerateModal
             email={identityDraft.email}
             busy={pgpGenerating}
-            validatePassphrase={(passphrase) => pgpPassphraseIssues(passphrase, identityPGPPassphraseValues())}
+            validatePassphrase={(passphrase) => pgpPlugin?.pgpPassphraseIssues(passphrase, identityPGPPassphraseValues()) || []}
             onCancel={() => { if (!pgpGenerating) setPGPGenerateOpen(false); }}
             onGenerate={(passphrase) => generateIdentityPGPKey(passphrase)}
           />
@@ -1720,9 +1739,9 @@ export function SettingsView({
             <h3>Theme</h3>
             <label>Interface style</label>
             <select value={profileForm.theme} onChange={(event) => setProfileForm((current) => ({ ...current, theme: event.target.value }))}>
-              <option value="classic">Classic</option>
-              <option value="classic_dark">Classic Dark</option>
-              <option value="matrix">Matrix</option>
+              {(availableThemes.length > 0 ? availableThemes : fallbackThemes()).map((theme) => (
+                <option value={theme.id} key={theme.id}>{theme.name}</option>
+              ))}
             </select>
           </section>
           <section>

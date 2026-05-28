@@ -1,0 +1,10 @@
+{
+  "id": "trusted_image_sources",
+  "name": "Trusted image sources",
+  "description": "Remembers senders whose remote images may load automatically.",
+  "version": "1.0.0",
+  "enabled_by_default": true,
+  "backend": {
+    "kind": "builtin"
+  }
+}

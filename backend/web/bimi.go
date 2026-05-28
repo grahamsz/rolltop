@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"rolltop/backend/plugins"
-	bimibrandicons "rolltop/backend/plugins/bimi_brand_icons"
 	"rolltop/backend/store"
+	bimibrandicons "rolltop/plugins/bimi_brand_icons/bimi"
 )
 
 func (s *Server) apiBrandIcons(w http.ResponseWriter, r *http.Request) {

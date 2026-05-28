@@ -131,47 +131,26 @@ func Parse(raw []byte) (ParsedMessage, error) {
 	}
 	decoder := wordDecoder()
 	subject, _ := decoder.DecodeHeader(msg.Header.Get("Subject"))
-	pgpEncrypted, pgpSigned := DetectPGP(raw)
 	parsed := ParsedMessage{
-		IsEncrypted: pgpEncrypted,
-		IsSigned:    pgpSigned,
-		MessageID:   strings.TrimSpace(msg.Header.Get("Message-ID")),
-		InReplyTo:   strings.TrimSpace(msg.Header.Get("In-Reply-To")),
-		References:  strings.TrimSpace(msg.Header.Get("References")),
-		Subject:     strings.TrimSpace(subject),
-		From:        addressHeader(msg.Header.Get("From")),
-		To:          addressHeader(msg.Header.Get("To")),
-		CC:          addressHeader(msg.Header.Get("Cc")),
+		MessageID:  strings.TrimSpace(msg.Header.Get("Message-ID")),
+		InReplyTo:  strings.TrimSpace(msg.Header.Get("In-Reply-To")),
+		References: strings.TrimSpace(msg.Header.Get("References")),
+		Subject:    strings.TrimSpace(subject),
+		From:       addressHeader(msg.Header.Get("From")),
+		To:         addressHeader(msg.Header.Get("To")),
+		CC:         addressHeader(msg.Header.Get("Cc")),
 	}
 	if d, err := mail.ParseDate(msg.Header.Get("Date")); err == nil {
 		parsed.Date = d.UTC()
 	}
 	if err := parsePart(textproto.MIMEHeader(msg.Header), msg.Body, &parsed); err != nil {
 		if isTolerableEOF(err) {
-			if parsed.IsEncrypted {
-				parsed.Text = ""
-				parsed.HTML = ""
-				parsed.Files = nil
-			} else {
-				if parsed.IsSigned {
-					stripPGPSignedParsedBody(&parsed)
-				}
-				parsed.Text = cleanIndexedText(parsed.Text)
-			}
+			parsed.Text = cleanIndexedText(parsed.Text)
 			return parsed, nil
 		}
 		return ParsedMessage{}, err
 	}
-	if parsed.IsEncrypted {
-		parsed.Text = ""
-		parsed.HTML = ""
-		parsed.Files = nil
-	} else {
-		if parsed.IsSigned {
-			stripPGPSignedParsedBody(&parsed)
-		}
-		parsed.Text = cleanIndexedText(parsed.Text)
-	}
+	parsed.Text = cleanIndexedText(parsed.Text)
 	return parsed, nil
 }
 
@@ -182,10 +161,6 @@ func ParseDisplayBody(r io.Reader) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	encrypted, signed := DetectPGP(raw)
-	if encrypted {
-		return "", "", nil
-	}
 	msg, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
 		return "", "", err
@@ -193,13 +168,11 @@ func ParseDisplayBody(r io.Reader) (string, string, error) {
 	var parsed ParsedMessage
 	if err := parseDisplayPart(textproto.MIMEHeader(msg.Header), msg.Body, &parsed); err != nil {
 		if isTolerableEOF(err) {
-			text, html := pgpDisplayBody(parsed.Text, parsed.HTML, signed)
-			return text, html, nil
+			return normalizeDisplayText(parsed.Text), parsed.HTML, nil
 		}
 		return "", "", err
 	}
-	text, html := pgpDisplayBody(parsed.Text, parsed.HTML, signed)
-	return text, html, nil
+	return normalizeDisplayText(parsed.Text), parsed.HTML, nil
 }
 
 // parsePart recursively walks the MIME tree for indexing. Attachments keep their
@@ -485,101 +458,6 @@ func normalizeText(value string) string {
 		return ""
 	}
 	return strings.Join(fields, " ")
-}
-
-func stripPGPSignedParsedBody(parsed *ParsedMessage) {
-	clear, ok := stripInlinePGPSignedText(parsed.Text)
-	if !ok {
-		return
-	}
-	parsed.Text = clear
-	parsed.HTML = ""
-}
-
-func pgpDisplayBody(text, htmlBody string, signed bool) (string, string) {
-	text = normalizeDisplayText(text)
-	if signed {
-		if clear, ok := stripInlinePGPSignedText(text); ok {
-			return normalizeDisplayText(clear), ""
-		}
-	}
-	return text, htmlBody
-}
-
-func stripInlinePGPSignedText(value string) (string, bool) {
-	value = strings.ReplaceAll(value, "\r\n", "\n")
-	value = strings.ReplaceAll(value, "\r", "\n")
-	begin := strings.Index(value, "-----BEGIN PGP SIGNED MESSAGE-----")
-	if begin < 0 {
-		return "", false
-	}
-	sigBeginRel := strings.Index(value[begin:], "-----BEGIN PGP SIGNATURE-----")
-	if sigBeginRel < 0 {
-		return "", false
-	}
-	sigBegin := begin + sigBeginRel
-	bodyOffset := clearSignedBodyOffset(value[begin:sigBegin])
-	if bodyOffset < 0 {
-		return "", false
-	}
-	body := value[begin+bodyOffset : sigBegin]
-	body = unescapeClearSignedBody(body)
-
-	replacement := normalizeDisplayText(body)
-	prefix := strings.TrimSpace(value[:begin])
-	suffix := ""
-	if sigEndRel := strings.Index(value[sigBegin:], "-----END PGP SIGNATURE-----"); sigEndRel >= 0 {
-		suffixStart := sigBegin + sigEndRel + len("-----END PGP SIGNATURE-----")
-		suffix = strings.TrimSpace(value[suffixStart:])
-	}
-
-	parts := make([]string, 0, 3)
-	if prefix != "" {
-		parts = append(parts, prefix)
-	}
-	if replacement != "" {
-		parts = append(parts, replacement)
-	}
-	if suffix != "" {
-		parts = append(parts, suffix)
-	}
-	return normalizeDisplayText(strings.Join(parts, "\n\n")), true
-}
-
-func clearSignedBodyOffset(block string) int {
-	lineEnd := strings.IndexByte(block, '\n')
-	if lineEnd < 0 {
-		return -1
-	}
-	pos := lineEnd + 1
-	for pos <= len(block) {
-		next := strings.IndexByte(block[pos:], '\n')
-		lineEnd = len(block)
-		lineNext := len(block)
-		if next >= 0 {
-			lineEnd = pos + next
-			lineNext = lineEnd + 1
-		}
-		if strings.TrimSpace(block[pos:lineEnd]) == "" {
-			return lineNext
-		}
-		if next < 0 {
-			return -1
-		}
-		pos = lineNext
-	}
-	return -1
-}
-
-func unescapeClearSignedBody(value string) string {
-	value = strings.Trim(value, "\n")
-	lines := strings.Split(value, "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, "- ") {
-			lines[i] = strings.TrimPrefix(line, "- ")
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 func normalizeDisplayText(value string) string {
@@ -966,26 +844,4 @@ func stripHTML(value string) string {
 		}
 	}
 	return html.UnescapeString(b.String())
-}
-
-var (
-	inlinePGPMessageRE = regexp.MustCompile(`(?is)-----BEGIN PGP MESSAGE-----.*?-----END PGP MESSAGE-----`)
-	inlinePGPSignedRE  = regexp.MustCompile(`(?is)-----BEGIN PGP SIGNED MESSAGE-----.*?-----END PGP SIGNATURE-----`)
-)
-
-// DetectPGP reports whether a raw RFC822 message appears to contain OpenPGP
-// encrypted or signed content. It intentionally treats this as metadata only;
-// private-key operations happen in the browser.
-func DetectPGP(raw []byte) (encrypted bool, signed bool) {
-	lower := strings.ToLower(string(limitBytes(raw, 256*1024)))
-	if strings.Contains(lower, "multipart/encrypted") || strings.Contains(lower, "application/pgp-encrypted") || inlinePGPMessageRE.Match(raw) {
-		encrypted = true
-	}
-	if strings.Contains(lower, "multipart/signed") && strings.Contains(lower, "application/pgp-signature") {
-		signed = true
-	}
-	if strings.Contains(lower, "application/pgp-signature") || inlinePGPSignedRE.Match(raw) {
-		signed = true
-	}
-	return encrypted, signed
 }

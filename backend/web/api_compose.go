@@ -450,23 +450,21 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 		bodyHTML, bodyText = appendIdentitySignature(form.BodyHTML, form.Body, identity.Signature)
 	}
 	msg := smtpclient.Message{
-		From:             identity.Header,
-		To:               []string{form.To},
-		Cc:               []string{form.Cc},
-		Bcc:              []string{form.Bcc},
-		Subject:          form.Subject,
-		BodyText:         bodyText,
-		BodyHTML:         bodyHTML,
-		MessageID:        smtpclient.NewMessageID(identity.Email),
-		Date:             time.Now(),
-		PGPMIMEEncrypted: form.PGPMIME && form.PGPEncrypted,
-		PGPMIMESigned:    form.PGPMIME && form.PGPSigned && !form.PGPEncrypted,
-		PGPMIMESignature: form.PGPSignature,
-		Attachments:      attachments,
+		From:        identity.Header,
+		To:          []string{form.To},
+		Cc:          []string{form.Cc},
+		Bcc:         []string{form.Bcc},
+		Subject:     form.Subject,
+		BodyText:    bodyText,
+		BodyHTML:    bodyHTML,
+		MessageID:   smtpclient.NewMessageID(identity.Email),
+		Date:        time.Now(),
+		Attachments: attachments,
 	}
-	if s.pluginEnabled(ctx, plugins.ClientSidePGP) {
-		applyAutocryptHeader(&msg, identity)
+	if err := s.applyPluginMIMEBodyOverride(ctx, cu.User.ID, &msg, identity, form); err != nil {
+		return store.MessageRecord{}, err
 	}
+	s.applyPluginMailHeaders(ctx, cu.User.ID, &msg, identity)
 	if form.InReplyToID > 0 {
 		reply, err := s.store.GetMessageForUser(ctx, cu.User.ID, form.InReplyToID)
 		if err != nil && !store.IsNotFound(err) {
@@ -489,24 +487,29 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 }
 
 func (s *Server) composePublicKeyAttachment(ctx context.Context, userID int64, identity composeIdentity) (smtpclient.Attachment, error) {
-	if identity.PGPIdentityID == 0 {
-		return smtpclient.Attachment{}, errors.New("this identity does not have a PGP public key")
-	}
-	key, err := s.store.ActiveIdentityPGPPublicKeyForUser(ctx, userID, identity.PGPIdentityID)
+	backendPlugins, err := s.enabledBackendPlugins(ctx)
 	if err != nil {
-		if store.IsNotFound(err) {
-			return smtpclient.Attachment{}, errors.New("this identity does not have a PGP public key")
-		}
 		return smtpclient.Attachment{}, err
 	}
-	filename := strings.NewReplacer("@", "-", ".", "-").Replace(store.NormalizeContactEmail(identity.Email))
-	if strings.TrimSpace(filename) == "" {
-		filename = "public-key"
+	identityCtx := pluginMailIdentityContext(identity)
+	for _, backendPlugin := range backendPlugins {
+		provider, ok := backendPlugin.(plugins.IdentityAttachmentProvider)
+		if !ok {
+			continue
+		}
+		attachment, attachmentErr := provider.ComposeIdentityAttachment(ctx, s, userID, identityCtx, "public-key")
+		if errors.Is(attachmentErr, plugins.ErrUnsupported) {
+			continue
+		}
+		if attachmentErr != nil {
+			return smtpclient.Attachment{}, attachmentErr
+		}
+		return smtpclient.Attachment{
+			Filename:    attachment.Filename,
+			ContentType: attachment.ContentType,
+			Inline:      attachment.Inline,
+			Data:        attachment.Data,
+		}, nil
 	}
-	return smtpclient.Attachment{
-		Filename:    filename + ".asc",
-		ContentType: "application/pgp-keys",
-		Inline:      false,
-		Data:        []byte(strings.TrimSpace(key.PublicKeyArmored) + "\n"),
-	}, nil
+	return smtpclient.Attachment{}, errors.New("this identity does not have a public key attachment")
 }

@@ -2,7 +2,11 @@ package syncer
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 
 	"rolltop/backend/plugins"
@@ -22,8 +26,8 @@ func TestDiscoverAutocryptHeadersStoresSenderKey(t *testing.T) {
 	if err := db.SetPluginEnabled(ctx, plugins.ClientSidePGP, true); err != nil {
 		t.Fatal(err)
 	}
-	svc := &Service{Store: db}
-	if err := svc.discoverAutocryptHeaders(ctx, user.ID, []byte(autocryptTestRaw), "Alice <alice@example.test>"); err != nil {
+	svc := &Service{Store: db, PluginDir: testClientSidePGPPluginDir(t)}
+	if err := svc.importIncomingMessageHooks(ctx, user.ID, []byte(autocryptTestRaw), "Alice <alice@example.test>"); err != nil {
 		t.Fatal(err)
 	}
 	keys, err := db.ListAllContactPGPPublicKeysForEmails(ctx, user.ID, []string{"alice@example.test"})
@@ -61,7 +65,10 @@ func TestDiscoverAutocryptHeadersRequiresPluginAndMatchingFrom(t *testing.T) {
 				}
 			}
 			svc := &Service{Store: db}
-			if err := svc.discoverAutocryptHeaders(ctx, user.ID, []byte(autocryptTestRaw), tc.parsedFrom); err != nil {
+			if tc.enablePGP {
+				svc.PluginDir = testClientSidePGPPluginDir(t)
+			}
+			if err := svc.importIncomingMessageHooks(ctx, user.ID, []byte(autocryptTestRaw), tc.parsedFrom); err != nil {
 				t.Fatal(err)
 			}
 			keys, err := db.ListAllContactPGPPublicKeysForEmails(ctx, user.ID, []string{"alice@example.test"})
@@ -73,6 +80,59 @@ func TestDiscoverAutocryptHeadersRequiresPluginAndMatchingFrom(t *testing.T) {
 			}
 		})
 	}
+}
+
+var (
+	testPGPPluginOnce sync.Once
+	testPGPPluginRoot string
+	testPGPPluginErr  error
+)
+
+func testClientSidePGPPluginDir(t *testing.T) string {
+	t.Helper()
+	testPGPPluginOnce.Do(func() {
+		_, file, _, _ := runtime.Caller(0)
+		repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+		testPGPPluginRoot, testPGPPluginErr = os.MkdirTemp("", "rolltop-syncer-pgp-plugin-")
+		if testPGPPluginErr != nil {
+			return
+		}
+		pluginDir := filepath.Join(testPGPPluginRoot, plugins.ClientSidePGP)
+		backendDir := filepath.Join(pluginDir, "backend")
+		if err := os.MkdirAll(backendDir, 0o700); err != nil {
+			testPGPPluginErr = err
+			return
+		}
+		manifest := `{
+			"id": "client_side_pgp",
+			"name": "Client-side PGP",
+			"description": "Test PGP backend",
+			"backend": {"kind": "go-plugin", "binary": "backend/client_side_pgp.so"}
+		}`
+		if err := os.WriteFile(filepath.Join(pluginDir, "manifest.json"), []byte(manifest), 0o600); err != nil {
+			testPGPPluginErr = err
+			return
+		}
+		cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", filepath.Join(backendDir, "client_side_pgp.so"), "./plugins/client_side_pgp/backend")
+		cmd.Dir = repoRoot
+		cmd.Env = append(os.Environ(), "GOCACHE=/tmp/mailmirror-go-build")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			testPGPPluginErr = &execBuildError{err: err, out: string(out)}
+		}
+	})
+	if testPGPPluginErr != nil {
+		t.Fatal(testPGPPluginErr)
+	}
+	return testPGPPluginRoot
+}
+
+type execBuildError struct {
+	err error
+	out string
+}
+
+func (e *execBuildError) Error() string {
+	return e.err.Error() + ": " + e.out
 }
 
 func autocryptTestStore(t *testing.T) *store.Store {

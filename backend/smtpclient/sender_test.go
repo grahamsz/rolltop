@@ -68,14 +68,16 @@ func TestBuildRawRejectsHeaderInjection(t *testing.T) {
 func TestBuildRawWritesFoldedAutocryptHeader(t *testing.T) {
 	keyData := strings.Repeat("AQIDBAUGBwg=", 12)
 	raw, _, err := BuildRaw(Message{
-		From:             "sender@example.test",
-		To:               []string{"to@example.test"},
-		Subject:          "Autocrypt",
-		BodyText:         "Body",
-		MessageID:        "<autocrypt@example.test>",
-		Date:             time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
-		AutocryptAddr:    "sender@example.test",
-		AutocryptKeyData: keyData,
+		From:      "sender@example.test",
+		To:        []string{"to@example.test"},
+		Subject:   "Autocrypt",
+		BodyText:  "Body",
+		MessageID: "<autocrypt@example.test>",
+		Date:      time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
+		ExtraHeaders: []Header{{
+			Name:  "Autocrypt",
+			Value: "addr=sender@example.test; prefer-encrypt=mutual; keydata=" + keyData,
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -93,14 +95,25 @@ func TestBuildRawWritesFoldedAutocryptHeader(t *testing.T) {
 }
 
 func TestBuildRawWithPGPMIMEEncryptedBody(t *testing.T) {
+	boundary := MIMEBoundary("<pgp-mime@example.test>", "pgp-encrypted")
 	raw, _, err := BuildRaw(Message{
-		From:             "sender@example.test",
-		To:               []string{"to@example.test"},
-		Subject:          "PGP MIME",
-		BodyText:         "-----BEGIN PGP MESSAGE-----\n\nciphertext\n-----END PGP MESSAGE-----",
-		MessageID:        "<pgp-mime@example.test>",
-		Date:             time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
-		PGPMIMEEncrypted: true,
+		From:      "sender@example.test",
+		To:        []string{"to@example.test"},
+		Subject:   "PGP MIME",
+		BodyText:  "-----BEGIN PGP MESSAGE-----\n\nciphertext\n-----END PGP MESSAGE-----",
+		MessageID: "<pgp-mime@example.test>",
+		Date:      time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
+		MIMEBodyOverride: &MIMEBodyOverride{
+			ContentType: `multipart/encrypted; boundary=` + boundary + `; protocol="application/pgp-encrypted"`,
+			Body: "--" + boundary + "\r\n" +
+				"Content-Type: application/pgp-encrypted\r\n\r\n" +
+				"Version: 1\r\n" +
+				"--" + boundary + "\r\n" +
+				"Content-Type: application/octet-stream; name=encrypted.asc\r\n" +
+				"Content-Disposition: inline; filename=encrypted.asc\r\n\r\n" +
+				"-----BEGIN PGP MESSAGE-----\r\n\r\nciphertext\r\n-----END PGP MESSAGE-----\r\n" +
+				"--" + boundary + "--\r\n",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,15 +137,24 @@ func TestBuildRawWithPGPMIMEEncryptedBody(t *testing.T) {
 }
 
 func TestBuildRawWithPGPMIMESignedBody(t *testing.T) {
+	boundary := MIMEBoundary("<pgp-mime-signed@example.test>", "pgp-signed")
 	raw, _, err := BuildRaw(Message{
-		From:             "sender@example.test",
-		To:               []string{"to@example.test"},
-		Subject:          "PGP MIME signed",
-		BodyText:         "Content-Type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\nSigned text\r\n",
-		PGPMIMESignature: "-----BEGIN PGP SIGNATURE-----\n\nsignature\n-----END PGP SIGNATURE-----",
-		MessageID:        "<pgp-mime-signed@example.test>",
-		Date:             time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
-		PGPMIMESigned:    true,
+		From:      "sender@example.test",
+		To:        []string{"to@example.test"},
+		Subject:   "PGP MIME signed",
+		BodyText:  "Content-Type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\nSigned text\r\n",
+		MessageID: "<pgp-mime-signed@example.test>",
+		Date:      time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
+		MIMEBodyOverride: &MIMEBodyOverride{
+			ContentType: `multipart/signed; boundary=` + boundary + `; micalg=pgp-sha256; protocol="application/pgp-signature"`,
+			Body: "--" + boundary + "\r\n" +
+				"Content-Type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\nSigned text\r\n" +
+				"--" + boundary + "\r\n" +
+				"Content-Type: application/pgp-signature; name=signature.asc\r\n" +
+				"Content-Disposition: attachment; filename=signature.asc\r\n\r\n" +
+				"-----BEGIN PGP SIGNATURE-----\r\n\r\nsignature\r\n-----END PGP SIGNATURE-----\r\n" +
+				"--" + boundary + "--\r\n",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

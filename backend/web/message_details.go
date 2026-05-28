@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	oneclickunsubscribe "rolltop/backend/plugins/one_click_unsubscribe"
 	"rolltop/backend/store"
+	oneclickunsubscribe "rolltop/plugins/one_click_unsubscribe/history"
 )
 
 var errOneClickUnavailable = errors.New("one-click unsubscribe unavailable")

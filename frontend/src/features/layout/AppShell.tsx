@@ -9,6 +9,7 @@ import type { Bootstrap, Mailbox, SyncRun, User } from "../../types";
 import { Icon, LogoMark } from "../../components/Icon";
 import { folderTree, nodeContainsMailbox, type FolderNode } from "../../lib/folders";
 import { mailRoute, mailURL, searchRoute, searchURL, currentLocation } from "../../lib/routes";
+import type { ClientSidePGPPlugin } from "../../../../plugins/client_side_pgp/frontend/types";
 import { createPluginSet, pluginIDs } from "../../plugins/registry";
 import { SearchAutocomplete, useSearchAutocomplete } from "./SearchAutocomplete";
 
@@ -39,6 +40,7 @@ export function AppShell({
   refreshChrome,
   notificationsEnabled,
   toggleNotifications,
+  pgpPlugin,
   pgpUnlock,
   openPGPUnlock,
   lockPGP,
@@ -62,6 +64,7 @@ export function AppShell({
         navigate={navigate}
         notificationsEnabled={notificationsEnabled}
         toggleNotifications={toggleNotifications}
+        pgpPlugin={pgpPlugin}
         pgpUnlock={pgpUnlock}
         openPGPUnlock={openPGPUnlock}
         lockPGP={lockPGP}
@@ -164,6 +167,7 @@ function Topbar({
   navigate,
   notificationsEnabled,
   toggleNotifications,
+  pgpPlugin,
   pgpUnlock,
   openPGPUnlock,
   lockPGP,
@@ -177,6 +181,7 @@ function Topbar({
   navigate: (url: string) => void;
   notificationsEnabled: boolean;
   toggleNotifications: () => Promise<void>;
+  pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
   openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
   lockPGP: () => void;
@@ -189,7 +194,7 @@ function Topbar({
   const accountMenuRef = useRef<HTMLDetailsElement>(null);
   const pluginKey = enabledPlugins.join("|");
   const pluginSet = useMemo(() => createPluginSet(enabledPlugins), [pluginKey]);
-  const pgpEnabled = pluginSet.has(pluginIDs.clientSidePGP);
+  const pgpEnabled = pluginSet.has(pluginIDs.clientSidePGP) && Boolean(pgpPlugin);
   const pgpUnlocked = pgpUnlock.keys.length > 0 && pgpUnlock.unlockedUntil > Date.now();
   const autocomplete = useSearchAutocomplete({
     query,

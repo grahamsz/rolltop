@@ -9,8 +9,7 @@ import type { ContactAutocomplete, ContactPGPKey, ComposeAttachmentUpload, Compo
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { textToHTML } from "../../lib/html";
-import { addAutocryptGossipHeaders, encryptMessageText, encryptionKeyRecordsForRecipients, pgpMIMEEntityFromBody, signPGPMIMEEntity } from "../../lib/pgp";
-import type { PGPMIMEAttachmentInput } from "../../lib/pgp";
+import type { ClientSidePGPPlugin, PGPMIMEAttachmentInput } from "../../../../plugins/client_side_pgp/frontend/types";
 
 const ATTACHMENT_WARNING_BYTES = 20 * 1024 * 1024;
 const RESIZE_PHOTO_MAX_EDGE = 1920;
@@ -34,6 +33,7 @@ export function ComposeOverlay({
   csrf,
   query,
   pgpEnabled,
+  pgpPlugin,
   pgpUnlock,
   openPGPUnlock,
   addToast,
@@ -42,6 +42,7 @@ export function ComposeOverlay({
   csrf: string;
   query: string;
   pgpEnabled: boolean;
+  pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
   openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
@@ -82,6 +83,7 @@ export function ComposeOverlay({
           identities={identities}
           initial={form}
           pgpEnabled={pgpEnabled}
+          pgpPlugin={pgpPlugin}
           pgpUnlock={pgpUnlock}
           openPGPUnlock={openPGPUnlock}
           addToast={addToast}
@@ -109,6 +111,7 @@ export function ComposePage({
   location,
   navigate,
   pgpEnabled,
+  pgpPlugin,
   pgpUnlock,
   openPGPUnlock,
   addToast
@@ -117,6 +120,7 @@ export function ComposePage({
   location: LocationState;
   navigate: (url: string) => void;
   pgpEnabled: boolean;
+  pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
   openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
@@ -153,8 +157,9 @@ export function ComposePage({
           composeFrom={from}
           identities={identities}
           initial={form}
-          pgpEnabled={pgpEnabled}
-          pgpUnlock={pgpUnlock}
+        pgpEnabled={pgpEnabled}
+        pgpPlugin={pgpPlugin}
+        pgpUnlock={pgpUnlock}
           openPGPUnlock={openPGPUnlock}
           addToast={addToast}
           onSent={() => navigate("/mail")}
@@ -178,6 +183,7 @@ export function ComposeBox({
   initial,
   inline = false,
   pgpEnabled = false,
+  pgpPlugin,
   pgpUnlock,
   openPGPUnlock,
   addToast,
@@ -190,6 +196,7 @@ export function ComposeBox({
   initial: ComposeForm;
   inline?: boolean;
   pgpEnabled?: boolean;
+  pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
   openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
@@ -287,9 +294,13 @@ export function ComposeBox({
       return;
     }
     timer = window.setTimeout(() => {
-      api.pgpPublicKeys(recipientEmails, true)
+      if (!pgpPlugin) {
+        setPGPSendSuggestionAvailable(false);
+        return;
+      }
+      pgpPlugin.publicKeys(recipientEmails, true)
         .then(async (data) => {
-          await encryptionKeyRecordsForRecipients(recipientEmails, data.keys || []);
+          await pgpPlugin.encryptionKeyRecordsForRecipients(recipientEmails, data.keys || []);
           if (!cancelled) setPGPSendSuggestionAvailable(true);
         })
         .catch(() => {
@@ -300,7 +311,7 @@ export function ComposeBox({
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [pgpActive, pgpEnabled, recipientEmailKey, selectedIdentityCanEncrypt]);
+  }, [pgpActive, pgpEnabled, pgpPlugin, recipientEmailKey, selectedIdentityCanEncrypt]);
 
   function setField<K extends keyof ComposeForm>(field: K, value: ComposeForm[K]) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -502,6 +513,9 @@ export function ComposeBox({
     if (!pgpEnabled || (!pgpEncrypt && !pgpSign)) {
       return { form: { ...nextForm, pgp_encrypted: false, pgp_signed: false, pgp_mime: false }, attachments: uploadAttachments };
     }
+    if (!pgpPlugin) {
+      throw new Error("PGP plugin is still loading. Try again in a moment.");
+    }
     if (pgpSign && !unlockedSigningKey) {
       openPGPUnlock(selectedIdentity?.pgp_identity_id || undefined);
       throw new Error("Unlock this identity's PGP key before signing.");
@@ -518,20 +532,20 @@ export function ComposeBox({
       const recipientEmails = recipientEmailAddresses([nextForm.to, nextForm.cc, nextForm.bcc]);
       let data;
       try {
-        data = await api.pgpPublicKeys(recipientEmails, true);
+        data = await pgpPlugin.publicKeys(recipientEmails, true);
       } catch (err) {
         throw new Error(`Could not load recipient PGP public keys: ${messageFromError(err)}`);
       }
-      const recipientKeys = await encryptionKeyRecordsForRecipients(recipientEmails, data.keys || []);
+      const recipientKeys = await pgpPlugin.encryptionKeyRecordsForRecipients(recipientEmails, data.keys || []);
       const keys = encryptionKeysWithSender(recipientKeys);
       pgpMime = true;
-      const mimeEntity = pgpMIMEEntityFromBody(nextForm.body, nextForm.body_html, pgpAttachments);
-      armored = await encryptMessageText(addAutocryptGossipHeaders(mimeEntity, keys), keys, pgpSign ? unlockedSigningKey || undefined : undefined);
+      const mimeEntity = pgpPlugin.pgpMIMEEntityFromBody(nextForm.body, nextForm.body_html, pgpAttachments);
+      armored = await pgpPlugin.encryptMessageText(pgpPlugin.addAutocryptGossipHeaders(mimeEntity, keys), keys, pgpSign ? unlockedSigningKey || undefined : undefined);
     } else if (pgpSign && unlockedSigningKey) {
       pgpMime = true;
-      const mimeEntity = pgpMIMEEntityFromBody(nextForm.body, nextForm.body_html, pgpAttachments);
+      const mimeEntity = pgpPlugin.pgpMIMEEntityFromBody(nextForm.body, nextForm.body_html, pgpAttachments);
       armored = mimeEntity;
-      pgpSignature = await signPGPMIMEEntity(mimeEntity, unlockedSigningKey);
+      pgpSignature = await pgpPlugin.signPGPMIMEEntity(mimeEntity, unlockedSigningKey);
     }
     onPGPArmored?.(armored);
     return {

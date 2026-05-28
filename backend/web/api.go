@@ -43,6 +43,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiStorage(w, r)
 	case path == "plugins":
 		s.apiPlugins(w, r)
+	case strings.HasPrefix(path, "plugins/"):
+		s.apiBackendPlugin(w, r, strings.TrimPrefix(path, "plugins/"))
 	case path == "contacts":
 		s.apiContacts(w, r)
 	case strings.HasPrefix(path, "contacts/"):
@@ -61,12 +63,6 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiSMTPAccountPath(w, r, strings.TrimPrefix(path, "account/smtp/"))
 	case path == "account/identities":
 		s.apiMailIdentity(w, r)
-	case path == "account/pgp/private-keys":
-		s.apiPGPPrivateKeys(w, r)
-	case strings.HasPrefix(path, "account/pgp/private-keys/"):
-		s.apiPGPPrivateKeyPath(w, r, strings.TrimPrefix(path, "account/pgp/private-keys/"))
-	case path == "pgp/public-keys":
-		s.apiPGPPublicKeys(w, r)
 	case path == "account/sync":
 		s.apiAccountSync(w, r)
 	case strings.HasPrefix(path, "account/folders/"):

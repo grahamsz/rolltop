@@ -1,0 +1,10 @@
+{
+  "id": "remote_image_blocklist",
+  "name": "Remote image blocklist",
+  "description": "Blocks remote tracking images and allows admin-maintained URL block patterns.",
+  "version": "1.0.0",
+  "enabled_by_default": true,
+  "backend": {
+    "kind": "builtin"
+  }
+}

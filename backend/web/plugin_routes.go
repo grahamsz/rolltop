@@ -7,21 +7,25 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"rolltop/backend/mailparse"
 	"rolltop/backend/plugins"
-	attachmentpreview "rolltop/backend/plugins/attachment_preview"
-	gravatarsendericons "rolltop/backend/plugins/gravatar_sender_icons"
 	"rolltop/backend/store"
+	attachmentpreview "rolltop/plugins/attachment_preview/preview"
+	gravatarsendericons "rolltop/plugins/gravatar_sender_icons/gravatar"
 )
 
 func (s *Server) handlePluginRoute(w http.ResponseWriter, r *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/plugins/"), "/")
 	switch {
+	case isPluginAssetRoute(rest):
+		s.handlePluginAsset(w, r, rest)
 	case strings.HasPrefix(rest, "bimi_brand_icons/brand-icons/"):
 		s.handleBrandIcon(w, r)
 	case strings.HasPrefix(rest, "gravatar_sender_icons/avatar/"):
@@ -31,6 +35,74 @@ func (s *Server) handlePluginRoute(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func isPluginAssetRoute(rest string) bool {
+	pluginID, tail, ok := strings.Cut(rest, "/")
+	return ok && pluginID != "" && strings.HasPrefix(tail, "assets/")
+}
+
+func (s *Server) handlePluginAsset(w http.ResponseWriter, r *http.Request, rest string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	pluginID, tail, ok := strings.Cut(rest, "/")
+	if !ok || strings.TrimSpace(pluginID) == "" || !strings.HasPrefix(tail, "assets/") {
+		http.NotFound(w, r)
+		return
+	}
+	if !s.pluginEnabled(r.Context(), pluginID) {
+		http.NotFound(w, r)
+		return
+	}
+	manifest, ok := s.pluginManifest(pluginID)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	assetPath := strings.TrimPrefix(tail, "assets/")
+	clean := filepath.Clean(filepath.FromSlash(assetPath))
+	if clean == "." || clean == ".." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		http.NotFound(w, r)
+		return
+	}
+	if !pluginAssetAllowed(manifest, clean) {
+		http.NotFound(w, r)
+		return
+	}
+	full := filepath.Join(manifest.Dir, clean)
+	if _, err := os.Stat(full); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeFile(w, r, full)
+}
+
+func pluginAssetAllowed(manifest plugins.Manifest, clean string) bool {
+	slash := filepath.ToSlash(clean)
+	for _, theme := range manifest.Themes {
+		themeCSS := path.Clean(strings.TrimLeft(theme.CSS, "/"))
+		themeDir := path.Dir(themeCSS)
+		if slash == themeCSS || (themeDir != "." && strings.HasPrefix(slash, themeDir+"/")) {
+			return true
+		}
+	}
+	if manifest.Frontend != nil {
+		module := path.Clean(strings.TrimLeft(manifest.Frontend.Module, "/"))
+		css := path.Clean(strings.TrimLeft(manifest.Frontend.CSS, "/"))
+		moduleDir := path.Dir(module)
+		cssDir := path.Dir(css)
+		if slash == module || (moduleDir != "." && strings.HasPrefix(slash, moduleDir+"/")) {
+			return true
+		}
+		if manifest.Frontend.CSS != "" && (slash == css || (cssDir != "." && strings.HasPrefix(slash, cssDir+"/"))) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) attachmentPreview(att store.Attachment) *apiAttachmentPreview {

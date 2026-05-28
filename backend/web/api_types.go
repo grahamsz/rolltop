@@ -133,8 +133,16 @@ type apiAttachment struct {
 	Matched               bool                  `json:"matched,omitempty"`
 	ContentMatched        bool                  `json:"content_matched,omitempty"`
 	MatchTerms            []string              `json:"match_terms,omitempty"`
+	Actions               []apiAttachmentAction `json:"actions,omitempty"`
 	PGPPublicKeyCandidate bool                  `json:"pgp_public_key_candidate,omitempty"`
 	Preview               *apiAttachmentPreview `json:"preview,omitempty"`
+}
+
+type apiAttachmentAction struct {
+	PluginID string            `json:"plugin_id"`
+	Kind     string            `json:"kind"`
+	Label    string            `json:"label"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 type apiAttachmentPreview struct {
@@ -294,6 +302,21 @@ type apiPluginSetting struct {
 	Enabled          bool   `json:"enabled"`
 	EnabledByDefault bool   `json:"enabled_by_default"`
 	Heavy            bool   `json:"heavy"`
+}
+
+type apiThemeDefinition struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	PluginID string `json:"plugin_id,omitempty"`
+	CSSURL   string `json:"css_url,omitempty"`
+}
+
+type apiFrontendPlugin struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Version   string `json:"version,omitempty"`
+	ModuleURL string `json:"module_url"`
+	CSSURL    string `json:"css_url,omitempty"`
 }
 
 type apiContactPGPKey struct {

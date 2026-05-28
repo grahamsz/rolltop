@@ -237,7 +237,7 @@ func apiConversations(conversations []conversationView) []apiConversation {
 func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []threadMessageView) []apiThreadMessage {
 	out := make([]apiThreadMessage, 0, len(views))
 	attachmentPreviewEnabled := s.pluginEnabled(ctx, plugins.AttachmentPreview)
-	pgpEnabled := s.pluginEnabled(ctx, plugins.ClientSidePGP)
+	backendPlugins, _ := s.enabledBackendPlugins(ctx)
 	for _, view := range views {
 		atts := make([]apiAttachment, 0, len(view.Attachments))
 		for _, att := range view.Attachments {
@@ -252,6 +252,7 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 			if attachmentPreviewEnabled {
 				preview = s.attachmentPreview(att)
 			}
+			attachmentActions := s.pluginAttachmentActions(ctx, backendPlugins, att)
 			atts = append(atts, apiAttachment{
 				ID:                    att.ID,
 				Filename:              att.Filename,
@@ -261,7 +262,8 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 				Matched:               nameMatched || contentMatched,
 				ContentMatched:        contentMatched,
 				MatchTerms:            matchTerms,
-				PGPPublicKeyCandidate: pgpEnabled && pgpPublicKeyAttachmentCandidate(att),
+				Actions:               attachmentActions,
+				PGPPublicKeyCandidate: hasAttachmentAction(attachmentActions, "pgp-public-key-import"),
 				Preview:               preview,
 			})
 		}
@@ -301,16 +303,39 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 	return out
 }
 
-func pgpPublicKeyAttachmentCandidate(att store.Attachment) bool {
-	if att.IsInline || att.Size <= 0 || att.Size > 16*1024 {
-		return false
+func (s *Server) pluginAttachmentActions(ctx context.Context, backendPlugins []plugins.BackendPlugin, att store.Attachment) []apiAttachmentAction {
+	info := plugins.AttachmentInfo{
+		ID:          att.ID,
+		Filename:    attachmentDisplayName(att),
+		ContentType: att.ContentType,
+		Size:        att.Size,
+		Inline:      att.IsInline,
 	}
-	name := strings.ToLower(strings.TrimSpace(att.Filename))
-	contentType := strings.ToLower(strings.TrimSpace(att.ContentType))
-	if strings.Contains(name, "signature") || strings.Contains(contentType, "pgp-signature") {
-		return false
+	var out []apiAttachmentAction
+	for _, backendPlugin := range backendPlugins {
+		provider, ok := backendPlugin.(plugins.AttachmentActionProvider)
+		if !ok {
+			continue
+		}
+		for _, action := range provider.AttachmentActions(ctx, s, info) {
+			out = append(out, apiAttachmentAction{
+				PluginID: backendPlugin.ID(),
+				Kind:     action.Kind,
+				Label:    action.Label,
+				Metadata: action.Metadata,
+			})
+		}
 	}
-	return strings.HasSuffix(name, ".asc") && (contentType == "" || strings.Contains(contentType, "pgp-keys") || strings.Contains(contentType, "text/plain"))
+	return out
+}
+
+func hasAttachmentAction(actions []apiAttachmentAction, kind string) bool {
+	for _, action := range actions {
+		if action.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func apiContactFromStore(c store.Contact) apiContact {

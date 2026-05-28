@@ -250,48 +250,6 @@ func TestParseDisplayBodyPreservesPlainTextLineBreaks(t *testing.T) {
 		t.Fatalf("text = %q, want %q", text, want)
 	}
 }
-func TestParseInlinePGPSignedBodyUsesClearTextOnly(t *testing.T) {
-	raw := strings.Join([]string{
-		"From: sender@example.test",
-		"To: archive@example.test",
-		"Subject: signed text",
-		"Content-Type: text/plain; charset=utf-8",
-		"",
-		"-----BEGIN PGP SIGNED MESSAGE-----",
-		"Hash: SHA512",
-		"",
-		"This is a signed message",
-		"-----BEGIN PGP SIGNATURE-----",
-		"",
-		"wrfakebase64",
-		"-----END PGP SIGNATURE-----",
-	}, "\r\n")
-
-	parsed, err := Parse([]byte(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !parsed.IsSigned {
-		t.Fatal("message was not marked signed")
-	}
-	if parsed.Text != "This is a signed message" {
-		t.Fatalf("parsed text = %q", parsed.Text)
-	}
-	if strings.Contains(parsed.Text, "BEGIN PGP") || strings.Contains(parsed.Text, "SIGNATURE") {
-		t.Fatalf("parsed text kept signature armor: %q", parsed.Text)
-	}
-
-	text, html, err := ParseDisplayBody(strings.NewReader(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if html != "" {
-		t.Fatalf("html = %q", html)
-	}
-	if text != "This is a signed message" {
-		t.Fatalf("display text = %q", text)
-	}
-}
 
 func officeZipFixture(t *testing.T, files map[string]string) []byte {
 	t.Helper()

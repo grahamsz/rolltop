@@ -33,6 +33,15 @@ func (s *captureSender) Send(_ context.Context, _ store.MailAccount, msg smtpcli
 	return raw, err
 }
 
+func captureExtraHeader(msg smtpclient.Message, name string) string {
+	for _, header := range msg.ExtraHeaders {
+		if strings.EqualFold(header.Name, name) {
+			return header.Value
+		}
+	}
+	return ""
+}
+
 type captureAppendFetcher struct {
 	syncer.Fetcher
 	nextUID uint32
@@ -201,14 +210,15 @@ func TestSendComposeAutocryptHeaderRequiresPluginAndIdentitySetting(t *testing.T
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if sender.msg.AutocryptAddr != tc.wantAutocryptAddr {
-				t.Fatalf("AutocryptAddr = %q, want %q", sender.msg.AutocryptAddr, tc.wantAutocryptAddr)
+			autocrypt := captureExtraHeader(sender.msg, "Autocrypt")
+			if tc.wantAutocryptAddr != "" && !strings.Contains(autocrypt, "addr="+tc.wantAutocryptAddr) {
+				t.Fatalf("Autocrypt header = %q, want addr %q", autocrypt, tc.wantAutocryptAddr)
 			}
-			if tc.wantAutocryptAddr != "" && sender.msg.AutocryptKeyData != "AQIDBAUGBwg=" {
-				t.Fatalf("AutocryptKeyData = %q", sender.msg.AutocryptKeyData)
+			if tc.wantAutocryptAddr != "" && !strings.Contains(autocrypt, "keydata=AQIDBAUGBwg=") {
+				t.Fatalf("Autocrypt header missing keydata: %q", autocrypt)
 			}
-			if tc.wantAutocryptAddr == "" && sender.msg.AutocryptKeyData != "" {
-				t.Fatalf("AutocryptKeyData = %q, want empty", sender.msg.AutocryptKeyData)
+			if tc.wantAutocryptAddr == "" && autocrypt != "" {
+				t.Fatalf("Autocrypt header = %q, want empty", autocrypt)
 			}
 		})
 	}
@@ -227,8 +237,8 @@ func TestSendComposePGPMIMEEncryptedForm(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !sender.msg.PGPMIMEEncrypted {
-		t.Fatal("sendCompose did not mark encrypted PGP form as PGP/MIME")
+	if sender.msg.MIMEBodyOverride == nil || !strings.Contains(sender.msg.MIMEBodyOverride.ContentType, "multipart/encrypted") {
+		t.Fatal("sendCompose did not prepare encrypted PGP form as a MIME override")
 	}
 }
 
@@ -246,13 +256,13 @@ func TestSendComposePGPMIMESignedForm(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !sender.msg.PGPMIMESigned {
-		t.Fatal("sendCompose did not mark signed PGP form as PGP/MIME")
+	if sender.msg.MIMEBodyOverride == nil || !strings.Contains(sender.msg.MIMEBodyOverride.ContentType, "multipart/signed") {
+		t.Fatal("sendCompose did not prepare signed PGP form as a MIME override")
 	}
-	if sender.msg.PGPMIMESignature == "" {
+	if !strings.Contains(sender.msg.MIMEBodyOverride.Body, "-----BEGIN PGP SIGNATURE-----") {
 		t.Fatal("sendCompose did not preserve the detached PGP/MIME signature")
 	}
-	if sender.msg.PGPMIMEEncrypted {
+	if strings.Contains(sender.msg.MIMEBodyOverride.ContentType, "multipart/encrypted") {
 		t.Fatal("signed-only PGP/MIME form was marked encrypted")
 	}
 }
@@ -483,5 +493,8 @@ func setupAutocryptComposeTest(t *testing.T, ctx context.Context, enablePGPPlugi
 	}
 	sender := &captureSender{}
 	server := &Server{store: db, blobs: blob.New(dir), sender: sender, syncer: &syncer.Service{Fetcher: &captureAppendFetcher{}}}
+	if enablePGPPlugin {
+		server.pluginManifests, server.backendPlugins = testClientSidePGPBackendPlugins(t)
+	}
 	return server, user, contact.Emails[0].ID, sender, identities[0]
 }

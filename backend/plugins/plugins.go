@@ -1,11 +1,14 @@
-// File overview: Web-layer plugin integration helpers.
+// File overview: Compiled plugin registry and shared plugin schema types.
 
 package plugins
 
 import (
 	"context"
 	"database/sql"
+	"log"
+	"sort"
 	"strings"
+	"sync"
 )
 
 const (
@@ -17,6 +20,12 @@ const (
 	LanguageSearch       = "language_search"
 	OneClickUnsubscribe  = "one_click_unsubscribe"
 	ClientSidePGP        = "client_side_pgp"
+	MatrixTheme          = "matrix_theme"
+)
+
+const (
+	ScopeSystem = "system"
+	ScopeUser   = "user"
 )
 
 // Definition describes a compiled plugin and how it should appear in admin settings.
@@ -30,73 +39,88 @@ type Definition struct {
 
 // Migration describes one plugin-owned schema change and checksum source.
 type Migration struct {
+	Scope      string
 	PluginID   string
 	ID         string
 	Statements []string
 	Apply      func(context.Context, *sql.Tx) error
 }
 
+var registry = struct {
+	sync.RWMutex
+	definitions map[string]Definition
+	order       []string
+	migrations  []Migration
+}{definitions: map[string]Definition{}}
+
+// Register adds one statically compiled plugin package to the runtime registry.
+// Plugin packages live under /plugins and call this from init so the main app can
+// build them together without keeping implementation metadata in the core.
+func Register(def Definition, migrations ...Migration) {
+	def.ID = strings.TrimSpace(def.ID)
+	if def.ID == "" {
+		return
+	}
+	registry.Lock()
+	defer registry.Unlock()
+	if _, exists := registry.definitions[def.ID]; !exists {
+		registry.order = append(registry.order, def.ID)
+	}
+	registry.definitions[def.ID] = def
+	for _, migration := range migrations {
+		migration.PluginID = strings.TrimSpace(migration.PluginID)
+		if migration.PluginID == "" {
+			migration.PluginID = def.ID
+		}
+		migration.ID = strings.TrimSpace(migration.ID)
+		if migration.ID == "" {
+			continue
+		}
+		migration.Scope = strings.TrimSpace(migration.Scope)
+		if migration.Scope == "" {
+			migration.Scope = ScopeSystem
+		}
+		registry.migrations = append(registry.migrations, migration)
+	}
+	log.Printf("debug plugin module registered plugin_id=%s migrations=%d enabled_by_default=%t heavy=%t", def.ID, len(migrations), def.EnabledByDefault, def.Heavy)
+}
+
 // All returns every compiled plugin definition in display order for admin settings and migration seeding.
 func All() []Definition {
-	return []Definition{
-		{
-			ID:               BIMIBrandIcons,
-			Name:             "BIMI brand icons",
-			Description:      "Fetches and caches verified BIMI SVG logos for sender domains.",
-			EnabledByDefault: true,
-		},
-		{
-			ID:          GravatarSenderIcons,
-			Name:        "Gravatar sender icons",
-			Description: "Optionally proxies and caches Gravatar images for sender email addresses.",
-		},
-		{
-			ID:               RemoteImageBlocklist,
-			Name:             "Remote image blocklist",
-			Description:      "Blocks remote tracking images and allows admin-maintained URL block patterns.",
-			EnabledByDefault: true,
-		},
-		{
-			ID:               TrustedImageSources,
-			Name:             "Trusted image sources",
-			Description:      "Remembers senders whose remote images may load automatically.",
-			EnabledByDefault: true,
-		},
-		{
-			ID:          AttachmentPreview,
-			Name:        "Attachment preview",
-			Description: "Adds authenticated browser previews for supported image and PDF attachments.",
-			Heavy:       true,
-		},
-		{
-			ID:               LanguageSearch,
-			Name:             "Language search",
-			Description:      "Detects message language during indexing and enables lang: search filters.",
-			EnabledByDefault: true,
-			Heavy:            true,
-		},
-		{
-			ID:               OneClickUnsubscribe,
-			Name:             "One-click unsubscribe",
-			Description:      "Detects RFC 8058 unsubscribe links and sends one-click unsubscribe requests.",
-			EnabledByDefault: true,
-		},
-		{
-			ID:          ClientSidePGP,
-			Name:        "Client-side PGP",
-			Description: "Adds server-stored, passphrase-protected PGP keys with browser unlock, decrypt, sign, and encrypt controls.",
-			Heavy:       true,
-		},
+	registry.RLock()
+	defer registry.RUnlock()
+	out := make([]Definition, 0, len(registry.order))
+	for _, id := range registry.order {
+		out = append(out, registry.definitions[id])
 	}
+	return out
 }
 
 // Lookup returns one plugin definition by ID for enablement checks and plugin-specific routes.
 func Lookup(id string) (Definition, bool) {
 	id = strings.TrimSpace(id)
-	for _, def := range All() {
-		if def.ID == id {
-			return def, true
+	registry.RLock()
+	defer registry.RUnlock()
+	def, ok := registry.definitions[id]
+	return def, ok
+}
+
+// Migrations returns compiled plugin schema changes for one database scope.
+func Migrations(scope string) []Migration {
+	scope = strings.TrimSpace(scope)
+	registry.RLock()
+	defer registry.RUnlock()
+	out := make([]Migration, 0, len(registry.migrations))
+	for _, migration := range registry.migrations {
+		if scope == "" || migration.Scope == scope {
+			out = append(out, migration)
 		}
 	}
-	return Definition{}, false
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].PluginID != out[j].PluginID {
+			return out[i].PluginID < out[j].PluginID
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
 }

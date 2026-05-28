@@ -1,0 +1,10 @@
+{
+  "id": "bimi_brand_icons",
+  "name": "BIMI brand icons",
+  "description": "Fetches and caches verified BIMI SVG logos for sender domains.",
+  "version": "1.0.0",
+  "enabled_by_default": true,
+  "backend": {
+    "kind": "builtin"
+  }
+}

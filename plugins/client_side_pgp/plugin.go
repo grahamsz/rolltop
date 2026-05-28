@@ -1,0 +1,12 @@
+package client_side_pgp
+
+import "rolltop/backend/plugins"
+
+func init() {
+	plugins.Register(plugins.Definition{
+		ID:          plugins.ClientSidePGP,
+		Name:        "Client-side PGP",
+		Description: "Adds browser-loaded OpenPGP decrypt, verify, sign, encrypt, Autocrypt, and key-management UI.",
+		Heavy:       true,
+	}, Migrations()...)
+}

@@ -10,19 +10,19 @@ import type { Attachment, Bootstrap, ComposeForm, ComposeIdentity, ContactPGPKey
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
-import { autocryptKeyRecordFromMessageSource, decryptedHTMLDoc, decryptedMIMEAttachments, decryptedPlainText, decryptPGPSource, encryptionRecipientKeyIDsFromSource, publicKeyRecordFromArmored } from "../../lib/pgp";
-import type { AutocryptGossipKey, DecryptedMIMEAttachment, PGPMessageOpenResult, PGPSignatureStatus } from "../../lib/pgp";
-import { ENCRYPTED_PREVIEW_TEXT, pgpPreviewText } from "../../lib/pgpPreview";
 import { HighlightedText, highlightEmailDocument } from "../../lib/searchHighlight";
 import { messageBackURL, messageHighlightQuery, messageHighlightTerms, messageSearchHitID } from "../../lib/routes";
 import { ComposeBox } from "../compose/ComposeViews";
 import { AttachmentPreviewSlot } from "../../plugins/attachmentPreview";
 import { brandDomainKeyForThread, loadBrandIconsForDomains } from "../../plugins/bimiBrandIcons";
+import { messageSecurityPreviewText, messageSecuritySnippetClassName } from "../../plugins/messageSecurity";
 import { OneClickUnsubscribeInlineAction, OneClickUnsubscribeMenuAction } from "../../plugins/oneClickUnsubscribe";
 import { RemoteImageNotice } from "../../plugins/remoteImageBlocklist/RemoteImageNotice";
 import { createPluginSet, pluginIDs } from "../../plugins/registry";
 import { senderVisualURL } from "../../plugins/senderVisuals";
 import { TrustImageSourceAction } from "../../plugins/trustedImageSources/TrustImageSourceAction";
+import type { RuntimePlugin } from "../../plugins/runtime";
+import type { AutocryptGossipKey, ClientSidePGPPlugin, DecryptedMIMEAttachment, PGPMessageOpenResult, PGPSignatureStatus } from "../../../../plugins/client_side_pgp/frontend/types";
 
 type MessageLoadStatus = {
   conversation: number;
@@ -609,6 +609,8 @@ export function ThreadView({
   enabledPlugins,
   refreshChrome,
   openCompose,
+  messageSecurityPlugins = [],
+  pgpPlugin,
   pgpUnlock,
   openPGPUnlock,
   addToast
@@ -621,6 +623,8 @@ export function ThreadView({
   enabledPlugins: string[];
   refreshChrome: () => Promise<Bootstrap | null>;
   openCompose: (query?: string) => void;
+  messageSecurityPlugins?: RuntimePlugin[];
+  pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
   openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
@@ -651,7 +655,7 @@ export function ThreadView({
   const [loading, setLoading] = useState(true);
   const pluginKey = enabledPlugins.join("|");
   const pluginSet = useMemo(() => createPluginSet(enabledPlugins), [pluginKey]);
-  const pgpEnabled = pluginSet.has(pluginIDs.clientSidePGP);
+  const pgpEnabled = pluginSet.has(pluginIDs.clientSidePGP) && Boolean(pgpPlugin);
   const mailbox = mailboxID ? mailboxes.find((item) => item.id === mailboxID) : null;
   const trashMailbox = mailboxes.find((item) => item.role === "trash");
   const backURL = messageBackURL(location);
@@ -666,6 +670,16 @@ export function ThreadView({
   useEffect(() => {
     pgpBodiesRef.current = pgpBodies;
   }, [pgpBodies]);
+
+  useEffect(() => {
+    if (pgpEnabled) return;
+    Object.values(pgpBodiesRef.current).forEach((body) => revokeDecryptedMIMEAttachments(body.decryptedAttachments));
+    setPGPBodies({});
+    setPGPAttachmentImports({});
+    setAutocryptImports({});
+    setAutocryptGossipImports({});
+    autoPGPVerificationRef.current = new Set();
+  }, [pgpEnabled]);
 
   useEffect(() => () => {
     Object.values(pgpBodiesRef.current).forEach((body) => revokeDecryptedMIMEAttachments(body.decryptedAttachments));
@@ -845,7 +859,8 @@ export function ThreadView({
         setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ignored" } }));
         return;
       }
-      const key = await publicKeyRecordFromArmored(text, email);
+      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+      const key = await pgpPlugin.publicKeyRecordFromArmored(text, email);
       if (await savedPGPPublicKeyExists(email, key)) {
         setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ignored" } }));
         return;
@@ -865,10 +880,12 @@ export function ThreadView({
       const email = state.email || "";
       if (!key) {
         const text = await fetchPGPKeyAttachmentText(attachment);
-        key = await publicKeyRecordFromArmored(text, email);
+        if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+        key = await pgpPlugin.publicKeyRecordFromArmored(text, email);
         state = { ...state, email, key };
       }
-      await api.savePGPPublicKey(csrf, { ...key, email: state.email || key.email, is_preferred: true });
+      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+      await pgpPlugin.savePublicKey(csrf, { ...key, email: state.email || key.email, is_preferred: true });
       setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { ...state, status: "imported" } }));
       addToast(`PGP public key imported for ${state.email || key.email}.`);
     } catch (err) {
@@ -887,7 +904,8 @@ export function ThreadView({
     setAutocryptImports((current) => ({ ...current, [messageID]: { status: "checking", email } }));
     try {
       const original = await api.messageOriginal(messageID);
-      const key = await autocryptKeyRecordFromMessageSource(original.source, email);
+      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+      const key = await pgpPlugin.autocryptKeyRecordFromMessageSource(original.source, email);
       if (!key) {
         setAutocryptImports((current) => ({ ...current, [messageID]: { status: "ignored" } }));
         return;
@@ -912,11 +930,13 @@ export function ThreadView({
       const email = state.email || item.sender_email.trim();
       if (!key) {
         const original = await api.messageOriginal(messageID);
-        key = await autocryptKeyRecordFromMessageSource(original.source, email) || undefined;
+        if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+        key = await pgpPlugin.autocryptKeyRecordFromMessageSource(original.source, email) || undefined;
         if (!key) throw new Error("This message no longer contains a usable Autocrypt public key.");
         state = { ...state, email: key.email || email, key };
       }
-      await api.savePGPPublicKey(csrf, { ...key, email: state.email || key.email, is_preferred: true });
+      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+      await pgpPlugin.savePublicKey(csrf, { ...key, email: state.email || key.email, is_preferred: true });
       setAutocryptImports((current) => ({ ...current, [messageID]: { ...state, status: "imported" } }));
       addToast(`PGP public key imported for ${state.email || key.email}.`);
     } catch (err) {
@@ -936,7 +956,8 @@ export function ThreadView({
       }
     }));
     try {
-      await api.savePGPPublicKey(csrf, { ...state.key, email: state.email || state.key.email, is_preferred: true });
+      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+      await pgpPlugin.savePublicKey(csrf, { ...state.key, email: state.email || state.key.email, is_preferred: true });
       setAutocryptGossipImports((current) => ({
         ...current,
         [messageID]: {
@@ -977,8 +998,9 @@ export function ThreadView({
   }
 
   async function savedPGPPublicKeyExists(email: string, key: ContactPGPKey): Promise<boolean> {
+    if (!pgpPlugin) return false;
     try {
-      const existing = await api.pgpPublicKeys([email], true);
+      const existing = await pgpPlugin.publicKeys([email], true);
       return (existing.keys || []).some((candidate) => pgpPublicKeysMatch(candidate, key));
     } catch {
       return false;
@@ -1001,8 +1023,9 @@ export function ThreadView({
   async function pgpVerificationKeysForSender(item: ThreadMessage): Promise<PGPVerificationKeys> {
     const senderEmail = item.sender_email.trim();
     if (!senderEmail) return { armors: [], senderKeyCount: 0, senderEmail: "" };
+    if (!pgpPlugin) return { armors: [], senderKeyCount: 0, senderEmail };
     try {
-      const data = await api.pgpPublicKeys([senderEmail], true);
+      const data = await pgpPlugin.publicKeys([senderEmail], true);
       const armors = (data.keys || []).map((key) => key.public_key_armored).filter(Boolean);
       return {
         armors: Array.from(new Set(armors.map((armor) => armor.trim()).filter(Boolean))),
@@ -1019,7 +1042,8 @@ export function ThreadView({
     const staged: Record<string, AttachmentPGPImportState> = {};
     for (const [index, item] of gossip.entries()) {
       try {
-        const record = await publicKeyRecordFromArmored(item.publicKeyArmored, item.email);
+        if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+        const record = await pgpPlugin.publicKeyRecordFromArmored(item.publicKeyArmored, item.email);
         const email = record.email || item.email;
         if (await savedPGPPublicKeyExists(email, record)) continue;
         staged[pgpKeyDiscoveryID(email, record, index)] = { status: "ready", email, key: { ...record, email, is_preferred: true } };
@@ -1065,13 +1089,14 @@ export function ThreadView({
     try {
       const original = await api.messageOriginal(messageID);
       const verificationKeys = await pgpVerificationKeysForSender(item);
-      const opened = await decryptPGPSource(original.source, item.message.is_encrypted ? pgpUnlock.keys : [], verificationKeys.armors);
+      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+      const opened = await pgpPlugin.decryptPGPSource(original.source, item.message.is_encrypted ? pgpUnlock.keys : [], verificationKeys.armors);
       const signature = pgpSignatureState(item, opened, verificationKeys);
       const securityDetails = pgpSecurityDetails(item, opened, signature, verificationKeys, pgpUnlock);
       await stageAutocryptGossip(messageID, opened.autocryptGossip);
-      openedAttachments = decryptedMIMEAttachments(opened.text);
-      const doc = await decryptedHTMLDoc(opened.text, openedAttachments);
-      const quoteText = decryptedPlainText(opened.text);
+      openedAttachments = pgpPlugin.decryptedMIMEAttachments(opened.text);
+      const doc = await pgpPlugin.decryptedHTMLDoc(opened.text, openedAttachments);
+      const quoteText = pgpPlugin.decryptedPlainText(opened.text);
       setPGPBodies((current) => {
         revokeDecryptedMIMEAttachments(current[messageID]?.decryptedAttachments);
         return {
@@ -1113,7 +1138,8 @@ export function ThreadView({
   async function openPGPUnlockForMessage(item: ThreadMessage) {
     try {
       const original = await api.messageOriginal(item.message.id);
-      const recipientKeyIDs = await encryptionRecipientKeyIDsFromSource(original.source);
+      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+      const recipientKeyIDs = await pgpPlugin.encryptionRecipientKeyIDsFromSource(original.source);
       const identityID = identityIDForMessageRecipients(item, fromIdentities, original.source);
       openPGPUnlock(identityID || undefined, undefined, recipientKeyIDs);
     } catch {
@@ -1212,7 +1238,7 @@ export function ThreadView({
     try {
       const data = await api.compose(`${replyAll ? "reply_all" : "reply"}=${item.message.id}`);
       const protectedSubject = pgpBodies[item.message.id]?.protectedSubject || "";
-      const compose = item.message.is_encrypted
+      const compose = pgpEnabled && item.message.is_encrypted
         ? {
             ...data.compose,
             subject: protectedSubject ? replySubjectForProtectedSubject(protectedSubject) : data.compose.subject,
@@ -1334,10 +1360,11 @@ export function ThreadView({
             const pgpBody = pgpBodies[item.message.id];
             const decryptedAttachments = pgpBody?.decryptedAttachments || [];
             const pgpMessage = pgpEnabled && (item.message.is_encrypted || item.message.is_signed);
-            const pgpSignatureVisible = Boolean(item.message.is_signed || (pgpBody?.signatureStatus && pgpBody.signatureStatus !== "none"));
-            const encryptedPreviewLocked = item.message.is_encrypted && !pgpBody?.doc;
-            const decryptedPreviewText = item.message.is_encrypted && pgpBody?.quoteText ? compactPGPPreviewText(pgpBody.quoteText) : "";
-            const previewText = decryptedPreviewText || pgpPreviewText(item.snippet, item.message.is_encrypted, item.message.is_signed);
+            const pgpSignatureVisible = pgpMessage && Boolean(item.message.is_signed || (pgpBody?.signatureStatus && pgpBody.signatureStatus !== "none"));
+            const encryptedPreviewLocked = pgpMessage && item.message.is_encrypted && !pgpBody?.doc;
+            const decryptedPreviewText = pgpMessage && item.message.is_encrypted && pgpBody?.quoteText ? compactPGPPreviewText(pgpBody.quoteText) : "";
+            const securitySnippetClass = encryptedPreviewLocked ? messageSecuritySnippetClassName(messageSecurityPlugins, item.message) : "";
+            const previewText = decryptedPreviewText || messageSecurityPreviewText(messageSecurityPlugins, item.snippet, item.message);
             const hasUnlockedPGPKey = pgpUnlock.keys.length > 0 && pgpUnlock.unlockedUntil > Date.now();
             const autocryptImport = autocryptImports[item.message.id];
             const showAutocryptImport = Boolean(pgpEnabled && autocryptImport && !["ignored", "checking"].includes(autocryptImport.status));
@@ -1385,7 +1412,7 @@ export function ThreadView({
                           }}
                         />
                       ) : null}
-                      {pgpEnabled && pgpSignatureVisible ? <PGPSignaturePill encrypted={item.message.is_encrypted} state={pgpBody} /> : null}
+                      {pgpSignatureVisible ? <PGPSignaturePill encrypted={item.message.is_encrypted} state={pgpBody} /> : null}
                     </div>
                     <MessageDetailsToggle
                       summary={item.recipient_line}
@@ -1393,8 +1420,8 @@ export function ThreadView({
                       highlightQuery={highlightQuery}
                       highlightTerms={highlightTerms}
                     />
-                    <div className={`thread-collapsed-snippet ${encryptedPreviewLocked ? "encrypted-preview" : ""}`}>
-                      <HighlightedText text={previewText} query={encryptedPreviewLocked ? "" : highlightQuery} terms={encryptedPreviewLocked ? [] : highlightTerms} />
+                    <div className={`thread-collapsed-snippet ${securitySnippetClass}`}>
+                      <HighlightedText text={previewText} query={securitySnippetClass ? "" : highlightQuery} terms={securitySnippetClass ? [] : highlightTerms} />
                     </div>
                   </div>
                   <div className="thread-meta">
@@ -1508,12 +1535,12 @@ export function ThreadView({
                       <span>Encrypted content will appear here after a matching PGP key is unlocked.</span>
                     </div>
                   ) : null}
-                  {item.message.is_encrypted && !pgpBody?.doc ? (
+                  {pgpMessage && item.message.is_encrypted && !pgpBody?.doc ? (
                     <div className="pgp-encrypted-fallback encrypted-preview" aria-hidden="true">
-                      {ENCRYPTED_PREVIEW_TEXT} {ENCRYPTED_PREVIEW_TEXT} {ENCRYPTED_PREVIEW_TEXT}
+                      {pgpPlugin?.encryptedPreviewText} {pgpPlugin?.encryptedPreviewText} {pgpPlugin?.encryptedPreviewText}
                     </div>
                   ) : null}
-                  {item.message.is_encrypted && !pgpBody?.doc ? null : (
+                  {pgpMessage && item.message.is_encrypted && !pgpBody?.doc ? null : (
                     <EmailFrame
                       key={pgpBody?.doc ? `pgp-${item.message.id}` : `body-${item.message.id}`}
                       srcDoc={pgpBody?.doc || item.body_doc}
@@ -1619,6 +1646,7 @@ export function ThreadView({
                       initial={inlineReply}
                       inline
                       pgpEnabled={pgpEnabled}
+                      pgpPlugin={pgpPlugin}
                       pgpUnlock={pgpUnlock}
                       openPGPUnlock={openPGPUnlock}
                       addToast={addToast}

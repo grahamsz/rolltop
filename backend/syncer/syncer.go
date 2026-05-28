@@ -6,10 +6,13 @@ import (
 	"context"
 	"errors"
 	"log"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"rolltop/backend/blob"
+	"rolltop/backend/plugins"
 	"rolltop/backend/search"
 	"rolltop/backend/store"
 )
@@ -74,9 +77,73 @@ type Service struct {
 
 	BlobRetention time.Duration
 	Notify        func(userID int64)
+	PluginDir     string
+
+	pluginOnce     sync.Once
+	pluginLoadErr  error
+	backendPlugins *plugins.BackendManager
 }
 
 const inlineMetadataSyncLimit = 10000
+
+func (s *Service) initBackendPlugins() error {
+	if s == nil {
+		return nil
+	}
+	s.pluginOnce.Do(func() {
+		root := strings.TrimSpace(s.PluginDir)
+		if root == "" {
+			root = "plugins"
+		}
+		manifests, err := plugins.LoadManifests(filepath.Clean(root))
+		if err != nil {
+			s.pluginLoadErr = err
+			return
+		}
+		s.backendPlugins = plugins.NewBackendManager(root, manifests)
+	})
+	return s.pluginLoadErr
+}
+
+func (s *Service) backendPlugin(pluginID string) (plugins.BackendPlugin, bool, error) {
+	if s == nil {
+		return nil, false, nil
+	}
+	if err := s.initBackendPlugins(); err != nil {
+		return nil, false, err
+	}
+	if s.backendPlugins == nil {
+		return nil, false, nil
+	}
+	return s.backendPlugins.Plugin(pluginID)
+}
+
+func (s *Service) enabledBackendPlugins(ctx context.Context) ([]plugins.BackendPlugin, error) {
+	if s == nil {
+		return nil, nil
+	}
+	if err := s.initBackendPlugins(); err != nil {
+		return nil, err
+	}
+	if s.backendPlugins == nil {
+		return nil, nil
+	}
+	ids := s.backendPlugins.PluginIDs()
+	out := make([]plugins.BackendPlugin, 0, len(ids))
+	for _, pluginID := range ids {
+		if !s.pluginEnabled(ctx, pluginID) {
+			continue
+		}
+		plugin, ok, err := s.backendPlugin(pluginID)
+		if err != nil {
+			return nil, err
+		}
+		if ok && plugin != nil {
+			out = append(out, plugin)
+		}
+	}
+	return out, nil
+}
 
 // SyncUser syncs every configured account for a user using each account's auto
 // mailbox plan. Runner normally decomposes this into mailbox jobs, but tests and

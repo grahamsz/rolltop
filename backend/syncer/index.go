@@ -8,20 +8,34 @@ import (
 
 	"rolltop/backend/mailparse"
 	"rolltop/backend/plugins"
-	languagesearch "rolltop/backend/plugins/language_search"
 	"rolltop/backend/search"
 	"rolltop/backend/store"
+	languagesearch "rolltop/plugins/language_search/detector"
 )
 
 func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox, item FetchedMessage) (store.MessageRecord, *pendingFetchedSearchIndex, error) {
 	parsed, err := mailparse.Parse(item.Raw)
 	if err != nil {
-		encrypted, signed := mailparse.DetectPGP(item.Raw)
 		parsed = mailparse.ParsedMessage{
-			Subject:     fmt.Sprintf("Unparseable message UID %d", item.UID),
-			Text:        fmt.Sprintf("rolltop stored the raw message, but could not parse its MIME body: %v. Download the raw .eml to inspect it.", err),
-			IsEncrypted: encrypted,
-			IsSigned:    signed,
+			Subject: fmt.Sprintf("Unparseable message UID %d", item.UID),
+			Text:    fmt.Sprintf("rolltop stored the raw message, but could not parse its MIME body: %v. Download the raw .eml to inspect it.", err),
+		}
+	}
+	securityState, securityHandled, err := s.detectMessageSecurity(ctx, userID, item.Raw, plugins.MessageBody{Purpose: "storage", Text: parsed.Text, HTML: parsed.HTML})
+	if err != nil {
+		return store.MessageRecord{}, nil, err
+	}
+	if securityHandled {
+		parsed.IsEncrypted = securityState.Encrypted
+		parsed.IsSigned = securityState.Signed
+		if transform, err := s.transformMessageSecurityBody(ctx, userID, item.Raw, securityState, plugins.MessageBody{Purpose: "storage", Text: parsed.Text, HTML: parsed.HTML}); err != nil {
+			return store.MessageRecord{}, nil, err
+		} else if transform.Applied {
+			parsed.Text = transform.Body.Text
+			parsed.HTML = transform.Body.HTML
+			if transform.DropAttachments {
+				parsed.Files = nil
+			}
 		}
 	}
 	date := parsed.Date
@@ -101,7 +115,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 	if err := s.Store.CreateLocation(ctx, userID, msg.ID, mailbox.ID, item.UID); err != nil {
 		return store.MessageRecord{}, nil, err
 	}
-	if err := s.discoverAutocryptHeaders(ctx, userID, item.Raw, parsed.From); err != nil {
+	if err := s.importIncomingMessageHooks(ctx, userID, item.Raw, parsed.From); err != nil {
 		return store.MessageRecord{}, nil, err
 	}
 	attachmentDocs := make([]search.AttachmentDoc, 0, len(parsed.Files))
@@ -209,6 +223,17 @@ func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.M
 	}
 	parsed, err := mailparse.Parse(raw)
 	if err != nil {
+		securityState, securityHandled, securityErr := s.detectMessageSecurity(ctx, msg.UserID, raw, plugins.MessageBody{Purpose: "storage", Text: msg.BodyText, HTML: msg.BodyHTML})
+		if securityErr != nil {
+			return nil, securityErr
+		}
+		if securityHandled {
+			msg.IsEncrypted = securityState.Encrypted
+			msg.IsSigned = securityState.Signed
+			if err := s.Store.UpdateMessagePGPState(ctx, msg.UserID, msg.ID, msg.IsEncrypted, msg.IsSigned); err != nil {
+				return nil, err
+			}
+		}
 		if msg.LanguageCode == "" && s.pluginEnabled(ctx, plugins.LanguageSearch) {
 			msg.LanguageCode = languagesearch.DetectCode(msg.Subject, msg.BodyText)
 			if err := s.Store.UpdateMessageLanguage(ctx, msg.UserID, msg.ID, msg.LanguageCode); err != nil {
@@ -218,6 +243,23 @@ func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.M
 		return &pendingFetchedSearchIndex{
 			Document: search.MessageIndexDocument{Message: msg},
 		}, nil
+	}
+	securityState, securityHandled, err := s.detectMessageSecurity(ctx, msg.UserID, raw, plugins.MessageBody{Purpose: "storage", Text: parsed.Text, HTML: parsed.HTML})
+	if err != nil {
+		return nil, err
+	}
+	if securityHandled {
+		parsed.IsEncrypted = securityState.Encrypted
+		parsed.IsSigned = securityState.Signed
+		if transform, err := s.transformMessageSecurityBody(ctx, msg.UserID, raw, securityState, plugins.MessageBody{Purpose: "storage", Text: parsed.Text, HTML: parsed.HTML}); err != nil {
+			return nil, err
+		} else if transform.Applied {
+			parsed.Text = transform.Body.Text
+			parsed.HTML = transform.Body.HTML
+			if transform.DropAttachments {
+				parsed.Files = nil
+			}
+		}
 	}
 	msg.IsEncrypted = parsed.IsEncrypted
 	msg.IsSigned = parsed.IsSigned

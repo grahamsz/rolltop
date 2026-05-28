@@ -1,0 +1,15 @@
+{
+  "id": "client_side_pgp",
+  "name": "Client-side PGP",
+  "description": "Adds browser-loaded OpenPGP decrypt, verify, sign, encrypt, Autocrypt, and key-management UI.",
+  "version": "1.0.0",
+  "heavy": true,
+  "backend": {
+    "kind": "go-plugin",
+    "binary": "backend/client_side_pgp.so"
+  },
+  "frontend": {
+    "module": "frontend_dist/index.js",
+    "css": "styles/pgp.css"
+  }
+}

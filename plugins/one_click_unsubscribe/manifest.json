@@ -1,0 +1,10 @@
+{
+  "id": "one_click_unsubscribe",
+  "name": "One-click unsubscribe",
+  "description": "Detects RFC 8058 unsubscribe links and sends one-click unsubscribe requests.",
+  "version": "1.0.0",
+  "enabled_by_default": true,
+  "backend": {
+    "kind": "builtin"
+  }
+}

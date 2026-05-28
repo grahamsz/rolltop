@@ -393,7 +393,7 @@ func TestCreateMailIdentityEndpointCreatesMeIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{store: db, masterKey: []byte("12345678901234567890123456789012")}
+	server := &Server{store: db}
 	body := bytes.NewBufferString(fmt.Sprintf(`{"email":"alias-api@example.test","display_name":"Alias API","smtp_account_id":%d,"imap_account_id":%d,"sent_mailbox_id":%d,"drafts_mailbox_id":%d,"signature":"<p>Alias API</p>","is_primary":true}`, smtp.ID, account.ID, sent.ID, drafts.ID))
 	req := httptest.NewRequest(http.MethodPost, "/api/account/identities", body)
 	req.Header.Set("Content-Type", "application/json")
@@ -456,7 +456,8 @@ func TestPGPPrivateKeyAPIAutocryptDefaultsOnForFirstIdentityKey(t *testing.T) {
 	if identity.AutocryptEnabled {
 		t.Fatal("test setup expected Autocrypt disabled")
 	}
-	server := &Server{store: db, masterKey: []byte("12345678901234567890123456789012")}
+	manifests, backendPlugins := testClientSidePGPBackendPlugins(t)
+	server := &Server{store: db, masterKey: []byte("12345678901234567890123456789012"), pluginManifests: manifests, backendPlugins: backendPlugins}
 	body := bytes.NewBufferString(fmt.Sprintf(`{
 		"identity_id":%d,
 		"label":"PGP API",
@@ -468,7 +469,7 @@ func TestPGPPrivateKeyAPIAutocryptDefaultsOnForFirstIdentityKey(t *testing.T) {
 		"is_active_signing":true,
 		"is_active_encryption":true
 	}`, identity.ID))
-	req := httptest.NewRequest(http.MethodPost, "/api/account/pgp/private-keys", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/plugins/client_side_pgp/private-keys", body)
 	req.Header.Set("Content-Type", "application/json")
 	csrfBase := "pgp-key-csrf-base"
 	req.AddCookie(&http.Cookie{Name: csrfCookie, Value: csrfBase})

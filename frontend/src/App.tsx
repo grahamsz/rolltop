@@ -2,9 +2,8 @@
 // toast lifecycle, server-sent events, browser-history navigation, and the compose overlay.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
 import { api } from "./api";
-import type { Bootstrap, ChromeEvent, IdentityPGPPrivateKey, SyncRun } from "./types";
+import type { Bootstrap, ChromeEvent, SyncRun, ThemeDefinition } from "./types";
 import type { LocationState, MessageTransferAction, MoveTarget, PGPUnlockState, Toast } from "./appTypes";
 import { ToastStack } from "./components/common";
 import { LogoMark } from "./components/Icon";
@@ -14,9 +13,7 @@ import { ComposeOverlay } from "./features/compose/ComposeViews";
 import { RouteView } from "./RouteView";
 import { messageFromError } from "./lib/errors";
 import { currentLocation } from "./lib/routes";
-import { matchingPGPPrivateKeyIDForRecipients, restorePGPUnlockState, serializePGPUnlockState, unlockPrivateKey } from "./lib/pgp";
-import type { SerializedPGPUnlockState } from "./lib/pgp";
-import { hydrateBrowserPGPPrivateKeys } from "./lib/browserPGPKeys";
+import { emptyRuntimePlugins, loadRuntimePlugins, type RuntimePlugins } from "./plugins/runtime";
 
 
 // Push notifications should identify the human sender when possible. This helper
@@ -39,11 +36,37 @@ function truncateNotificationText(value: string, max: number) {
 const allMailWakePrefetchAfterMS = 3 * 60 * 1000;
 const notificationPreferenceKey = "rolltop.notifications.enabled";
 const emptyPGPUnlockState: PGPUnlockState = { unlockedUntil: 0, keys: [] };
+const pluginThemeLinkID = "rolltop-plugin-theme-css";
+
+function themeChoices(themes: ThemeDefinition[] | undefined): ThemeDefinition[] {
+  return themes && themes.length > 0 ? themes : [
+    { id: "classic", name: "Classic" },
+    { id: "classic_dark", name: "Classic Dark" }
+  ];
+}
+
+function loadPluginThemeCSS(theme: ThemeDefinition | undefined) {
+  let link = document.getElementById(pluginThemeLinkID) as HTMLLinkElement | null;
+  const href = theme?.css_url || "";
+  if (!href) {
+    link?.remove();
+    return;
+  }
+  if (!link) {
+    link = document.createElement("link");
+    link.id = pluginThemeLinkID;
+    link.rel = "stylesheet";
+    document.head.appendChild(link);
+  }
+  if (link.href !== new URL(href, window.location.href).href) {
+    link.href = href;
+  }
+}
 
 type PGPUnlockWorkerMessage = {
   type: "rolltop:pgp-unlock-get" | "rolltop:pgp-unlock-set";
   userID: number;
-  state?: SerializedPGPUnlockState;
+  state?: unknown;
 };
 
 function postServiceWorkerMessage(message: PGPUnlockWorkerMessage) {
@@ -60,8 +83,9 @@ function postServiceWorkerMessage(message: PGPUnlockWorkerMessage) {
     });
 }
 
-async function publishPGPUnlockToWorker(userID: number, state: PGPUnlockState) {
-  const serialized = await serializePGPUnlockState(state);
+async function publishPGPUnlockToWorker(userID: number, state: PGPUnlockState, runtimePlugins: RuntimePlugins) {
+  if (!runtimePlugins.clientSidePGP) return;
+  const serialized = await runtimePlugins.clientSidePGP.serializeUnlockState(state);
   postServiceWorkerMessage({ type: "rolltop:pgp-unlock-set", userID, state: serialized });
 }
 
@@ -99,6 +123,7 @@ function initialNotificationsEnabled() {
 export default function App() {
   const [location, setLocation] = useState<LocationState>(() => currentLocation());
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
+  const [runtimePlugins, setRuntimePlugins] = useState<RuntimePlugins>(() => emptyRuntimePlugins());
   const [bootError, setBootError] = useState("");
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [hiddenMessageIDs, setHiddenMessageIDs] = useState<Set<number>>(() => new Set());
@@ -115,6 +140,7 @@ export default function App() {
   const pgpUnlockCallbackRef = useRef<((state: PGPUnlockState) => void) | null>(null);
   const pgpUnlockRef = useRef<PGPUnlockState>(emptyPGPUnlockState);
   const activeUserIDRef = useRef<number | null>(null);
+  const runtimePluginsRef = useRef<RuntimePlugins>(emptyRuntimePlugins());
 
   // Navigation is intentionally tiny and local: Go serves every SPA route, so
   // the client only needs to update history and reparse LocationState.
@@ -154,9 +180,11 @@ export default function App() {
 
   useEffect(() => {
     const savedTheme = bootstrap?.user?.theme;
-    const theme = savedTheme === "classic_dark" || savedTheme === "matrix" ? savedTheme : "classic";
-    document.documentElement.dataset.theme = theme;
-  }, [bootstrap?.user?.theme]);
+    const choices = themeChoices(bootstrap?.available_themes);
+    const selected = choices.find((choice) => choice.id === savedTheme) || choices.find((choice) => choice.id === "classic");
+    loadPluginThemeCSS(selected);
+    document.documentElement.dataset.theme = selected?.id || "classic";
+  }, [bootstrap?.user?.theme, bootstrap?.available_themes]);
 
   useEffect(() => {
     const userID = bootstrap?.user?.id || null;
@@ -168,7 +196,7 @@ export default function App() {
     setPGPUnlockOpen(false);
     setPGPUnlockIdentityID(null);
     pgpUnlockCallbackRef.current = null;
-    if (previousUserID) void publishPGPUnlockToWorker(previousUserID, emptyPGPUnlockState);
+    if (previousUserID) void publishPGPUnlockToWorker(previousUserID, emptyPGPUnlockState, runtimePluginsRef.current);
     if (userID) requestPGPUnlockFromWorker(userID);
   }, [bootstrap?.user?.id]);
 
@@ -215,11 +243,27 @@ export default function App() {
     [removeToast]
   );
 
+  useEffect(() => {
+    let cancelled = false;
+    void loadRuntimePlugins(bootstrap?.frontend_plugins || [])
+      .then((plugins) => {
+        if (cancelled) return;
+        runtimePluginsRef.current = plugins;
+        setRuntimePlugins(plugins);
+      })
+      .catch((err) => {
+        if (!cancelled) addToast(messageFromError(err), "error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [addToast, bootstrap?.frontend_plugins]);
+
   const applyPGPUnlock = useCallback((state: PGPUnlockState, broadcast = false) => {
     pgpUnlockRef.current = state;
     setPGPUnlock(state);
     if (broadcast && activeUserIDRef.current) {
-      void publishPGPUnlockToWorker(activeUserIDRef.current, state);
+      void publishPGPUnlockToWorker(activeUserIDRef.current, state, runtimePluginsRef.current);
     }
   }, []);
 
@@ -232,11 +276,15 @@ export default function App() {
   }, [addToast, applyPGPUnlock]);
 
   const openPGPUnlock = useCallback((identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs: string[] = []) => {
+    if (!runtimePluginsRef.current.clientSidePGP) {
+      addToast("PGP is still loading. Try again in a moment.", "error");
+      return;
+    }
     setPGPUnlockIdentityID(identityID || null);
     setPGPUnlockRecipientKeyIDs(recipientKeyIDs);
     pgpUnlockCallbackRef.current = onUnlocked || null;
     setPGPUnlockOpen(true);
-  }, []);
+  }, [addToast]);
 
   const closePGPUnlock = useCallback(() => {
     setPGPUnlockOpen(false);
@@ -257,13 +305,15 @@ export default function App() {
     if (!userID || !("serviceWorker" in navigator)) return;
     let cancelled = false;
     function onMessage(event: MessageEvent) {
-      const data = event.data as { type?: string; userID?: number; state?: SerializedPGPUnlockState };
+      const data = event.data as { type?: string; userID?: number; state?: unknown };
       if (data?.type === "rolltop:pgp-unlock-request" && data.userID === userID && pgpUnlockRef.current.unlockedUntil > Date.now()) {
-        void publishPGPUnlockToWorker(userID, pgpUnlockRef.current);
+        void publishPGPUnlockToWorker(userID, pgpUnlockRef.current, runtimePluginsRef.current);
         return;
       }
       if (data?.type !== "rolltop:pgp-unlock-state" || data.userID !== userID || !data.state) return;
-      void restorePGPUnlockState(data.state).then((state) => {
+      const pgp = runtimePluginsRef.current.clientSidePGP;
+      if (!pgp) return;
+      void pgp.restoreUnlockState(data.state).then((state) => {
         if (cancelled) return;
         pgpUnlockRef.current = state;
         setPGPUnlock(state);
@@ -489,6 +539,7 @@ export default function App() {
         refreshChrome={refreshBootstrap}
         notificationsEnabled={notificationsEnabled}
         toggleNotifications={toggleNotifications}
+        pgpPlugin={runtimePlugins.clientSidePGP}
         pgpUnlock={pgpUnlock}
         openPGPUnlock={openPGPUnlock}
         lockPGP={lockPGP}
@@ -501,11 +552,14 @@ export default function App() {
           latestSyncRun={bootstrap.latest_sync_run || null}
           activeSyncRuns={bootstrap.active_sync_runs || []}
           enabledPlugins={bootstrap.enabled_plugins || []}
+          availableThemes={bootstrap.available_themes || []}
           location={location}
           navigate={navigate}
           hiddenMessageIDs={hiddenMessageIDs}
           openCompose={openCompose}
           refreshChrome={refreshBootstrap}
+          runtimePlugins={runtimePlugins}
+          pgpPlugin={runtimePlugins.clientSidePGP}
           pgpUnlock={pgpUnlock}
           openPGPUnlock={openPGPUnlock}
           addToast={addToast}
@@ -515,15 +569,16 @@ export default function App() {
         <ComposeOverlay
           csrf={bootstrap.csrf}
           query={composeOverlayQuery}
-          pgpEnabled={(bootstrap.enabled_plugins || []).includes("client_side_pgp")}
+          pgpEnabled={(bootstrap.enabled_plugins || []).includes("client_side_pgp") && Boolean(runtimePlugins.clientSidePGP)}
+          pgpPlugin={runtimePlugins.clientSidePGP}
           pgpUnlock={pgpUnlock}
           openPGPUnlock={openPGPUnlock}
           addToast={addToast}
           onClose={() => setComposeOverlayQuery(null)}
         />
       ) : null}
-      {pgpUnlockOpen ? (
-        <PGPUnlockDialog
+      {pgpUnlockOpen && runtimePlugins.clientSidePGP ? (
+        <runtimePlugins.clientSidePGP.UnlockDialog
           userID={bootstrap.user.id}
           identityID={pgpUnlockIdentityID}
           recipientKeyIDs={pgpUnlockRecipientKeyIDs}
@@ -541,118 +596,5 @@ export default function App() {
       ) : null}
       <ToastStack toasts={toasts} onDismiss={removeToast} />
     </>
-  );
-}
-
-function PGPUnlockDialog({
-  userID,
-  identityID,
-  recipientKeyIDs,
-  onClose,
-  onUnlocked,
-  addToast
-}: {
-  userID: number;
-  identityID: number | null;
-  recipientKeyIDs: string[];
-  onClose: () => void;
-  onUnlocked: (state: PGPUnlockState) => void;
-  addToast: (message: string, kind?: Toast["kind"]) => number;
-}) {
-  const [keys, setKeys] = useState<IdentityPGPPrivateKey[]>([]);
-  const [selectedID, setSelectedID] = useState(0);
-  const [passphrase, setPassphrase] = useState("");
-  const [durationMinutes, setDurationMinutes] = useState(30);
-  const [loading, setLoading] = useState(true);
-  const [unlocking, setUnlocking] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    api.pgpPrivateKeys()
-      .then((data) => {
-        if (cancelled) return;
-        return hydrateBrowserPGPPrivateKeys(userID, data.keys || []);
-      })
-      .then((list) => {
-        if (cancelled || !list) return;
-        const preferred = identityID ? list.find((key) => key.identity_id === identityID) : null;
-        if (recipientKeyIDs.length === 0) {
-          setKeys(list);
-          setSelectedID(preferred?.id || list[0]?.id || 0);
-          return;
-        }
-        return matchingPGPPrivateKeyIDForRecipients(list, recipientKeyIDs).then((matchedID) => {
-          if (cancelled) return;
-          setKeys(list);
-          setSelectedID(matchedID || preferred?.id || list[0]?.id || 0);
-        });
-      })
-      .catch((err) => {
-        if (!cancelled) setError(messageFromError(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [identityID, recipientKeyIDs, userID]);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    const key = keys.find((item) => item.id === selectedID);
-    if (!key) return;
-    setUnlocking(true);
-    setError("");
-    try {
-      if (key.private_key_storage === "browser" && !key.private_key_armored?.trim()) {
-        throw new Error("This private key is saved in another browser. Import it here, or save a server-encrypted copy from the browser that has it.");
-      }
-      const unlocked = await unlockPrivateKey(key, passphrase);
-      onUnlocked({ unlockedUntil: Date.now() + durationMinutes * 60_000, keys: [unlocked] });
-      addToast("PGP key unlocked.");
-      onClose();
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      setUnlocking(false);
-    }
-  }
-
-  return (
-    <div className="pgp-unlock-backdrop" role="presentation" onClick={onClose}>
-      <form className="pgp-unlock-dialog" role="dialog" aria-label="Unlock PGP key" onSubmit={submit} onClick={(event) => event.stopPropagation()}>
-        <div className="pgp-unlock-head">
-          <strong>Unlock PGP key</strong>
-          <button className="ghost" type="button" title="Close" onClick={onClose}>Close</button>
-        </div>
-        {loading ? <div className="muted">Loading keys...</div> : null}
-        {error ? <div className="error">{error}</div> : null}
-        {!loading && keys.length === 0 ? <div className="muted">Add a PGP private key on an identity first.</div> : null}
-        {keys.length > 0 ? (
-          <>
-            <div className="notice subtle">Server-stored keys are sent here for unlock. Browser-only keys unlock only in browsers where you saved the private key. Your PGP passphrase is used only in this browser and is not sent to the server.</div>
-            <label>
-              Key
-              <select value={selectedID} onChange={(event) => setSelectedID(Number(event.target.value))}>
-                {keys.map((key) => <option key={key.id} value={key.id}>{key.label || key.fingerprint}{key.private_key_storage === "browser" && !key.private_key_armored ? " (not in this browser)" : ""}</option>)}
-              </select>
-            </label>
-            <label>
-              Passphrase
-              <input type="password" value={passphrase} autoFocus onChange={(event) => setPassphrase(event.target.value)} />
-            </label>
-            <label>
-              Keep unlocked
-              <select value={durationMinutes} onChange={(event) => setDurationMinutes(Number(event.target.value))}>
-                <option value={15}>15 minutes</option>
-                <option value={30}>30 minutes</option>
-                <option value={60}>1 hour</option>
-              </select>
-            </label>
-            <button disabled={unlocking || !passphrase}>{unlocking ? "Unlocking..." : "Unlock"}</button>
-          </>
-        ) : null}
-      </form>
-    </div>
   );
 }

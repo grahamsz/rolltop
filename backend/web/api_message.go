@@ -14,11 +14,11 @@ import (
 
 	"rolltop/backend/mailparse"
 	"rolltop/backend/plugins"
-	oneclickunsubscribe "rolltop/backend/plugins/one_click_unsubscribe"
-	remoteimageblocklist "rolltop/backend/plugins/remote_image_blocklist"
-	trustedimagesources "rolltop/backend/plugins/trusted_image_sources"
 	"rolltop/backend/search"
 	"rolltop/backend/store"
+	oneclickunsubscribe "rolltop/plugins/one_click_unsubscribe/history"
+	remoteimageblocklist "rolltop/plugins/remote_image_blocklist/rules"
+	trustedimagesources "rolltop/plugins/trusted_image_sources/sources"
 )
 
 // apiMessagePath is the subrouter for /api/messages/:id. It keeps per-message
@@ -1063,7 +1063,7 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 				}
 			}
 		}
-		threadMsg, err = s.ensureMessagePGPState(ctx, cu.User.ID, threadMsg)
+		threadMsg, err = s.ensureMessageSecurityState(ctx, cu.User.ID, threadMsg)
 		if err != nil {
 			return nil, msg, err
 		}
@@ -1131,23 +1131,28 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 	return threadViews, msg, nil
 }
 
-func (s *Server) ensureMessagePGPState(ctx context.Context, userID int64, msg store.MessageRecord) (store.MessageRecord, error) {
-	encrypted, signed := mailparse.DetectPGP([]byte(msg.BodyText + "\n" + msg.BodyHTML))
-	if !encrypted && !signed && strings.TrimSpace(msg.BlobPath) != "" {
-		raw, err := s.rawMessageBytes(ctx, userID, msg)
-		if err != nil {
-			return msg, nil
+func (s *Server) ensureMessageSecurityState(ctx context.Context, userID int64, msg store.MessageRecord) (store.MessageRecord, error) {
+	var raw []byte
+	if strings.TrimSpace(msg.BlobPath) != "" || strings.TrimSpace(msg.BodyText+msg.BodyHTML) == "" {
+		if data, err := s.rawMessageBytes(ctx, userID, msg); err == nil {
+			raw = data
 		}
-		encrypted, signed = mailparse.DetectPGP(raw)
 	}
-	if encrypted == msg.IsEncrypted && signed == msg.IsSigned {
-		return msg, nil
-	}
-	if err := s.store.UpdateMessagePGPState(ctx, userID, msg.ID, encrypted, signed); err != nil {
+	state, handled, err := s.detectMessageSecurity(ctx, userID, raw, plugins.MessageBody{Purpose: "repair", Text: msg.BodyText, HTML: msg.BodyHTML})
+	if err != nil {
 		return msg, err
 	}
-	msg.IsEncrypted = encrypted
-	msg.IsSigned = signed
+	if !handled || (!state.Encrypted && !state.Signed) {
+		return msg, nil
+	}
+	if state.Encrypted == msg.IsEncrypted && state.Signed == msg.IsSigned {
+		return msg, nil
+	}
+	if err := s.store.UpdateMessagePGPState(ctx, userID, msg.ID, state.Encrypted, state.Signed); err != nil {
+		return msg, err
+	}
+	msg.IsEncrypted = state.Encrypted
+	msg.IsSigned = state.Signed
 	return msg, nil
 }
 

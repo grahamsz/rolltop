@@ -20,6 +20,9 @@ func TestLoadUsesRolltopDefaults(t *testing.T) {
 	if cfg.DataDir != "/data" {
 		t.Fatalf("data dir = %q", cfg.DataDir)
 	}
+	if cfg.PluginDir != "plugins" {
+		t.Fatalf("plugin dir = %q", cfg.PluginDir)
+	}
 }
 
 func TestLoadUsesRolltopDatabasePath(t *testing.T) {
@@ -32,5 +35,18 @@ func TestLoadUsesRolltopDatabasePath(t *testing.T) {
 	}
 	if cfg.DatabasePath != "/rolltop-data/custom.db" {
 		t.Fatalf("database path = %q", cfg.DatabasePath)
+	}
+}
+
+func TestLoadUsesRolltopPluginDir(t *testing.T) {
+	t.Setenv("ROLLTOP_MASTER_KEY", testMasterKey)
+	t.Setenv("ROLLTOP_PLUGIN_DIR", "/rolltop-plugins")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PluginDir != "/rolltop-plugins" {
+		t.Fatalf("plugin dir = %q", cfg.PluginDir)
 	}
 }

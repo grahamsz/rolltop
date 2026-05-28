@@ -7,12 +7,10 @@ import type {
   Bootstrap,
   Contact,
   ContactAutocomplete,
-  ContactPGPKey,
   ComposeAttachmentUpload,
   ComposeForm,
   ComposeIdentity,
   Conversation,
-  IdentityPGPPrivateKey,
   MailIdentity,
   MessageOriginalSource,
   PluginSetting,
@@ -318,18 +316,6 @@ export const api = {
     return postForm<{ contact: Contact }>(`/api/contacts/${id}/icon`, csrf, form);
   },
   deleteContactIcon: (csrf: string, id: number) => deleteJSON<{ contact: Contact }>(`/api/contacts/${id}/icon`, csrf),
-  pgpPrivateKeys: () => getJSON<{ keys: IdentityPGPPrivateKey[] }>("/api/account/pgp/private-keys"),
-  savePGPPrivateKey: (csrf: string, key: IdentityPGPPrivateKey) =>
-    postJSON<{ ok: boolean; key: IdentityPGPPrivateKey }>("/api/account/pgp/private-keys", csrf, key),
-  deletePGPPrivateKey: (csrf: string, id: number) => deleteJSON<{ ok: boolean }>(`/api/account/pgp/private-keys/${id}`, csrf),
-  pgpPublicKeys: (emails: string[], all = false) => {
-    const q = new URLSearchParams();
-    emails.forEach((email) => q.append("email", email));
-    if (all) q.set("all", "1");
-    return getJSON<{ keys: ContactPGPKey[] }>(`/api/pgp/public-keys?${q}`);
-  },
-  savePGPPublicKey: (csrf: string, key: ContactPGPKey) =>
-    postJSON<{ ok: boolean; key: ContactPGPKey }>("/api/pgp/public-keys", csrf, key),
   importContacts: (csrf: string, file: File) => {
     const form = new FormData();
     form.append("file", file);

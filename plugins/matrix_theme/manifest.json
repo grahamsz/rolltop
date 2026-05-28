@@ -1,0 +1,14 @@
+{
+  "id": "matrix_theme",
+  "name": "Matrix theme",
+  "description": "Adds the Matrix interface theme.",
+  "version": "1.0.0",
+  "enabled_by_default": true,
+  "themes": [
+    {
+      "id": "matrix",
+      "name": "Matrix",
+      "css": "themes/matrix/theme.css"
+    }
+  ]
+}

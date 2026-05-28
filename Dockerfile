@@ -3,8 +3,9 @@ FROM node:20-alpine AS frontend
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci
-COPY tsconfig.json vite.config.ts ./
+COPY tsconfig.json vite.config.ts vite.plugins.config.ts ./
 COPY frontend ./frontend
+COPY plugins ./plugins
 RUN npm run build
 
 FROM golang:1.25-alpine AS build
@@ -18,6 +19,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w -X rolltop/backend/buildinfo.Version=${ROLLTOP_VERSION} -X rolltop/backend/buildinfo.BuildDate=${ROLLTOP_BUILD_DATE} -X rolltop/backend/buildinfo.Commit=${ROLLTOP_COMMIT}" -o /out/rolltop ./cmd/rolltop
+RUN mkdir -p /out/plugins/client_side_pgp/backend \
+	&& CGO_ENABLED=1 GOOS=linux go build -buildmode=plugin -trimpath -ldflags="-s -w" -o /out/plugins/client_side_pgp/backend/client_side_pgp.so ./plugins/client_side_pgp/backend
 
 FROM alpine:3.22
 
@@ -30,6 +33,8 @@ RUN apk add --no-cache ca-certificates tzdata poppler-utils antiword \
 WORKDIR /app
 COPY --from=build /out/rolltop /usr/local/bin/rolltop
 COPY --from=frontend /src/frontend/dist /app/frontend/dist
+COPY --from=frontend /src/plugins /app/plugins
+COPY --from=build /out/plugins /app/plugins
 
 USER rolltop
 EXPOSE 8080

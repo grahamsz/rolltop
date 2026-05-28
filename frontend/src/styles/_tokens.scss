@@ -1,6 +1,5 @@
 @use "mixins/classic-theme" as classic;
 @use "mixins/classic-dark-theme" as classicDark;
-@use "mixins/matrix-theme" as matrix;
 
 :root {
   @include classic.theme;
@@ -9,9 +8,4 @@
 :root[data-theme="classic_dark"] {
   @include classicDark.theme;
   @include classicDark.polish;
-}
-
-:root[data-theme="matrix"] {
-  @include matrix.theme;
-  @include matrix.polish;
 }

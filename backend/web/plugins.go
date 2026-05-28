@@ -5,13 +5,16 @@ package web
 import (
 	"context"
 	"database/sql"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"rolltop/backend/plugins"
-	bimibrandicons "rolltop/backend/plugins/bimi_brand_icons"
-	gravatarsendericons "rolltop/backend/plugins/gravatar_sender_icons"
+	bimibrandicons "rolltop/plugins/bimi_brand_icons/bimi"
+	gravatarsendericons "rolltop/plugins/gravatar_sender_icons/gravatar"
 )
 
 func (s *Server) pluginEnabled(ctx context.Context, pluginID string) bool {
@@ -19,11 +22,106 @@ func (s *Server) pluginEnabled(ctx context.Context, pluginID string) bool {
 		return false
 	}
 	enabled, err := s.store.PluginEnabled(ctx, pluginID)
-	return err == nil && enabled
+	if err != nil || enabled {
+		return err == nil && enabled
+	}
+	manifest, ok := s.pluginManifest(pluginID)
+	if !ok || !manifest.EnabledByDefault {
+		return false
+	}
+	settings, err := s.store.ListPluginSettings(ctx)
+	if err != nil {
+		return false
+	}
+	for _, setting := range settings {
+		if setting.ID == pluginID {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) languageSearchEnabled(ctx context.Context) bool {
 	return s.pluginEnabled(ctx, plugins.LanguageSearch)
+}
+
+func (s *Server) availableThemes(ctx context.Context) []apiThemeDefinition {
+	themes := []apiThemeDefinition{
+		{ID: "classic", Name: "Classic"},
+		{ID: "classic_dark", Name: "Classic Dark"},
+	}
+	if s == nil {
+		return themes
+	}
+	for _, manifest := range s.pluginManifests {
+		if !s.pluginEnabled(ctx, manifest.ID) {
+			continue
+		}
+		for _, theme := range manifest.Themes {
+			themes = append(themes, apiThemeDefinition{
+				ID:       theme.ID,
+				Name:     theme.Name,
+				PluginID: manifest.ID,
+				CSSURL:   pluginAssetPublicURL(manifest, theme.CSS),
+			})
+		}
+	}
+	return themes
+}
+
+func (s *Server) frontendPlugins(ctx context.Context) []apiFrontendPlugin {
+	if s == nil {
+		return nil
+	}
+	out := []apiFrontendPlugin{}
+	for _, manifest := range s.pluginManifests {
+		if !s.pluginEnabled(ctx, manifest.ID) || manifest.Frontend == nil || strings.TrimSpace(manifest.Frontend.Module) == "" {
+			continue
+		}
+		plugin := apiFrontendPlugin{
+			ID:        manifest.ID,
+			Name:      manifest.Name,
+			Version:   manifest.Version,
+			ModuleURL: pluginAssetPublicURL(manifest, manifest.Frontend.Module),
+		}
+		if strings.TrimSpace(manifest.Frontend.CSS) != "" {
+			plugin.CSSURL = pluginAssetPublicURL(manifest, manifest.Frontend.CSS)
+		}
+		out = append(out, plugin)
+	}
+	return out
+}
+
+func pluginAssetPublicURL(manifest plugins.Manifest, asset string) string {
+	asset = strings.TrimLeft(strings.TrimSpace(asset), "/")
+	out := "/plugins/" + manifest.ID + "/assets/" + asset
+	if version := pluginAssetVersion(manifest, asset); version != "" {
+		out += "?v=" + url.QueryEscape(version)
+	}
+	return out
+}
+
+func pluginAssetVersion(manifest plugins.Manifest, asset string) string {
+	if manifest.Dir != "" && asset != "" {
+		full := filepath.Join(manifest.Dir, filepath.FromSlash(asset))
+		if info, err := os.Stat(full); err == nil {
+			return strconv.FormatInt(info.ModTime().UnixNano(), 36)
+		}
+	}
+	return strings.TrimSpace(manifest.Version)
+}
+
+func (s *Server) pluginManifest(id string) (plugins.Manifest, bool) {
+	id = strings.TrimSpace(id)
+	if s == nil || id == "" {
+		return plugins.Manifest{}, false
+	}
+	for _, manifest := range s.pluginManifests {
+		if manifest.ID == id {
+			return manifest, true
+		}
+	}
+	return plugins.Manifest{}, false
 }
 
 func (s *Server) senderVisual(ctx context.Context, userID int64, sender string) (apiSenderVisual, bool) {

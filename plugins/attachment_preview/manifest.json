@@ -1,0 +1,10 @@
+{
+  "id": "attachment_preview",
+  "name": "Attachment preview",
+  "description": "Adds authenticated browser previews for supported image and PDF attachments.",
+  "version": "1.0.0",
+  "heavy": true,
+  "backend": {
+    "kind": "builtin"
+  }
+}

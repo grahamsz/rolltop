@@ -1,4 +1,6 @@
-// File overview: Plugin registry persistence. It stores plugin enablement, records plugin migration checksums, and applies system-level plugin migrations.
+// File overview: Plugin registry persistence. It stores plugin enablement,
+// records plugin migration checksums, and applies compiled plugin migrations
+// to the correct system or per-user database scope.
 
 package store
 
@@ -12,7 +14,7 @@ import (
 	"strings"
 
 	"rolltop/backend/plugins"
-	remoteimageblocklist "rolltop/backend/plugins/remote_image_blocklist"
+	_ "rolltop/plugins/bundled"
 )
 
 // PluginSetting is the persisted admin enablement state for one plugin definition.
@@ -57,8 +59,18 @@ func (s *Store) initPluginTables(ctx context.Context) error {
 }
 
 func (s *Store) seedPluginSettings(ctx context.Context) error {
+	return s.SyncPluginDefinitions(ctx, plugins.All())
+}
+
+// SyncPluginDefinitions upserts admin-visible plugin metadata while preserving
+// an existing enabled/disabled choice for previously known plugins.
+func (s *Store) SyncPluginDefinitions(ctx context.Context, definitions []plugins.Definition) error {
 	ts := nowUnix()
-	for _, def := range plugins.All() {
+	for _, def := range definitions {
+		def.ID = strings.TrimSpace(def.ID)
+		if def.ID == "" {
+			continue
+		}
 		_, err := s.db.ExecContext(ctx, `INSERT INTO plugin_settings
 				(id, name, description, enabled, enabled_by_default, heavy, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -119,17 +131,20 @@ func (s *Store) PluginEnabled(ctx context.Context, id string) (bool, error) {
 
 // SetPluginEnabled updates plugin enablement and records the change time.
 func (s *Store) SetPluginEnabled(ctx context.Context, id string, enabled bool) error {
-	def, ok := plugins.Lookup(strings.TrimSpace(id))
+	def, static, ok, err := s.pluginDefinition(ctx, strings.TrimSpace(id))
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return ErrNotFound
 	}
-	if enabled {
+	if enabled && static {
 		if err := s.ApplyPluginMigrations(ctx, def.ID); err != nil {
 			return err
 		}
 	}
 	ts := nowUnix()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO plugin_settings
+	_, err = s.db.ExecContext(ctx, `INSERT INTO plugin_settings
 			(id, name, description, enabled, enabled_by_default, heavy, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -164,7 +179,12 @@ func (s *Store) ApplyEnabledPluginMigrations(ctx context.Context) error {
 func (s *Store) ApplyPluginMigrations(ctx context.Context, pluginID string) error {
 	pluginID = strings.TrimSpace(pluginID)
 	if _, ok := plugins.Lookup(pluginID); !ok {
-		return ErrNotFound
+		if _, _, ok, err := s.pluginDefinition(ctx, pluginID); err != nil {
+			return err
+		} else if !ok {
+			return ErrNotFound
+		}
+		return nil
 	}
 	for _, migration := range pluginMigrations() {
 		if migration.PluginID != pluginID {
@@ -177,7 +197,33 @@ func (s *Store) ApplyPluginMigrations(ctx context.Context, pluginID string) erro
 	return nil
 }
 
+func (s *Store) pluginDefinition(ctx context.Context, id string) (plugins.Definition, bool, bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return plugins.Definition{}, false, false, nil
+	}
+	if def, ok := plugins.Lookup(id); ok {
+		return def, true, true, nil
+	}
+	var def plugins.Definition
+	var enabledByDefault, heavy int
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, description, enabled_by_default, heavy FROM plugin_settings WHERE id = ?`, id).
+		Scan(&def.ID, &def.Name, &def.Description, &enabledByDefault, &heavy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return plugins.Definition{}, false, false, nil
+	}
+	if err != nil {
+		return plugins.Definition{}, false, false, err
+	}
+	def.EnabledByDefault = enabledByDefault != 0
+	def.Heavy = heavy != 0
+	return def, false, true, nil
+}
+
 func (s *Store) applyPluginMigration(ctx context.Context, migration plugins.Migration) error {
+	if err := s.ensurePluginMigrationTable(ctx); err != nil {
+		return err
+	}
 	checksum := pluginMigrationChecksum(migration)
 	var existing string
 	err := s.db.QueryRowContext(ctx, `SELECT checksum FROM plugin_migrations WHERE plugin_id = ? AND migration_id = ?`,
@@ -233,7 +279,26 @@ func pluginMigrationChecksum(m plugins.Migration) string {
 }
 
 func pluginMigrations() []plugins.Migration {
-	// User-owned plugin tables are part of the user schema migration.
-	// Runtime plugin migrations only manage system-level plugin tables.
-	return remoteimageblocklist.Migrations()
+	return plugins.Migrations(plugins.ScopeSystem)
+}
+
+func (s *Store) applyPluginMigrationsForScope(ctx context.Context, scope string) error {
+	for _, migration := range plugins.Migrations(scope) {
+		if err := s.applyPluginMigration(ctx, migration); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ensurePluginMigrationTable(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS plugin_migrations (
+		plugin_id TEXT NOT NULL,
+		migration_id TEXT NOT NULL,
+		applied_at INTEGER NOT NULL,
+		app_version TEXT NOT NULL DEFAULT '',
+		checksum TEXT NOT NULL,
+		PRIMARY KEY(plugin_id, migration_id)
+	)`)
+	return err
 }

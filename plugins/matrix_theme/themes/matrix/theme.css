@@ -1,0 +1,230 @@
+@import url("https://fonts.googleapis.com/css2?family=Michroma&display=swap");
+
+:root[data-theme="matrix"] {
+  color-scheme: dark;
+  --font-ui: "Inter", "Aptos", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-heading: "Michroma", "IBM Plex Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --font-display: "IBM Plex Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --font-brand: var(--font-heading);
+  --font-mono: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --bg: linear-gradient(180deg, rgba(0, 245, 160, .035) 0 1px, transparent 1px 22px), radial-gradient(circle at 14% -8%, rgba(0, 245, 160, .20), transparent 34rem), radial-gradient(circle at 88% 8%, rgba(34, 211, 238, .14), transparent 30rem), linear-gradient(180deg, #020604 0%, #041109 45%, #020604 100%);
+  --surface: #06130d;
+  --surface-subtle: #0a1c13;
+  --surface-ink: #000f08;
+  --text: #dcffe9;
+  --muted: #78ad8d;
+  --border: rgba(74, 222, 128, .25);
+  --border-strong: rgba(74, 222, 128, .54);
+  --hover: rgba(0, 245, 160, .11);
+  --active: rgba(0, 245, 160, .16);
+  --active-strong: rgba(0, 245, 160, .62);
+  --accent: #00f5a0;
+  --accent-strong: #7dffbf;
+  --accent-soft: rgba(0, 245, 160, .14);
+  --accent-warm: #22d3ee;
+  --accent-warm-strong: #8ff4ff;
+  --accent-sun: #c084fc;
+  --danger: #fb7185;
+  --ok: #00f5a0;
+  --button-text: #00160c;
+  --focus: #00f5a0;
+  --button-hover-border: rgba(34, 211, 238, .62);
+  --shadow: 0 0 0 1px rgba(0, 245, 160, .07), 0 18px 48px rgba(0, 0, 0, .42), 0 0 28px rgba(0, 245, 160, .08);
+}
+
+:root[data-theme="matrix"] body {
+  background-attachment: fixed;
+  text-rendering: geometricPrecision;
+}
+
+:root[data-theme="matrix"] .topbar {
+  background: rgba(1, 8, 5, .92);
+  box-shadow: inset 0 -1px 0 rgba(0, 245, 160, .34), 0 12px 36px rgba(0, 0, 0, .36);
+  backdrop-filter: blur(18px);
+}
+
+:root[data-theme="matrix"] .brand {
+  gap: 0;
+}
+
+:root[data-theme="matrix"] .brand,
+:root[data-theme="matrix"] .auth-brand {
+  font-family: var(--font-heading);
+  font-weight: 400;
+  letter-spacing: .04em;
+  text-transform: lowercase;
+  text-shadow: 0 0 18px rgba(0, 245, 160, .45);
+}
+
+:root[data-theme="matrix"] .brand::after,
+:root[data-theme="matrix"] .auth-brand::after {
+  content: "_";
+  display: inline-block;
+  align-self: flex-end;
+  line-height: .82;
+  transform: translateY(1px);
+  color: var(--accent);
+  animation: matrix-cursor-blink 1s steps(1, end) infinite;
+}
+
+:root[data-theme="matrix"] h1 {
+  font-family: var(--font-heading);
+  font-weight: 400;
+  letter-spacing: .02em;
+}
+
+:root[data-theme="matrix"] h2,
+:root[data-theme="matrix"] h3,
+:root[data-theme="matrix"] th,
+:root[data-theme="matrix"] .stat-label {
+  font-family: var(--font-display);
+  letter-spacing: .04em;
+}
+
+:root[data-theme="matrix"] .brand .brand-logo,
+:root[data-theme="matrix"] .auth-brand .brand-logo {
+  margin-right: 17px;
+  filter: drop-shadow(0 0 10px rgba(0, 245, 160, .55));
+}
+
+:root[data-theme="matrix"] .brand .brand-logo path,
+:root[data-theme="matrix"] .auth-brand .brand-logo path {
+  display: none;
+}
+
+:root[data-theme="matrix"] .brand .brand-logo path:nth-of-type(2),
+:root[data-theme="matrix"] .auth-brand .brand-logo path:nth-of-type(2) {
+  display: block;
+  stroke: #fff;
+}
+
+:root[data-theme="matrix"] .sidebar {
+  background: linear-gradient(180deg, rgba(4, 18, 10, .94), rgba(1, 8, 5, .96));
+}
+
+:root[data-theme="matrix"] .top-search input,
+:root[data-theme="matrix"] input[type="text"],
+:root[data-theme="matrix"] input[type="email"],
+:root[data-theme="matrix"] input[type="password"],
+:root[data-theme="matrix"] input[type="number"],
+:root[data-theme="matrix"] textarea,
+:root[data-theme="matrix"] select {
+  background: rgba(2, 12, 7, .82);
+  border-color: var(--border);
+  box-shadow: inset 0 0 0 1px rgba(0, 245, 160, .04);
+}
+
+:root[data-theme="matrix"] button,
+:root[data-theme="matrix"] .button {
+  box-shadow: 0 0 0 1px rgba(0, 245, 160, .24), 0 10px 24px rgba(0, 245, 160, .10);
+  letter-spacing: .01em;
+}
+
+:root[data-theme="matrix"] button.secondary,
+:root[data-theme="matrix"] .button.secondary,
+:root[data-theme="matrix"] button.ghost,
+:root[data-theme="matrix"] .button.ghost {
+  background: rgba(5, 20, 13, .78);
+  color: var(--text);
+}
+
+:root[data-theme="matrix"] .panel,
+:root[data-theme="matrix"] .message-table,
+:root[data-theme="matrix"] .thread-shell,
+:root[data-theme="matrix"] .thread-card,
+:root[data-theme="matrix"] .thread-body,
+:root[data-theme="matrix"] .compose-window,
+:root[data-theme="matrix"] .inline-reply,
+:root[data-theme="matrix"] .inline-reply-row,
+:root[data-theme="matrix"] .confirm-dialog,
+:root[data-theme="matrix"] .original-source-dialog,
+:root[data-theme="matrix"] .toast {
+  background: rgba(5, 19, 12, .88);
+  border-color: var(--border);
+  backdrop-filter: blur(18px);
+}
+
+:root[data-theme="matrix"] .message-row {
+  background: transparent;
+  border-bottom-color: rgba(74, 222, 128, .16);
+}
+
+:root[data-theme="matrix"] .message-row.read {
+  background: rgba(2, 12, 7, .34);
+  color: var(--muted);
+}
+
+:root[data-theme="matrix"] .message-row.unread {
+  background: rgba(0, 245, 160, .055);
+  color: var(--text);
+}
+
+:root[data-theme="matrix"] .message-row:hover,
+:root[data-theme="matrix"] .thread-card.collapsed:hover,
+:root[data-theme="matrix"] .message-row.selected {
+  background: rgba(0, 245, 160, .12);
+  box-shadow: inset 3px 0 0 var(--accent), 0 0 24px rgba(0, 245, 160, .08);
+}
+
+:root[data-theme="matrix"] .date-preview,
+:root[data-theme="matrix"] .stat-card,
+:root[data-theme="matrix"] .message-menu-panel,
+:root[data-theme="matrix"] .search-autocomplete,
+:root[data-theme="matrix"] .folder-sync-notice,
+:root[data-theme="matrix"] .sidebar-sync,
+:root[data-theme="matrix"] .sync-run-list,
+:root[data-theme="matrix"] .sync-run-mini,
+:root[data-theme="matrix"] .body-notice,
+:root[data-theme="matrix"] .image-notice,
+:root[data-theme="matrix"] .compose-format,
+:root[data-theme="matrix"] th {
+  background: rgba(2, 12, 7, .74);
+  border-color: var(--border);
+}
+
+:root[data-theme="matrix"] .avatar,
+:root[data-theme="matrix"] .inline-reply-avatar {
+  color: var(--accent-strong);
+  text-shadow: 0 0 12px rgba(0, 245, 160, .65);
+  box-shadow: inset 0 -3px 0 var(--accent-warm), 0 0 18px rgba(0, 245, 160, .24);
+}
+
+:root[data-theme="matrix"] .email-frame {
+  background: var(--surface);
+}
+
+:root[data-theme="matrix"] .search-hit,
+:root[data-theme="matrix"] mark {
+  background: rgba(0, 245, 160, .24);
+  color: #effff5;
+  box-shadow: 0 0 12px rgba(0, 245, 160, .18);
+}
+
+:root[data-theme="matrix"] .skeleton-block {
+  background: linear-gradient(90deg, rgba(0, 245, 160, .05) 0%, rgba(0, 245, 160, .18) 45%, rgba(0, 245, 160, .05) 90%);
+}
+
+:root[data-theme="matrix"] .progress,
+:root[data-theme="matrix"] .folder-sync-progress,
+:root[data-theme="matrix"] .sync-percent > div {
+  background: rgba(0, 245, 160, .12);
+}
+
+:root[data-theme="matrix"] .progress div,
+:root[data-theme="matrix"] .folder-sync-progress div,
+:root[data-theme="matrix"] .sync-percent > div span {
+  background: linear-gradient(90deg, var(--accent), var(--accent-warm));
+  box-shadow: 0 0 14px rgba(0, 245, 160, .34);
+}
+
+@keyframes matrix-cursor-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0;
+  }
+}

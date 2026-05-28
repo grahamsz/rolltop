@@ -22,5 +22,4 @@ Run before handing off:
 
 ```sh
 go test ./...
-docker build -t rolltop:dev .
 ```

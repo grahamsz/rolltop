@@ -41,6 +41,7 @@ func TestPGPPublicKeyAttachmentCandidateRequiresPluginSmallASC(t *testing.T) {
 	if err := db.SetPluginEnabled(ctx, plugins.ClientSidePGP, true); err != nil {
 		t.Fatal(err)
 	}
+	server.pluginManifests, server.backendPlugins = testClientSidePGPBackendPlugins(t)
 	enabled := server.apiThreadMessages(ctx, user.ID, []threadMessageView{view})
 	if !enabled[0].Attachments[0].PGPPublicKeyCandidate {
 		t.Fatal("PGP public-key attachment was not marked as a candidate")
@@ -210,7 +211,11 @@ func TestThreadMessageRepairsInlinePGPSignedStateFromRawBlob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.SetPluginEnabled(ctx, plugins.ClientSidePGP, true); err != nil {
+		t.Fatal(err)
+	}
 	server := &Server{store: db, blobs: blobStore}
+	server.pluginManifests, server.backendPlugins = testClientSidePGPBackendPlugins(t)
 	views, repaired, err := server.threadViewsForMessage(ctx, currentUser{User: user}, msg, false, "")
 	if err != nil {
 		t.Fatal(err)

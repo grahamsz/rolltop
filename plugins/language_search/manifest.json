@@ -1,0 +1,11 @@
+{
+  "id": "language_search",
+  "name": "Language search",
+  "description": "Detects message language during indexing and enables lang: search filters.",
+  "version": "1.0.0",
+  "enabled_by_default": true,
+  "heavy": true,
+  "backend": {
+    "kind": "builtin"
+  }
+}

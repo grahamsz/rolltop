@@ -1,19 +1,10 @@
-// File overview: Per-identity Autocrypt key-discovery preference.
+// File overview: Shared helper for the per-identity Autocrypt key-discovery
+// preference. The PGP plugin owns the user-facing migration, but older identity
+// migrations still call this helper so startup remains idempotent.
 
 package store
 
 import "context"
-
-func userAutocryptMigrationSet() migrationSet {
-	return migrationSet{
-		Scope:   "user",
-		Version: UserSchemaVersion009,
-		Label:   "user schema 009 autocrypt identity setting",
-		After: []migrationStep{
-			{Label: "add identity autocrypt setting", Run: ensureIdentityAutocryptColumn},
-		},
-	}
-}
 
 func ensureIdentityAutocryptColumn(ctx context.Context, s *Store) error {
 	exists, err := tableColumnExists(ctx, s, "mail_identities", "autocrypt_enabled")

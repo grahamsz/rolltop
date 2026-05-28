@@ -25,6 +25,7 @@ import (
 	"rolltop/backend/buildinfo"
 	mmcrypto "rolltop/backend/crypto"
 	"rolltop/backend/mailparse"
+	"rolltop/backend/plugins"
 	"rolltop/backend/search"
 	"rolltop/backend/smtpclient"
 	"rolltop/backend/store"
@@ -53,6 +54,7 @@ type Options struct {
 	DataDir      string
 	DatabasePath string
 	IndexPath    string
+	PluginDir    string
 	SessionTTL   time.Duration
 	CookieSecure bool
 	WebhookToken string
@@ -70,6 +72,12 @@ type Server struct {
 	dataDir                   string
 	databasePath              string
 	indexPath                 string
+	pluginDir                 string
+	pluginManifests           []plugins.Manifest
+	backendPlugins            *plugins.BackendManager
+	protectedAPIRoutes        *protectedAPIRouteRegistry
+	backendLifecycleMu        sync.Mutex
+	startedBackendPlugins     map[string]plugins.BackendPlugin
 	sessionTTL                time.Duration
 	cookieSecure              bool
 	webhookToken              string
@@ -213,22 +221,39 @@ func New(opts Options) (*Server, error) {
 	if opts.Sender == nil && len(opts.MasterKey) == 32 {
 		opts.Sender = &smtpclient.Sender{MasterKey: opts.MasterKey}
 	}
+	if strings.TrimSpace(opts.PluginDir) == "" {
+		opts.PluginDir = "plugins"
+	}
+	pluginManifests, err := plugins.LoadManifests(opts.PluginDir)
+	if err != nil {
+		return nil, err
+	}
+	if opts.Store != nil {
+		if err := opts.Store.SyncPluginDefinitions(context.Background(), plugins.DefinitionsFromManifests(pluginManifests)); err != nil {
+			return nil, err
+		}
+	}
 	events := newEventHub()
 	srv := &Server{
-		store:        opts.Store,
-		blobs:        opts.Blobs,
-		search:       opts.Search,
-		syncer:       opts.Syncer,
-		syncRunner:   opts.SyncRunner,
-		sender:       opts.Sender,
-		masterKey:    opts.MasterKey,
-		dataDir:      opts.DataDir,
-		databasePath: opts.DatabasePath,
-		indexPath:    opts.IndexPath,
-		sessionTTL:   opts.SessionTTL,
-		cookieSecure: opts.CookieSecure,
-		webhookToken: strings.TrimSpace(opts.WebhookToken),
-		events:       events,
+		store:                 opts.Store,
+		blobs:                 opts.Blobs,
+		search:                opts.Search,
+		syncer:                opts.Syncer,
+		syncRunner:            opts.SyncRunner,
+		sender:                opts.Sender,
+		masterKey:             opts.MasterKey,
+		dataDir:               opts.DataDir,
+		databasePath:          opts.DatabasePath,
+		indexPath:             opts.IndexPath,
+		pluginDir:             opts.PluginDir,
+		pluginManifests:       pluginManifests,
+		backendPlugins:        plugins.NewBackendManager(opts.PluginDir, pluginManifests),
+		protectedAPIRoutes:    newProtectedAPIRouteRegistry(),
+		startedBackendPlugins: map[string]plugins.BackendPlugin{},
+		sessionTTL:            opts.SessionTTL,
+		cookieSecure:          opts.CookieSecure,
+		webhookToken:          strings.TrimSpace(opts.WebhookToken),
+		events:                events,
 
 		statusRefreshRunning:      map[int64]bool{},
 		statusRefreshBlockedUntil: map[int64]time.Time{},

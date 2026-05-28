@@ -13,14 +13,13 @@ import (
 	"strings"
 	"time"
 
-	"rolltop/backend/autocrypt"
 	"rolltop/backend/mailparse"
 	"rolltop/backend/plugins"
-	languagesearch "rolltop/backend/plugins/language_search"
 	"rolltop/backend/search"
 	"rolltop/backend/smtpclient"
 	"rolltop/backend/store"
 	"rolltop/backend/syncer"
+	languagesearch "rolltop/plugins/language_search/detector"
 )
 
 // replyComposeForm builds the server default for reply compose. The frontend may
@@ -423,6 +422,21 @@ type composeIdentity struct {
 	AutocryptEnabled    bool
 }
 
+func pluginMailIdentityContext(identity composeIdentity) plugins.MailIdentityContext {
+	preferences := map[string]string{
+		"autocrypt_enabled": "false",
+	}
+	if identity.AutocryptEnabled {
+		preferences["autocrypt_enabled"] = "true"
+	}
+	return plugins.MailIdentityContext{
+		ID:                identity.PGPIdentityID,
+		Email:             identity.Email,
+		HeaderDisplayName: identity.Label,
+		Preferences:       preferences,
+	}
+}
+
 func (s *Server) composeIdentities(ctx context.Context, cu currentUser) []apiComposeIdentity {
 	choices := s.composeIdentityChoices(ctx, cu)
 	out := make([]apiComposeIdentity, 0, len(choices))
@@ -462,18 +476,34 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 	identities, err := s.store.ListMailIdentitiesForUser(ctx, cu.User.ID)
 	if err == nil {
 		out := make([]composeIdentity, 0, len(identities))
+		backendPlugins, _ := s.enabledBackendPlugins(ctx)
 		for _, identity := range identities {
 			email := strings.TrimSpace(identity.Email)
 			if email == "" {
 				continue
 			}
 			label := firstNonEmpty(identity.DisplayName, email)
-			pgpKey, pgpErr := s.store.ActiveIdentityPGPPublicKeyForUser(ctx, cu.User.ID, identity.ID)
 			pgpPublic := ""
 			hasPGP := false
-			if pgpErr == nil {
-				pgpPublic = pgpKey.PublicKeyArmored
-				hasPGP = true
+			identityCtx := plugins.MailIdentityContext{
+				ID:                identity.ID,
+				Email:             email,
+				HeaderDisplayName: label,
+				Preferences: map[string]string{
+					"autocrypt_enabled": fmt.Sprintf("%t", identity.AutocryptEnabled),
+				},
+			}
+			for _, backendPlugin := range backendPlugins {
+				provider, ok := backendPlugin.(plugins.IdentitySecurityProvider)
+				if !ok {
+					continue
+				}
+				info, securityErr := provider.ComposeIdentitySecurity(ctx, s, cu.User.ID, identityCtx)
+				if securityErr == nil {
+					pgpPublic = info.PublicMaterial
+					hasPGP = info.HasSecret
+					break
+				}
 			}
 			out = append(out, composeIdentity{
 				ID:                  identity.ContactEmailID,
@@ -645,16 +675,86 @@ func (s *Server) smtpAccountForIdentity(ctx context.Context, userID int64, ident
 	return store.SMTPAccount{}, fmt.Errorf("no SMTP server is assigned to %s", identity.Email)
 }
 
-func applyAutocryptHeader(msg *smtpclient.Message, identity composeIdentity) {
-	if msg == nil || !identity.AutocryptEnabled || strings.TrimSpace(identity.PGPPublicKeyArmored) == "" {
+func (s *Server) applyPluginMailHeaders(ctx context.Context, userID int64, msg *smtpclient.Message, identity composeIdentity) {
+	backendPlugins, err := s.enabledBackendPlugins(ctx)
+	if err != nil {
 		return
 	}
-	keyData, ok := autocrypt.KeyDataFromArmoredPublicKey(identity.PGPPublicKeyArmored)
-	if !ok {
-		return
+	identityCtx := pluginMailIdentityContext(identity)
+	for _, backendPlugin := range backendPlugins {
+		provider, ok := backendPlugin.(plugins.OutboundMailHeaderProvider)
+		if !ok {
+			continue
+		}
+		headers, headerErr := provider.OutboundMailHeaders(ctx, s, userID, identityCtx)
+		if headerErr != nil {
+			continue
+		}
+		for _, header := range headers {
+			msg.ExtraHeaders = append(msg.ExtraHeaders, smtpclient.Header{
+				Name:  header.Name,
+				Value: header.Value,
+			})
+		}
 	}
-	msg.AutocryptAddr = identity.Email
-	msg.AutocryptKeyData = keyData
+}
+
+func (s *Server) applyPluginMIMEBodyOverride(ctx context.Context, userID int64, msg *smtpclient.Message, identity composeIdentity, form composeForm) error {
+	if !form.PGPMIME {
+		return nil
+	}
+	backendPlugins, err := s.enabledBackendPlugins(ctx)
+	if err != nil {
+		return err
+	}
+	identityCtx := pluginMailIdentityContext(identity)
+	bodyCtx := plugins.ComposeMessageBodyContext{
+		MessageID: msg.MessageID,
+		BodyText:  msg.BodyText,
+		BodyHTML:  msg.BodyHTML,
+		Metadata:  composePluginMIMEMetadata(form),
+	}
+	for _, backendPlugin := range backendPlugins {
+		provider, ok := backendPlugin.(plugins.ComposeMIMEBodyProvider)
+		if !ok {
+			continue
+		}
+		override, overrideErr := provider.ComposeMIMEBodyOverride(ctx, s, userID, identityCtx, bodyCtx)
+		if errors.Is(overrideErr, plugins.ErrUnsupported) {
+			continue
+		}
+		if overrideErr != nil {
+			return overrideErr
+		}
+		if override == nil || strings.TrimSpace(override.ContentType) == "" {
+			continue
+		}
+		msg.MIMEBodyOverride = &smtpclient.MIMEBodyOverride{
+			ContentType: override.ContentType,
+			Body:        override.Body,
+		}
+		return nil
+	}
+	return errors.New("requested plugin MIME body is unavailable")
+}
+
+func composePluginMIMEMetadata(form composeForm) map[string]string {
+	metadata := map[string]string{
+		"pgp_mime":      "false",
+		"pgp_encrypted": "false",
+		"pgp_signed":    "false",
+		"pgp_signature": form.PGPSignature,
+	}
+	if form.PGPMIME {
+		metadata["pgp_mime"] = "true"
+	}
+	if form.PGPEncrypted {
+		metadata["pgp_encrypted"] = "true"
+	}
+	if form.PGPSigned {
+		metadata["pgp_signed"] = "true"
+	}
+	return metadata
 }
 
 func (s *Server) sentMailboxForIdentity(ctx context.Context, userID int64, identity composeIdentity, smtpAccount store.SMTPAccount) (store.MailAccount, store.Mailbox, error) {
@@ -936,23 +1036,21 @@ func (s *Server) saveComposeDraft(ctx context.Context, cu currentUser, form comp
 		}
 	}
 	msg := smtpclient.Message{
-		From:             identity.Header,
-		To:               []string{form.To},
-		Cc:               []string{form.Cc},
-		Bcc:              []string{form.Bcc},
-		Subject:          form.Subject,
-		BodyText:         form.Body,
-		BodyHTML:         form.BodyHTML,
-		MessageID:        messageID,
-		Date:             messageDate,
-		PGPMIMEEncrypted: form.PGPMIME && form.PGPEncrypted,
-		PGPMIMESigned:    form.PGPMIME && form.PGPSigned && !form.PGPEncrypted,
-		PGPMIMESignature: form.PGPSignature,
-		Attachments:      attachments,
+		From:        identity.Header,
+		To:          []string{form.To},
+		Cc:          []string{form.Cc},
+		Bcc:         []string{form.Bcc},
+		Subject:     form.Subject,
+		BodyText:    form.Body,
+		BodyHTML:    form.BodyHTML,
+		MessageID:   messageID,
+		Date:        messageDate,
+		Attachments: attachments,
 	}
-	if s.pluginEnabled(ctx, plugins.ClientSidePGP) {
-		applyAutocryptHeader(&msg, identity)
+	if err := s.applyPluginMIMEBodyOverride(ctx, cu.User.ID, &msg, identity, form); err != nil {
+		return store.MessageRecord{}, err
 	}
+	s.applyPluginMailHeaders(ctx, cu.User.ID, &msg, identity)
 	raw, err := smtpclient.BuildDraftRaw(msg)
 	if err != nil {
 		return store.MessageRecord{}, err

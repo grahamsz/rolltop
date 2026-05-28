@@ -96,8 +96,17 @@ export type Attachment = {
   matched?: boolean;
   content_matched?: boolean;
   match_terms?: string[];
+  actions?: AttachmentAction[];
   pgp_public_key_candidate?: boolean;
   preview?: AttachmentPreview;
+};
+
+/** AttachmentAction is a plugin-provided operation available for an attachment. */
+export type AttachmentAction = {
+  plugin_id: string;
+  kind: string;
+  label: string;
+  metadata?: Record<string, string>;
 };
 
 /** AttachmentPreview describes a plugin-provided in-browser preview option. */
@@ -202,6 +211,21 @@ export type SenderVisual = {
   plugin_id: string;
   kind: string;
   url: string;
+};
+
+export type ThemeDefinition = {
+  id: string;
+  name: string;
+  plugin_id?: string;
+  css_url?: string;
+};
+
+export type FrontendPluginDefinition = {
+  id: string;
+  name: string;
+  version?: string;
+  module_url: string;
+  css_url?: string;
 };
 
 /** ContactEmail is one editable email row on a contact. */
@@ -357,6 +381,8 @@ export type Bootstrap = {
   account_needs_password?: boolean;
   account_notice?: string;
   enabled_plugins?: string[];
+  available_themes?: ThemeDefinition[];
+  frontend_plugins?: FrontendPluginDefinition[];
   server_started_at?: string;
   server_uptime_seconds?: number;
   build_version?: string;

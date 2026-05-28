@@ -7,18 +7,19 @@ import { api } from "../../api";
 import type { Contact, ContactAddress, ContactEmail, ContactPGPKey, ContactPhone, ContactURL } from "../../types";
 import type { Toast } from "../../appTypes";
 import { Icon } from "../../components/Icon";
-import { PGPKeyImportModal } from "../../components/PGPKeyImportModal";
 import { messageFromError } from "../../lib/errors";
-import { publicKeyRecordFromArmored } from "../../lib/pgp";
+import type { ClientSidePGPPlugin } from "../../../../plugins/client_side_pgp/frontend/types";
 
 /** ContactsView manages the user address book and Me contacts used by compose/reply identity logic. */
 export function ContactsView({
   csrf,
   pgpEnabled,
+  pgpPlugin,
   addToast
 }: {
   csrf: string;
   pgpEnabled: boolean;
+  pgpPlugin?: ClientSidePGPPlugin;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -226,6 +227,7 @@ export function ContactsView({
               emails={draft.emails}
               value={draft.pgp_keys || []}
               onChange={(keys) => setField("pgp_keys", keys)}
+              pgpPlugin={pgpPlugin}
               addToast={addToast}
             />
           ) : null}
@@ -290,11 +292,13 @@ function ContactPGPKeyEditor({
   emails,
   value,
   onChange,
+  pgpPlugin,
   addToast
 }: {
   emails: ContactEmail[];
   value: ContactPGPKey[];
   onChange: (value: ContactPGPKey[]) => void;
+  pgpPlugin?: ClientSidePGPPlugin;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const emailChoices = emails.map((item) => item.email.trim()).filter(Boolean);
@@ -312,7 +316,8 @@ function ContactPGPKeyEditor({
     if (!armored.trim()) throw new Error("Paste an ASCII-armored PGP public key first.");
     setAdding(true);
     try {
-      const parsed = await publicKeyRecordFromArmored(armored, email);
+      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+      const parsed = await pgpPlugin.publicKeyRecordFromArmored(armored, email);
       const parsedFingerprint = normalizedPGPIdentifier(parsed.fingerprint);
       const parsedKeyID = normalizedPGPIdentifier(parsed.key_id);
       const duplicate = value.find((key) =>
@@ -358,8 +363,8 @@ function ContactPGPKeyEditor({
           {adding ? "Reading key..." : "Import public key"}
         </button>
       </div>
-      {importOpen ? (
-        <PGPKeyImportModal
+      {importOpen && pgpPlugin?.KeyImportModal ? (
+        <pgpPlugin.KeyImportModal
           title="Import public key"
           description={`Paste, drop, or choose an ASCII-armored public key for ${email || "this contact"}.`}
           placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"

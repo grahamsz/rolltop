@@ -12,10 +12,11 @@ import { ListHeader } from "../../components/common";
 import { messageFromError } from "../../lib/errors";
 import { displayTime } from "../../lib/format";
 import { effectiveMailboxSyncMode, mailboxActiveRun, mailboxNeedsSync, mailboxRefreshKey } from "../../lib/sync";
-import { pgpPreviewText } from "../../lib/pgpPreview";
 import { HighlightedText } from "../../lib/searchHighlight";
 import { mailPageSize } from "../../lib/constants";
 import { mailRoute, mailURL, messageURL, routeWithSearch, searchRoute, searchURL } from "../../lib/routes";
+import { messageSecurityIndicators, messageSecurityPreviewText, messageSecuritySnippetClassName } from "../../plugins/messageSecurity";
+import type { RuntimePlugin } from "../../plugins/runtime";
 
 /**
  * MailView fetches one page of mailbox/all-mail conversations. It clears stale
@@ -32,6 +33,7 @@ export function MailView({
   latestSyncRun,
   activeSyncRuns,
   refreshChrome,
+  messageSecurityPlugins = [],
   addToast
 }: {
   csrf: string;
@@ -43,6 +45,7 @@ export function MailView({
   latestSyncRun: SyncRun | null;
   activeSyncRuns: SyncRun[];
   refreshChrome: () => Promise<Bootstrap | null>;
+  messageSecurityPlugins?: RuntimePlugin[];
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -223,6 +226,7 @@ export function MailView({
               datePrefs={datePrefs}
               returnURL={mailURL(mailboxID, page)}
               navigate={navigate}
+              messageSecurityPlugins={messageSecurityPlugins}
               addToast={addToast}
               onStarredChange={updateStarred}
             />
@@ -320,6 +324,7 @@ export function SearchView({
   hiddenMessageIDs,
   datePrefs,
   activeSyncRuns,
+  messageSecurityPlugins = [],
   addToast
 }: {
   csrf: string;
@@ -328,6 +333,7 @@ export function SearchView({
   hiddenMessageIDs: Set<number>;
   datePrefs: DatePrefs;
   activeSyncRuns: SyncRun[];
+  messageSecurityPlugins?: RuntimePlugin[];
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -425,6 +431,7 @@ export function SearchView({
               datePrefs={datePrefs}
               returnURL={returnURL}
               addToast={addToast}
+              messageSecurityPlugins={messageSecurityPlugins}
               onStarredChange={updateStarred}
             />
           )}
@@ -607,6 +614,7 @@ function MessageList({
   datePrefs,
   returnURL = "",
   navigate,
+  messageSecurityPlugins = [],
   addToast,
   onStarredChange
 }: {
@@ -620,6 +628,7 @@ function MessageList({
   datePrefs: DatePrefs;
   returnURL?: string;
   navigate: (url: string) => void;
+  messageSecurityPlugins?: RuntimePlugin[];
   addToast: (message: string, kind?: Toast["kind"]) => number;
   onStarredChange: (messageID: number, starredMessageID: number, starred: boolean) => void;
 }) {
@@ -763,7 +772,9 @@ function MessageList({
         const href = openAsDraft ? `/compose?draft=${msg.id}` : messageURL(msg.id, searchQuery, matchTerms, returnURL, searchQuery ? msg.id : 0);
         const attachmentNames = conversation.attachment_names || [];
         const attachmentMatches = conversation.attachment_matches || [];
-        const previewText = pgpPreviewText(conversation.snippet, msg.is_encrypted, msg.is_signed);
+        const previewText = messageSecurityPreviewText(messageSecurityPlugins, conversation.snippet, msg);
+        const securitySnippetClass = messageSecuritySnippetClassName(messageSecurityPlugins, msg);
+        const securityIndicators = messageSecurityIndicators(messageSecurityPlugins, { location: "message-list", message: msg, state: msg });
         const selected = selectedIDs.has(msg.id);
         const movingOut = hiddenMessageIDs.has(msg.id);
         const participantText = showRecipients
@@ -807,14 +818,9 @@ function MessageList({
               <strong>
                 <HighlightedText text={msg.subject || "(no subject)"} query={searchQuery} terms={matchTerms} />
               </strong>
-              {msg.is_encrypted || msg.is_signed ? (
-                <span className="message-pgp-icons" aria-label={[msg.is_encrypted ? "Encrypted" : "", msg.is_signed ? "Signed" : ""].filter(Boolean).join(", ")}>
-                  {msg.is_encrypted ? <span className="message-pgp-icon encrypted" title="Encrypted message"><Icon name="lock" weight="bold" /></span> : null}
-                  {msg.is_signed ? <span className="message-pgp-icon signature pending" title="Signature pending verification"><Icon name="signature" weight="bold" /></span> : null}
-                </span>
-              ) : null}
-              <span className={`snippet ${msg.is_encrypted ? "encrypted-preview" : ""}`}>
-                <HighlightedText text={previewText} query={msg.is_encrypted ? "" : searchQuery} terms={msg.is_encrypted ? [] : matchTerms} />
+              {securityIndicators}
+              <span className={`snippet ${securitySnippetClass}`}>
+                <HighlightedText text={previewText} query={securitySnippetClass ? "" : searchQuery} terms={securitySnippetClass ? [] : matchTerms} />
               </span>
               {attachmentNames.length > 0 ? (
                 <span className={`attachment-preview ${attachmentMatches.length > 0 || conversation.attachment_content_matched ? "matched" : ""}`}>

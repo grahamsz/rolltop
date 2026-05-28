@@ -496,7 +496,7 @@ func TestUpdateUserDisplayPreferencesPersistsTheme(t *testing.T) {
 		t.Fatalf("display update did not preserve search preferences = %+v", updated)
 	}
 
-	updated, err = db.UpdateUserDisplayPreferences(ctx, user.ID, "", "bogus", "neon")
+	updated, err = db.UpdateUserDisplayPreferences(ctx, user.ID, "", "bogus", "bad theme")
 	if err != nil {
 		t.Fatal(err)
 	}

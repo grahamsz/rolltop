@@ -341,6 +341,7 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 		Search:        searchSvc,
 		Fetcher:       imapFetcher,
 		BlobRetention: cfg.BlobRetention,
+		PluginDir:     cfg.PluginDir,
 	}
 	syncRunner := syncer.NewRunnerWithContext(ctx, syncSvc)
 	webServer, err := web.New(web.Options{
@@ -353,6 +354,7 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 		DataDir:      cfg.DataDir,
 		DatabasePath: cfg.DatabasePath,
 		IndexPath:    cfg.IndexPath,
+		PluginDir:    cfg.PluginDir,
 		SessionTTL:   cfg.SessionTTL,
 		CookieSecure: cfg.CookieSecure,
 		WebhookToken: cfg.WebhookToken,

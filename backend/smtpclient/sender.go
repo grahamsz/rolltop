@@ -34,6 +34,18 @@ type Attachment struct {
 	Data        []byte
 }
 
+// Header is an extra outbound RFC822 header prepared by compose or a plugin.
+type Header struct {
+	Name  string
+	Value string
+}
+
+// MIMEBodyOverride lets compose supply a fully prepared root MIME body.
+type MIMEBodyOverride struct {
+	ContentType string
+	Body        string
+}
+
 // Message is the normalized outbound compose payload passed to the SMTP sender.
 type Message struct {
 	From             string
@@ -47,11 +59,8 @@ type Message struct {
 	InReplyTo        string
 	References       string
 	Date             time.Time
-	AutocryptAddr    string
-	AutocryptKeyData string
-	PGPMIMEEncrypted bool
-	PGPMIMESigned    bool
-	PGPMIMESignature string
+	ExtraHeaders     []Header
+	MIMEBodyOverride *MIMEBodyOverride
 	Attachments      []Attachment
 }
 
@@ -207,7 +216,9 @@ func buildRaw(msg Message, requireRecipients bool) ([]byte, []string, error) {
 	writeHeader(w, "Date", msg.Date.Format(time.RFC1123Z))
 	writeHeader(w, "Message-ID", msg.MessageID)
 	writeHeader(w, "X-Mailer", xMailerHeaderValue())
-	writeAutocryptHeader(w, msg.AutocryptAddr, msg.AutocryptKeyData)
+	for _, header := range msg.ExtraHeaders {
+		writeExtraHeader(w, header.Name, header.Value)
+	}
 	if strings.TrimSpace(msg.InReplyTo) != "" {
 		writeHeader(w, "In-Reply-To", sanitizeHeaderValue(msg.InReplyTo))
 	}
@@ -223,12 +234,14 @@ func buildRaw(msg Message, requireRecipients bool) ([]byte, []string, error) {
 }
 
 func writeRootBody(w *bufio.Writer, msg Message) {
-	if msg.PGPMIMEEncrypted {
-		writePGPMIMEEncryptedBody(w, msg)
-		return
-	}
-	if msg.PGPMIMESigned {
-		writePGPMIMESignedBody(w, msg)
+	if msg.MIMEBodyOverride != nil && strings.TrimSpace(msg.MIMEBodyOverride.ContentType) != "" {
+		writeHeader(w, "Content-Type", msg.MIMEBodyOverride.ContentType)
+		_, _ = w.WriteString("\r\n")
+		body := normalizeCRLF(msg.MIMEBodyOverride.Body)
+		_, _ = w.WriteString(body)
+		if !strings.HasSuffix(body, "\r\n") {
+			_, _ = w.WriteString("\r\n")
+		}
 		return
 	}
 	inlineAttachments, regularAttachments := splitAttachments(msg.Attachments)
@@ -278,60 +291,6 @@ func writeRootBody(w *bufio.Writer, msg Message) {
 	writeBodyEntityPart(w, boundary, msg)
 	for _, attachment := range inlineAttachments {
 		writeAttachmentPart(w, boundary, attachment)
-	}
-	_, _ = fmt.Fprintf(w, "--%s--\r\n", boundary)
-}
-
-func writePGPMIMEEncryptedBody(w *bufio.Writer, msg Message) {
-	boundary := boundaryFor(msg, "pgp-encrypted")
-	writeHeader(w, "Content-Type", mime.FormatMediaType("multipart/encrypted", map[string]string{
-		"protocol": "application/pgp-encrypted",
-		"boundary": boundary,
-	}))
-	_, _ = w.WriteString("\r\n")
-	_, _ = fmt.Fprintf(w, "--%s\r\n", boundary)
-	writeHeader(w, "Content-Type", "application/pgp-encrypted")
-	writeHeader(w, "Content-Description", "PGP/MIME version identification")
-	_, _ = w.WriteString("\r\n")
-	_, _ = w.WriteString("Version: 1\r\n")
-	_, _ = fmt.Fprintf(w, "--%s\r\n", boundary)
-	writeHeader(w, "Content-Type", mime.FormatMediaType("application/octet-stream", map[string]string{"name": "encrypted.asc"}))
-	writeHeader(w, "Content-Description", "OpenPGP encrypted message")
-	writeHeader(w, "Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": "encrypted.asc"}))
-	writeHeader(w, "Content-Transfer-Encoding", "7bit")
-	_, _ = w.WriteString("\r\n")
-	body := normalizeCRLF(msg.BodyText)
-	_, _ = w.WriteString(body)
-	if !strings.HasSuffix(body, "\r\n") {
-		_, _ = w.WriteString("\r\n")
-	}
-	_, _ = fmt.Fprintf(w, "--%s--\r\n", boundary)
-}
-
-func writePGPMIMESignedBody(w *bufio.Writer, msg Message) {
-	boundary := boundaryFor(msg, "pgp-signed")
-	writeHeader(w, "Content-Type", mime.FormatMediaType("multipart/signed", map[string]string{
-		"protocol": "application/pgp-signature",
-		"micalg":   "pgp-sha256",
-		"boundary": boundary,
-	}))
-	_, _ = w.WriteString("\r\n")
-	_, _ = fmt.Fprintf(w, "--%s\r\n", boundary)
-	entity := normalizeCRLF(msg.BodyText)
-	_, _ = w.WriteString(entity)
-	if !strings.HasSuffix(entity, "\r\n") {
-		_, _ = w.WriteString("\r\n")
-	}
-	_, _ = fmt.Fprintf(w, "--%s\r\n", boundary)
-	writeHeader(w, "Content-Type", mime.FormatMediaType("application/pgp-signature", map[string]string{"name": "signature.asc"}))
-	writeHeader(w, "Content-Description", "OpenPGP digital signature")
-	writeHeader(w, "Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": "signature.asc"}))
-	writeHeader(w, "Content-Transfer-Encoding", "7bit")
-	_, _ = w.WriteString("\r\n")
-	signature := normalizeCRLF(msg.PGPMIMESignature)
-	_, _ = w.WriteString(signature)
-	if !strings.HasSuffix(signature, "\r\n") {
-		_, _ = w.WriteString("\r\n")
 	}
 	_, _ = fmt.Fprintf(w, "--%s--\r\n", boundary)
 }
@@ -419,7 +378,13 @@ func writeBase64Body(w *bufio.Writer, data []byte) {
 }
 
 func boundaryFor(msg Message, kind string) string {
-	boundary := "rolltop-" + kind + "-" + strings.Trim(msg.MessageID, "<>")
+	return MIMEBoundary(msg.MessageID, kind)
+}
+
+// MIMEBoundary returns Rolltop's stable boundary format for a message and body
+// kind so callers that prepare a MIMEBodyOverride can match normal compose.
+func MIMEBoundary(messageID, kind string) string {
+	boundary := "rolltop-" + kind + "-" + strings.Trim(messageID, "<>")
 	return strings.NewReplacer("@", "-", ".", "-", "_", "-", "/", "-", "+", "-").Replace(boundary)
 }
 
@@ -506,6 +471,22 @@ func writeHeader(w *bufio.Writer, name, value string) {
 	_, _ = fmt.Fprintf(w, "%s: %s\r\n", name, sanitizeHeaderValue(value))
 }
 
+func writeExtraHeader(w *bufio.Writer, name, value string) {
+	name = sanitizeHeaderName(name)
+	value = sanitizeHeaderValue(value)
+	if name == "" || value == "" {
+		return
+	}
+	prefix := name + ": "
+	_, _ = w.WriteString(prefix)
+	firstLineRemaining := 76 - len(prefix)
+	if firstLineRemaining < 16 {
+		firstLineRemaining = 16
+	}
+	writeFoldedToken(w, value, firstLineRemaining, 76)
+	_, _ = w.WriteString("\r\n")
+}
+
 func xMailerHeaderValue() string {
 	info := buildinfo.Current()
 	version := strings.TrimSpace(info.Version)
@@ -513,29 +494,6 @@ func xMailerHeaderValue() string {
 		version = "dev"
 	}
 	return "rolltop/" + version
-}
-
-func writeAutocryptHeader(w *bufio.Writer, addr, keyData string) {
-	addr = sanitizeHeaderValue(addr)
-	keyData = strings.Map(func(r rune) rune {
-		switch r {
-		case ' ', '\t', '\r', '\n':
-			return -1
-		default:
-			return r
-		}
-	}, strings.TrimSpace(keyData))
-	if addr == "" || keyData == "" {
-		return
-	}
-	prefix := "Autocrypt: addr=" + addr + "; prefer-encrypt=mutual; keydata="
-	_, _ = w.WriteString(prefix)
-	firstLineRemaining := 76 - len(prefix)
-	if firstLineRemaining < 16 {
-		firstLineRemaining = 16
-	}
-	writeFoldedToken(w, keyData, firstLineRemaining, 76)
-	_, _ = w.WriteString("\r\n")
 }
 
 func writeFoldedToken(w *bufio.Writer, value string, firstLine, nextLine int) {
@@ -552,6 +510,22 @@ func writeFoldedToken(w *bufio.Writer, value string, firstLine, nextLine int) {
 			lineLimit = nextLine
 		}
 	}
+}
+
+func sanitizeHeaderName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			continue
+		default:
+			return ""
+		}
+	}
+	return name
 }
 
 func sanitizeHeaderValue(value string) string {

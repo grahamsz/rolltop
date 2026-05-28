@@ -207,14 +207,33 @@ func normalizeUserDateFormat(value string) string {
 }
 
 func normalizeUserTheme(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
+	theme := strings.ToLower(strings.TrimSpace(value))
+	switch theme {
+	case "classic":
+		return "classic"
 	case "classic_dark", "classic-dark":
 		return "classic_dark"
 	case "matrix", "modern":
 		return "matrix"
 	default:
+		if safeUserThemeID(theme) {
+			return theme
+		}
 		return "classic"
 	}
+}
+
+func safeUserThemeID(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for i, r := range value {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+		if !ok || (i == 0 && (r < 'a' || r > 'z')) {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeUserSearchPreset(value string) string {

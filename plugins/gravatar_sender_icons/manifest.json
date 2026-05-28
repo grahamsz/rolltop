@@ -1,0 +1,9 @@
+{
+  "id": "gravatar_sender_icons",
+  "name": "Gravatar sender icons",
+  "description": "Optionally proxies and caches Gravatar images for sender email addresses.",
+  "version": "1.0.0",
+  "backend": {
+    "kind": "builtin"
+  }
+}

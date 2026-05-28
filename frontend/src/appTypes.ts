@@ -3,6 +3,7 @@
 
 import type { ReactNode } from "react";
 import type { Bootstrap, Mailbox, User } from "./types";
+import type { ClientSidePGPPlugin } from "../../plugins/client_side_pgp/frontend/types";
 
 /** LocationState is the minimal browser URL state App passes through the manual router. */
 export type LocationState = {
@@ -75,6 +76,7 @@ export type AppShellProps = {
   refreshChrome: RefreshChrome;
   notificationsEnabled: boolean;
   toggleNotifications: () => Promise<void>;
+  pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
   openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
   lockPGP: () => void;

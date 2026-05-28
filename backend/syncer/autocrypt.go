@@ -1,94 +1,45 @@
-// File overview: Autocrypt key discovery during message sync.
+// File overview: Backend plugin hook dispatch during message sync.
 
 package syncer
 
 import (
-	"bytes"
 	"context"
-	"net/mail"
-	"net/textproto"
-	"strings"
 
-	"rolltop/backend/autocrypt"
 	"rolltop/backend/plugins"
-	"rolltop/backend/store"
 )
 
-func (s *Service) discoverAutocryptHeaders(ctx context.Context, userID int64, raw []byte, parsedFrom string) error {
-	if !s.pluginEnabled(ctx, plugins.ClientSidePGP) {
-		return nil
-	}
-	msg, err := mail.ReadMessage(bytes.NewReader(raw))
+func (s *Service) importIncomingMessageHooks(ctx context.Context, userID int64, raw []byte, parsedFrom string) error {
+	backendPlugins, err := s.enabledBackendPlugins(ctx)
 	if err != nil {
-		return nil
+		return err
 	}
-	sender := store.NormalizeContactEmail(parsedFrom)
-	if sender == "" {
-		sender = store.NormalizeContactEmail(msg.Header.Get("From"))
-	}
-	if sender == "" {
-		return nil
-	}
-	values := textproto.MIMEHeader(msg.Header).Values("Autocrypt")
-	for _, header := range autocrypt.ParseHeaderValues(values) {
-		if !strings.EqualFold(store.NormalizeContactEmail(header.Addr), sender) {
+	host := syncPluginHost{s: s}
+	for _, backendPlugin := range backendPlugins {
+		hook, ok := backendPlugin.(plugins.IncomingMessageHook)
+		if !ok {
 			continue
 		}
-		if err := s.saveDiscoveredAutocryptKey(ctx, userID, header.Addr, header.PublicKey); err != nil {
+		if err := hook.ImportIncomingMessage(ctx, host, userID, raw, parsedFrom); err != nil {
 			return err
 		}
-		return nil
 	}
 	return nil
 }
 
-func (s *Service) saveDiscoveredAutocryptKey(ctx context.Context, userID int64, email, publicKey string) error {
-	email = strings.TrimSpace(email)
-	publicKey = strings.TrimSpace(publicKey)
-	if store.NormalizeContactEmail(email) == "" || publicKey == "" {
-		return nil
-	}
-	existing, err := s.Store.ListAllContactPGPPublicKeysForEmails(ctx, userID, []string{email})
-	if err != nil {
-		return err
-	}
-	for _, key := range existing {
-		if strings.TrimSpace(key.PublicKeyArmored) == publicKey {
-			if key.IsPreferred {
-				return nil
-			}
-			key.IsPreferred = true
-			_, err := s.Store.UpsertContactPGPPublicKey(ctx, key)
-			return err
-		}
-	}
-	contact, err := s.autocryptContact(ctx, userID, email)
-	if err != nil {
-		return err
-	}
-	_, err = s.Store.UpsertContactPGPPublicKey(ctx, store.ContactPGPPublicKey{
-		UserID:           userID,
-		ContactID:        contact.ID,
-		Email:            email,
-		Label:            email,
-		PublicKeyArmored: publicKey,
-		IsPreferred:      true,
-	})
-	return err
+type syncPluginHost struct {
+	s *Service
 }
 
-func (s *Service) autocryptContact(ctx context.Context, userID int64, email string) (store.Contact, error) {
-	if contact, err := s.Store.GetContactByEmailForUser(ctx, userID, email); err == nil {
-		return contact, nil
-	} else if !store.IsNotFound(err) {
-		return store.Contact{}, err
-	}
-	return s.Store.CreateContact(ctx, userID, store.Contact{
-		DisplayName: email,
-		Emails: []store.ContactEmail{{
-			Label:     "email",
-			Email:     email,
-			IsPrimary: true,
-		}},
-	})
+func (h syncPluginHost) Store() any {
+	return h.s.Store
 }
+
+func (h syncPluginHost) MasterKey() []byte {
+	return nil
+}
+
+func (h syncPluginHost) PluginEnabled(ctx context.Context, pluginID string) bool {
+	return h.s.pluginEnabled(ctx, pluginID)
+}
+
+var _ plugins.BackendHost = syncPluginHost{}

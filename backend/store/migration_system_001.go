@@ -11,7 +11,7 @@ package store
 import (
 	"context"
 
-	remoteimageblocklist "rolltop/backend/plugins/remote_image_blocklist"
+	remoteimageblocklist "rolltop/plugins/remote_image_blocklist/rules"
 )
 
 // systemMigrationSet returns the single clean-start system schema. Auth and

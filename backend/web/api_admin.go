@@ -5,6 +5,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/mail"
 	"regexp"
@@ -12,8 +13,8 @@ import (
 	"strings"
 
 	"rolltop/backend/auth"
-	remoteimageblocklist "rolltop/backend/plugins/remote_image_blocklist"
 	"rolltop/backend/store"
+	remoteimageblocklist "rolltop/plugins/remote_image_blocklist/rules"
 )
 
 func (s *Server) apiAdminUsers(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +228,17 @@ func (s *Server) apiAdminPlugin(w http.ResponseWriter, r *http.Request, rest str
 			http.NotFound(w, r)
 			return
 		}
+		s.serverError(w, err)
+		return
+	}
+	log.Printf("debug plugin setting updated plugin_id=%s enabled=%t", pluginID, in.Enabled)
+	if in.Enabled {
+		if _, _, err := s.startBackendPlugin(r.Context(), pluginID); err != nil {
+			_ = s.store.SetPluginEnabled(r.Context(), pluginID, false)
+			s.serverError(w, err)
+			return
+		}
+	} else if err := s.stopBackendPlugin(pluginID); err != nil {
 		s.serverError(w, err)
 		return
 	}

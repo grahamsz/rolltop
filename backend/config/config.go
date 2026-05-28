@@ -20,6 +20,7 @@ type Config struct {
 	DataDir      string
 	DatabasePath string
 	IndexPath    string
+	PluginDir    string
 
 	MasterKey []byte
 
@@ -36,6 +37,7 @@ func Load() (Config, error) {
 	dataDir := env("ROLLTOP_DATA_DIR", "/data")
 	dbPath := env("ROLLTOP_DB_PATH", filepath.Join(dataDir, "rolltop.db"))
 	indexPath := env("ROLLTOP_INDEX_PATH", filepath.Join(dataDir, "bleve"))
+	pluginDir := env("ROLLTOP_PLUGIN_DIR", "plugins")
 
 	key, err := ParseMasterKey(os.Getenv("ROLLTOP_MASTER_KEY"))
 	if err != nil {
@@ -68,6 +70,7 @@ func Load() (Config, error) {
 		DataDir:           dataDir,
 		DatabasePath:      dbPath,
 		IndexPath:         indexPath,
+		PluginDir:         pluginDir,
 		MasterKey:         key,
 		SessionTTL:        sessionTTL,
 		CookieSecure:      cookieSecure,
