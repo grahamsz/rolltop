@@ -107,6 +107,8 @@ type apiMessage struct {
 
 type apiConversation struct {
 	Message                  apiMessage `json:"message"`
+	MessageIDs               []int64    `json:"message_ids,omitempty"`
+	MessageAccountIDs        []int64    `json:"message_account_ids,omitempty"`
 	StarredMessageID         int64      `json:"starred_message_id"`
 	Participants             string     `json:"participants"`
 	RecipientParticipants    string     `json:"recipient_participants"`

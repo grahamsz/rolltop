@@ -308,16 +308,28 @@ function ContactPGPKeyEditor({
   }, [email, emailChoices.join("|")]);
 
   async function addKey(armored: string) {
-    if (!email || !armored.trim()) return;
+    if (!email) throw new Error("Add or select a contact email before importing a PGP public key.");
+    if (!armored.trim()) throw new Error("Paste an ASCII-armored PGP public key first.");
     setAdding(true);
     try {
       const parsed = await publicKeyRecordFromArmored(armored, email);
+      const parsedFingerprint = normalizedPGPIdentifier(parsed.fingerprint);
+      const parsedKeyID = normalizedPGPIdentifier(parsed.key_id);
+      const duplicate = value.find((key) =>
+        (parsedFingerprint && normalizedPGPIdentifier(key.fingerprint) === parsedFingerprint) ||
+        (!parsedFingerprint && parsedKeyID && normalizedPGPIdentifier(key.key_id) === parsedKeyID)
+      );
+      if (duplicate) {
+        throw new Error(`This public key is already saved for ${duplicate.email || email}.`);
+      }
       const hasPreferredForEmail = value.some((key) => key.email.toLowerCase() === email.toLowerCase() && key.is_preferred);
       onChange([...value, { ...parsed, email, is_preferred: !hasPreferredForEmail }]);
       setImportOpen(false);
       addToast("PGP public key added.");
     } catch (err) {
-      addToast(messageFromError(err), "error");
+      const message = messageFromError(err);
+      addToast(message, "error");
+      throw new Error(message);
     } finally {
       setAdding(false);
     }
@@ -492,6 +504,10 @@ function shortFingerprint(value: string): string {
   const clean = value.replace(/\s+/g, "");
   if (clean.length <= 16) return clean;
   return `${clean.slice(0, 8)}...${clean.slice(-8)}`;
+}
+
+function normalizedPGPIdentifier(value: string): string {
+  return value.replace(/[\s:]/g, "").toUpperCase();
 }
 
 function firstKeyUserID(value: string): string {

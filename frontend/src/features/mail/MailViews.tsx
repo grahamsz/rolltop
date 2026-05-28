@@ -551,7 +551,7 @@ function MessageListSkeleton({ label }: { label: string }) {
 function messageDragPreview(conversations: Conversation[], ids: number[]) {
   if (typeof document === "undefined" || ids.length === 0) return null;
   const idSet = new Set(ids);
-  const rows = conversations.filter((conversation) => idSet.has(conversation.message.id));
+  const rows = conversations.filter((conversation) => conversationTransferMessageIDs(conversation).some((id) => idSet.has(id)));
   const preview = document.createElement("div");
   preview.className = "message-drag-preview";
   preview.setAttribute("aria-hidden", "true");
@@ -576,6 +576,22 @@ function messageDragPreview(conversations: Conversation[], ids: number[]) {
   }
   document.body.appendChild(preview);
   return preview;
+}
+
+function uniquePositiveIDs(ids: number[]): number[] {
+  return Array.from(new Set(ids.filter((id) => Number.isFinite(id) && id > 0)));
+}
+
+function conversationTransferMessageIDs(conversation: Conversation): number[] {
+  const ids = conversation.message_ids && conversation.message_ids.length > 0 ? conversation.message_ids : [conversation.message.id];
+  return uniquePositiveIDs(ids);
+}
+
+function conversationTransferAccountIDs(conversation: Conversation): number[] {
+  const ids = conversation.message_account_ids && conversation.message_account_ids.length > 0
+    ? conversation.message_account_ids
+    : [conversation.message.account_id];
+  return uniquePositiveIDs(ids);
 }
 
 // MessageList is shared by mailbox and search pages. It owns local row selection,
@@ -663,16 +679,16 @@ function MessageList({
     });
   }, [visibleKey]);
 
-  function selectedDragIDs(messageID: number): number[] {
-    if (!selectedIDs.has(messageID)) return [messageID];
-    const selected = visible.map((conversation) => conversation.message.id).filter((id) => selectedIDs.has(id));
-    return selected.length > 0 ? selected : [messageID];
+  function selectedDragConversations(conversation: Conversation): Conversation[] {
+    if (!selectedIDs.has(conversation.message.id)) return [conversation];
+    const selected = visible.filter((item) => selectedIDs.has(item.message.id));
+    return selected.length > 0 ? selected : [conversation];
   }
 
   function startMessageDrag(event: DragEvent<HTMLDivElement>, conversation: Conversation) {
-    const ids = selectedDragIDs(conversation.message.id);
-    const selected = visible.filter((item) => ids.includes(item.message.id));
-    const accountIDs = Array.from(new Set(selected.map((item) => item.message.account_id).filter((id) => Number.isFinite(id) && id > 0)));
+    const selected = selectedDragConversations(conversation);
+    const ids = uniquePositiveIDs(selected.flatMap(conversationTransferMessageIDs));
+    const accountIDs = uniquePositiveIDs(selected.flatMap(conversationTransferAccountIDs));
     event.dataTransfer.effectAllowed = "copyMove";
     event.dataTransfer.setData("application/x-rolltop-message-transfer", JSON.stringify({ ids, account_ids: accountIDs }));
     event.dataTransfer.setData("application/x-rolltop-messages", JSON.stringify(ids));

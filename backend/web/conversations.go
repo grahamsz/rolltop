@@ -278,6 +278,8 @@ func mergeFields(existing []string, next []string) []string {
 }
 
 func summarizeConversation(thread []store.MessageRecord, own map[string]bool) conversationView {
+	messageIDs := conversationMessageIDs(thread)
+	accountIDs := conversationAccountIDs(thread)
 	thread = dedupeConversationMessages(thread)
 	latest := thread[0]
 	starred := false
@@ -307,6 +309,8 @@ func summarizeConversation(thread []store.MessageRecord, own map[string]bool) co
 	}
 	return conversationView{
 		Message:               displayMessage,
+		MessageIDs:            messageIDs,
+		MessageAccountIDs:     accountIDs,
 		StarredMessageID:      starredMessageID,
 		Participants:          participantSummary(thread, own),
 		RecipientParticipants: recipientParticipantSummary(thread, own),
@@ -315,6 +319,32 @@ func summarizeConversation(thread []store.MessageRecord, own map[string]bool) co
 		HasAttachments:        hasAttachments,
 		Snippet:               messageSnippet(latest.BodyText, latest.BodyHTML),
 	}
+}
+
+func conversationMessageIDs(messages []store.MessageRecord) []int64 {
+	seen := map[int64]bool{}
+	out := make([]int64, 0, len(messages))
+	for _, msg := range messages {
+		if msg.ID <= 0 || seen[msg.ID] {
+			continue
+		}
+		seen[msg.ID] = true
+		out = append(out, msg.ID)
+	}
+	return out
+}
+
+func conversationAccountIDs(messages []store.MessageRecord) []int64 {
+	seen := map[int64]bool{}
+	out := make([]int64, 0, len(messages))
+	for _, msg := range messages {
+		if msg.AccountID <= 0 || seen[msg.AccountID] {
+			continue
+		}
+		seen[msg.AccountID] = true
+		out = append(out, msg.AccountID)
+	}
+	return out
 }
 
 func (s *Server) conversationAttachmentNames(ctx context.Context, userID int64, messages []store.MessageRecord, limit int) []string {

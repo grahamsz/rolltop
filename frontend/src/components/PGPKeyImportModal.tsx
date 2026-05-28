@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type { ChangeEvent, DragEvent, FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "./Icon";
 import { messageFromError } from "../lib/errors";
 
@@ -70,7 +71,7 @@ export function PGPKeyImportModal({
     }
   }
 
-  return (
+  const dialog = (
     <div className="confirm-backdrop pgp-import-backdrop" role="presentation" onClick={onCancel}>
       <form className="confirm-dialog pgp-import-dialog" role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()} onSubmit={(event) => void submit(event)}>
         <div className="pgp-import-heading">
@@ -104,4 +105,5 @@ export function PGPKeyImportModal({
       </form>
     </div>
   );
+  return typeof document === "undefined" ? dialog : createPortal(dialog, document.body);
 }

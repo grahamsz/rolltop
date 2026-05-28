@@ -69,6 +69,8 @@ export type Message = {
 /** Conversation is a list/search row grouped around the latest visible thread message. */
 export type Conversation = {
   message: Message;
+  message_ids?: number[];
+  message_account_ids?: number[];
   starred_message_id: number;
   participants: string;
   recipient_participants: string;

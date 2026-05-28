@@ -135,6 +135,8 @@ type threadMessageView struct {
 
 type conversationView struct {
 	Message                  store.MessageRecord
+	MessageIDs               []int64
+	MessageAccountIDs        []int64
 	StarredMessageID         int64
 	Participants             string
 	RecipientParticipants    string

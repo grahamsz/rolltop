@@ -214,6 +214,8 @@ func apiConversations(conversations []conversationView) []apiConversation {
 	for _, conv := range conversations {
 		out = append(out, apiConversation{
 			Message:                  apiMessageFromRecord(conv.Message, conv.Snippet),
+			MessageIDs:               conv.MessageIDs,
+			MessageAccountIDs:        conv.MessageAccountIDs,
 			StarredMessageID:         conv.StarredMessageID,
 			Participants:             conv.Participants,
 			RecipientParticipants:    conv.RecipientParticipants,

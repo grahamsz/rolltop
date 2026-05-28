@@ -89,6 +89,7 @@ export function pgpUserIDEmails(userIDs: string): string[] {
 }
 
 export async function publicKeyRecordFromArmored(publicKeyArmored: string, email = ""): Promise<ContactPGPKey> {
+  assertPublicKeyImportText(publicKeyArmored);
   const openpgp = await loadOpenPGP();
   const publicKey = await openpgp.readKey({ armoredKey: publicKeyArmored });
   const userIDs = userIDsFromKey(publicKey);
@@ -596,6 +597,16 @@ function assertPrivateKeyImportText(value: string) {
   }
   if (!/-----BEGIN PGP PRIVATE KEY BLOCK-----/i.test(trimmed)) {
     throw new Error("Paste an ASCII-armored PGP private key that starts with -----BEGIN PGP PRIVATE KEY BLOCK-----.");
+  }
+}
+
+function assertPublicKeyImportText(value: string) {
+  const trimmed = value.trim();
+  if (/-----BEGIN PGP PRIVATE KEY BLOCK-----/i.test(trimmed)) {
+    throw new Error("This is a private key. Import only an ASCII-armored PGP public key here.");
+  }
+  if (!/-----BEGIN PGP PUBLIC KEY BLOCK-----/i.test(trimmed)) {
+    throw new Error("Paste an ASCII-armored PGP public key that starts with -----BEGIN PGP PUBLIC KEY BLOCK-----.");
   }
 }
 

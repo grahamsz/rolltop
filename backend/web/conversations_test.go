@@ -3,6 +3,7 @@
 package web
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -196,6 +197,13 @@ func TestSummarizeConversationDedupesMailboxCopies(t *testing.T) {
 	conv := summarizeConversation(thread, map[string]bool{"me@example.test": true})
 	if conv.Count != 2 {
 		t.Fatalf("count = %d, want 2", conv.Count)
+	}
+	if !slices.Equal(conv.MessageIDs, []int64{1, 2, 3}) {
+		t.Fatalf("message ids = %v, want all physical thread messages", conv.MessageIDs)
+	}
+	api := apiConversations([]conversationView{conv})
+	if len(api) != 1 || !slices.Equal(api[0].MessageIDs, []int64{1, 2, 3}) {
+		t.Fatalf("api conversation ids = %+v", api)
 	}
 	if conv.IsRead {
 		t.Fatal("expected unread duplicate copy to keep conversation unread")
