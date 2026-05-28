@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 // reconcileMailboxUIDs treats IMAP as the source of truth for membership in a

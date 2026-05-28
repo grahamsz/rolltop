@@ -9,9 +9,9 @@ import (
 	"net/textproto"
 	"strings"
 
-	"mailmirror/backend/autocrypt"
-	"mailmirror/backend/plugins"
-	"mailmirror/backend/store"
+	"rolltop/backend/autocrypt"
+	"rolltop/backend/plugins"
+	"rolltop/backend/store"
 )
 
 func (s *Service) discoverAutocryptHeaders(ctx context.Context, userID int64, raw []byte, parsedFrom string) error {

@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	mmcrypto "mailmirror/backend/crypto"
-	"mailmirror/backend/plugins"
-	"mailmirror/backend/store"
+	mmcrypto "rolltop/backend/crypto"
+	"rolltop/backend/plugins"
+	"rolltop/backend/store"
 )
 
 func (s *Server) apiPGPPrivateKeys(w http.ResponseWriter, r *http.Request) {

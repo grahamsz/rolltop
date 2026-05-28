@@ -6,8 +6,8 @@ package web
 import (
 	"context"
 
-	"mailmirror/backend/search"
-	"mailmirror/backend/store"
+	"rolltop/backend/search"
+	"rolltop/backend/store"
 )
 
 const recentSearchRepairLimit = 250

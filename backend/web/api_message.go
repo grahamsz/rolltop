@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/plugins"
-	oneclickunsubscribe "mailmirror/backend/plugins/one_click_unsubscribe"
-	remoteimageblocklist "mailmirror/backend/plugins/remote_image_blocklist"
-	trustedimagesources "mailmirror/backend/plugins/trusted_image_sources"
-	"mailmirror/backend/search"
-	"mailmirror/backend/store"
+	"rolltop/backend/plugins"
+	oneclickunsubscribe "rolltop/backend/plugins/one_click_unsubscribe"
+	remoteimageblocklist "rolltop/backend/plugins/remote_image_blocklist"
+	trustedimagesources "rolltop/backend/plugins/trusted_image_sources"
+	"rolltop/backend/search"
+	"rolltop/backend/store"
 )
 
 // apiMessagePath is the subrouter for /api/messages/:id. It keeps per-message
@@ -211,7 +211,7 @@ type apiScoreExplanation struct {
 
 // apiMessageSearchExplanation is intentionally on-demand. It re-runs the active
 // search against one user-owned message with Bleve explanations enabled, then adds
-// MailMirror-level labels for ranking boosts that are otherwise hard to interpret
+// Rolltop-level labels for ranking boosts that are otherwise hard to interpret
 // from the raw scorer tree.
 func (s *Server) apiMessageSearchExplanation(w http.ResponseWriter, r *http.Request, id int64) {
 	if r.Method != http.MethodGet {

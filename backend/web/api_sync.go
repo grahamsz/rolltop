@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/buildinfo"
-	"mailmirror/backend/store"
+	"rolltop/backend/buildinfo"
+	"rolltop/backend/store"
 )
 
 func (s *Server) apiSyncStatus(w http.ResponseWriter, r *http.Request) {

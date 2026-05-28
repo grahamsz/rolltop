@@ -108,7 +108,7 @@ const iconMap: Record<string, PhosphorIcon> = {
   menu: List,
   mail: EnvelopeSimple,
   mailbox: MailboxIcon,
-  mailmirror: MailboxIcon,
+  rolltop: MailboxIcon,
   minimize: Minus,
   more_vert: DotsThreeVertical,
   newspaper: Newspaper,
@@ -136,7 +136,7 @@ const iconAliases: Record<string, string> = {
 };
 
 const iconWeights: Partial<Record<string, IconWeight>> = {
-  mailmirror: "duotone",
+  rolltop: "duotone",
   report: "duotone",
   sync: "duotone"
 };
@@ -155,7 +155,7 @@ export function LogoMark({ className = "brand-logo" }: { className?: string }) {
   );
 }
 
-/** Resolve a semantic MailMirror icon name to a Phosphor component and weight. */
+/** Resolve a semantic Rolltop icon name to a Phosphor component and weight. */
 export function Icon({ name, weight }: { name: string; weight?: IconWeight }) {
   const normalized = name.trim().toLowerCase().replaceAll("-", "_");
   const key = iconAliases[normalized] || normalized;

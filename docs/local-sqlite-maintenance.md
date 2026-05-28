@@ -1,6 +1,6 @@
 # Local SQLite Maintenance
 
-This MailMirror deployment is currently the only running instance of this codebase.
+This Rolltop deployment is currently the only running instance of this codebase.
 One-time local SQLite changes are acceptable when they simplify plugin-table
 migrations or data cleanup.
 

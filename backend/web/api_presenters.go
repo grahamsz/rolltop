@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	mmcrypto "mailmirror/backend/crypto"
-	"mailmirror/backend/plugins"
-	"mailmirror/backend/store"
+	mmcrypto "rolltop/backend/crypto"
+	"rolltop/backend/plugins"
+	"rolltop/backend/store"
 )
 
 func safeUser(user store.User) apiUser {
@@ -183,7 +183,7 @@ func (s *Server) accountCredentialNotice(ctx context.Context, userID int64) (boo
 			if label == "" {
 				label = "one IMAP account"
 			}
-			return true, fmt.Sprintf("IMAP password required for %s: the saved password cannot be decrypted with the current MAILMIRROR_MASTER_KEY. Re-enter the IMAP password to restore sync and full-message loading.", label)
+			return true, fmt.Sprintf("IMAP password required for %s: the saved password cannot be decrypted with the current ROLLTOP_MASTER_KEY. Re-enter the IMAP password to restore sync and full-message loading.", label)
 		}
 	}
 	return false, ""
@@ -234,6 +234,7 @@ func apiConversations(conversations []conversationView) []apiConversation {
 func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []threadMessageView) []apiThreadMessage {
 	out := make([]apiThreadMessage, 0, len(views))
 	attachmentPreviewEnabled := s.pluginEnabled(ctx, plugins.AttachmentPreview)
+	pgpEnabled := s.pluginEnabled(ctx, plugins.ClientSidePGP)
 	for _, view := range views {
 		atts := make([]apiAttachment, 0, len(view.Attachments))
 		for _, att := range view.Attachments {
@@ -249,15 +250,16 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 				preview = s.attachmentPreview(att)
 			}
 			atts = append(atts, apiAttachment{
-				ID:             att.ID,
-				Filename:       att.Filename,
-				ContentType:    att.ContentType,
-				Size:           att.Size,
-				DownloadURL:    fmt.Sprintf("/attachments/%d/download", att.ID),
-				Matched:        nameMatched || contentMatched,
-				ContentMatched: contentMatched,
-				MatchTerms:     matchTerms,
-				Preview:        preview,
+				ID:                    att.ID,
+				Filename:              att.Filename,
+				ContentType:           att.ContentType,
+				Size:                  att.Size,
+				DownloadURL:           fmt.Sprintf("/attachments/%d/download", att.ID),
+				Matched:               nameMatched || contentMatched,
+				ContentMatched:        contentMatched,
+				MatchTerms:            matchTerms,
+				PGPPublicKeyCandidate: pgpEnabled && pgpPublicKeyAttachmentCandidate(att),
+				Preview:               preview,
 			})
 		}
 		var senderVisual *apiSenderVisual
@@ -294,6 +296,18 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 		})
 	}
 	return out
+}
+
+func pgpPublicKeyAttachmentCandidate(att store.Attachment) bool {
+	if att.IsInline || att.Size <= 0 || att.Size > 16*1024 {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(att.Filename))
+	contentType := strings.ToLower(strings.TrimSpace(att.ContentType))
+	if strings.Contains(name, "signature") || strings.Contains(contentType, "pgp-signature") {
+		return false
+	}
+	return strings.HasSuffix(name, ".asc") && (contentType == "" || strings.Contains(contentType, "pgp-keys") || strings.Contains(contentType, "text/plain"))
 }
 
 func apiContactFromStore(c store.Contact) apiContact {

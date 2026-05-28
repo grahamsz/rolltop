@@ -35,7 +35,7 @@ function truncateNotificationText(value: string, max: number) {
 }
 
 const allMailWakePrefetchAfterMS = 3 * 60 * 1000;
-const notificationPreferenceKey = "mailmirror.notifications.enabled";
+const notificationPreferenceKey = "rolltop.notifications.enabled";
 
 function notificationPreference() {
   try {
@@ -237,7 +237,7 @@ export default function App() {
       : fallback;
     new Notification(title, {
       body,
-      tag: "mailmirror-new-mail"
+      tag: "rolltop-new-mail"
     });
   }, [notificationsEnabled]);
 

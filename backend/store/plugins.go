@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"strings"
 
-	"mailmirror/backend/plugins"
-	remoteimageblocklist "mailmirror/backend/plugins/remote_image_blocklist"
+	"rolltop/backend/plugins"
+	remoteimageblocklist "rolltop/backend/plugins/remote_image_blocklist"
 )
 
 // PluginSetting is the persisted admin enablement state for one plugin definition.

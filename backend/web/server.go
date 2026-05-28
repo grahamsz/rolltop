@@ -20,15 +20,15 @@ import (
 	"sync"
 	"time"
 
-	"mailmirror/backend/auth"
-	"mailmirror/backend/blob"
-	"mailmirror/backend/buildinfo"
-	mmcrypto "mailmirror/backend/crypto"
-	"mailmirror/backend/mailparse"
-	"mailmirror/backend/search"
-	"mailmirror/backend/smtpclient"
-	"mailmirror/backend/store"
-	"mailmirror/backend/syncer"
+	"rolltop/backend/auth"
+	"rolltop/backend/blob"
+	"rolltop/backend/buildinfo"
+	mmcrypto "rolltop/backend/crypto"
+	"rolltop/backend/mailparse"
+	"rolltop/backend/search"
+	"rolltop/backend/smtpclient"
+	"rolltop/backend/store"
+	"rolltop/backend/syncer"
 )
 
 const (
@@ -168,6 +168,7 @@ type composeForm struct {
 	Attachments          []composeAttachment         `json:"attachments,omitempty"`
 	PGPEncrypted         bool                        `json:"pgp_encrypted,omitempty"`
 	PGPSigned            bool                        `json:"pgp_signed,omitempty"`
+	PGPMIME              bool                        `json:"pgp_mime,omitempty"`
 	AttachPublicKey      bool                        `json:"attach_public_key,omitempty"`
 }
 
@@ -368,7 +369,7 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) validWebhookToken(r *http.Request) bool {
-	got := strings.TrimSpace(r.Header.Get("X-MailMirror-Webhook-Token"))
+	got := strings.TrimSpace(r.Header.Get("X-Rolltop-Webhook-Token"))
 	if got == "" {
 		if authz := strings.TrimSpace(r.Header.Get("Authorization")); strings.HasPrefix(strings.ToLower(authz), "bearer ") {
 			got = strings.TrimSpace(authz[len("bearer "):])
@@ -883,7 +884,7 @@ func (s *Server) verifyCSRF(w http.ResponseWriter, r *http.Request) bool {
 
 func (s *Server) csrfForBase(base string) string {
 	mac := hmac.New(sha256.New, s.masterKey)
-	mac.Write([]byte("mailmirror-csrf\x00"))
+	mac.Write([]byte("rolltop-csrf\x00"))
 	mac.Write([]byte(base))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }

@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"mailmirror/backend/plugins"
+	"rolltop/backend/plugins"
 )
 
 const MaxBytes = 25 * 1024 * 1024

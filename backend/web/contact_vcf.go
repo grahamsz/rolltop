@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 type vcardLine struct {

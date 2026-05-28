@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/blob"
-	"mailmirror/backend/search"
-	"mailmirror/backend/store"
+	"rolltop/backend/blob"
+	"rolltop/backend/search"
+	"rolltop/backend/store"
 )
 
 // MailboxInfo is the minimal mailbox discovery record returned by a Fetcher.

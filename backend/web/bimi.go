@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/plugins"
-	bimibrandicons "mailmirror/backend/plugins/bimi_brand_icons"
-	"mailmirror/backend/store"
+	"rolltop/backend/plugins"
+	bimibrandicons "rolltop/backend/plugins/bimi_brand_icons"
+	"rolltop/backend/store"
 )
 
 func (s *Server) apiBrandIcons(w http.ResponseWriter, r *http.Request) {

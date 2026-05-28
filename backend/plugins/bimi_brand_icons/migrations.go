@@ -2,7 +2,7 @@
 
 package bimi_brand_icons
 
-import "mailmirror/backend/plugins"
+import "rolltop/backend/plugins"
 
 // Migrations returns schema changes for the BIMI icon cache.
 func Migrations() []plugins.Migration {

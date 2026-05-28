@@ -93,6 +93,7 @@ export type Attachment = {
   matched?: boolean;
   content_matched?: boolean;
   match_terms?: string[];
+  pgp_public_key_candidate?: boolean;
   preview?: AttachmentPreview;
 };
 
@@ -423,6 +424,7 @@ export type ComposeForm = {
   forward_attachment?: ComposeExistingAttachment;
   pgp_encrypted?: boolean;
   pgp_signed?: boolean;
+  pgp_mime?: boolean;
   attach_public_key?: boolean;
 };
 

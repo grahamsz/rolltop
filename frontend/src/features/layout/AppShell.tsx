@@ -375,7 +375,7 @@ function Sidebar({
 
   function canAcceptDraggedMessages(event: DragEvent) {
     const types = Array.from(event.dataTransfer.types);
-    return types.includes("application/x-mailmirror-message-transfer") || types.includes("application/x-mailmirror-messages") || types.includes("application/x-mailmirror-message");
+    return types.includes("application/x-rolltop-message-transfer") || types.includes("application/x-rolltop-messages") || types.includes("application/x-rolltop-message");
   }
 
   function onDragEnter(event: DragEvent, mailboxID: number) {
@@ -404,8 +404,8 @@ function Sidebar({
   function onDrop(event: DragEvent, mailbox: Mailbox) {
     event.preventDefault();
     setDropID(null);
-    const transfer = event.dataTransfer.getData("application/x-mailmirror-message-transfer");
-    const bulk = event.dataTransfer.getData("application/x-mailmirror-messages");
+    const transfer = event.dataTransfer.getData("application/x-rolltop-message-transfer");
+    const bulk = event.dataTransfer.getData("application/x-rolltop-messages");
     let ids: number[] = [];
     let sourceAccountIDs: number[] = [];
     if (transfer) {
@@ -429,7 +429,7 @@ function Sidebar({
       }
     }
     if (ids.length === 0) {
-      const raw = event.dataTransfer.getData("application/x-mailmirror-message") || event.dataTransfer.getData("text/plain");
+      const raw = event.dataTransfer.getData("application/x-rolltop-message") || event.dataTransfer.getData("text/plain");
       const messageID = Number.parseInt(raw, 10);
       if (Number.isFinite(messageID) && messageID > 0) ids = [messageID];
     }
@@ -503,7 +503,7 @@ function Sidebar({
   return (
     <aside className={`sidebar ${mobileOpen ? "open" : ""}`}>
       <div className="sidebar-mobile-head">
-        <span><Icon name="mailmirror" />Folders</span>
+        <span><Icon name="rolltop" />Folders</span>
         <button className="ghost" type="button" title="Close folders" aria-label="Close folders" onClick={onClose}><Icon name="close" /></button>
       </div>
       <a href="/compose" className="button compose" onClick={(event) => {
@@ -660,7 +660,7 @@ export function SyncRunMini({ run }: { run: SyncRun }) {
       : totalFolders > 0
         ? Math.min(100, Math.round((run.mailboxes_done / totalFolders) * 100))
         : run.status === "running" ? 100 : 0;
-  const isPurge = run.latest_new_from === "mailmirror:maintenance" && run.latest_new_subject.trim().toLowerCase().startsWith("purging");
+  const isPurge = run.latest_new_from === "rolltop:maintenance" && run.latest_new_subject.trim().toLowerCase().startsWith("purging");
   const indexedLabel = run.messages_stored > 0 ? `${run.messages_stored.toLocaleString()} indexed` : "Indexing...";
   const purgeLabel = totalMessages > 0
     ? `${run.messages_seen.toLocaleString()} of ${totalMessages.toLocaleString()} purged`

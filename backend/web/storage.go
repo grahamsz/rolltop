@@ -127,7 +127,7 @@ func (s *Server) userStoragePaths(userID int64) (databasePath, indexPath, blobPa
 	id := strconv.FormatInt(userID, 10)
 	if strings.TrimSpace(s.dataDir) != "" {
 		userDir := filepath.Join(s.dataDir, "users", id)
-		return filepath.Join(userDir, "mailmirror.db"),
+		return filepath.Join(userDir, "rolltop.db"),
 			filepath.Join(userDir, "bleve"),
 			filepath.Join(userDir, "blobs")
 	}

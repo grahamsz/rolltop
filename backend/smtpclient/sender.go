@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	mmcrypto "mailmirror/backend/crypto"
-	"mailmirror/backend/store"
+	mmcrypto "rolltop/backend/crypto"
+	"rolltop/backend/store"
 )
 
 // Attachment is an outgoing MIME attachment or inline part prepared by compose.
@@ -48,10 +48,11 @@ type Message struct {
 	Date             time.Time
 	AutocryptAddr    string
 	AutocryptKeyData string
+	PGPMIMEEncrypted bool
 	Attachments      []Attachment
 }
 
-// Sender sends compose messages through an encrypted MailMirror SMTP account.
+// Sender sends compose messages through an encrypted Rolltop SMTP account.
 type Sender struct {
 	MasterKey []byte
 	Timeout   time.Duration
@@ -218,6 +219,10 @@ func buildRaw(msg Message, requireRecipients bool) ([]byte, []string, error) {
 }
 
 func writeRootBody(w *bufio.Writer, msg Message) {
+	if msg.PGPMIMEEncrypted {
+		writePGPMIMEEncryptedBody(w, msg)
+		return
+	}
 	inlineAttachments, regularAttachments := splitAttachments(msg.Attachments)
 	hasInlineHTML := len(inlineAttachments) > 0 && strings.TrimSpace(msg.BodyHTML) != ""
 	if len(msg.Attachments) == 0 {
@@ -265,6 +270,32 @@ func writeRootBody(w *bufio.Writer, msg Message) {
 	writeBodyEntityPart(w, boundary, msg)
 	for _, attachment := range inlineAttachments {
 		writeAttachmentPart(w, boundary, attachment)
+	}
+	_, _ = fmt.Fprintf(w, "--%s--\r\n", boundary)
+}
+
+func writePGPMIMEEncryptedBody(w *bufio.Writer, msg Message) {
+	boundary := boundaryFor(msg, "pgp-encrypted")
+	writeHeader(w, "Content-Type", mime.FormatMediaType("multipart/encrypted", map[string]string{
+		"protocol": "application/pgp-encrypted",
+		"boundary": boundary,
+	}))
+	_, _ = w.WriteString("\r\n")
+	_, _ = fmt.Fprintf(w, "--%s\r\n", boundary)
+	writeHeader(w, "Content-Type", "application/pgp-encrypted")
+	writeHeader(w, "Content-Description", "PGP/MIME version identification")
+	_, _ = w.WriteString("\r\n")
+	_, _ = w.WriteString("Version: 1\r\n")
+	_, _ = fmt.Fprintf(w, "--%s\r\n", boundary)
+	writeHeader(w, "Content-Type", mime.FormatMediaType("application/octet-stream", map[string]string{"name": "encrypted.asc"}))
+	writeHeader(w, "Content-Description", "OpenPGP encrypted message")
+	writeHeader(w, "Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": "encrypted.asc"}))
+	writeHeader(w, "Content-Transfer-Encoding", "7bit")
+	_, _ = w.WriteString("\r\n")
+	body := normalizeCRLF(msg.BodyText)
+	_, _ = w.WriteString(body)
+	if !strings.HasSuffix(body, "\r\n") {
+		_, _ = w.WriteString("\r\n")
 	}
 	_, _ = fmt.Fprintf(w, "--%s--\r\n", boundary)
 }
@@ -352,7 +383,7 @@ func writeBase64Body(w *bufio.Writer, data []byte) {
 }
 
 func boundaryFor(msg Message, kind string) string {
-	boundary := "mailmirror-" + kind + "-" + strings.Trim(msg.MessageID, "<>")
+	boundary := "rolltop-" + kind + "-" + strings.Trim(msg.MessageID, "<>")
 	return strings.NewReplacer("@", "-", ".", "-", "_", "-", "/", "-", "+", "-").Replace(boundary)
 }
 
@@ -374,13 +405,13 @@ func sanitizeAttachmentFilename(filename string) string {
 
 // NewMessageID creates a local Message-ID suitable for outbound composed mail.
 func NewMessageID(fromAddress string) string {
-	domain := "mailmirror.local"
+	domain := "rolltop.local"
 	if _, host, ok := strings.Cut(fromAddress, "@"); ok && strings.TrimSpace(host) != "" {
 		domain = strings.ToLower(strings.TrimSpace(host))
 	}
 	random := make([]byte, 12)
 	if _, err := rand.Read(random); err != nil {
-		return fmt.Sprintf("<%d@mailmirror.%s>", time.Now().UnixNano(), domain)
+		return fmt.Sprintf("<%d@rolltop.%s>", time.Now().UnixNano(), domain)
 	}
 	return fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), hex.EncodeToString(random), domain)
 }

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/plugins"
+	"rolltop/backend/plugins"
 )
 
 var DefaultPatterns = []string{

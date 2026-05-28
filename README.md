@@ -4,7 +4,7 @@ rolltop is a single-container Go app that mirrors one IMAP account per local use
 
 V1 stores:
 
-- SQLite metadata at `/data/mailmirror.db`
+- SQLite metadata at `/data/rolltop.db`
 - Bleve search index at `/data/bleve`
 - Raw `.eml` and attachment blobs under `/data/blobs/users/{user_id}/...`
 - Incremental sync progress in `sync_runs`, updated while each folder is processed.
@@ -18,7 +18,7 @@ V1 stores:
 - Cookies are `HttpOnly` and `SameSite=Lax`.
 - POST routes require CSRF tokens.
 - App passwords are hashed with Argon2id.
-- IMAP passwords are encrypted at rest with `MAILMIRROR_MASTER_KEY`.
+- IMAP passwords are encrypted at rest with `ROLLTOP_MASTER_KEY`.
 - Admins can create users, but V1 does not give admins access to other users' mail.
 - Message sending uses the configured SMTP server.
 - Mailbox moves are explicit user actions and are mirrored to IMAP.
@@ -29,32 +29,36 @@ V1 stores:
 Required:
 
 ```sh
-test -f .env.mailmirror || (
+test -f .env.rolltop || (
   umask 077
-  printf 'MAILMIRROR_MASTER_KEY=%s\n' "$(openssl rand -base64 32)" > .env.mailmirror
+  printf 'ROLLTOP_MASTER_KEY=%s\n' "$(openssl rand -base64 32)" > .env.rolltop
 )
 
 set -a
-. ./.env.mailmirror
+. ./.env.rolltop
 set +a
 ```
 
 Common optional variables:
 
 ```sh
-export MAILMIRROR_ADDR=":8080"
-export MAILMIRROR_DATA_DIR="/data"
-export MAILMIRROR_DB_PATH="/data/mailmirror.db"
-export MAILMIRROR_INDEX_PATH="/data/bleve"
-export MAILMIRROR_SESSION_TTL="720h"
-export MAILMIRROR_SYNC_INTERVAL="15m"
-export MAILMIRROR_INBOX_POLL_INTERVAL="1m"
-export MAILMIRROR_BLOB_RETENTION="336h"
-export MAILMIRROR_COOKIE_SECURE="false"
-export MAILMIRROR_WEBHOOK_TOKEN=""
+export ROLLTOP_ADDR=":8080"
+export ROLLTOP_DATA_DIR="/data"
+export ROLLTOP_DB_PATH="/data/rolltop.db"
+export ROLLTOP_INDEX_PATH="/data/bleve"
+export ROLLTOP_SESSION_TTL="720h"
+export ROLLTOP_SYNC_INTERVAL="15m"
+export ROLLTOP_INBOX_POLL_INTERVAL="1m"
+export ROLLTOP_BLOB_RETENTION="336h"
+export ROLLTOP_COOKIE_SECURE="false"
+export ROLLTOP_WEBHOOK_TOKEN=""
 ```
 
-Use `MAILMIRROR_COOKIE_SECURE=true` when serving over HTTPS.
+Use `ROLLTOP_COOKIE_SECURE=true` when serving over HTTPS.
+
+Existing `MAILMIRROR_*` environment variables are accepted temporarily as fallbacks. Prefer `ROLLTOP_*`; when both names are set, `ROLLTOP_*` wins.
+
+On startup, default database paths are renamed from `mailmirror.db` to `rolltop.db` when the new file does not already exist. This applies to both `/data/rolltop.db` and per-user `data/users/<id>/rolltop.db`, including SQLite `-wal`, `-shm`, and `-journal` sidecar files.
 
 ## Run Locally
 
@@ -62,14 +66,14 @@ Use `MAILMIRROR_COOKIE_SECURE=true` when serving over HTTPS.
 npm install
 npm run build
 go test ./...
-test -f .env.mailmirror || (
+test -f .env.rolltop || (
   umask 077
-  printf 'MAILMIRROR_MASTER_KEY=%s\n' "$(openssl rand -base64 32)" > .env.mailmirror
+  printf 'ROLLTOP_MASTER_KEY=%s\n' "$(openssl rand -base64 32)" > .env.rolltop
 )
 set -a
-. ./.env.mailmirror
+. ./.env.rolltop
 set +a
-MAILMIRROR_DATA_DIR="./data" go run ./cmd/mailmirror
+ROLLTOP_DATA_DIR="./data" go run ./cmd/rolltop
 ```
 
 Open `http://localhost:8080`. If no users exist, `/setup` creates the first admin.
@@ -79,29 +83,29 @@ Open `http://localhost:8080`. If no users exist, `/setup` creates the first admi
 ```sh
 docker pull ghcr.io/grahamsz/rolltop:latest
 
-test -f .env.mailmirror || (
+test -f .env.rolltop || (
   umask 077
-  printf 'MAILMIRROR_MASTER_KEY=%s\nMAILMIRROR_COOKIE_SECURE=false\n' "$(openssl rand -base64 32)" > .env.mailmirror
+  printf 'ROLLTOP_MASTER_KEY=%s\nROLLTOP_COOKIE_SECURE=false\n' "$(openssl rand -base64 32)" > .env.rolltop
 )
 
 docker run --rm -p 8080:8080 \
-  --env-file .env.mailmirror \
-  -v mailmirror-data:/data \
+  --env-file .env.rolltop \
+  -v rolltop-data:/data \
   ghcr.io/grahamsz/rolltop:latest
 ```
 
-Keep `.env.mailmirror` with the same care as the Docker volume. Changing or losing `MAILMIRROR_MASTER_KEY` makes stored IMAP passwords undecryptable.
+Keep `.env.rolltop` with the same care as the Docker volume. Changing or losing `ROLLTOP_MASTER_KEY` makes stored IMAP passwords undecryptable.
 
 ## V1 Flow
 
 1. First admin creates the initial account at `/setup`.
 2. Admin creates additional local users at `/admin/users`.
 3. Each user logs in and configures their own IMAP account at `/settings/account`.
-4. The user clicks `Sync now`, chooses per-folder `auto`, `manual`, or `never`, or scheduled sync runs on `MAILMIRROR_SYNC_INTERVAL`.
+4. The user clicks `Sync now`, chooses per-folder `auto`, `manual`, or `never`, or scheduled sync runs on `ROLLTOP_SYNC_INTERVAL`.
 5. Sync runs are planned per mailbox, with INBOX prioritized before background folders. Each mailbox task estimates pending work from IMAP `STATUS`, streams messages in UID batches, and updates current folder, UID, seen, total, stored, and skipped counts.
 6. Message bodies, attachment names, and searchable text-like attachments are indexed with the current user's `user_id`.
 7. SQLite stores compact body previews; full body search lives in Bleve and message display uses the local raw `.eml` or fetches the message from IMAP by UID when the raw blob has aged out.
-8. Raw `.eml` blobs are retained for `MAILMIRROR_BLOB_RETENTION` only, defaulting to 14 days. Set it to `0` to keep all raw blobs.
+8. Raw `.eml` blobs are retained for `ROLLTOP_BLOB_RETENTION` only, defaulting to 14 days. Set it to `0` to keep all raw blobs.
 9. Attachment bytes are read from the raw `.eml` while indexing and are not stored as separate blobs for new syncs.
 10. `/mail`, folder views, `/search`, and `/messages/{id}` only return current-user records.
 11. Folder counts show unread messages.

@@ -8,9 +8,9 @@ import (
 	"regexp"
 	"strings"
 
-	"mailmirror/backend/auth"
-	remoteimageblocklist "mailmirror/backend/plugins/remote_image_blocklist"
-	"mailmirror/backend/store"
+	"rolltop/backend/auth"
+	remoteimageblocklist "rolltop/backend/plugins/remote_image_blocklist"
+	"rolltop/backend/store"
 )
 
 func (s *Server) apiAdminUsers(w http.ResponseWriter, r *http.Request) {

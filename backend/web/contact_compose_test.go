@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"mailmirror/backend/blob"
-	"mailmirror/backend/plugins"
-	"mailmirror/backend/smtpclient"
-	"mailmirror/backend/store"
-	"mailmirror/backend/syncer"
+	"rolltop/backend/blob"
+	"rolltop/backend/plugins"
+	"rolltop/backend/smtpclient"
+	"rolltop/backend/store"
+	"rolltop/backend/syncer"
 )
 
 const composeAutocryptPublicKey = `-----BEGIN PGP PUBLIC KEY BLOCK-----
@@ -61,7 +61,7 @@ func (f *captureAppendFetcher) AppendMessageWithFlags(_ context.Context, _ store
 func TestSendComposeRequiresSentRoleBeforeSMTP(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestSendComposeRequiresSentRoleBeforeSMTP(t *testing.T) {
 func TestSaveComposeDraftAppendsToDraftsMailbox(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,10 +214,28 @@ func TestSendComposeAutocryptHeaderRequiresPluginAndIdentitySetting(t *testing.T
 	}
 }
 
+func TestSendComposePGPMIMEEncryptedForm(t *testing.T) {
+	ctx := context.Background()
+	server, user, fromID, sender, _ := setupAutocryptComposeTest(t, ctx, true)
+	if _, err := server.sendCompose(ctx, currentUser{User: user}, composeForm{
+		To:             "recipient@example.test",
+		Subject:        "PGP/MIME",
+		Body:           "-----BEGIN PGP MESSAGE-----\n\nciphertext\n-----END PGP MESSAGE-----",
+		FromIdentityID: fromID,
+		PGPEncrypted:   true,
+		PGPMIME:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !sender.msg.PGPMIMEEncrypted {
+		t.Fatal("sendCompose did not mark encrypted PGP form as PGP/MIME")
+	}
+}
+
 func TestSendComposeRejectsOtherUserFromIdentity(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +320,7 @@ func TestSendComposeRejectsOtherUserFromIdentity(t *testing.T) {
 func TestReplyComposeSelectsIdentityMatchingRecipient(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +393,7 @@ func TestReplyComposeSelectsIdentityMatchingRecipient(t *testing.T) {
 func setupAutocryptComposeTest(t *testing.T, ctx context.Context, enablePGPPlugin bool) (*Server, store.User, int64, *captureSender, store.MailIdentity) {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,6 +17,7 @@ export type PGPSignatureStatus = "none" | "verified" | "unverified" | "invalid";
 export type PGPMessageOpenResult = {
   text: string;
   encrypted: boolean;
+  pgpMime?: boolean;
   signed: boolean;
   signatureStatus: PGPSignatureStatus;
   signatureDetail: string;
@@ -135,6 +136,34 @@ export async function signMessageText(text: string, signingKey: UnlockedPGPKey):
   return openpgp.sign({ message, signingKeys: signingKey.privateKey as never }) as Promise<string>;
 }
 
+export function pgpMIMEEntityFromBody(text: string, html: string): string {
+  if (html.trim()) {
+    const boundary = `rolltop-pgp-alt-${randomMIMEBoundaryToken()}`;
+    return ensureTrailingCRLF([
+      `Content-Type: multipart/alternative; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      `Content-Type: text/plain; charset="utf-8"`,
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      normalizeCRLFText(text || ""),
+      `--${boundary}`,
+      `Content-Type: text/html; charset="utf-8"`,
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      normalizeCRLFText(html),
+      `--${boundary}--`,
+      ""
+    ].join("\r\n"));
+  }
+  return ensureTrailingCRLF([
+    `Content-Type: text/plain; charset="utf-8"`,
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    normalizeCRLFText(text || "")
+  ].join("\r\n"));
+}
+
 export function addAutocryptGossipHeaders(payload: string, keys: ContactPGPKey[]): string {
   const seen = new Set<string>();
   const headers: string[] = [];
@@ -183,9 +212,50 @@ export async function encryptionKeyRecordsForRecipients(recipientEmails: string[
 
 export async function decryptPGPSource(source: string, keys: UnlockedPGPKey[], verificationKeyArmors: string[] = []): Promise<PGPMessageOpenResult> {
   const openpgp = await loadOpenPGP();
+  const verificationKeys = await readVerificationKeys(openpgp, verificationKeyArmors);
+  const pgpMimeSigned = extractPGPMIMESigned(source);
+  if (pgpMimeSigned) {
+    if (verificationKeys.length === 0) {
+      return {
+        text: pgpMimeSigned.signedEntity,
+        encrypted: false,
+        pgpMime: true,
+        signed: true,
+        signatureStatus: "unverified",
+        signatureDetail: "No public key is available in this browser to verify the signature."
+      };
+    }
+    try {
+      const signaturePacket = await openpgp.readSignature({ armoredSignature: pgpMimeSigned.signatureArmored });
+      const message = await openpgp.createMessage({ binary: new TextEncoder().encode(pgpMimeSigned.signedEntity) });
+      const verified = await openpgp.verify({
+        message,
+        signature: signaturePacket,
+        verificationKeys: verificationKeys as never,
+        format: "binary"
+      });
+      const signature = await verificationState(openpgp, verified.signatures);
+      return {
+        text: pgpMimeSigned.signedEntity,
+        encrypted: false,
+        pgpMime: true,
+        signed: true,
+        ...signature
+      };
+    } catch (err) {
+      return {
+        text: pgpMimeSigned.signedEntity,
+        encrypted: false,
+        pgpMime: true,
+        signed: true,
+        signatureStatus: "invalid",
+        signatureDetail: pgpErrorMessage(err)
+      };
+    }
+  }
+
   const armored = extractArmoredMessage(source);
   if (!armored) throw pgpBlockNotFoundError(source);
-  const verificationKeys = await readVerificationKeys(openpgp, verificationKeyArmors);
   if (armored.includes("BEGIN PGP SIGNED MESSAGE")) {
     const cleartext = await openpgp.readCleartextMessage({ cleartextMessage: armored });
     if (verificationKeys.length === 0) {
@@ -245,6 +315,7 @@ export async function decryptPGPSource(source: string, keys: UnlockedPGPKey[], v
   return {
     text: openedText.text,
     encrypted: true,
+    pgpMime: isPGPMIMEEncryptedSource(source),
     signed: signature.signatureStatus !== "none",
     encryptionKeyIDs,
     symmetricAlgorithm,
@@ -254,9 +325,155 @@ export async function decryptPGPSource(source: string, keys: UnlockedPGPKey[], v
 }
 
 export async function decryptedHTMLDoc(content: string): Promise<string> {
-  const html = looksLikeHTML(content) ? await sanitizeHTML(content) : `<div class="plaintext">${plainTextToHTML(content)}</div>`;
+  const decoded = decodedMIMEEntityForDisplay(content);
+  const display = decoded.html || decoded.text || content;
+  const html = (decoded.html || looksLikeHTML(display)) ? await sanitizeHTML(display) : `<div class="plaintext">${plainTextToHTML(display)}</div>`;
   const csp = "default-src 'none'; img-src 'self' data: cid:; style-src 'unsafe-inline'; font-src data:";
-  return `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${csp}"><style>html,body{margin:0;padding:0;background:#fff;color:#1f2328;font:14px/1.55 Arial,sans-serif;overflow:hidden}body{padding:18px}a{color:#245f80;text-decoration:none;border-bottom:1px solid #9cc5d8}.plaintext{white-space:pre-wrap;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere}table{max-width:100%}img{max-width:100%;height:auto}html[data-mailmirror-theme="classic_dark"],html[data-mailmirror-theme="classic_dark"] body{background:#151f1c!important;color:#e6eee9!important;color-scheme:dark}html[data-mailmirror-theme="classic_dark"] body :where(div,p,span,blockquote,pre,td,th,li){background:transparent!important;color:inherit!important;border-color:rgba(174,190,183,.28)!important}html[data-mailmirror-theme="classic_dark"] a{color:#8bd4c8!important;border-bottom-color:rgba(139,212,200,.5)!important}html[data-mailmirror-theme="matrix"],html[data-mailmirror-theme="matrix"] body{background:#06130d!important;color:#dcffe9!important;color-scheme:dark}html[data-mailmirror-theme="matrix"] body :where(div,p,span,blockquote,pre,td,th,li){background:transparent!important;color:inherit!important;border-color:rgba(74,222,128,.24)!important}html[data-mailmirror-theme="matrix"] a{color:#7dffbf!important;border-bottom-color:rgba(125,255,191,.5)!important}</style></head><body>${html}</body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${csp}"><style>html,body{margin:0;padding:0;background:#fff;color:#1f2328;font:14px/1.55 Arial,sans-serif;overflow:hidden}body{padding:18px}a{color:#245f80;text-decoration:none;border-bottom:1px solid #9cc5d8}.plaintext{white-space:pre-wrap;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere}table{max-width:100%}img{max-width:100%;height:auto}html[data-rolltop-theme="classic_dark"],html[data-rolltop-theme="classic_dark"] body{background:#151f1c!important;color:#e6eee9!important;color-scheme:dark}html[data-rolltop-theme="classic_dark"] body :where(div,p,span,blockquote,pre,td,th,li){background:transparent!important;color:inherit!important;border-color:rgba(174,190,183,.28)!important}html[data-rolltop-theme="classic_dark"] a{color:#8bd4c8!important;border-bottom-color:rgba(139,212,200,.5)!important}html[data-rolltop-theme="matrix"],html[data-rolltop-theme="matrix"] body{background:#06130d!important;color:#dcffe9!important;color-scheme:dark}html[data-rolltop-theme="matrix"] body :where(div,p,span,blockquote,pre,td,th,li){background:transparent!important;color:inherit!important;border-color:rgba(74,222,128,.24)!important}html[data-rolltop-theme="matrix"] a{color:#7dffbf!important;border-bottom-color:rgba(125,255,191,.5)!important}</style></head><body>${html}</body></html>`;
+}
+
+type DecodedMIMEEntity = {
+  html?: string;
+  text?: string;
+};
+
+function decodedMIMEEntityForDisplay(value: string): DecodedMIMEEntity {
+  const entity = splitMIMEEntity(value);
+  if (!entity) return {};
+  return decodedMIMEEntity(entity.headers, entity.body);
+}
+
+function decodedMIMEEntity(headers: Record<string, string>, body: string): DecodedMIMEEntity {
+  const contentType = headers["content-type"] || "";
+  const mediaType = contentType.split(";")[0].trim().toLowerCase();
+  if (mediaType.startsWith("multipart/")) {
+    const boundary = headerParams(contentType).boundary || "";
+    if (!boundary) return {};
+    const out: DecodedMIMEEntity = {};
+    for (const part of splitMultipartBody(body, boundary)) {
+      const decoded = decodedMIMEEntityForDisplay(part);
+      if (!out.html && decoded.html) out.html = decoded.html;
+      if (!out.text && decoded.text) out.text = decoded.text;
+    }
+    return out;
+  }
+  if (mediaType === "text/html") {
+    return { html: decodeMIMEBody(headers, body) };
+  }
+  if (mediaType === "text/plain") {
+    return { text: decodeMIMEBody(headers, body) };
+  }
+  return {};
+}
+
+function splitMIMEEntity(value: string): { headers: Record<string, string>; body: string } | null {
+  const normalized = value.replace(/\r\n/g, "\n");
+  const splitAt = normalized.indexOf("\n\n");
+  if (splitAt < 0) return null;
+  const headerBlock = normalized.slice(0, splitAt);
+  if (!/^[A-Za-z0-9-]+:/m.test(headerBlock)) return null;
+  const headers: Record<string, string> = {};
+  for (const line of unfoldHeaderLines(headerBlock.split("\n"))) {
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
+  }
+  return { headers, body: normalized.slice(splitAt + 2) };
+}
+
+function splitMultipartBody(body: string, boundary: string): string[] {
+  const marker = `--${boundary}`;
+  const parts: string[] = [];
+  for (const chunk of body.split(marker).slice(1)) {
+    if (chunk.startsWith("--")) continue;
+    const part = chunk.replace(/^\n/, "").replace(/\n$/, "");
+    if (part.trim()) parts.push(part);
+  }
+  return parts;
+}
+
+type PGPMIMESignedParts = {
+  signedEntity: string;
+  signatureArmored: string;
+};
+
+function extractPGPMIMESigned(source: string): PGPMIMESignedParts | null {
+  const normalized = normalizeCRLFText(source);
+  const root = splitRawMIMEEntity(normalized);
+  if (!root) return null;
+  const contentType = root.headers["content-type"] || "";
+  const mediaType = contentType.split(";")[0].trim().toLowerCase();
+  if (mediaType !== "multipart/signed") return null;
+  const params = headerParams(contentType);
+  if (!params.protocol?.toLowerCase().includes("application/pgp-signature")) return null;
+  const boundary = params.boundary || "";
+  if (!boundary) return null;
+  const parts = splitRawMultipartBody(root.body, boundary);
+  if (parts.length < 2) return null;
+  const signatureEntity = splitRawMIMEEntity(parts[1]);
+  const signatureBody = signatureEntity ? decodeMIMEBody(signatureEntity.headers, signatureEntity.body) : parts[1];
+  const signatureArmored = signatureBody.match(/-----BEGIN PGP SIGNATURE-----[\s\S]*?-----END PGP SIGNATURE-----/)?.[0] || "";
+  if (!signatureArmored) return null;
+  return {
+    signedEntity: parts[0],
+    signatureArmored
+  };
+}
+
+function splitRawMIMEEntity(value: string): { headers: Record<string, string>; body: string } | null {
+  const splitAt = value.indexOf("\r\n\r\n");
+  if (splitAt < 0) return null;
+  const headerBlock = value.slice(0, splitAt);
+  if (!/^[A-Za-z0-9-]+:/m.test(headerBlock)) return null;
+  const headers: Record<string, string> = {};
+  for (const line of unfoldHeaderLines(headerBlock.split("\r\n"))) {
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
+  }
+  return { headers, body: value.slice(splitAt + 4) };
+}
+
+function splitRawMultipartBody(body: string, boundary: string): string[] {
+  const marker = `--${boundary}`;
+  const boundaryIndexes: number[] = [];
+  let offset = 0;
+  while (offset < body.length) {
+    const index = body.indexOf(marker, offset);
+    if (index < 0) break;
+    if (index === 0 || body[index - 1] === "\n") {
+      boundaryIndexes.push(index);
+    }
+    offset = index + marker.length;
+  }
+  const parts: string[] = [];
+  for (let i = 0; i < boundaryIndexes.length - 1; i++) {
+    const boundaryAt = boundaryIndexes[i];
+    const lineEnd = body.indexOf("\n", boundaryAt);
+    if (lineEnd < 0) break;
+    const boundaryLine = body.slice(boundaryAt, lineEnd).replace(/\r$/, "");
+    if (boundaryLine === `${marker}--`) break;
+    if (boundaryLine !== marker) continue;
+    const start = lineEnd + 1;
+    let end = boundaryIndexes[i + 1];
+    if (body.slice(end - 2, end) === "\r\n") end -= 2;
+    const part = body.slice(start, end);
+    if (part.trim()) parts.push(part);
+  }
+  return parts;
+}
+
+function isPGPMIMEEncryptedSource(source: string): boolean {
+  const contentType = splitRawMIMEEntity(normalizeCRLFText(source))?.headers["content-type"] || "";
+  return contentType.toLowerCase().includes("multipart/encrypted") &&
+    contentType.toLowerCase().includes("application/pgp-encrypted");
+}
+
+function decodeMIMEBody(headers: Record<string, string>, body: string): string {
+  const encoding = (headers["content-transfer-encoding"] || "").toLowerCase();
+  if (encoding.includes("quoted-printable")) return decodeQuotedPrintable(body);
+  if (encoding.includes("base64")) return decodeBase64Text(body);
+  return body;
 }
 
 export function pgpPassphraseIssues(passphrase: string, identityValues: string[]): string[] {
@@ -395,7 +612,7 @@ async function publicKeyCanEncrypt(openpgp: OpenPGPModule, publicKeyArmored: str
 function pgpBlockNotFoundError(source: string): Error {
   const lower = source.toLowerCase();
   if (lower.includes("multipart/encrypted") || lower.includes("application/pgp-encrypted")) {
-    return new Error("PGP/MIME encrypted messages are detected, but this opener currently supports inline armored PGP messages only.");
+    return new Error("PGP/MIME encrypted message detected, but no ASCII-armored encrypted payload was found.");
   }
   if (lower.includes("multipart/signed") || lower.includes("application/pgp-signature")) {
     return new Error("Detached PGP/MIME signatures are detected, but this opener currently supports inline clear-signed PGP messages only.");
@@ -533,7 +750,9 @@ function stripAutocryptGossipHeaders(value: string): { text: string; gossip: Aut
     .filter((line) => /^Autocrypt-Gossip:/i.test(line))
     .map((line) => parseAutocryptHeaderValue(line.replace(/^Autocrypt-Gossip:\s*/i, "")))
     .filter((item): item is AutocryptGossipKey => Boolean(item));
-  return { text: normalized.slice(splitAt + 2), gossip };
+  const keptHeaders = unfolded.filter((line) => !/^Autocrypt-Gossip:/i.test(line));
+  const body = normalized.slice(splitAt + 2);
+  return { text: keptHeaders.length > 0 ? `${keptHeaders.join("\n")}\n\n${body}` : body, gossip };
 }
 
 function unfoldHeaderLines(lines: string[]): string[] {
@@ -608,6 +827,24 @@ function normalizeBase64(value: string): string {
   } catch {
     return "";
   }
+}
+
+function randomMIMEBoundaryToken(): string {
+  const bytes = new Uint8Array(12);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function normalizeCRLFText(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, "\r\n");
+}
+
+function ensureTrailingCRLF(value: string): string {
+  return value.endsWith("\r\n") ? value : `${value}\r\n`;
 }
 
 function pgpErrorMessage(err: unknown): string {

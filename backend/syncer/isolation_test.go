@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"mailmirror/backend/blob"
-	mmcrypto "mailmirror/backend/crypto"
-	"mailmirror/backend/search"
-	"mailmirror/backend/store"
-	"mailmirror/backend/syncer"
+	"rolltop/backend/blob"
+	mmcrypto "rolltop/backend/crypto"
+	"rolltop/backend/search"
+	"rolltop/backend/store"
+	"rolltop/backend/syncer"
 )
 
 type fakeFetcher struct {
@@ -164,7 +164,7 @@ func (f *fakeFetcher) MoveMessage(ctx context.Context, account store.MailAccount
 func TestFakeSyncTenantIsolation(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestFakeSyncTenantIsolation(t *testing.T) {
 func TestRequestedMailboxSyncRepairsIncompleteCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestRequestedMailboxSyncRepairsIncompleteCheckpoint(t *testing.T) {
 func TestRepairMailboxSearchIndexIndexesMissingIDsWhenCountsMatch(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +484,7 @@ func TestRepairMailboxSearchIndexIndexesMissingIDsWhenCountsMatch(t *testing.T) 
 func TestPurgeMailboxLocalReferencesClearsSearchAndResetsCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +597,7 @@ func TestPurgeMailboxLocalReferencesClearsSearchAndResetsCheckpoint(t *testing.T
 func TestSyncModesControlAutomaticAndManualFolders(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +694,7 @@ func TestSyncModesControlAutomaticAndManualFolders(t *testing.T) {
 func TestDiscoverMailboxesCreatesRowsWithoutSyncingMessages(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -756,7 +756,7 @@ func TestDiscoverMailboxesCreatesRowsWithoutSyncingMessages(t *testing.T) {
 func TestCanceledSyncRunIsMarkedInterrupted(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -806,7 +806,7 @@ func TestCanceledSyncRunIsMarkedInterrupted(t *testing.T) {
 func TestOnDemandFetchCachesRawBlobButPlainFetchDoesNot(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -885,7 +885,7 @@ func TestOnDemandFetchCachesRawBlobButPlainFetchDoesNot(t *testing.T) {
 func TestCopyMessageAcrossAccountsAppendsAndStoresDestination(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -972,7 +972,7 @@ func TestCopyMessageAcrossAccountsAppendsAndStoresDestination(t *testing.T) {
 func TestCopyMessagesPreservesSourceDateWhenDestinationUsesAppendDate(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1094,7 +1094,7 @@ func rawMessage(from, subject, body string, withAttachment bool) string {
 	if !withAttachment {
 		return fmt.Sprintf("From: %s\r\nTo: archive@example.test\r\nSubject: %s\r\nDate: Fri, 01 May 2026 12:00:00 +0000\r\nMessage-ID: <%s@example.test>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n", from, subject, strings.ReplaceAll(subject, " ", "-"), body)
 	}
-	return fmt.Sprintf("From: %s\r\nTo: archive@example.test\r\nSubject: %s\r\nDate: Fri, 01 May 2026 12:00:00 +0000\r\nMessage-ID: <%s@example.test>\r\nContent-Type: multipart/mixed; boundary=mailmirror-test\r\n\r\n--mailmirror-test\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n--mailmirror-test\r\nContent-Type: text/plain; name=\"note.txt\"\r\nContent-Disposition: attachment; filename=\"note.txt\"\r\nContent-Transfer-Encoding: base64\r\n\r\nbm90ZSBib2R5\r\n--mailmirror-test--\r\n", from, subject, strings.ReplaceAll(subject, " ", "-"), body)
+	return fmt.Sprintf("From: %s\r\nTo: archive@example.test\r\nSubject: %s\r\nDate: Fri, 01 May 2026 12:00:00 +0000\r\nMessage-ID: <%s@example.test>\r\nContent-Type: multipart/mixed; boundary=rolltop-test\r\n\r\n--rolltop-test\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n--rolltop-test\r\nContent-Type: text/plain; name=\"note.txt\"\r\nContent-Disposition: attachment; filename=\"note.txt\"\r\nContent-Transfer-Encoding: base64\r\n\r\nbm90ZSBib2R5\r\n--rolltop-test--\r\n", from, subject, strings.ReplaceAll(subject, " ", "-"), body)
 }
 
 func rawMessageNoDate(from, subject, body string) string {

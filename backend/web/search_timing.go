@@ -53,8 +53,7 @@ func writeSearchTimingHeaders(w http.ResponseWriter, timing *searchTiming, page 
 		"raw_hits=" + strconv.Itoa(timing.rawHits),
 		"seeds=" + strconv.Itoa(timing.seeds),
 	}, ";")
-	w.Header().Set("X-rolltop-Search-Stats", stats)
-	w.Header().Set("X-MailMirror-Search-Stats", stats)
+	w.Header().Set("X-Rolltop-Search-Stats", stats)
 }
 
 func serverTimingMetric(name string, duration time.Duration) string {
@@ -90,8 +89,7 @@ func (s *Server) writeSearchNotModifiedIfFresh(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Server-Timing", `cache;desc="mail-list-etag";dur=0`)
-	w.Header().Set("X-rolltop-Search-Stats", "cache=hit")
-	w.Header().Set("X-MailMirror-Search-Stats", "cache=hit")
+	w.Header().Set("X-Rolltop-Search-Stats", "cache=hit")
 	w.WriteHeader(http.StatusNotModified)
 	return true
 }

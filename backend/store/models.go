@@ -149,7 +149,7 @@ type MailboxSummary struct {
 }
 
 // AccountPurgeEstimate is the local data footprint shown before deleting an
-// IMAP account from MailMirror. It deliberately describes only local SQLite,
+// IMAP account from Rolltop. It deliberately describes only local SQLite,
 // blob, and search-index data; no remote IMAP message is deleted.
 type AccountPurgeEstimate struct {
 	Account      MailAccount

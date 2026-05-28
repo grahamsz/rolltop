@@ -1,5 +1,5 @@
 // File overview: Store construction and tenant database routing. OpenServer
-// opens only the system database; UserStore opens data/users/<id>/mailmirror.db
+// opens only the system database; UserStore opens data/users/<id>/rolltop.db
 // on demand and mirrors the system user row into it. Store methods that touch
 // user-owned mail/contact/blob/search hydration metadata should call dataDB or
 // mustDataDB so they automatically run against the per-user SQLite handle in
@@ -21,7 +21,11 @@ import (
 
 var ErrNotFound = sql.ErrNoRows
 
-const DefaultMessageBodyPreviewBytes = 4096
+const (
+	DefaultMessageBodyPreviewBytes = 4096
+	databaseFilename               = "rolltop.db"
+	legacyDatabaseFilename         = "mailmirror.db"
+)
 
 // Store is the SQLite access layer; in production the root store opens the system DB and caches per-user stores.
 type Store struct {
@@ -39,15 +43,18 @@ func Open(path string) (*Store, error) {
 }
 
 // OpenServer opens the production system store without progress reporting.
-// cmd/mailmirror usually calls OpenServerWithProgress instead.
+// cmd/rolltop usually calls OpenServerWithProgress instead.
 func OpenServer(path string, dataDir string) (*Store, error) {
 	return OpenServerWithProgress(path, dataDir, nil)
 }
 
 // OpenServerWithProgress opens the installation-level database only. Per-user
 // databases are opened lazily through UserStore so tenant-owned data remains in
-// data/users/<id>/mailmirror.db.
+// data/users/<id>/rolltop.db.
 func OpenServerWithProgress(path string, dataDir string, progress MigrationReporter) (*Store, error) {
+	if err := renameLegacyDatabaseFiles(path, schemaSystem); err != nil {
+		return nil, err
+	}
 	return open(path, dataDir, true, schemaSystem, progress)
 }
 
@@ -57,6 +64,9 @@ func OpenServerWithProgress(path string, dataDir string, progress MigrationRepor
 // caching only for the production system database.
 func open(path string, dataDir string, split bool, schema schemaKind, progress MigrationReporter) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	if err := renameLegacyDatabaseFiles(path, schema); err != nil {
 		return nil, err
 	}
 	db, err := sql.Open("sqlite3", path+"?_foreign_keys=on&_busy_timeout=5000")
@@ -154,7 +164,7 @@ func (s *Store) userStore(ctx context.Context, userID int64, progress MigrationR
 	if err := os.MkdirAll(userDir, 0o700); err != nil {
 		return nil, err
 	}
-	userDBPath := filepath.Join(userDir, "mailmirror.db")
+	userDBPath := filepath.Join(userDir, databaseFilename)
 	us, err := open(userDBPath, "", false, schemaUser, progress)
 	if err != nil {
 		return nil, err
@@ -172,6 +182,97 @@ func (s *Store) userStore(ctx context.Context, userID int64, progress MigrationR
 	s.userStores[userID] = us
 	s.mu.Unlock()
 	return us, nil
+}
+
+func renameLegacyDatabaseFiles(path string, schema schemaKind) error {
+	if filepath.Base(path) != databaseFilename {
+		return nil
+	}
+	if _, err := os.Stat(path); err == nil {
+		if schema != schemaSystem {
+			return nil
+		}
+		replace, err := shouldReplaceEmptySystemDatabase(path)
+		if err != nil || !replace {
+			return err
+		}
+		if err := removeDatabaseFiles(path); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	legacyPath := filepath.Join(filepath.Dir(path), legacyDatabaseFilename)
+	if _, err := os.Stat(legacyPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		oldPath := legacyPath + suffix
+		newPath := path + suffix
+		if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if _, err := os.Stat(newPath); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return fmt.Errorf("rename legacy database %q to %q: %w", oldPath, newPath, err)
+		}
+	}
+	return nil
+}
+
+func shouldReplaceEmptySystemDatabase(path string) (bool, error) {
+	legacyPath := filepath.Join(filepath.Dir(path), legacyDatabaseFilename)
+	if _, err := os.Stat(legacyPath); os.IsNotExist(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	currentUsers, err := sqliteTableRowCount(path, "users")
+	if err != nil {
+		return false, err
+	}
+	legacyUsers, err := sqliteTableRowCount(legacyPath, "users")
+	if err != nil {
+		return false, err
+	}
+	return currentUsers == 0 && legacyUsers > 0, nil
+}
+
+func sqliteTableRowCount(path string, table string) (int, error) {
+	db, err := sql.Open("sqlite3", path+"?mode=ro&_query_only=1")
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	var exists int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&exists); err != nil {
+		return 0, err
+	}
+	if exists == 0 {
+		return 0, nil
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func removeDatabaseFiles(path string) error {
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if err := os.Remove(path + suffix); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // UserDB exposes the concrete per-user database for plugin code that needs to

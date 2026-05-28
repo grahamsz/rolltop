@@ -6,7 +6,7 @@ import type { MouseEvent, ReactNode } from "react";
 import { Star } from "@phosphor-icons/react";
 import { api } from "../../api";
 import type { DatePrefs, LocationState, PGPUnlockState, Toast } from "../../appTypes";
-import type { Bootstrap, ComposeForm, ComposeIdentity, HeaderDetail, Mailbox, MessageOriginalSource, SearchExplanation, ThreadMessage } from "../../types";
+import type { Attachment, Bootstrap, ComposeForm, ComposeIdentity, ContactPGPKey, HeaderDetail, Mailbox, MessageOriginalSource, SearchExplanation, ThreadMessage } from "../../types";
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime } from "../../lib/format";
@@ -63,6 +63,16 @@ type PGPVerificationKeys = {
   senderEmail: string;
   loadError?: string;
 };
+
+type AttachmentPGPImportState = {
+  status: "candidate" | "checking" | "ready" | "importing" | "imported" | "ignored" | "error";
+  email?: string;
+  key?: ContactPGPKey;
+  error?: string;
+};
+
+const PGP_ATTACHMENT_AUTO_PARSE_BYTES = 1024;
+const PGP_ATTACHMENT_IMPORT_BYTES = 16 * 1024;
 
 function shouldShowLoadStatus(status: MessageLoadStatus | null): status is MessageLoadStatus {
   return Boolean(status && (status.imap_fetch_count > 0 || status.source === "local_blob" || status.source === "local"));
@@ -190,6 +200,14 @@ function PGPSignaturePill({ encrypted, state }: { encrypted: boolean; state?: PG
   const loading = !encrypted && (!state || state.loading);
   const status = loading ? "checking" : state?.signatureStatus || (encrypted ? "unverified" : "unverified");
   const statusClass = status === "verified" ? "verified" : status === "invalid" ? "invalid" : "unverified";
+  const summary = loading
+    ? "Checking the PGP signature in this browser."
+    : state?.signatureDetail || (encrypted && !state
+      ? "Decrypt this message to verify its PGP signature."
+      : "No saved public key is available for this sender, so rolltop cannot verify the signature.");
+  const detailLines = [summary, ...(state?.securityDetails || [])].filter(Boolean);
+  const detail = detailLines.join("\n");
+  const missingKey = /^no (?:saved )?public key/i.test(summary);
   const label = loading
     ? "Checking signature"
     : status === "verified"
@@ -198,19 +216,16 @@ function PGPSignaturePill({ encrypted, state }: { encrypted: boolean; state?: PG
         ? "Signature mismatch"
         : encrypted && !state
           ? "Signature locked"
-          : "No public key";
-  const detail = loading
-    ? "Checking the PGP signature in this browser."
-    : state?.signatureDetail || (encrypted && !state
-      ? "Decrypt this message to verify its PGP signature."
-      : "No saved public key is available for this sender, so rolltop cannot verify the signature.");
+          : missingKey ? "No public key" : "Signature unverified";
   return (
     <details className={`pgp-signature-pill ${statusClass}`} onClick={(event) => event.stopPropagation()}>
       <summary title={detail}>
         <Icon name="signature" weight={status === "verified" ? "bold" : "regular"} />
         {label}
       </summary>
-      <div className="pgp-signature-detail">{detail}</div>
+      <div className="pgp-signature-detail">
+        {detailLines.map((line) => <div key={line}>{line}</div>)}
+      </div>
     </details>
   );
 }
@@ -282,7 +297,7 @@ function pgpSignatureState(item: ThreadMessage, result: PGPMessageOpenResult, ke
 function pgpSecurityDetails(item: ThreadMessage, result: PGPMessageOpenResult, signature: Pick<PGPBodyState, "signatureStatus" | "signatureDetail">, keys: PGPVerificationKeys, unlocked: PGPUnlockState): string[] {
   const details: string[] = [];
   if (result.encrypted) {
-    details.push("OpenPGP mode: Encrypted inline message");
+    details.push(`OpenPGP mode: ${result.pgpMime ? "Encrypted PGP/MIME message" : "Encrypted inline message"}`);
     if (result.symmetricAlgorithm) details.push(`Message cipher: ${formatPGPAlgorithm(result.symmetricAlgorithm)}`);
     if (result.encryptionKeyIDs?.length) details.push(`Recipient key IDs: ${result.encryptionKeyIDs.map(shortPGPDetailValue).join(", ")}`);
     const unlockedKey = unlocked.keys[0];
@@ -291,7 +306,7 @@ function pgpSecurityDetails(item: ThreadMessage, result: PGPMessageOpenResult, s
       details.push(`Unlocked key: ${parts.join(" · ")}`);
     }
   } else if (item.message.is_signed || result.signed) {
-    details.push("OpenPGP mode: Clear-signed inline message");
+    details.push(`OpenPGP mode: ${result.pgpMime ? "Detached PGP/MIME signature" : "Clear-signed inline message"}`);
   }
   if (signature.signatureStatus && signature.signatureStatus !== "none") {
     details.push(`Signature status: ${signature.signatureStatus}`);
@@ -438,6 +453,7 @@ export function ThreadView({
   const [pendingUnsubscribe, setPendingUnsubscribe] = useState<ThreadMessage | null>(null);
   const [originalSource, setOriginalSource] = useState<OriginalSourceState | null>(null);
   const [pgpBodies, setPGPBodies] = useState<Record<number, PGPBodyState>>({});
+  const [pgpAttachmentImports, setPGPAttachmentImports] = useState<Record<number, AttachmentPGPImportState>>({});
   const [searchExplanations, setSearchExplanations] = useState<Record<number, SearchExplanationState>>({});
   const [loadStatus, setLoadStatus] = useState<MessageLoadStatus | null>(null);
   const [error, setError] = useState("");
@@ -453,6 +469,7 @@ export function ThreadView({
   const brandDomainKey = useMemo(() => brandDomainKeyForThread(thread, pluginSet), [thread, pluginSet]);
   const [brandIcons, setBrandIcons] = useState<Record<string, string>>({});
   const autoPGPVerificationRef = useRef<Set<string>>(new Set());
+  const pgpAttachmentChecksRef = useRef<Set<number>>(new Set());
   const pgpWasUnlockedRef = useRef(false);
 
   // Loading is split into a quick status probe and the actual message request.
@@ -464,7 +481,9 @@ export function ThreadView({
       setLoadStatus(null);
       setOriginalSource(null);
       setPGPBodies({});
+      setPGPAttachmentImports({});
       autoPGPVerificationRef.current = new Set();
+      pgpAttachmentChecksRef.current = new Set();
       setSearchExplanations({});
       let statusTimer = 0;
       try {
@@ -512,6 +531,17 @@ export function ThreadView({
       cancelled = true;
     };
   }, [brandDomainKey]);
+
+  useEffect(() => {
+    if (!pgpEnabled || loading) return;
+    for (const item of thread) {
+      for (const attachment of item.attachments) {
+        if (!attachment.pgp_public_key_candidate || pgpAttachmentChecksRef.current.has(attachment.id)) continue;
+        pgpAttachmentChecksRef.current.add(attachment.id);
+        void checkPGPPublicKeyAttachment(item, attachment);
+      }
+    }
+  }, [loading, pgpEnabled, thread]);
 
   useEffect(() => {
     if (!pgpEnabled || loading) return;
@@ -585,6 +615,70 @@ export function ThreadView({
     } catch (err) {
       addToast(messageFromError(err), "error");
     }
+  }
+
+  async function checkPGPPublicKeyAttachment(item: ThreadMessage, attachment: Attachment) {
+    const email = item.sender_email.trim();
+    if (!email || attachment.size > PGP_ATTACHMENT_IMPORT_BYTES) {
+      setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ignored" } }));
+      return;
+    }
+    if (attachment.size > PGP_ATTACHMENT_AUTO_PARSE_BYTES) {
+      setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "candidate", email } }));
+      return;
+    }
+    setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "checking", email } }));
+    try {
+      const text = await fetchPGPKeyAttachmentText(attachment);
+      if (text.length > PGP_ATTACHMENT_AUTO_PARSE_BYTES || !/-----BEGIN PGP PUBLIC KEY BLOCK-----/i.test(text)) {
+        setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ignored" } }));
+        return;
+      }
+      const key = await publicKeyRecordFromArmored(text, email);
+      setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ready", email, key } }));
+    } catch {
+      setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ignored" } }));
+    }
+  }
+
+  async function importAttachmentPGPPublicKey(attachment: Attachment) {
+    let state = pgpAttachmentImports[attachment.id];
+    if (!state || state.status === "ignored" || state.status === "imported") return;
+    setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { ...state, status: "importing" } }));
+    try {
+      let key = state.key;
+      const email = state.email || "";
+      if (!key) {
+        const text = await fetchPGPKeyAttachmentText(attachment);
+        key = await publicKeyRecordFromArmored(text, email);
+        state = { ...state, email, key };
+      }
+      await api.savePGPPublicKey(csrf, { ...key, email: state.email || key.email, is_preferred: true });
+      setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { ...state, status: "imported" } }));
+      addToast(`PGP public key imported for ${state.email || key.email}.`);
+    } catch (err) {
+      setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { ...state, status: "error", error: messageFromError(err) } }));
+      addToast(messageFromError(err), "error");
+    }
+  }
+
+  async function fetchPGPKeyAttachmentText(attachment: Attachment): Promise<string> {
+    if (attachment.size > PGP_ATTACHMENT_IMPORT_BYTES) {
+      throw new Error("This PGP key attachment is too large to import from the message view.");
+    }
+    const response = await fetch(attachment.download_url, {
+      headers: { Accept: "application/pgp-keys,text/plain,*/*;q=0.8" },
+      credentials: "same-origin"
+    });
+    if (!response.ok) throw new Error(`Attachment download failed (${response.status}).`);
+    const text = await response.text();
+    if (text.length > PGP_ATTACHMENT_IMPORT_BYTES) {
+      throw new Error("This PGP key attachment is too large to import from the message view.");
+    }
+    if (!/-----BEGIN PGP PUBLIC KEY BLOCK-----/i.test(text)) {
+      throw new Error("This attachment does not contain an ASCII-armored PGP public key.");
+    }
+    return text;
   }
 
   async function viewOriginal(event: MouseEvent<HTMLButtonElement>, item: ThreadMessage) {
@@ -1046,7 +1140,7 @@ export function ThreadView({
                       <span>{pgpBody.status}</span>
                     </div>
                   ) : null}
-                  {pgpMessage && pgpBody?.doc ? <PGPDetailsBlock state={pgpBody} /> : null}
+                  {pgpMessage && pgpBody?.doc && !pgpSignatureVisible ? <PGPDetailsBlock state={pgpBody} /> : null}
                   {pgpMessage && item.message.is_encrypted && !pgpBody?.doc && !pgpBody?.loading && !pgpBody?.error ? (
                     <div className="body-notice pgp-body-notice encrypted-placeholder">
                       <Icon name="lock" />
@@ -1088,6 +1182,45 @@ export function ThreadView({
                           />
                         </a>
                         <AttachmentPreviewSlot attachment={attachment} plugins={pluginSet} />
+                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "checking" ? (
+                          <span className="attachment-preview-link">Checking key</span>
+                        ) : null}
+                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "candidate" ? (
+                          <button
+                            className="attachment-preview-link"
+                            type="button"
+                            title={`Validate and import PGP public key for ${pgpAttachmentImports[attachment.id]?.email || item.sender_email}`}
+                            onClick={() => void importAttachmentPGPPublicKey(attachment)}
+                          >
+                            Import key
+                          </button>
+                        ) : null}
+                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "ready" ? (
+                          <button
+                            className="attachment-preview-link"
+                            type="button"
+                            title={`Import PGP public key for ${pgpAttachmentImports[attachment.id]?.email || item.sender_email}`}
+                            onClick={() => void importAttachmentPGPPublicKey(attachment)}
+                          >
+                            Import key
+                          </button>
+                        ) : null}
+                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "importing" ? (
+                          <span className="attachment-preview-link">Importing</span>
+                        ) : null}
+                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "imported" ? (
+                          <span className="attachment-preview-link">Key imported</span>
+                        ) : null}
+                        {pgpEnabled && pgpAttachmentImports[attachment.id]?.status === "error" ? (
+                          <button
+                            className="attachment-preview-link"
+                            type="button"
+                            title={pgpAttachmentImports[attachment.id]?.error || "Import failed"}
+                            onClick={() => void importAttachmentPGPPublicKey(attachment)}
+                          >
+                            Retry key
+                          </button>
+                        ) : null}
                       </div>
                     ))}
                   </div>
@@ -1317,21 +1450,21 @@ function currentEmailDocumentTheme(): "classic" | "classic_dark" | "matrix" {
 function themedEmailSrcDoc(srcDoc: string): string {
   const theme = currentEmailDocumentTheme();
   if (theme === "classic") return srcDoc;
-  return srcDoc.replace(/<html(\s|>)/i, `<html data-mailmirror-theme="${theme}"$1`);
+  return srcDoc.replace(/<html(\s|>)/i, `<html data-rolltop-theme="${theme}"$1`);
 }
 
 function applyEmailDocumentTheme(doc: Document | null | undefined) {
   if (!doc) return;
   const theme = currentEmailDocumentTheme();
   if (theme === "classic") {
-    doc.documentElement.removeAttribute("data-mailmirror-theme");
+    doc.documentElement.removeAttribute("data-rolltop-theme");
     return;
   }
-  doc.documentElement.setAttribute("data-mailmirror-theme", theme);
+  doc.documentElement.setAttribute("data-rolltop-theme", theme);
 }
 
 // EmailFrame isolates message HTML in a sandboxed iframe, applies the active
-// MailMirror theme, highlights search terms inside the iframe document, and
+// Rolltop theme, highlights search terms inside the iframe document, and
 // repeatedly measures height because images/fonts can settle after load.
 function EmailFrame({
   srcDoc,

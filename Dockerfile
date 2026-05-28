@@ -17,7 +17,7 @@ ARG ROLLTOP_COMMIT=
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w -X mailmirror/backend/buildinfo.Version=${ROLLTOP_VERSION} -X mailmirror/backend/buildinfo.BuildDate=${ROLLTOP_BUILD_DATE} -X mailmirror/backend/buildinfo.Commit=${ROLLTOP_COMMIT}" -o /out/rolltop ./cmd/mailmirror
+RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w -X rolltop/backend/buildinfo.Version=${ROLLTOP_VERSION} -X rolltop/backend/buildinfo.BuildDate=${ROLLTOP_BUILD_DATE} -X rolltop/backend/buildinfo.Commit=${ROLLTOP_COMMIT}" -o /out/rolltop ./cmd/rolltop
 
 FROM alpine:3.22
 
@@ -35,7 +35,7 @@ USER rolltop
 EXPOSE 8080
 VOLUME ["/data"]
 
-ENV MAILMIRROR_ADDR=:8080
-ENV MAILMIRROR_DATA_DIR=/data
+ENV ROLLTOP_ADDR=:8080
+ENV ROLLTOP_DATA_DIR=/data
 
 ENTRYPOINT ["/usr/local/bin/rolltop"]

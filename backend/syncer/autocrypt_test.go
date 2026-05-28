@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mailmirror/backend/plugins"
-	"mailmirror/backend/store"
+	"rolltop/backend/plugins"
+	"rolltop/backend/store"
 )
 
 const autocryptTestRaw = "From: Alice <alice@example.test>\r\nAutocrypt: addr=alice@example.test; prefer-encrypt=mutual; keydata=AQIDBAUGBwg=\r\nSubject: hello\r\n\r\nbody"
@@ -77,7 +77,7 @@ func TestDiscoverAutocryptHeadersRequiresPluginAndMatchingFrom(t *testing.T) {
 
 func autocryptTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

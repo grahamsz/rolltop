@@ -10,8 +10,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"mailmirror/backend/mailparse"
-	"mailmirror/backend/store"
+	"rolltop/backend/mailparse"
+	"rolltop/backend/store"
 )
 
 const snippetPreviewBytes = 280

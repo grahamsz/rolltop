@@ -122,15 +122,16 @@ type apiConversation struct {
 }
 
 type apiAttachment struct {
-	ID             int64                 `json:"id"`
-	Filename       string                `json:"filename"`
-	ContentType    string                `json:"content_type"`
-	Size           int64                 `json:"size"`
-	DownloadURL    string                `json:"download_url"`
-	Matched        bool                  `json:"matched,omitempty"`
-	ContentMatched bool                  `json:"content_matched,omitempty"`
-	MatchTerms     []string              `json:"match_terms,omitempty"`
-	Preview        *apiAttachmentPreview `json:"preview,omitempty"`
+	ID                    int64                 `json:"id"`
+	Filename              string                `json:"filename"`
+	ContentType           string                `json:"content_type"`
+	Size                  int64                 `json:"size"`
+	DownloadURL           string                `json:"download_url"`
+	Matched               bool                  `json:"matched,omitempty"`
+	ContentMatched        bool                  `json:"content_matched,omitempty"`
+	MatchTerms            []string              `json:"match_terms,omitempty"`
+	PGPPublicKeyCandidate bool                  `json:"pgp_public_key_candidate,omitempty"`
+	Preview               *apiAttachmentPreview `json:"preview,omitempty"`
 }
 
 type apiAttachmentPreview struct {

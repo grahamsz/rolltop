@@ -8,7 +8,7 @@ import (
 
 func TestMailIdentityAutocryptDefaultsAndUpdates(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

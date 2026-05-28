@@ -84,6 +84,37 @@ func TestBuildRawWritesFoldedAutocryptHeader(t *testing.T) {
 	}
 }
 
+func TestBuildRawWithPGPMIMEEncryptedBody(t *testing.T) {
+	raw, _, err := BuildRaw(Message{
+		From:             "sender@example.test",
+		To:               []string{"to@example.test"},
+		Subject:          "PGP MIME",
+		BodyText:         "-----BEGIN PGP MESSAGE-----\n\nciphertext\n-----END PGP MESSAGE-----",
+		MessageID:        "<pgp-mime@example.test>",
+		Date:             time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
+		PGPMIMEEncrypted: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		`Content-Type: multipart/encrypted; boundary=rolltop-pgp-encrypted-pgp-mime-example-test; protocol="application/pgp-encrypted"`,
+		"Content-Type: application/pgp-encrypted\r\n",
+		"Version: 1\r\n",
+		`Content-Type: application/octet-stream; name=encrypted.asc`,
+		`Content-Disposition: inline; filename=encrypted.asc`,
+		"-----BEGIN PGP MESSAGE-----\r\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("PGP/MIME raw missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "Content-Type: text/plain") {
+		t.Fatalf("PGP/MIME encrypted body leaked a plain text body part:\n%s", text)
+	}
+}
+
 func TestBuildDraftRawAllowsNoRecipientsAndKeepsBcc(t *testing.T) {
 	raw, err := BuildDraftRaw(Message{
 		From:      "Sender <sender@example.test>",

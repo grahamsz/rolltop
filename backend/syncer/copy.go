@@ -8,7 +8,7 @@ import (
 	"log"
 	"strings"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 // CopyMessages appends local or refetched raw messages to the destination IMAP

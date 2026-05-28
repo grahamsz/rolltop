@@ -6,7 +6,7 @@ import (
 	"context"
 	"database/sql"
 
-	"mailmirror/backend/plugins"
+	"rolltop/backend/plugins"
 )
 
 // Migrations returns schema changes for per-message language detection metadata.

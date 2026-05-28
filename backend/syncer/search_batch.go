@@ -5,7 +5,7 @@ package syncer
 import (
 	"context"
 
-	"mailmirror/backend/search"
+	"rolltop/backend/search"
 )
 
 const fetchedSearchIndexBatchSize = 25

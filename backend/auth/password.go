@@ -32,7 +32,7 @@ var DefaultArgon2idParams = Argon2idParams{
 	KeyLength:   32,
 }
 
-// HashPassword derives a password hash using the default interactive parameters for local MailMirror users.
+// HashPassword derives a password hash using the default interactive parameters for local Rolltop users.
 func HashPassword(password string) (string, error) {
 	return HashPasswordWithParams(password, DefaultArgon2idParams)
 }

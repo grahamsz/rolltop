@@ -10,7 +10,7 @@ import (
 
 func TestContactsAreScopedByUser(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestContactsAreScopedByUser(t *testing.T) {
 
 func TestContactPGPKeysMustMatchContactEmail(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestContactPGPKeysMustMatchContactEmail(t *testing.T) {
 
 func TestContactIconsAreScopedByUser(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 func TestRunnerMailboxReservationsConflictAcrossGlobalAndAccountJobs(t *testing.T) {
@@ -61,7 +61,7 @@ func TestRunnerAccountReservationReleasesGlobalPendingRerun(t *testing.T) {
 
 func TestRunnerMailboxMaintenanceBlocksSyncUntilFinished(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestRunnerMailboxMaintenanceBlocksSyncUntilFinished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Status != "ok" || saved.MessagesSeen != 1 || saved.MessagesTotal != 1 || saved.MailboxesDone != 1 || saved.LatestNewFrom != "mailmirror:maintenance" {
+	if saved.Status != "ok" || saved.MessagesSeen != 1 || saved.MessagesTotal != 1 || saved.MailboxesDone != 1 || saved.LatestNewFrom != "rolltop:maintenance" {
 		t.Fatalf("maintenance run = %+v", saved)
 	}
 }

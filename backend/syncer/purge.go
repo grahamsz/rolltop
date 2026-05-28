@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 // PurgeMailboxSearchIndex clears Bleve documents for one local mailbox only.
@@ -152,7 +152,7 @@ func (s *Service) PurgeAccountLocalDataWithProgress(ctx context.Context, userID 
 		progress.MailboxesTotal = len(mailboxes)
 		progress.MessagesTotal = estimate.MessageCount + searchTotal
 		progress.CurrentMailbox = accountPurgeLabel(account)
-		progress.LatestNewFrom = "mailmirror:maintenance"
+		progress.LatestNewFrom = "rolltop:maintenance"
 		progress.LatestNewSubject = "Deleting local IMAP account data"
 		if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
 			return 0, err

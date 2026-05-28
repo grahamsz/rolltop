@@ -1,5 +1,5 @@
 // File overview: User database migration 001. Store.userStore applies this
-// migration to data/users/<id>/mailmirror.db when a user is prepared at startup
+// migration to data/users/<id>/rolltop.db when a user is prepared at startup
 // or touched lazily at runtime. The syncer writes IMAP accounts, mailboxes,
 // messages, locations, attachments, blob metadata, and sync progress here. The
 // web/API layer reads these same tables for mailbox lists, message views,

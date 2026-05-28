@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 func TestOpenPerUserKeepsDuplicateMessageIDsSeparate(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"log"
 	"strings"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 func uniqueMessageIDs(ids []int64) []int64 {

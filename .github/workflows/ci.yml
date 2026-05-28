@@ -153,7 +153,7 @@ jobs:
           mkdir -p godoc
           go list ./... > godoc/packages.txt
           while IFS= read -r pkg; do
-            rel="${pkg#mailmirror/}"
+            rel="${pkg#rolltop/}"
             out="godoc/${rel}.txt"
             mkdir -p "$(dirname "$out")"
             go doc -all "$pkg" > "$out"
@@ -184,7 +184,7 @@ jobs:
       - name: Build Backend Binary
         run: |
           mkdir -p build-artifacts
-          CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w -X mailmirror/backend/buildinfo.Version=${ROLLTOP_VERSION} -X mailmirror/backend/buildinfo.BuildDate=${ROLLTOP_BUILD_DATE} -X mailmirror/backend/buildinfo.Commit=${GITHUB_SHA}" -o "build-artifacts/${ROLLTOP_BINARY}" ./cmd/mailmirror
+          CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w -X rolltop/backend/buildinfo.Version=${ROLLTOP_VERSION} -X rolltop/backend/buildinfo.BuildDate=${ROLLTOP_BUILD_DATE} -X rolltop/backend/buildinfo.Commit=${GITHUB_SHA}" -o "build-artifacts/${ROLLTOP_BINARY}" ./cmd/rolltop
 
       - name: Upload Backend Binary
         uses: actions/upload-artifact@v4

@@ -908,8 +908,7 @@ export function SettingsView({
 
   async function importIdentityPGPKey(armored: string) {
     if (!identityDraft.id) {
-      addToast("Save the identity before adding a PGP key.", "error");
-      return;
+      throw new Error("Save the identity before adding a PGP key.");
     }
     setPGPSaving(true);
     try {
@@ -923,9 +922,11 @@ export function SettingsView({
       if (matchingIdentity.id !== identityDraft.id) {
         throw new Error(`This private key is for ${matchingIdentity.email}. Select that identity before importing it.`);
       }
+      const parsedFingerprint = normalizedPGPIdentifier(parsed.fingerprint);
+      const parsedKeyID = normalizedPGPIdentifier(parsed.key_id);
       const duplicate = pgpKeys.find((key) =>
-        (parsed.fingerprint && key.fingerprint === parsed.fingerprint) ||
-        (!parsed.fingerprint && parsed.key_id && key.key_id === parsed.key_id)
+        (parsedFingerprint && normalizedPGPIdentifier(key.fingerprint) === parsedFingerprint) ||
+        (!parsedFingerprint && parsedKeyID && normalizedPGPIdentifier(key.key_id) === parsedKeyID)
       );
       if (duplicate) {
         const duplicateIdentity = identities.find((identity) => identity.id === duplicate.identity_id);
@@ -943,7 +944,9 @@ export function SettingsView({
       setPGPPrivateImportOpen(false);
       addToast("PGP private key imported.");
     } catch (err) {
-      addToast(messageFromError(err), "error");
+      const message = messageFromError(err);
+      addToast(message, "error");
+      throw new Error(message);
     } finally {
       setPGPSaving(false);
     }
@@ -2068,6 +2071,10 @@ function shortPGPValue(value: string): string {
   const clean = value.replace(/\s+/g, "");
   if (clean.length <= 16) return clean;
   return `${clean.slice(0, 8)}...${clean.slice(-8)}`;
+}
+
+function normalizedPGPIdentifier(value: string): string {
+  return value.replace(/[\s:]/g, "").toUpperCase();
 }
 
 function firstPGPUserID(value: string): string {

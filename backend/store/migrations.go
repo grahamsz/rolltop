@@ -33,7 +33,7 @@ const (
 )
 
 // MigrationProgress is emitted while Store.OpenServerWithProgress and
-// PrepareUserStores apply schema work. cmd/mailmirror turns these fields into
+// PrepareUserStores apply schema work. cmd/rolltop turns these fields into
 // the startup page and /api/startup response.
 type MigrationProgress struct {
 	Scope     string `json:"scope"`

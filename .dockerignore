@@ -7,4 +7,4 @@ frontend/dist
 *.db
 *.db-*
 coverage.out
-mailmirror
+rolltop

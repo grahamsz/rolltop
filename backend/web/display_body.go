@@ -8,8 +8,8 @@ import (
 	"io"
 	"strings"
 
-	"mailmirror/backend/mailparse"
-	"mailmirror/backend/store"
+	"rolltop/backend/mailparse"
+	"rolltop/backend/store"
 )
 
 func (s *Server) displayBodiesForMessage(ctx context.Context, userID int64, msg store.MessageRecord) (string, string, bool) {

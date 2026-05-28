@@ -7,7 +7,7 @@ import (
 	"errors"
 	"strings"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 func (s *Service) syncMailboxReadFlags(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox) error {

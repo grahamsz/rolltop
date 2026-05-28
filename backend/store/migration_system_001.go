@@ -1,5 +1,5 @@
 // File overview: System database migration 001. Store.OpenServerWithProgress
-// applies this migration to data/mailmirror.db before any user database is
+// applies this migration to data/rolltop.db before any user database is
 // opened. The system database owns installation-level state: local users,
 // browser sessions, plugin enablement, plugin migration bookkeeping, and
 // administrator-managed remote-image blocklist rules. Mail headers, messages,
@@ -11,7 +11,7 @@ package store
 import (
 	"context"
 
-	remoteimageblocklist "mailmirror/backend/plugins/remote_image_blocklist"
+	remoteimageblocklist "rolltop/backend/plugins/remote_image_blocklist"
 )
 
 // systemMigrationSet returns the single clean-start system schema. Auth and

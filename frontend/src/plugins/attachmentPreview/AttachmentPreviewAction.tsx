@@ -10,7 +10,7 @@ const loadPdfAttachmentViewer = () =>
   import("./PdfAttachmentViewer").then((module) => ({ default: module.PdfAttachmentViewer }));
 
 const LazyPdfAttachmentViewer = lazy(loadPdfAttachmentViewer);
-const PDFIUM_WASM_PRELOAD_ID = "mailmirror-pdfium-wasm-preload";
+const PDFIUM_WASM_PRELOAD_ID = "rolltop-pdfium-wasm-preload";
 
 function preloadPdfAttachmentViewer() {
   void loadPdfAttachmentViewer();

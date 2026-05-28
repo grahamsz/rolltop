@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 func TestConversationListKeyMergesSameSubjectParticipants(t *testing.T) {

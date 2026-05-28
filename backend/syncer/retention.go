@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 const OnDemandBlobCacheRetention = 7 * 24 * time.Hour

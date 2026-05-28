@@ -6,11 +6,11 @@ import (
 	"context"
 	"fmt"
 
-	"mailmirror/backend/mailparse"
-	"mailmirror/backend/plugins"
-	languagesearch "mailmirror/backend/plugins/language_search"
-	"mailmirror/backend/search"
-	"mailmirror/backend/store"
+	"rolltop/backend/mailparse"
+	"rolltop/backend/plugins"
+	languagesearch "rolltop/backend/plugins/language_search"
+	"rolltop/backend/search"
+	"rolltop/backend/store"
 )
 
 func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox, item FetchedMessage) (store.MessageRecord, *pendingFetchedSearchIndex, error) {
@@ -294,7 +294,7 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 		previousLatestSubject = progress.LatestNewSubject
 		progress.MessagesTotal += missing
 		progress.CurrentMailbox = mailbox.Name
-		progress.LatestNewFrom = "mailmirror:maintenance"
+		progress.LatestNewFrom = "rolltop:maintenance"
 		progress.LatestNewSubject = "Repairing full-text index"
 		if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
 			return 0, err

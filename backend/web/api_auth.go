@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"mailmirror/backend/auth"
-	"mailmirror/backend/buildinfo"
-	mmcrypto "mailmirror/backend/crypto"
-	"mailmirror/backend/store"
+	"rolltop/backend/auth"
+	"rolltop/backend/buildinfo"
+	mmcrypto "rolltop/backend/crypto"
+	"rolltop/backend/store"
 )
 
 func (s *Server) apiBootstrap(w http.ResponseWriter, r *http.Request) {

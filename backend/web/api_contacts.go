@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 const maxContactIconBytes = 2 << 20
@@ -413,7 +413,7 @@ func (s *Server) apiExportContacts(w http.ResponseWriter, r *http.Request, cu cu
 	}
 	data := writeVCards(contacts)
 	w.Header().Set("Content-Type", "text/vcard; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="mailmirror-contacts.vcf"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="rolltop-contacts.vcf"`)
 	_, _ = w.Write(data)
 }
 

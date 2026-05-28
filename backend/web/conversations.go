@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/search"
-	"mailmirror/backend/store"
+	"rolltop/backend/search"
+	"rolltop/backend/store"
 )
 
 type conversationSeed struct {

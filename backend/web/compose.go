@@ -13,14 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/autocrypt"
-	"mailmirror/backend/mailparse"
-	"mailmirror/backend/plugins"
-	languagesearch "mailmirror/backend/plugins/language_search"
-	"mailmirror/backend/search"
-	"mailmirror/backend/smtpclient"
-	"mailmirror/backend/store"
-	"mailmirror/backend/syncer"
+	"rolltop/backend/autocrypt"
+	"rolltop/backend/mailparse"
+	"rolltop/backend/plugins"
+	languagesearch "rolltop/backend/plugins/language_search"
+	"rolltop/backend/search"
+	"rolltop/backend/smtpclient"
+	"rolltop/backend/store"
+	"rolltop/backend/syncer"
 )
 
 // replyComposeForm builds the server default for reply compose. The frontend may
@@ -318,7 +318,7 @@ func forwardedBodyHTML(msg store.MessageRecord) string {
 		b.WriteString(html.EscapeString(msg.ToAddr))
 		b.WriteString(`</div>`)
 	}
-	b.WriteString(`<br><div class="mailmirror-forwarded-body">`)
+	b.WriteString(`<br><div class="rolltop-forwarded-body">`)
 	b.WriteString(sanitizeComposeHTML(msg.BodyHTML))
 	b.WriteString(`</div>`)
 	return b.String()
@@ -796,7 +796,7 @@ func appendIdentitySignature(bodyHTML, bodyText, signature string) (string, stri
 		return bodyHTML, bodyText
 	}
 	if strings.TrimSpace(bodyHTML) != "" {
-		bodyHTML = strings.TrimRight(bodyHTML, " \t\r\n") + `<div><br></div><div class="mailmirror-signature">` + signature + `</div>`
+		bodyHTML = strings.TrimRight(bodyHTML, " \t\r\n") + `<div><br></div><div class="rolltop-signature">` + signature + `</div>`
 	}
 	plain := htmlSignatureText(signature)
 	if plain != "" {
@@ -936,16 +936,17 @@ func (s *Server) saveComposeDraft(ctx context.Context, cu currentUser, form comp
 		}
 	}
 	msg := smtpclient.Message{
-		From:        identity.Header,
-		To:          []string{form.To},
-		Cc:          []string{form.Cc},
-		Bcc:         []string{form.Bcc},
-		Subject:     form.Subject,
-		BodyText:    form.Body,
-		BodyHTML:    form.BodyHTML,
-		MessageID:   messageID,
-		Date:        messageDate,
-		Attachments: attachments,
+		From:             identity.Header,
+		To:               []string{form.To},
+		Cc:               []string{form.Cc},
+		Bcc:              []string{form.Bcc},
+		Subject:          form.Subject,
+		BodyText:         form.Body,
+		BodyHTML:         form.BodyHTML,
+		MessageID:        messageID,
+		Date:             messageDate,
+		PGPMIMEEncrypted: form.PGPMIME && form.PGPEncrypted,
+		Attachments:      attachments,
 	}
 	if s.pluginEnabled(ctx, plugins.ClientSidePGP) {
 		applyAutocryptHeader(&msg, identity)

@@ -10,8 +10,8 @@ import (
 	"context"
 	"strings"
 
-	"mailmirror/backend/search"
-	"mailmirror/backend/store"
+	"rolltop/backend/search"
+	"rolltop/backend/store"
 )
 
 func searchOptionsForUser(user store.User) search.SearchOptions {

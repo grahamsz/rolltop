@@ -9,7 +9,7 @@ import type { ContactAutocomplete, ContactPGPKey, ComposeAttachmentUpload, Compo
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { textToHTML } from "../../lib/html";
-import { addAutocryptGossipHeaders, encryptMessageText, encryptionKeyRecordsForRecipients, signMessageText } from "../../lib/pgp";
+import { addAutocryptGossipHeaders, encryptMessageText, encryptionKeyRecordsForRecipients, pgpMIMEEntityFromBody, signMessageText } from "../../lib/pgp";
 
 const ATTACHMENT_WARNING_BYTES = 20 * 1024 * 1024;
 const RESIZE_PHOTO_MAX_EDGE = 1920;
@@ -446,7 +446,7 @@ export function ComposeBox({
 
   async function preparePGPSubmitForm(nextForm: ComposeForm, uploadAttachments: ComposeAttachment[], onPGPArmored?: (armored: string) => void) {
     if (!pgpEnabled || (!pgpEncrypt && !pgpSign)) {
-      return { form: { ...nextForm, pgp_encrypted: false, pgp_signed: false }, attachments: uploadAttachments };
+      return { form: { ...nextForm, pgp_encrypted: false, pgp_signed: false, pgp_mime: false }, attachments: uploadAttachments };
     }
     if (uploadAttachments.length > 0 || hasAttachedItems || attachPublicKey) {
       throw new Error("Remove attachments before enabling PGP encrypt/sign.");
@@ -457,6 +457,7 @@ export function ComposeBox({
     }
     const payload = nextForm.body_html.trim() ? nextForm.body_html : nextForm.body;
     let armored = payload;
+    let pgpMime = false;
     if (pgpEncrypt) {
       const recipientEmails = recipientEmailAddresses([nextForm.to, nextForm.cc, nextForm.bcc]);
       let data;
@@ -467,13 +468,15 @@ export function ComposeBox({
       }
       const recipientKeys = await encryptionKeyRecordsForRecipients(recipientEmails, data.keys || []);
       const keys = encryptionKeysWithSender(recipientKeys);
-      armored = await encryptMessageText(addAutocryptGossipHeaders(payload, keys), keys, pgpSign ? unlockedSigningKey || undefined : undefined);
+      pgpMime = true;
+      const mimeEntity = pgpMIMEEntityFromBody(nextForm.body, nextForm.body_html);
+      armored = await encryptMessageText(addAutocryptGossipHeaders(mimeEntity, keys), keys, pgpSign ? unlockedSigningKey || undefined : undefined);
     } else if (pgpSign && unlockedSigningKey) {
       armored = await signMessageText(payload, unlockedSigningKey);
     }
     onPGPArmored?.(armored);
     return {
-      form: { ...nextForm, body: armored, body_html: "", pgp_encrypted: pgpEncrypt, pgp_signed: pgpSign },
+      form: { ...nextForm, body: armored, body_html: "", pgp_encrypted: pgpEncrypt, pgp_signed: pgpSign, pgp_mime: pgpMime },
       attachments: [] as ComposeAttachment[]
     };
   }
@@ -789,7 +792,7 @@ export function ComposeBox({
                 >
                   <Icon name="key" weight={attachPublicKey ? "bold" : "regular"} />
                 </button>
-                {pgpActive ? <span className="compose-pgp-scope">Body only</span> : null}
+                {pgpActive ? <span className="compose-pgp-scope">{pgpEncrypt ? "PGP/MIME" : "Body only"}</span> : null}
               </div>
             ) : null}
           </div>
@@ -814,7 +817,7 @@ function createComposeAttachment(file: File, inline: boolean): ComposeAttachment
     field: `attachment_${safeID}`,
     filename: file.name || "attachment",
     content_type: file.type || "application/octet-stream",
-    content_id: `mailmirror-${safeID}@compose.local`,
+    content_id: `rolltop-${safeID}@compose.local`,
     inline,
     size: file.size,
     file,
@@ -863,7 +866,7 @@ function isForwardDraft(initial: ComposeForm): boolean {
   const subject = initial.subject.trim().toLowerCase();
   if (subject.startsWith("fwd:") || subject.startsWith("fw:")) return true;
   const body = `${initial.body_html}\n${initial.body}`.toLowerCase();
-  return body.includes("mailmirror-forwarded-body") || body.includes("forwarded message");
+  return body.includes("rolltop-forwarded-body") || body.includes("forwarded message");
 }
 
 function stripLeadingBreaks(html: string): string {

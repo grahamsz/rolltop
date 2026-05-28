@@ -748,7 +748,7 @@ func extractPDFTextWithPdftotext(data []byte) (string, error) {
 	if len(data) > maxPDFAttachmentBytes {
 		return "", errors.New("pdf attachment too large for search extraction")
 	}
-	tmp, err := os.CreateTemp("", "mailmirror-pdf-*.pdf")
+	tmp, err := os.CreateTemp("", "rolltop-pdf-*.pdf")
 	if err != nil {
 		return "", err
 	}
@@ -888,7 +888,7 @@ func extractDOCTextWithExternalTool(data []byte) (string, error) {
 	if len(data) > maxOfficeAttachmentBytes {
 		return "", errors.New("doc attachment too large for search extraction")
 	}
-	tmp, err := os.CreateTemp("", "mailmirror-doc-*.doc")
+	tmp, err := os.CreateTemp("", "rolltop-doc-*.doc")
 	if err != nil {
 		return "", err
 	}

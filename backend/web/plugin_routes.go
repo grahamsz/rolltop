@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/mailparse"
-	"mailmirror/backend/plugins"
-	attachmentpreview "mailmirror/backend/plugins/attachment_preview"
-	gravatarsendericons "mailmirror/backend/plugins/gravatar_sender_icons"
-	"mailmirror/backend/store"
+	"rolltop/backend/mailparse"
+	"rolltop/backend/plugins"
+	attachmentpreview "rolltop/backend/plugins/attachment_preview"
+	gravatarsendericons "rolltop/backend/plugins/gravatar_sender_icons"
+	"rolltop/backend/store"
 )
 
 func (s *Server) handlePluginRoute(w http.ResponseWriter, r *http.Request) {

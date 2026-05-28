@@ -1,4 +1,4 @@
-module mailmirror
+module rolltop
 
 go 1.25.0
 

@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/plugins"
-	"mailmirror/backend/smtpclient"
-	"mailmirror/backend/store"
+	"rolltop/backend/plugins"
+	"rolltop/backend/smtpclient"
+	"rolltop/backend/store"
 )
 
 const (
@@ -155,7 +155,7 @@ func decodeComposeMultipart(w http.ResponseWriter, r *http.Request) (composeForm
 		}
 		meta.ContentType = normalizeUploadContentType(meta.ContentType, files[0].Header.Get("Content-Type"), data)
 		if meta.Inline && strings.TrimSpace(meta.ContentID) == "" {
-			meta.ContentID = fmt.Sprintf("mailmirror-inline-%d", i)
+			meta.ContentID = fmt.Sprintf("rolltop-inline-%d", i)
 		}
 	}
 	return form, true
@@ -450,16 +450,17 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 		bodyHTML, bodyText = appendIdentitySignature(form.BodyHTML, form.Body, identity.Signature)
 	}
 	msg := smtpclient.Message{
-		From:        identity.Header,
-		To:          []string{form.To},
-		Cc:          []string{form.Cc},
-		Bcc:         []string{form.Bcc},
-		Subject:     form.Subject,
-		BodyText:    bodyText,
-		BodyHTML:    bodyHTML,
-		MessageID:   smtpclient.NewMessageID(identity.Email),
-		Date:        time.Now(),
-		Attachments: attachments,
+		From:             identity.Header,
+		To:               []string{form.To},
+		Cc:               []string{form.Cc},
+		Bcc:              []string{form.Bcc},
+		Subject:          form.Subject,
+		BodyText:         bodyText,
+		BodyHTML:         bodyHTML,
+		MessageID:        smtpclient.NewMessageID(identity.Email),
+		Date:             time.Now(),
+		PGPMIMEEncrypted: form.PGPMIME && form.PGPEncrypted,
+		Attachments:      attachments,
 	}
 	if s.pluginEnabled(ctx, plugins.ClientSidePGP) {
 		applyAutocryptHeader(&msg, identity)

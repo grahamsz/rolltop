@@ -21,8 +21,8 @@ import (
 	blevesearch "github.com/blevesearch/bleve/v2/search"
 	blevequery "github.com/blevesearch/bleve/v2/search/query"
 
-	languagesearch "mailmirror/backend/plugins/language_search"
-	"mailmirror/backend/store"
+	languagesearch "rolltop/backend/plugins/language_search"
+	"rolltop/backend/store"
 )
 
 // Service owns Bleve indexes and query construction for either combined-test or per-user production mode.
@@ -304,7 +304,7 @@ func OpenPerUser(root string) (*Service, error) {
 	return &Service{root: root, perUser: true, indexes: make(map[int64]bleve.Index), writers: make(map[int64]*sync.Mutex)}, nil
 }
 
-// openIndex either opens an existing Bleve index or creates the MailMirror mapping.
+// openIndex either opens an existing Bleve index or creates the Rolltop mapping.
 // Most fields are not stored in Bleve because SQLite remains the source of truth;
 // the index stores only enough term data to find and rank message IDs.
 func openIndex(path string) (bleve.Index, error) {

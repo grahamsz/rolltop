@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 func TestClipTextQuoteUsesStandardReplyMarker(t *testing.T) {
@@ -294,10 +294,10 @@ func TestEmailDocumentIncludesDarkThemeStyles(t *testing.T) {
 	if !strings.Contains(doc, `class="plaintext-doc"`) {
 		t.Fatalf("missing plaintext document marker: %s", doc)
 	}
-	if !strings.Contains(doc, `data-mailmirror-theme="classic_dark"`) {
+	if !strings.Contains(doc, `data-rolltop-theme="classic_dark"`) {
 		t.Fatalf("missing classic dark plaintext styles: %s", doc)
 	}
-	if !strings.Contains(doc, `data-mailmirror-theme="matrix"`) {
+	if !strings.Contains(doc, `data-rolltop-theme="matrix"`) {
 		t.Fatalf("missing matrix plaintext styles: %s", doc)
 	}
 
@@ -305,7 +305,7 @@ func TestEmailDocumentIncludesDarkThemeStyles(t *testing.T) {
 	if strings.Contains(htmlDoc, `class="plaintext-doc"`) {
 		t.Fatalf("html document should not use plaintext marker: %s", htmlDoc)
 	}
-	if !strings.Contains(htmlDoc, `html[data-mailmirror-theme="matrix"],html[data-mailmirror-theme="matrix"] body`) {
+	if !strings.Contains(htmlDoc, `html[data-rolltop-theme="matrix"],html[data-rolltop-theme="matrix"] body`) {
 		t.Fatalf("missing matrix html document styles: %s", htmlDoc)
 	}
 }

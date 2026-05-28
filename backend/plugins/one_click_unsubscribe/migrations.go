@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/plugins"
+	"rolltop/backend/plugins"
 )
 
 // Migrations returns schema changes for one-click unsubscribe send history.

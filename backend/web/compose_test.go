@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"mailmirror/backend/blob"
-	"mailmirror/backend/store"
+	"rolltop/backend/blob"
+	"rolltop/backend/store"
 )
 
 func TestForwardComposePrefersSanitizedHTML(t *testing.T) {

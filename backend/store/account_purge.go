@@ -1,5 +1,5 @@
 // File overview: Local IMAP-account removal helpers. These methods estimate and
-// delete MailMirror-owned SQLite rows in batches without touching remote IMAP mail.
+// delete Rolltop-owned SQLite rows in batches without touching remote IMAP mail.
 
 package store
 

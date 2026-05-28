@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/plugins"
+	"rolltop/backend/plugins"
 )
 
 const MaxImageBytes = 512 * 1024

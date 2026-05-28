@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 var inSearchOperatorRE = regexp.MustCompile(`(?i)(^|\s)in:("[^"]+"|\S+)`)

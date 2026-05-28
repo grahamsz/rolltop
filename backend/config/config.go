@@ -33,38 +33,38 @@ type Config struct {
 
 // Load reads environment configuration, applies defaults, and validates values needed before services start.
 func Load() (Config, error) {
-	dataDir := env("MAILMIRROR_DATA_DIR", "/data")
-	dbPath := env("MAILMIRROR_DB_PATH", filepath.Join(dataDir, "mailmirror.db"))
-	indexPath := env("MAILMIRROR_INDEX_PATH", filepath.Join(dataDir, "bleve"))
+	dataDir := env("ROLLTOP_DATA_DIR", legacyEnvPrefix+"DATA_DIR", "/data")
+	dbPath := databasePath(dataDir)
+	indexPath := env("ROLLTOP_INDEX_PATH", legacyEnvPrefix+"INDEX_PATH", filepath.Join(dataDir, "bleve"))
 
-	key, err := ParseMasterKey(os.Getenv("MAILMIRROR_MASTER_KEY"))
+	key, err := ParseMasterKey(env("ROLLTOP_MASTER_KEY", legacyEnvPrefix+"MASTER_KEY", ""))
 	if err != nil {
 		return Config{}, err
 	}
 
-	sessionTTL, err := parseDuration("MAILMIRROR_SESSION_TTL", 30*24*time.Hour)
+	sessionTTL, err := parseDuration("ROLLTOP_SESSION_TTL", legacyEnvPrefix+"SESSION_TTL", 30*24*time.Hour)
 	if err != nil {
 		return Config{}, err
 	}
-	syncInterval, err := parseDuration("MAILMIRROR_SYNC_INTERVAL", 15*time.Minute)
+	syncInterval, err := parseDuration("ROLLTOP_SYNC_INTERVAL", legacyEnvPrefix+"SYNC_INTERVAL", 15*time.Minute)
 	if err != nil {
 		return Config{}, err
 	}
-	inboxPollInterval, err := parseDuration("MAILMIRROR_INBOX_POLL_INTERVAL", time.Minute)
+	inboxPollInterval, err := parseDuration("ROLLTOP_INBOX_POLL_INTERVAL", legacyEnvPrefix+"INBOX_POLL_INTERVAL", time.Minute)
 	if err != nil {
 		return Config{}, err
 	}
-	blobRetention, err := parseDuration("MAILMIRROR_BLOB_RETENTION", 14*24*time.Hour)
+	blobRetention, err := parseDuration("ROLLTOP_BLOB_RETENTION", legacyEnvPrefix+"BLOB_RETENTION", 14*24*time.Hour)
 	if err != nil {
 		return Config{}, err
 	}
-	cookieSecure, err := parseBool("MAILMIRROR_COOKIE_SECURE", false)
+	cookieSecure, err := parseBool("ROLLTOP_COOKIE_SECURE", legacyEnvPrefix+"COOKIE_SECURE", false)
 	if err != nil {
 		return Config{}, err
 	}
 
 	return Config{
-		Addr:              env("MAILMIRROR_ADDR", ":8080"),
+		Addr:              env("ROLLTOP_ADDR", legacyEnvPrefix+"ADDR", ":8080"),
 		DataDir:           dataDir,
 		DatabasePath:      dbPath,
 		IndexPath:         indexPath,
@@ -74,7 +74,7 @@ func Load() (Config, error) {
 		SyncInterval:      syncInterval,
 		InboxPollInterval: inboxPollInterval,
 		BlobRetention:     blobRetention,
-		WebhookToken:      os.Getenv("MAILMIRROR_WEBHOOK_TOKEN"),
+		WebhookToken:      env("ROLLTOP_WEBHOOK_TOKEN", legacyEnvPrefix+"WEBHOOK_TOKEN", ""),
 	}, nil
 }
 
@@ -82,7 +82,7 @@ func Load() (Config, error) {
 func ParseMasterKey(value string) ([]byte, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return nil, errors.New("MAILMIRROR_MASTER_KEY is required")
+		return nil, errors.New("ROLLTOP_MASTER_KEY is required")
 	}
 
 	decoders := []func(string) ([]byte, error){
@@ -100,36 +100,73 @@ func ParseMasterKey(value string) ([]byte, error) {
 	if len([]byte(value)) == 32 {
 		return []byte(value), nil
 	}
-	return nil, errors.New("MAILMIRROR_MASTER_KEY must decode to exactly 32 bytes")
+	return nil, errors.New("ROLLTOP_MASTER_KEY must decode to exactly 32 bytes")
 }
 
-func env(key, fallback string) string {
+const (
+	databaseFilename       = "rolltop.db"
+	legacyDatabaseFilename = "mailmirror.db"
+	legacyEnvPrefix        = "MAILMIRROR_"
+)
+
+func databasePath(dataDir string) string {
+	if v := strings.TrimSpace(os.Getenv("ROLLTOP_DB_PATH")); v != "" {
+		if filepath.Base(v) == legacyDatabaseFilename {
+			return filepath.Join(filepath.Dir(v), databaseFilename)
+		}
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv(legacyEnvPrefix + "DB_PATH")); v != "" {
+		if filepath.Base(v) == legacyDatabaseFilename {
+			return filepath.Join(filepath.Dir(v), databaseFilename)
+		}
+		return v
+	}
+	return filepath.Join(dataDir, databaseFilename)
+}
+
+func env(key, legacyKey, fallback string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
+	}
+	if legacyKey != "" {
+		if v := strings.TrimSpace(os.Getenv(legacyKey)); v != "" {
+			return v
+		}
 	}
 	return fallback
 }
 
-func parseDuration(key string, fallback time.Duration) (time.Duration, error) {
+func parseDuration(key, legacyKey string, fallback time.Duration) (time.Duration, error) {
 	v := strings.TrimSpace(os.Getenv(key))
+	source := key
+	if v == "" && legacyKey != "" {
+		v = strings.TrimSpace(os.Getenv(legacyKey))
+		source = legacyKey
+	}
 	if v == "" {
 		return fallback, nil
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		return 0, fmt.Errorf("%s: %w", key, err)
+		return 0, fmt.Errorf("%s: %w", source, err)
 	}
 	return d, nil
 }
 
-func parseBool(key string, fallback bool) (bool, error) {
+func parseBool(key, legacyKey string, fallback bool) (bool, error) {
 	v := strings.TrimSpace(os.Getenv(key))
+	source := key
+	if v == "" && legacyKey != "" {
+		v = strings.TrimSpace(os.Getenv(legacyKey))
+		source = legacyKey
+	}
 	if v == "" {
 		return fallback, nil
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
-		return false, fmt.Errorf("%s: %w", key, err)
+		return false, fmt.Errorf("%s: %w", source, err)
 	}
 	return b, nil
 }

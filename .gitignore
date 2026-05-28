@@ -1,7 +1,7 @@
 .beads
 .codex
 .agents
-.env.mailmirror
+.env.rolltop
 data/
 tmp/
 build-artifacts/
@@ -12,5 +12,5 @@ frontend/dist/
 *.db
 *.db-*
 coverage.out
-/mailmirror
+/rolltop
 tsconfig.tsbuildinfo

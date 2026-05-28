@@ -6,7 +6,7 @@ import (
 	"context"
 	"strings"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 func (s *Service) mailboxesToSync(ctx context.Context, account store.MailAccount, requested []string) ([]string, error) {

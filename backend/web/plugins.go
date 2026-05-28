@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"mailmirror/backend/plugins"
-	bimibrandicons "mailmirror/backend/plugins/bimi_brand_icons"
-	gravatarsendericons "mailmirror/backend/plugins/gravatar_sender_icons"
+	"rolltop/backend/plugins"
+	bimibrandicons "rolltop/backend/plugins/bimi_brand_icons"
+	gravatarsendericons "rolltop/backend/plugins/gravatar_sender_icons"
 )
 
 func (s *Server) pluginEnabled(ctx context.Context, pluginID string) bool {

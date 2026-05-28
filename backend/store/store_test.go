@@ -16,7 +16,7 @@ func TestOpenServerStoresMailDataInUserDatabase(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")
-	db, err := OpenServer(filepath.Join(dataDir, "mailmirror.db"), dataDir)
+	db, err := OpenServer(filepath.Join(dataDir, "rolltop.db"), dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestOpenServerStoresMailDataInUserDatabase(t *testing.T) {
 	if account.ID == 0 {
 		t.Fatal("account was not created")
 	}
-	userDBPath := filepath.Join(dataDir, "users", strconv.FormatInt(user.ID, 10), "mailmirror.db")
+	userDBPath := filepath.Join(dataDir, "users", strconv.FormatInt(user.ID, 10), "rolltop.db")
 	if _, err := os.Stat(userDBPath); err != nil {
 		t.Fatalf("user database was not created: %v", err)
 	}
@@ -60,9 +60,75 @@ func TestOpenServerStoresMailDataInUserDatabase(t *testing.T) {
 	}
 }
 
+func TestOpenRenamesLegacyDatabaseFiles(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "mailmirror.db")
+	newPath := filepath.Join(dir, "rolltop.db")
+	if err := os.WriteFile(legacyPath, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath+"-wal", []byte("wal"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := renameLegacyDatabaseFiles(newPath, schemaCombined); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("new database path missing: %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy database path still exists: %v", err)
+	}
+	if _, err := os.Stat(newPath + "-wal"); err != nil {
+		t.Fatalf("legacy WAL was not renamed: %v", err)
+	}
+}
+
+func TestOpenServerReplacesEmptySystemDatabaseWithLegacy(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	newPath := filepath.Join(dataDir, "rolltop.db")
+	legacyPath := filepath.Join(dataDir, "mailmirror.db")
+
+	empty, err := OpenServer(newPath, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := empty.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, err := OpenServer(legacyPath, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.CreateUser(ctx, "legacy@example.test", "Legacy", "hash", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := OpenServer(newPath, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	users, err := db.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 || users[0].Email != "legacy@example.test" {
+		t.Fatalf("users = %+v", users)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy database path still exists: %v", err)
+	}
+}
+
 func TestCreateBlobIsIdempotentForUserPath(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +165,7 @@ func TestCreateBlobIsIdempotentForUserPath(t *testing.T) {
 
 func TestThreadMessagesForUserUsesReferencesAndSubjectFallback(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +213,7 @@ func TestThreadMessagesForUserUsesReferencesAndSubjectFallback(t *testing.T) {
 func TestBackfillThreadHeadersFromBlobsRepairsRowsMissingThreadHeaders(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +285,7 @@ func TestBackfillThreadHeadersFromBlobsRepairsRowsMissingThreadHeaders(t *testin
 
 func TestReadSenderStatsAreUserScoped(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +340,7 @@ func TestReadSenderStatsAreUserScoped(t *testing.T) {
 
 func TestSyncRunStoresLatestNewMessageDetails(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +388,7 @@ func TestSyncRunStoresLatestNewMessageDetails(t *testing.T) {
 
 func TestListSyncRunsForUserCollapsesNoopFolderRuns(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +444,7 @@ func TestListSyncRunsForUserCollapsesNoopFolderRuns(t *testing.T) {
 
 func TestMarkRunningSyncRunsInterruptedSurvivesLateFinish(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +508,7 @@ func TestMarkRunningSyncRunsInterruptedSurvivesLateFinish(t *testing.T) {
 
 func TestUpdateUserDisplayPreferencesPersistsTheme(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +573,7 @@ func TestUpdateUserDisplayPreferencesPersistsTheme(t *testing.T) {
 
 func TestStorageMessageCountsAreTenantScoped(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +641,7 @@ func TestStorageMessageCountsAreTenantScoped(t *testing.T) {
 
 func TestOnboardingMailboxDefaultsDiscoverAllButAutoSyncInboxOnly(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,7 +689,7 @@ func TestOnboardingMailboxDefaultsDiscoverAllButAutoSyncInboxOnly(t *testing.T) 
 
 func TestUpdateMailboxSettingsRejectsInheritForTopLevelFolder(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,7 +735,7 @@ func TestUpdateMailboxSettingsRejectsInheritForTopLevelFolder(t *testing.T) {
 
 func TestUpdateMailboxSettingsRejectsDuplicateSpecialRole(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +778,7 @@ func TestUpdateMailboxSettingsRejectsDuplicateSpecialRole(t *testing.T) {
 
 func TestEnsureMeContactForEmailSeedsIdentityAndDefaultSMTP(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -753,7 +819,7 @@ func TestEnsureMeContactForEmailSeedsIdentityAndDefaultSMTP(t *testing.T) {
 
 func TestMailAccountsAndIdentitiesStayScopedByUser(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -823,7 +889,7 @@ func TestMailAccountsAndIdentitiesStayScopedByUser(t *testing.T) {
 
 func TestMailIdentityDefaultsChooseMatchingIMAPAndFolders(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -873,7 +939,7 @@ func TestMailIdentityDefaultsChooseMatchingIMAPAndFolders(t *testing.T) {
 
 func TestCreateMailIdentityForUserCreatesMeIdentity(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -916,7 +982,7 @@ func TestCreateMailIdentityForUserCreatesMeIdentity(t *testing.T) {
 
 func TestUpdateMailIdentityValidatesIMAPAndMailboxScope(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -986,7 +1052,7 @@ func TestUpdateMailIdentityValidatesIMAPAndMailboxScope(t *testing.T) {
 
 func TestDeleteSMTPAccountForUserUnlinksIdentities(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

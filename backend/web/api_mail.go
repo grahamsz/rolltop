@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"mailmirror/backend/plugins"
-	"mailmirror/backend/store"
+	"rolltop/backend/plugins"
+	"rolltop/backend/store"
 )
 
 // apiMail returns a paged conversation list for All Mail or one mailbox. It asks

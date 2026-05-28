@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"mailmirror/backend/search"
-	"mailmirror/backend/store"
+	"rolltop/backend/search"
+	"rolltop/backend/store"
 )
 
 func TestWriteJSONCachedETagNotModified(t *testing.T) {
@@ -115,18 +115,15 @@ func TestAPISearchCachedETagShortCircuitsBeforeSearch(t *testing.T) {
 	if got := rec.Header().Get("Server-Timing"); !strings.Contains(got, "cache") {
 		t.Fatalf("server timing = %q", got)
 	}
-	if got := rec.Header().Get("X-rolltop-Search-Stats"); got != "cache=hit" {
+	if got := rec.Header().Get("X-Rolltop-Search-Stats"); got != "cache=hit" {
 		t.Fatalf("rolltop search stats = %q", got)
-	}
-	if got := rec.Header().Get("X-MailMirror-Search-Stats"); got != "cache=hit" {
-		t.Fatalf("legacy search stats = %q", got)
 	}
 }
 
 func TestAPISearchWritesTimingHeaders(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,10 +153,7 @@ func TestAPISearchWritesTimingHeaders(t *testing.T) {
 			t.Fatalf("server timing %q missing %q", serverTiming, part)
 		}
 	}
-	stats := rec.Header().Get("X-rolltop-Search-Stats")
-	if legacy := rec.Header().Get("X-MailMirror-Search-Stats"); legacy != stats {
-		t.Fatalf("legacy search stats = %q, want %q", legacy, stats)
-	}
+	stats := rec.Header().Get("X-Rolltop-Search-Stats")
 	for _, part := range []string{"cache=miss", "page=1", "batches=1", "raw_hits=0", "seeds=0"} {
 		if !strings.Contains(stats, part) {
 			t.Fatalf("search stats %q missing %q", stats, part)
@@ -173,7 +167,7 @@ func TestAPISearchWritesTimingHeaders(t *testing.T) {
 func TestAPISearchRepairsRecentMissingSearchDocument(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +244,7 @@ func TestAPISearchRepairsRecentMissingSearchDocument(t *testing.T) {
 func TestAPIMessageSearchExplanationRepairsAndPrefersClickedMessage(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +353,7 @@ func TestMailListCachedETagInvalidatesOnUserChange(t *testing.T) {
 func TestCreateMailIdentityEndpointCreatesMeIdentity(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +432,7 @@ func TestCreateMailIdentityEndpointCreatesMeIdentity(t *testing.T) {
 func TestDeleteSMTPAccountEndpointUnlinksIdentities(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +478,7 @@ func TestDeleteSMTPAccountEndpointUnlinksIdentities(t *testing.T) {
 
 func TestSetupCreatesFirstAdmin(t *testing.T) {
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,20 +579,20 @@ func TestStorageStatsReportsCurrentUserOnly(t *testing.T) {
 		}
 	}
 
-	writeStorageFile(filepath.Join(dir, "mailmirror.db"), "server database should not count")
+	writeStorageFile(filepath.Join(dir, "rolltop.db"), "server database should not count")
 	writeStorageFile(filepath.Join(dir, "bleve", "index"), "server index should not count")
 	writeStorageFile(filepath.Join(dir, "blobs", "server"), "server blobs should not count")
-	writeStorageFile(filepath.Join(dir, "users", "1", "mailmirror.db"), "database")
+	writeStorageFile(filepath.Join(dir, "users", "1", "rolltop.db"), "database")
 	writeStorageFile(filepath.Join(dir, "users", "1", "bleve", "index"), "bleve")
 	writeStorageFile(filepath.Join(dir, "users", "1", "bleve", "store", "001.zap"), "zap-one")
 	writeStorageFile(filepath.Join(dir, "users", "1", "bleve", "store", "002.zap"), "largest-zap")
 	writeStorageFile(filepath.Join(dir, "users", "1", "bleve", "store", "root.bolt"), "root")
 	writeStorageFile(filepath.Join(dir, "users", "1", "blobs", "blob"), "blobdata")
-	writeStorageFile(filepath.Join(dir, "users", "2", "mailmirror.db"), "other database should not count for user one")
+	writeStorageFile(filepath.Join(dir, "users", "2", "rolltop.db"), "other database should not count for user one")
 	writeStorageFile(filepath.Join(dir, "users", "2", "bleve", "index"), "other index should not count for user one")
 	writeStorageFile(filepath.Join(dir, "users", "2", "blobs", "blob"), "other blob should not count for user one")
 
-	server := &Server{dataDir: dir, databasePath: filepath.Join(dir, "mailmirror.db"), indexPath: filepath.Join(dir, "bleve")}
+	server := &Server{dataDir: dir, databasePath: filepath.Join(dir, "rolltop.db"), indexPath: filepath.Join(dir, "bleve")}
 	stats := server.cachedStorageStats(1)
 	if stats.DatabaseBytes != 8 {
 		t.Fatalf("database bytes = %d", stats.DatabaseBytes)
@@ -637,7 +631,7 @@ func TestStorageStatsReportsCurrentUserOnly(t *testing.T) {
 func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -747,7 +741,7 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 func TestMoveRefreshMailboxNamesIncludesSourceAndDestination(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

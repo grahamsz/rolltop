@@ -1,4 +1,4 @@
-# MailMirror Security Audit
+# Rolltop Security Audit
 
 Date: 2026-05-23
 
@@ -12,7 +12,7 @@ Reviewed the V1 local web app security boundary: authentication, sessions, CSRF,
 - Message move and remote-delete reconciliation now remove the local message, search document, and associated raw blob row/file where present, preventing stale raw message downloads after the message leaves the folder.
 - Sync progress events are user-scoped on the server. The browser never sends `user_id`; the event stream derives the user from the server-side session.
 - Remote folder reconciliation now compares local UIDs with IMAP UIDs after each folder sync, so remote deletes and moves out of a folder are reflected locally.
-- Full body storage has been reduced: SQLite keeps previews, Bleve indexes searchable text, and raw blobs are retained according to `MAILMIRROR_BLOB_RETENTION`.
+- Full body storage has been reduced: SQLite keeps previews, Bleve indexes searchable text, and raw blobs are retained according to `ROLLTOP_BLOB_RETENTION`.
 
 ## Verified Controls
 
@@ -21,7 +21,7 @@ Reviewed the V1 local web app security boundary: authentication, sessions, CSRF,
 - Normal routes derive the current user from the server-side session and do not accept browser-provided `user_id`.
 - Message, attachment, blob, search, sync-run, mailbox, and account lookups include `user_id` constraints.
 - POST routes use CSRF verification with an HttpOnly CSRF base cookie/session-derived token.
-- IMAP and SMTP passwords are encrypted at rest with `MAILMIRROR_MASTER_KEY`.
+- IMAP and SMTP passwords are encrypted at rest with `ROLLTOP_MASTER_KEY`.
 - Logs include user IDs, mailbox names, and sync status only; they do not log app passwords, IMAP/SMTP passwords, session tokens, or raw message bodies.
 - Search always includes a mandatory `user_id` term.
 

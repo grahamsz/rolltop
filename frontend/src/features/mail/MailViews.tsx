@@ -674,9 +674,9 @@ function MessageList({
     const selected = visible.filter((item) => ids.includes(item.message.id));
     const accountIDs = Array.from(new Set(selected.map((item) => item.message.account_id).filter((id) => Number.isFinite(id) && id > 0)));
     event.dataTransfer.effectAllowed = "copyMove";
-    event.dataTransfer.setData("application/x-mailmirror-message-transfer", JSON.stringify({ ids, account_ids: accountIDs }));
-    event.dataTransfer.setData("application/x-mailmirror-messages", JSON.stringify(ids));
-    event.dataTransfer.setData("application/x-mailmirror-message", String(ids[0]));
+    event.dataTransfer.setData("application/x-rolltop-message-transfer", JSON.stringify({ ids, account_ids: accountIDs }));
+    event.dataTransfer.setData("application/x-rolltop-messages", JSON.stringify(ids));
+    event.dataTransfer.setData("application/x-rolltop-message", String(ids[0]));
     event.dataTransfer.setData("text/plain", String(ids[0]));
     const dragImage = messageDragPreview(visible, ids);
     if (dragImage) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"mailmirror/backend/store"
+	"rolltop/backend/store"
 )
 
 // Runner serializes sync work per user/mailbox and launches background indexing follow-ups.
@@ -166,7 +166,7 @@ func (r *Runner) StartMailboxMaintenance(userID int64, mailbox store.Mailbox, la
 		r.releaseAccountMailboxReservations(userID, mailboxes, keys)
 		return store.SyncRun{}, true, err
 	}
-	progress := store.SyncProgress{MailboxesTotal: 1, CurrentMailbox: mailbox.Name, LatestNewFrom: "mailmirror:maintenance", LatestNewSubject: label}
+	progress := store.SyncProgress{MailboxesTotal: 1, CurrentMailbox: mailbox.Name, LatestNewFrom: "rolltop:maintenance", LatestNewSubject: label}
 	if err := r.Service.Store.UpdateSyncRunProgress(context.Background(), userID, run.ID, progress); err != nil {
 		r.releaseAccountMailboxReservations(userID, mailboxes, keys)
 		return store.SyncRun{}, true, err
@@ -178,7 +178,7 @@ func (r *Runner) StartMailboxMaintenance(userID int64, mailbox store.Mailbox, la
 
 // StartAccountMaintenance reserves all known folders for one account and runs a
 // local maintenance task in the background. It is used for destructive local
-// cache work such as deleting an IMAP account from MailMirror.
+// cache work such as deleting an IMAP account from Rolltop.
 func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount, mailboxes []store.Mailbox, label string, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
 	ctx := r.context()
 	if ctx.Err() != nil {
@@ -206,7 +206,7 @@ func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount
 	progress := store.SyncProgress{
 		MailboxesTotal:   len(mailboxes),
 		CurrentMailbox:   accountMaintenanceLabel(account),
-		LatestNewFrom:    "mailmirror:maintenance",
+		LatestNewFrom:    "rolltop:maintenance",
 		LatestNewSubject: label,
 	}
 	if err := r.Service.Store.UpdateSyncRunProgress(context.Background(), userID, run.ID, progress); err != nil {

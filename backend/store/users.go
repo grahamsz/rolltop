@@ -1,4 +1,4 @@
-// File overview: SQLite persistence layer for tenant-scoped MailMirror users,
+// File overview: SQLite persistence layer for tenant-scoped Rolltop users,
 // sessions, and profile preferences. The system store is the source of truth
 // for authentication and settings; split-mode user stores receive a mirrored
 // user row through Store.userStore so joins inside the tenant database can stay

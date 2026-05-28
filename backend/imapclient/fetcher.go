@@ -17,9 +17,9 @@ import (
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
 
-	mmcrypto "mailmirror/backend/crypto"
-	"mailmirror/backend/store"
-	"mailmirror/backend/syncer"
+	mmcrypto "rolltop/backend/crypto"
+	"rolltop/backend/store"
+	"rolltop/backend/syncer"
 )
 
 const (
@@ -29,7 +29,7 @@ const (
 
 var errIdleStopTimeout = errors.New("IDLE session did not stop cleanly")
 
-// Fetcher implements syncer.Fetcher using go-imap and encrypted MailMirror account credentials.
+// Fetcher implements syncer.Fetcher using go-imap and encrypted Rolltop account credentials.
 type Fetcher struct {
 	MasterKey []byte
 	Timeout   time.Duration
@@ -384,7 +384,7 @@ func highestUID(uids []uint32) uint32 {
 	return highest
 }
 
-// SetSeen is the one remote read-state mutation MailMirror intentionally allows:
+// SetSeen is the one remote read-state mutation Rolltop intentionally allows:
 // it toggles only the IMAP \Seen flag for a single UID.
 func (f *Fetcher) SetSeen(ctx context.Context, account store.MailAccount, mailbox string, uid uint32, seen bool) error {
 	select {
@@ -467,7 +467,7 @@ func (f *Fetcher) SetFlagged(ctx context.Context, account store.MailAccount, mai
 }
 
 // FlaggedUIDs returns the remote starred set. The syncer stores this locally so
-// MailMirror reflects stars added by another IMAP client.
+// Rolltop reflects stars added by another IMAP client.
 func (f *Fetcher) FlaggedUIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error) {
 	select {
 	case <-ctx.Done():

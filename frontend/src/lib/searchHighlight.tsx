@@ -108,11 +108,11 @@ function highlightImageAltMatches(doc: Document, pattern: RegExp) {
     const alt = image.getAttribute("alt") || "";
     pattern.lastIndex = 0;
     if (alt && pattern.test(alt)) {
-      image.classList.add("mailmirror-search-image-hit");
-      image.setAttribute("data-mailmirror-alt-hit", "true");
+      image.classList.add("rolltop-search-image-hit");
+      image.setAttribute("data-rolltop-alt-hit", "true");
     } else {
-      image.classList.remove("mailmirror-search-image-hit");
-      image.removeAttribute("data-mailmirror-alt-hit");
+      image.classList.remove("rolltop-search-image-hit");
+      image.removeAttribute("data-rolltop-alt-hit");
     }
   }
   pattern.lastIndex = 0;
@@ -125,10 +125,10 @@ export function highlightEmailDocument(doc: Document | null | undefined, query: 
   if (!body) return;
   const pattern = highlightRegExp(query, terms);
   if (!pattern) return;
-  if (!doc.head.querySelector("[data-mailmirror-highlight-style]")) {
+  if (!doc.head.querySelector("[data-rolltop-highlight-style]")) {
     const style = doc.createElement("style");
-    style.setAttribute("data-mailmirror-highlight-style", "true");
-    style.textContent = "mark.mailmirror-search-hit{background:rgba(229,169,40,.26);color:#202426;border-radius:3px;padding:0 1px;box-shadow:none}img.mailmirror-search-image-hit{outline:2px solid rgba(229,169,40,.92)!important;outline-offset:2px!important;box-shadow:0 0 0 4px rgba(229,169,40,.20)!important;border-radius:4px}html[data-mailmirror-theme=\"classic_dark\"] mark.mailmirror-search-hit,html[data-mailmirror-theme=\"matrix\"] mark.mailmirror-search-hit{background:rgba(224,182,77,.28);color:#f5fff8}html[data-mailmirror-theme=\"classic_dark\"] img.mailmirror-search-image-hit,html[data-mailmirror-theme=\"matrix\"] img.mailmirror-search-image-hit{outline-color:rgba(224,182,77,.95)!important;box-shadow:0 0 0 4px rgba(224,182,77,.22)!important}";
+    style.setAttribute("data-rolltop-highlight-style", "true");
+    style.textContent = "mark.rolltop-search-hit{background:rgba(229,169,40,.26);color:#202426;border-radius:3px;padding:0 1px;box-shadow:none}img.rolltop-search-image-hit{outline:2px solid rgba(229,169,40,.92)!important;outline-offset:2px!important;box-shadow:0 0 0 4px rgba(229,169,40,.20)!important;border-radius:4px}html[data-rolltop-theme=\"classic_dark\"] mark.rolltop-search-hit,html[data-rolltop-theme=\"matrix\"] mark.rolltop-search-hit{background:rgba(224,182,77,.28);color:#f5fff8}html[data-rolltop-theme=\"classic_dark\"] img.rolltop-search-image-hit,html[data-rolltop-theme=\"matrix\"] img.rolltop-search-image-hit{outline-color:rgba(224,182,77,.95)!important;box-shadow:0 0 0 4px rgba(224,182,77,.22)!important}";
     doc.head.appendChild(style);
   }
   highlightImageAltMatches(doc, pattern);
@@ -155,7 +155,7 @@ export function highlightEmailDocument(doc: Document | null | undefined, query: 
       const index = match.index ?? 0;
       if (index > lastIndex) fragment.appendChild(doc.createTextNode(value.slice(lastIndex, index)));
       const mark = doc.createElement("mark");
-      mark.className = "mailmirror-search-hit";
+      mark.className = "rolltop-search-hit";
       mark.textContent = match[0];
       fragment.appendChild(mark);
       lastIndex = index + match[0].length;
