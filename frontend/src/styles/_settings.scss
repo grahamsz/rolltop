@@ -1078,6 +1078,43 @@
   justify-content: flex-end;
 }
 
+.identity-pgp-key-menu-panel {
+  min-width: 294px;
+
+  button {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+    text-align: left;
+
+    .icon {
+      margin-top: 2px;
+    }
+
+    span {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    strong {
+      font-size: 13px;
+      line-height: 1.25;
+    }
+
+    small {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.35;
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+    }
+  }
+}
+
 .identity-pgp-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -1087,10 +1124,22 @@
     display: grid;
     gap: 8px;
   }
+}
 
-  textarea {
-    min-height: 112px;
-    font: 12px/1.45 var(--font-mono);
-    resize: vertical;
+.identity-pgp-action-card {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+
+  p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  button {
+    justify-self: start;
   }
 }

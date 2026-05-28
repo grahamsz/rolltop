@@ -8,9 +8,11 @@ import type { DatePrefs, LocationState, Toast } from "../../appTypes";
 import type { Account, AccountPurgeEstimate, Bootstrap, IdentityPGPPrivateKey, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SyncFolder, SyncRun, User } from "../../types";
 import { Icon } from "../../components/Icon";
 import { Field, Stat } from "../../components/common";
+import { PGPKeyGenerateModal } from "../../components/PGPKeyGenerateModal";
+import { PGPKeyImportModal } from "../../components/PGPKeyImportModal";
 import { emptyAccountForm, accountToForm } from "../../lib/accountForm";
 import { messageFromError } from "../../lib/errors";
-import { generatePrivateKey, pgpPassphraseIssues, privateKeyRecordFromArmoredSource } from "../../lib/pgp";
+import { generatePrivateKey, pgpPassphraseIssues, pgpUserIDEmails, pgpUserIDsMatchEmail, privateKeyRecordFromArmoredSource } from "../../lib/pgp";
 import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
 import { folderParentNames, folderTree, type FolderNode } from "../../lib/folders";
 import { effectiveMailboxSyncMode, mergeSyncRuns } from "../../lib/sync";
@@ -382,12 +384,13 @@ function blankMailIdentity(user: User, identities: MailIdentity[] = []): MailIde
     email: "",
     display_name: user.name || "",
     signature: "",
+    autocrypt_enabled: true,
     is_primary: identities.length === 0
   };
 }
 
 function cloneMailIdentity(identity: MailIdentity): MailIdentity {
-  return { ...identity };
+  return { ...identity, autocrypt_enabled: identity.autocrypt_enabled ?? true };
 }
 
 type SettingsRoute = {
@@ -547,7 +550,6 @@ export function SettingsView({
   location,
   navigate,
   refreshChrome,
-  logout,
   pgpEnabled,
   addToast
 }: {
@@ -558,7 +560,6 @@ export function SettingsView({
   location: LocationState;
   navigate: (url: string) => void;
   refreshChrome: () => Promise<Bootstrap | null>;
-  logout: () => void;
   pgpEnabled: boolean;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
@@ -587,9 +588,8 @@ export function SettingsView({
   const [deletingSMTPID, setDeletingSMTPID] = useState<number | null>(null);
   const [savingIdentity, setSavingIdentity] = useState(false);
   const [pgpKeys, setPGPKeys] = useState<IdentityPGPPrivateKey[]>([]);
-  const [pgpPrivateKeyInput, setPGPPrivateKeyInput] = useState("");
-  const [pgpPassphrase, setPGPPassphrase] = useState("");
-  const [pgpPassphraseConfirm, setPGPPassphraseConfirm] = useState("");
+  const [pgpPrivateImportOpen, setPGPPrivateImportOpen] = useState(false);
+  const [pgpGenerateOpen, setPGPGenerateOpen] = useState(false);
   const [pgpSaving, setPGPSaving] = useState(false);
   const [pgpGenerating, setPGPGenerating] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -906,14 +906,31 @@ export function SettingsView({
     return [user.email, user.name, identityDraft.email, identityDraft.display_name, identityDraft.email.split("@")[0] || "", identityDraft.email.split("@")[1] || ""];
   }
 
-  async function importIdentityPGPKey() {
+  async function importIdentityPGPKey(armored: string) {
     if (!identityDraft.id) {
       addToast("Save the identity before adding a PGP key.", "error");
       return;
     }
     setPGPSaving(true);
     try {
-      const parsed = await privateKeyRecordFromArmoredSource(pgpPrivateKeyInput, "", identityDraft.email);
+      const parsed = await privateKeyRecordFromArmoredSource(armored);
+      const matchingIdentity = identities.find((identity) => pgpUserIDsMatchEmail(parsed.user_ids, identity.email));
+      if (!matchingIdentity) {
+        const keyEmails = pgpUserIDEmails(parsed.user_ids);
+        const detail = keyEmails.length > 0 ? ` It lists ${keyEmails.join(", ")}.` : "";
+        throw new Error(`This private key is not for one of your profile email addresses.${detail}`);
+      }
+      if (matchingIdentity.id !== identityDraft.id) {
+        throw new Error(`This private key is for ${matchingIdentity.email}. Select that identity before importing it.`);
+      }
+      const duplicate = pgpKeys.find((key) =>
+        (parsed.fingerprint && key.fingerprint === parsed.fingerprint) ||
+        (!parsed.fingerprint && parsed.key_id && key.key_id === parsed.key_id)
+      );
+      if (duplicate) {
+        const duplicateIdentity = identities.find((identity) => identity.id === duplicate.identity_id);
+        throw new Error(`This private key is already saved${duplicateIdentity?.email ? ` for ${duplicateIdentity.email}` : ""}.`);
+      }
       const saved = await api.savePGPPrivateKey(csrf, {
         ...parsed,
         identity_id: identityDraft.id,
@@ -923,7 +940,7 @@ export function SettingsView({
         is_decrypt_only: false
       });
       setPGPKeys((current) => [...current.filter((key) => key.id !== saved.key.id), saved.key]);
-      setPGPPrivateKeyInput("");
+      setPGPPrivateImportOpen(false);
       addToast("PGP private key imported.");
     } catch (err) {
       addToast(messageFromError(err), "error");
@@ -932,23 +949,19 @@ export function SettingsView({
     }
   }
 
-  async function generateIdentityPGPKey() {
+  async function generateIdentityPGPKey(passphrase: string) {
     if (!identityDraft.id) {
       addToast("Save the identity before generating a PGP key.", "error");
       return;
     }
-    if (pgpPassphrase !== pgpPassphraseConfirm) {
-      addToast("PGP passphrases do not match.", "error");
-      return;
-    }
-    const issues = pgpPassphraseIssues(pgpPassphrase, identityPGPPassphraseValues());
+    const issues = pgpPassphraseIssues(passphrase, identityPGPPassphraseValues());
     if (issues.length > 0) {
       addToast(issues[0], "error");
       return;
     }
     setPGPGenerating(true);
     try {
-      const generated = await generatePrivateKey(identityDraft.display_name, identityDraft.email, pgpPassphrase);
+      const generated = await generatePrivateKey(identityDraft.display_name, identityDraft.email, passphrase);
       const saved = await api.savePGPPrivateKey(csrf, {
         ...generated,
         identity_id: identityDraft.id,
@@ -958,8 +971,7 @@ export function SettingsView({
         is_decrypt_only: false
       });
       setPGPKeys((current) => [...current.filter((key) => key.id !== saved.key.id), saved.key]);
-      setPGPPassphrase("");
-      setPGPPassphraseConfirm("");
+      setPGPGenerateOpen(false);
       addToast("PGP private key generated in this browser.");
     } catch (err) {
       addToast(messageFromError(err), "error");
@@ -985,7 +997,23 @@ export function SettingsView({
       addToast("No key material available to export.", "error");
       return;
     }
-    const suffix = kind === "private" ? "private" : kind === "public" ? "public" : "revocation";
+    if (kind === "private" && !window.confirm([
+      "Export this PGP private key?",
+      "",
+      "Do not send your private key or passphrase to anyone. Anyone with both can decrypt mail encrypted to you and sign mail as you.",
+      "",
+      "Only save it somewhere you control."
+    ].join("\n"))) {
+      return;
+    }
+    if (kind === "revocation" && !window.confirm([
+      "Export this revocation certificate?",
+      "",
+      "This is the public kill switch for the key. Publish it only if the private key is lost, compromised, or retired."
+    ].join("\n"))) {
+      return;
+    }
+    const suffix = kind === "private" ? "private" : kind === "public" ? "public" : "publishable-revocation-certificate";
     const blob = new Blob([data], { type: "application/pgp-keys" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1390,10 +1418,18 @@ export function SettingsView({
         <div className="panel-headline">
           <div>
             <h3>PGP keys</h3>
-            <div className="muted">Keys are passphrase-protected in the browser. Do not use your rolltop password.</div>
+            <div className="muted">Passphrase-protected private keys are stored on the rolltop server and sent to this browser for unlock/export. Your PGP passphrase, key unlock, and message decryption stay in this browser. Do not use your rolltop password.</div>
           </div>
         </div>
         {!identityDraft.id ? <div className="notice subtle">Save this identity before adding PGP keys.</div> : null}
+        <label className="identity-primary identity-autocrypt-toggle">
+          <input
+            type="checkbox"
+            checked={identityDraft.autocrypt_enabled ?? true}
+            onChange={(event) => updateIdentityDraft({ autocrypt_enabled: event.target.checked })}
+          />
+          Autocrypt key discovery
+        </label>
         <div className="identity-pgp-key-list">
           {keys.length === 0 ? <div className="muted">No PGP private keys saved for this identity.</div> : null}
           {keys.map((key) => (
@@ -1401,39 +1437,75 @@ export function SettingsView({
               <Icon name="lock" />
               <span>
                 <strong>{key.label || key.fingerprint || "PGP key"}</strong>
-                <small>{[shortPGPValue(key.fingerprint || key.key_id), firstPGPUserID(key.user_ids)].filter(Boolean).join(" · ")}</small>
+                <small>{[shortPGPValue(key.fingerprint || key.key_id), firstPGPUserID(key.user_ids), key.created_at ? `Imported ${displayDateTime(key.created_at, user)}` : ""].filter(Boolean).join(" · ")}</small>
               </span>
               <div className="identity-pgp-key-actions">
-                <button className="secondary" type="button" onClick={() => exportIdentityPGPKey(key, "public")}>Export public</button>
-                <button className="secondary" type="button" onClick={() => exportIdentityPGPKey(key, "private")}>Export private</button>
-                {key.revocation_certificate ? <button className="secondary" type="button" onClick={() => exportIdentityPGPKey(key, "revocation")}>Revocation</button> : null}
-                {key.id ? <button className="danger secondary" type="button" onClick={() => void deleteIdentityPGPKey(key.id || 0)}>Remove</button> : null}
+                <details className="message-menu identity-pgp-key-menu">
+                  <summary className="icon-action" title="PGP key actions" aria-label="PGP key actions">
+                    <Icon name="more_vert" />
+                  </summary>
+                  <div className="message-menu-panel identity-pgp-key-menu-panel">
+                    <button type="button" onClick={() => exportIdentityPGPKey(key, "public")}>
+                      <Icon name="signature" />
+                      <span><strong>Export public key</strong><small>Share this so others can encrypt mail to you and verify your signatures.</small></span>
+                    </button>
+                    <button type="button" onClick={() => exportIdentityPGPKey(key, "private")}>
+                      <Icon name="lock" />
+                      <span><strong>Export private key</strong><small>Danger: never send this key or its passphrase to anyone.</small></span>
+                    </button>
+                    {key.revocation_certificate ? (
+                      <button type="button" onClick={() => exportIdentityPGPKey(key, "revocation")}>
+                        <Icon name="report" />
+                        <span><strong>Download publishable revocation certificate</strong><small>Publish this only if the key is lost, compromised, or retired.</small></span>
+                      </button>
+                    ) : null}
+                    {key.id ? (
+                      <button className="danger" type="button" onClick={() => void deleteIdentityPGPKey(key.id || 0)}>
+                        <Icon name="delete" />
+                        <span><strong>Remove saved private key</strong><small>Deletes this rolltop server copy; it does not revoke the key.</small></span>
+                      </button>
+                    ) : null}
+                  </div>
+                </details>
               </div>
             </div>
           ))}
         </div>
         <div className="identity-pgp-grid">
-          <section>
+          <section className="identity-pgp-action-card">
             <h4>Import private key</h4>
-            <textarea
-              value={pgpPrivateKeyInput}
-              disabled={!identityDraft.id}
-              placeholder="Paste an ASCII-armored private key"
-              onChange={(event) => setPGPPrivateKeyInput(event.target.value)}
-            />
-            <button className="secondary" type="button" disabled={!identityDraft.id || pgpSaving || !pgpPrivateKeyInput.trim()} onClick={() => void importIdentityPGPKey()}>
+            <p>Bring in an existing ASCII-armored private key from a file or pasted text.</p>
+            <button className="secondary" type="button" disabled={!identityDraft.id || pgpSaving} onClick={() => setPGPPrivateImportOpen(true)}>
               {pgpSaving ? "Importing..." : "Import key"}
             </button>
           </section>
-          <section>
+          <section className="identity-pgp-action-card">
             <h4>Generate private key</h4>
-            <label>Passphrase<input type="password" value={pgpPassphrase} disabled={!identityDraft.id} onChange={(event) => setPGPPassphrase(event.target.value)} /></label>
-            <label>Confirm passphrase<input type="password" value={pgpPassphraseConfirm} disabled={!identityDraft.id} onChange={(event) => setPGPPassphraseConfirm(event.target.value)} /></label>
-            <button className="secondary" type="button" disabled={!identityDraft.id || pgpGenerating || !pgpPassphrase || !pgpPassphraseConfirm} onClick={() => void generateIdentityPGPKey()}>
+            <p>Create a new passphrase-protected key in this browser, then save the server-encrypted armored copy on the rolltop server.</p>
+            <button className="secondary" type="button" disabled={!identityDraft.id || pgpGenerating} onClick={() => setPGPGenerateOpen(true)}>
               {pgpGenerating ? "Generating..." : "Generate key"}
             </button>
           </section>
         </div>
+        {pgpPrivateImportOpen ? (
+          <PGPKeyImportModal
+            title="Import private key"
+            description="Paste, drop, or choose a passphrase-protected ASCII-armored PGP private key. The server stores an encrypted copy and sends it back to this browser for unlock/export."
+            placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"
+            busy={pgpSaving}
+            onCancel={() => { if (!pgpSaving) setPGPPrivateImportOpen(false); }}
+            onImport={(armored) => importIdentityPGPKey(armored)}
+          />
+        ) : null}
+        {pgpGenerateOpen ? (
+          <PGPKeyGenerateModal
+            email={identityDraft.email}
+            busy={pgpGenerating}
+            validatePassphrase={(passphrase) => pgpPassphraseIssues(passphrase, identityPGPPassphraseValues())}
+            onCancel={() => { if (!pgpGenerating) setPGPGenerateOpen(false); }}
+            onGenerate={(passphrase) => generateIdentityPGPKey(passphrase)}
+          />
+        ) : null}
       </section>
     );
   }
@@ -1513,7 +1585,6 @@ export function SettingsView({
             <h2>Profile</h2>
             <div className="muted">Signed in as {displayName}</div>
           </div>
-          <button className="secondary" type="button" onClick={logout}>Log out</button>
         </div>
         <div className="profile-account-summary">
           <span className="settings-field-label">Account</span>

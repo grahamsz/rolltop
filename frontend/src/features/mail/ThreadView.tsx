@@ -10,7 +10,9 @@ import type { Bootstrap, ComposeForm, ComposeIdentity, HeaderDetail, Mailbox, Me
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime } from "../../lib/format";
-import { decryptedHTMLDoc, decryptPGPSource } from "../../lib/pgp";
+import { decryptedHTMLDoc, decryptPGPSource, publicKeyRecordFromArmored } from "../../lib/pgp";
+import type { AutocryptGossipKey, PGPMessageOpenResult, PGPSignatureStatus } from "../../lib/pgp";
+import { ENCRYPTED_PREVIEW_TEXT, pgpPreviewText } from "../../lib/pgpPreview";
 import { HighlightedText, highlightEmailDocument } from "../../lib/searchHighlight";
 import { messageBackURL, messageHighlightQuery, messageHighlightTerms, messageSearchHitID } from "../../lib/routes";
 import { ComposeBox } from "../compose/ComposeViews";
@@ -43,6 +45,23 @@ type OriginalSourceState = {
   loading: boolean;
   error: string;
   data: MessageOriginalSource | null;
+};
+
+type PGPBodyState = {
+  loading: boolean;
+  error: string;
+  doc: string;
+  status: string;
+  signatureStatus?: PGPSignatureStatus;
+  signatureDetail?: string;
+  securityDetails?: string[];
+};
+
+type PGPVerificationKeys = {
+  armors: string[];
+  senderKeyCount: number;
+  senderEmail: string;
+  loadError?: string;
 };
 
 function shouldShowLoadStatus(status: MessageLoadStatus | null): status is MessageLoadStatus {
@@ -134,6 +153,178 @@ function SenderVisualOrAvatar({
     return <img className="thread-brand-icon" src={src} alt="" loading="lazy" onError={() => setFailedSrc(src)} />;
   }
   return <div className="avatar">{initial}</div>;
+}
+
+function PGPEncryptionPill({
+  state,
+  hasUnlockedKey,
+  onOpen
+}: {
+  state?: PGPBodyState;
+  hasUnlockedKey: boolean;
+  onOpen: () => void;
+}) {
+  const loading = Boolean(state?.loading);
+  const decrypted = Boolean(state?.doc && !state?.error);
+  const failed = Boolean(state?.error);
+  const statusClass = decrypted ? "verified" : failed ? "invalid" : "unverified";
+  const label = loading ? "Decrypting" : decrypted ? "Decrypted" : "Encrypted";
+  const detail = loading
+    ? "Decrypting this message in the browser."
+    : decrypted
+      ? "Message decrypted in this browser with an unlocked PGP key."
+      : failed
+        ? state?.error || "rolltop could not decrypt this message with the active key."
+        : hasUnlockedKey
+          ? "An unlocked PGP key is available. Click to try decrypting this message."
+          : "No unlocked PGP key is available. Click to unlock a key in this browser.";
+  return (
+    <button className={`pgp-status-pill encrypted ${statusClass}`} type="button" title={detail} onClick={(event) => { event.stopPropagation(); onOpen(); }}>
+      <Icon name={decrypted ? "lock_open" : "lock"} weight={decrypted ? "bold" : "regular"} />
+      {label}
+    </button>
+  );
+}
+
+function PGPSignaturePill({ encrypted, state }: { encrypted: boolean; state?: PGPBodyState }) {
+  const loading = !encrypted && (!state || state.loading);
+  const status = loading ? "checking" : state?.signatureStatus || (encrypted ? "unverified" : "unverified");
+  const statusClass = status === "verified" ? "verified" : status === "invalid" ? "invalid" : "unverified";
+  const label = loading
+    ? "Checking signature"
+    : status === "verified"
+      ? "Signature verified"
+      : status === "invalid"
+        ? "Signature mismatch"
+        : encrypted && !state
+          ? "Signature locked"
+          : "No public key";
+  const detail = loading
+    ? "Checking the PGP signature in this browser."
+    : state?.signatureDetail || (encrypted && !state
+      ? "Decrypt this message to verify its PGP signature."
+      : "No saved public key is available for this sender, so rolltop cannot verify the signature.");
+  return (
+    <details className={`pgp-signature-pill ${statusClass}`} onClick={(event) => event.stopPropagation()}>
+      <summary title={detail}>
+        <Icon name="signature" weight={status === "verified" ? "bold" : "regular"} />
+        {label}
+      </summary>
+      <div className="pgp-signature-detail">{detail}</div>
+    </details>
+  );
+}
+
+function PGPDetailsBlock({ state }: { state?: PGPBodyState }) {
+  const details = state?.securityDetails?.filter(Boolean) || [];
+  if (details.length === 0) return null;
+  return (
+    <details className="pgp-detail-block" onClick={(event) => event.stopPropagation()}>
+      <summary>
+        <Icon name="key" />
+        PGP details
+      </summary>
+      <dl>
+        {details.map((detail) => {
+          const [label, ...rest] = detail.split(": ");
+          return (
+            <Fragment key={detail}>
+              <dt>{rest.length > 0 ? label : "Detail"}</dt>
+              <dd>{rest.length > 0 ? rest.join(": ") : detail}</dd>
+            </Fragment>
+          );
+        })}
+      </dl>
+    </details>
+  );
+}
+
+function pgpOpenStatus(result: PGPMessageOpenResult, signatureStatus = result.signatureStatus): string {
+  if (result.encrypted && signatureStatus === "verified") return "Decrypted and signature verified.";
+  if (result.encrypted && signatureStatus === "invalid") return "Decrypted, but the signature does not match the saved sender key.";
+  if (result.encrypted && signatureStatus === "unverified") return "Decrypted, but the signature could not be verified because no saved sender key is available.";
+  if (result.encrypted) return "Decrypted.";
+  if (signatureStatus === "verified") return "Signature verified.";
+  if (signatureStatus === "invalid") return "Signature does not match the saved sender key.";
+  if (signatureStatus === "unverified") return "Signature could not be verified because no saved sender key is available.";
+  return "PGP content opened.";
+}
+
+function pgpSignatureState(item: ThreadMessage, result: PGPMessageOpenResult, keys: PGPVerificationKeys): Pick<PGPBodyState, "signatureStatus" | "signatureDetail"> {
+  if (!item.message.is_signed && !result.signed) return { signatureStatus: "none", signatureDetail: "" };
+  const sender = keys.senderEmail || item.sender_email || "this sender";
+  if (result.signatureStatus === "verified") {
+    return {
+      signatureStatus: "verified",
+      signatureDetail: result.signerKeyID
+        ? `Signature verified for ${sender} with key ${result.signerKeyID}.`
+        : `Signature verified for ${sender}.`
+    };
+  }
+  if (keys.loadError) {
+    return {
+      signatureStatus: "unverified",
+      signatureDetail: `rolltop could not load saved public keys for ${sender}: ${keys.loadError}`
+    };
+  }
+  if (keys.senderKeyCount === 0) {
+    return {
+      signatureStatus: "unverified",
+      signatureDetail: `No public key is saved for ${sender}. Add one to the contact before trusting this signature.`
+    };
+  }
+  return {
+    signatureStatus: "invalid",
+    signatureDetail: `This signature does not match the public key saved for ${sender}. ${result.signatureDetail || "The message may have been changed or the saved key may be wrong."}`
+  };
+}
+
+function pgpSecurityDetails(item: ThreadMessage, result: PGPMessageOpenResult, signature: Pick<PGPBodyState, "signatureStatus" | "signatureDetail">, keys: PGPVerificationKeys, unlocked: PGPUnlockState): string[] {
+  const details: string[] = [];
+  if (result.encrypted) {
+    details.push("OpenPGP mode: Encrypted inline message");
+    if (result.symmetricAlgorithm) details.push(`Message cipher: ${formatPGPAlgorithm(result.symmetricAlgorithm)}`);
+    if (result.encryptionKeyIDs?.length) details.push(`Recipient key IDs: ${result.encryptionKeyIDs.map(shortPGPDetailValue).join(", ")}`);
+    const unlockedKey = unlocked.keys[0];
+    if (unlockedKey) {
+      const parts = [unlockedKey.label, shortPGPDetailValue(unlockedKey.fingerprint || unlockedKey.key_id || ""), unlockedKey.algorithm].filter(Boolean);
+      details.push(`Unlocked key: ${parts.join(" · ")}`);
+    }
+  } else if (item.message.is_signed || result.signed) {
+    details.push("OpenPGP mode: Clear-signed inline message");
+  }
+  if (signature.signatureStatus && signature.signatureStatus !== "none") {
+    details.push(`Signature status: ${signature.signatureStatus}`);
+  }
+  if (result.signerKeyID) details.push(`Signer key ID: ${shortPGPDetailValue(result.signerKeyID)}`);
+  if (result.signaturePublicKeyAlgorithm || result.signatureHashAlgorithm) {
+    const parts = [formatPGPAlgorithm(result.signaturePublicKeyAlgorithm || ""), formatPGPAlgorithm(result.signatureHashAlgorithm || "")].filter(Boolean);
+    details.push(`Signature algorithms: ${parts.join(" / ")}`);
+  }
+  if (item.message.is_signed || result.signed) {
+    const sender = keys.senderEmail || item.sender_email || "sender";
+    details.push(`Saved sender keys: ${keys.senderKeyCount} for ${sender}`);
+  }
+  if (result.autocryptGossip?.length) {
+    details.push(`Autocrypt-Gossip: ${result.autocryptGossip.length} encrypted key ${result.autocryptGossip.length === 1 ? "header" : "headers"} found`);
+  }
+  return details;
+}
+
+function shortPGPDetailValue(value: string) {
+  const clean = value.replace(/\s+/g, "").toUpperCase();
+  if (clean.length <= 16) return clean;
+  return `${clean.slice(0, 8)}...${clean.slice(-8)}`;
+}
+
+function formatPGPAlgorithm(value: string) {
+  return value
+    .replace(/^aes(\d+)$/i, "AES-$1")
+    .replace(/^sha(\d+)$/i, "SHA-$1")
+    .replace(/^eddsaLegacy$/i, "EdDSA")
+    .replace(/^rsaEncryptSign$/i, "RSA")
+    .replace(/^ecdh$/i, "ECDH")
+    .replace(/^ecdsa$/i, "ECDSA");
 }
 
 type RangePagerProps = {
@@ -228,7 +419,7 @@ export function ThreadView({
   refreshChrome: () => Promise<Bootstrap | null>;
   openCompose: (query?: string) => void;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: () => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const id = location.path.split("/").pop() || "";
@@ -246,7 +437,7 @@ export function ThreadView({
   const [unsubscribingID, setUnsubscribingID] = useState<number | null>(null);
   const [pendingUnsubscribe, setPendingUnsubscribe] = useState<ThreadMessage | null>(null);
   const [originalSource, setOriginalSource] = useState<OriginalSourceState | null>(null);
-  const [pgpBodies, setPGPBodies] = useState<Record<number, { loading: boolean; error: string; doc: string; status: string }>>({});
+  const [pgpBodies, setPGPBodies] = useState<Record<number, PGPBodyState>>({});
   const [searchExplanations, setSearchExplanations] = useState<Record<number, SearchExplanationState>>({});
   const [loadStatus, setLoadStatus] = useState<MessageLoadStatus | null>(null);
   const [error, setError] = useState("");
@@ -261,6 +452,8 @@ export function ThreadView({
   const canExplainSearch = highlightQuery.trim() !== "";
   const brandDomainKey = useMemo(() => brandDomainKeyForThread(thread, pluginSet), [thread, pluginSet]);
   const [brandIcons, setBrandIcons] = useState<Record<string, string>>({});
+  const autoPGPVerificationRef = useRef<Set<string>>(new Set());
+  const pgpWasUnlockedRef = useRef(false);
 
   // Loading is split into a quick status probe and the actual message request.
   // The status dialog is delayed slightly to avoid flashing for local conversations.
@@ -271,6 +464,7 @@ export function ThreadView({
       setLoadStatus(null);
       setOriginalSource(null);
       setPGPBodies({});
+      autoPGPVerificationRef.current = new Set();
       setSearchExplanations({});
       let statusTimer = 0;
       try {
@@ -318,6 +512,41 @@ export function ThreadView({
       cancelled = true;
     };
   }, [brandDomainKey]);
+
+  useEffect(() => {
+    if (!pgpEnabled || loading) return;
+    const unlockedKey = pgpUnlock.keys.map((key) => key.fingerprint || key.id).join(",") || "locked";
+    for (const item of thread) {
+      if (item.message.is_encrypted) {
+        if (pgpUnlock.keys.length === 0 || pgpUnlock.unlockedUntil <= Date.now()) continue;
+        const decryptKey = `${id}:${item.message.id}:decrypt:${pgpUnlock.unlockedUntil}:${unlockedKey}`;
+        if (autoPGPVerificationRef.current.has(decryptKey)) continue;
+        autoPGPVerificationRef.current.add(decryptKey);
+        void openPGPMessage(item, { automatic: true });
+        continue;
+      }
+      if (!item.message.is_signed) continue;
+      const verifyKey = `${id}:${item.message.id}:verify`;
+      if (autoPGPVerificationRef.current.has(verifyKey)) continue;
+      autoPGPVerificationRef.current.add(verifyKey);
+      void openPGPMessage(item, { automatic: true });
+    }
+  }, [id, loading, pgpEnabled, pgpUnlock.keys, pgpUnlock.unlockedUntil, thread]);
+
+  useEffect(() => {
+    const unlocked = pgpUnlock.keys.length > 0 && pgpUnlock.unlockedUntil > Date.now();
+    if (!unlocked && pgpWasUnlockedRef.current) {
+      const encryptedIDs = new Set(thread.filter((item) => item.message.is_encrypted).map((item) => item.message.id));
+      if (encryptedIDs.size > 0) {
+        setPGPBodies((current) => {
+          const next = { ...current };
+          encryptedIDs.forEach((messageID) => delete next[messageID]);
+          return next;
+        });
+      }
+    }
+    pgpWasUnlockedRef.current = unlocked;
+  }, [pgpUnlock.keys.length, pgpUnlock.unlockedUntil, thread]);
 
   async function trustImages(messageID: number) {
     try {
@@ -371,31 +600,87 @@ export function ThreadView({
     }
   }
 
-  async function decryptMessage(item: ThreadMessage) {
+  async function pgpVerificationKeysForSender(item: ThreadMessage): Promise<PGPVerificationKeys> {
+    const senderEmail = item.sender_email.trim();
+    if (!senderEmail) return { armors: [], senderKeyCount: 0, senderEmail: "" };
+    try {
+      const data = await api.pgpPublicKeys([senderEmail], true);
+      const armors = (data.keys || []).map((key) => key.public_key_armored).filter(Boolean);
+      return {
+        armors: Array.from(new Set(armors.map((armor) => armor.trim()).filter(Boolean))),
+        senderKeyCount: data.keys?.length || 0,
+        senderEmail
+      };
+    } catch (err) {
+      return { armors: [], senderKeyCount: 0, senderEmail, loadError: messageFromError(err) };
+    }
+  }
+
+  async function saveAutocryptGossip(gossip: AutocryptGossipKey[] | undefined) {
+    if (!pgpEnabled || !gossip || gossip.length === 0) return;
+    for (const item of gossip) {
+      try {
+        const record = await publicKeyRecordFromArmored(item.publicKeyArmored, item.email);
+        await api.savePGPPublicKey(csrf, record);
+      } catch {
+        // Gossip is opportunistic key discovery. A malformed or duplicate key
+        // should not interrupt reading the encrypted message.
+      }
+    }
+  }
+
+  async function openPGPMessage(item: ThreadMessage, options: { automatic?: boolean } = {}) {
     const messageID = item.message.id;
-    if (item.message.is_encrypted && pgpUnlock.keys.length === 0) {
-      openPGPUnlock();
-      addToast("Unlock a PGP key to decrypt this message.", "error");
+    if (item.message.is_encrypted && (pgpUnlock.keys.length === 0 || pgpUnlock.unlockedUntil <= Date.now())) {
+      if (!options.automatic) {
+        openPGPUnlock();
+        addToast("Unlock a PGP key to decrypt this message.", "error");
+      }
       return;
     }
-    setPGPBodies((current) => ({ ...current, [messageID]: { loading: true, error: "", doc: current[messageID]?.doc || "", status: "" } }));
+    setPGPBodies((current) => ({
+      ...current,
+      [messageID]: {
+        loading: true,
+        error: "",
+        doc: current[messageID]?.doc || "",
+        status: "",
+        signatureStatus: current[messageID]?.signatureStatus || (item.message.is_signed ? "unverified" : "none"),
+        signatureDetail: current[messageID]?.signatureDetail || ""
+      }
+    }));
     try {
       const original = await api.messageOriginal(messageID);
-      const decrypted = await decryptPGPSource(original.source, pgpUnlock.keys);
-      const doc = await decryptedHTMLDoc(decrypted);
+      const verificationKeys = await pgpVerificationKeysForSender(item);
+      const opened = await decryptPGPSource(original.source, item.message.is_encrypted ? pgpUnlock.keys : [], verificationKeys.armors);
+      const signature = pgpSignatureState(item, opened, verificationKeys);
+      const securityDetails = pgpSecurityDetails(item, opened, signature, verificationKeys, pgpUnlock);
+      await saveAutocryptGossip(opened.autocryptGossip);
+      const doc = await decryptedHTMLDoc(opened.text);
       setPGPBodies((current) => ({
         ...current,
         [messageID]: {
           loading: false,
           error: "",
           doc,
-          status: item.message.is_encrypted ? "Decrypted in this browser." : "Signature block opened in this browser."
+          status: pgpOpenStatus(opened, signature.signatureStatus),
+          signatureStatus: signature.signatureStatus,
+          signatureDetail: signature.signatureDetail,
+          securityDetails
         }
       }));
     } catch (err) {
+      const detail = messageFromError(err);
       setPGPBodies((current) => ({
         ...current,
-        [messageID]: { loading: false, error: messageFromError(err), doc: current[messageID]?.doc || "", status: "" }
+        [messageID]: {
+          loading: false,
+          error: item.message.is_encrypted || !options.automatic ? detail : "",
+          doc: current[messageID]?.doc || "",
+          status: "",
+          signatureStatus: item.message.is_signed ? "unverified" : current[messageID]?.signatureStatus || "none",
+          signatureDetail: item.message.is_signed ? `rolltop could not verify this signature: ${detail}` : current[messageID]?.signatureDetail || ""
+        }
       }));
     }
   }
@@ -600,6 +885,9 @@ export function ThreadView({
             const unsubscribeSent = unsubscribeSentLabel(item);
             const pgpBody = pgpBodies[item.message.id];
             const pgpMessage = pgpEnabled && (item.message.is_encrypted || item.message.is_signed);
+            const pgpSignatureVisible = Boolean(item.message.is_signed || (pgpBody?.signatureStatus && pgpBody.signatureStatus !== "none"));
+            const previewText = pgpPreviewText(item.snippet, item.message.is_encrypted, item.message.is_signed);
+            const hasUnlockedPGPKey = pgpUnlock.keys.length > 0 && pgpUnlock.unlockedUntil > Date.now();
             return (
               <article className={`thread-card ${isExpanded ? "" : "collapsed"}`} key={item.message.id}>
                 <div
@@ -631,6 +919,17 @@ export function ThreadView({
                         sentLabel={unsubscribeSent}
                         onRequest={requestUnsubscribe}
                       />
+                      {pgpEnabled && item.message.is_encrypted ? (
+                        <PGPEncryptionPill
+                          state={pgpBody}
+                          hasUnlockedKey={hasUnlockedPGPKey}
+                          onOpen={() => {
+                            if (!hasUnlockedPGPKey) openPGPUnlock();
+                            else void openPGPMessage(item);
+                          }}
+                        />
+                      ) : null}
+                      {pgpEnabled && pgpSignatureVisible ? <PGPSignaturePill encrypted={item.message.is_encrypted} state={pgpBody} /> : null}
                     </div>
                     <MessageDetailsToggle
                       summary={item.recipient_line}
@@ -638,8 +937,8 @@ export function ThreadView({
                       highlightQuery={highlightQuery}
                       highlightTerms={highlightTerms}
                     />
-                    <div className="thread-collapsed-snippet">
-                      <HighlightedText text={item.snippet} query={highlightQuery} terms={highlightTerms} />
+                    <div className={`thread-collapsed-snippet ${item.message.is_encrypted ? "encrypted-preview" : ""}`}>
+                      <HighlightedText text={previewText} query={item.message.is_encrypted ? "" : highlightQuery} terms={item.message.is_encrypted ? [] : highlightTerms} />
                     </div>
                   </div>
                   <div className="thread-meta">
@@ -729,19 +1028,46 @@ export function ThreadView({
                       <button className="secondary" type="button" onClick={() => navigate("/settings/account")}>Account settings</button>
                     </div>
                   ) : null}
-                  {pgpMessage ? (
+                  {pgpMessage && pgpBody?.loading ? (
                     <div className="body-notice pgp-body-notice">
-                      <Icon name={item.message.is_encrypted ? "lock" : "file_text"} />
-                      <span>{item.message.is_encrypted ? "This message is PGP encrypted." : "This message is PGP signed."}</span>
-                      <button className="secondary" type="button" disabled={pgpBody?.loading} onClick={() => void decryptMessage(item)}>
-                        {pgpBody?.loading ? "Opening..." : item.message.is_encrypted ? "Decrypt" : "Open signed text"}
-                      </button>
-                      {pgpBody?.status ? <small>{pgpBody.status}</small> : null}
+                      <Icon name="lock_open" />
+                      <span>{item.message.is_encrypted ? "Decrypting this message in the browser..." : "Checking this PGP signature in the browser..."}</span>
                     </div>
                   ) : null}
-                  {pgpBody?.error ? <div className="body-notice pgp-body-notice error-text">{pgpBody.error}</div> : null}
-                  <EmailFrame srcDoc={pgpBody?.doc || item.body_doc} highlightQuery={highlightQuery} highlightTerms={highlightTerms} />
-                  {item.has_hidden_quoted && item.full_body_doc ? (
+                  {pgpMessage && pgpBody?.error ? (
+                    <div className="body-notice pgp-body-notice">
+                      <Icon name="report" />
+                      <span>{pgpBody.error}</span>
+                    </div>
+                  ) : null}
+                  {pgpMessage && pgpBody?.doc && pgpBody.status && (pgpBody.signatureStatus === "invalid" || pgpBody.signatureStatus === "unverified") ? (
+                    <div className="body-notice pgp-body-notice">
+                      <Icon name={pgpBody.signatureStatus === "invalid" ? "report" : "lock_open"} />
+                      <span>{pgpBody.status}</span>
+                    </div>
+                  ) : null}
+                  {pgpMessage && pgpBody?.doc ? <PGPDetailsBlock state={pgpBody} /> : null}
+                  {pgpMessage && item.message.is_encrypted && !pgpBody?.doc && !pgpBody?.loading && !pgpBody?.error ? (
+                    <div className="body-notice pgp-body-notice encrypted-placeholder">
+                      <Icon name="lock" />
+                      <span>Encrypted content will appear here after a matching PGP key is unlocked.</span>
+                    </div>
+                  ) : null}
+                  {item.message.is_encrypted && !pgpBody?.doc ? (
+                    <div className="pgp-encrypted-fallback encrypted-preview" aria-hidden="true">
+                      {ENCRYPTED_PREVIEW_TEXT} {ENCRYPTED_PREVIEW_TEXT} {ENCRYPTED_PREVIEW_TEXT}
+                    </div>
+                  ) : null}
+                  {item.message.is_encrypted && !pgpBody?.doc ? null : (
+                    <EmailFrame
+                      key={pgpBody?.doc ? `pgp-${item.message.id}` : `body-${item.message.id}`}
+                      srcDoc={pgpBody?.doc || item.body_doc}
+                      highlightQuery={highlightQuery}
+                      highlightTerms={highlightTerms}
+                      full={Boolean(pgpBody?.doc)}
+                    />
+                  )}
+                  {item.has_hidden_quoted && item.full_body_doc && !(pgpEnabled && item.message.is_signed) ? (
                     <QuotedDetails srcDoc={item.full_body_doc} highlightQuery={highlightQuery} highlightTerms={highlightTerms} />
                   ) : null}
                 </div>

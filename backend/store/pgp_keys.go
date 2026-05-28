@@ -174,6 +174,32 @@ func (s *Store) ListContactPGPPublicKeysForEmails(ctx context.Context, userID in
 	return out, nil
 }
 
+// ListAllContactPGPPublicKeysForEmails returns every public key for the supplied email addresses.
+func (s *Store) ListAllContactPGPPublicKeysForEmails(ctx context.Context, userID int64, emails []string) ([]ContactPGPPublicKey, error) {
+	seen := map[string]bool{}
+	var out []ContactPGPPublicKey
+	for _, email := range emails {
+		normalized := NormalizeContactEmail(email)
+		if normalized == "" || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, contactPGPPublicKeySelectSQL()+`
+			WHERE user_id = ? AND normalized_email = ?
+			ORDER BY is_preferred DESC, id`, userID, normalized)
+		if err != nil {
+			return nil, err
+		}
+		keys, err := scanContactPGPPublicKeys(rows)
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, keys...)
+	}
+	return out, nil
+}
+
 // UpsertContactPGPPublicKey creates or updates a contact public key row.
 func (s *Store) UpsertContactPGPPublicKey(ctx context.Context, key ContactPGPPublicKey) (ContactPGPPublicKey, error) {
 	if key.UserID == 0 || key.ContactID == 0 {
@@ -185,6 +211,9 @@ func (s *Store) UpsertContactPGPPublicKey(ctx context.Context, key ContactPGPPub
 	key = normalizeContactPGPPublicKey(key)
 	if key.NormalizedEmail == "" || key.PublicKeyArmored == "" {
 		return ContactPGPPublicKey{}, ErrNotFound
+	}
+	if err := s.requireContactEmailForUser(ctx, key.UserID, key.ContactID, key.NormalizedEmail); err != nil {
+		return ContactPGPPublicKey{}, err
 	}
 	ts := nowUnix()
 	db := s.mustDataDB(ctx, key.UserID)
@@ -357,6 +386,17 @@ func errorsIsNoRows(err error) bool {
 func (s *Store) requireContactForUser(ctx context.Context, userID, contactID int64) error {
 	var id int64
 	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT id FROM contacts WHERE user_id = ? AND id = ?`, userID, contactID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *Store) requireContactEmailForUser(ctx context.Context, userID, contactID int64, normalizedEmail string) error {
+	var id int64
+	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `
+		SELECT id FROM contact_emails
+		WHERE user_id = ? AND contact_id = ? AND normalized_email = ?`, userID, contactID, normalizedEmail).Scan(&id)
 	if err == sql.ErrNoRows {
 		return ErrNotFound
 	}

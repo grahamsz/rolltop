@@ -73,17 +73,18 @@ type apiSMTPAccount struct {
 }
 
 type apiMailIdentity struct {
-	ID              int64  `json:"id"`
-	ContactID       int64  `json:"contact_id"`
-	ContactEmailID  int64  `json:"contact_email_id"`
-	SMTPAccountID   int64  `json:"smtp_account_id"`
-	IMAPAccountID   int64  `json:"imap_account_id"`
-	SentMailboxID   int64  `json:"sent_mailbox_id"`
-	DraftsMailboxID int64  `json:"drafts_mailbox_id"`
-	Email           string `json:"email"`
-	DisplayName     string `json:"display_name"`
-	Signature       string `json:"signature"`
-	IsPrimary       bool   `json:"is_primary"`
+	ID               int64  `json:"id"`
+	ContactID        int64  `json:"contact_id"`
+	ContactEmailID   int64  `json:"contact_email_id"`
+	SMTPAccountID    int64  `json:"smtp_account_id"`
+	IMAPAccountID    int64  `json:"imap_account_id"`
+	SentMailboxID    int64  `json:"sent_mailbox_id"`
+	DraftsMailboxID  int64  `json:"drafts_mailbox_id"`
+	Email            string `json:"email"`
+	DisplayName      string `json:"display_name"`
+	Signature        string `json:"signature"`
+	AutocryptEnabled bool   `json:"autocrypt_enabled"`
+	IsPrimary        bool   `json:"is_primary"`
 }
 
 type apiMessage struct {
@@ -220,6 +221,7 @@ type apiComposeIdentity struct {
 	Signature           string `json:"signature"`
 	IconURL             string `json:"icon_url"`
 	IsPrimary           bool   `json:"is_primary"`
+	AutocryptEnabled    bool   `json:"autocrypt_enabled"`
 	HasPGPPrivateKey    bool   `json:"has_pgp_private_key"`
 	PGPPublicKeyArmored string `json:"pgp_public_key_armored,omitempty"`
 }
@@ -315,4 +317,6 @@ type apiIdentityPGPPrivateKey struct {
 	IsActiveSigning       bool   `json:"is_active_signing"`
 	IsActiveEncryption    bool   `json:"is_active_encryption"`
 	IsDecryptOnly         bool   `json:"is_decrypt_only"`
+	CreatedAt             string `json:"created_at,omitempty"`
+	UpdatedAt             string `json:"updated_at,omitempty"`
 }

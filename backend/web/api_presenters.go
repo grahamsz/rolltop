@@ -136,17 +136,18 @@ func apiSMTPAccountsFromStore(accounts []store.SMTPAccount) []apiSMTPAccount {
 
 func apiMailIdentityFromStore(identity store.MailIdentity) apiMailIdentity {
 	return apiMailIdentity{
-		ID:              identity.ID,
-		ContactID:       identity.ContactID,
-		ContactEmailID:  identity.ContactEmailID,
-		SMTPAccountID:   identity.SMTPAccountID,
-		IMAPAccountID:   identity.IMAPAccountID,
-		SentMailboxID:   identity.SentMailboxID,
-		DraftsMailboxID: identity.DraftsMailboxID,
-		Email:           identity.Email,
-		DisplayName:     identity.DisplayName,
-		Signature:       identity.Signature,
-		IsPrimary:       identity.IsPrimary,
+		ID:               identity.ID,
+		ContactID:        identity.ContactID,
+		ContactEmailID:   identity.ContactEmailID,
+		SMTPAccountID:    identity.SMTPAccountID,
+		IMAPAccountID:    identity.IMAPAccountID,
+		SentMailboxID:    identity.SentMailboxID,
+		DraftsMailboxID:  identity.DraftsMailboxID,
+		Email:            identity.Email,
+		DisplayName:      identity.DisplayName,
+		Signature:        identity.Signature,
+		AutocryptEnabled: identity.AutocryptEnabled,
+		IsPrimary:        identity.IsPrimary,
 	}
 }
 
@@ -474,6 +475,8 @@ func apiIdentityPGPPrivateKeyFromStore(key store.IdentityPGPPrivateKey, includeP
 		IsActiveSigning:       key.IsActiveSigning,
 		IsActiveEncryption:    key.IsActiveEncryption,
 		IsDecryptOnly:         key.IsDecryptOnly,
+		CreatedAt:             timeString(key.CreatedAt),
+		UpdatedAt:             timeString(key.UpdatedAt),
 	}
 	if includePrivate {
 		out.PrivateKeyArmored = key.PrivateKeyArmored

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"mailmirror/backend/autocrypt"
 	"mailmirror/backend/mailparse"
 	"mailmirror/backend/plugins"
 	languagesearch "mailmirror/backend/plugins/language_search"
@@ -419,6 +420,7 @@ type composeIdentity struct {
 	Header              string
 	IconURL             string
 	IsPrimary           bool
+	AutocryptEnabled    bool
 }
 
 func (s *Server) composeIdentities(ctx context.Context, cu currentUser) []apiComposeIdentity {
@@ -434,6 +436,7 @@ func (s *Server) composeIdentities(ctx context.Context, cu currentUser) []apiCom
 			Signature:           choice.Signature,
 			IconURL:             choice.IconURL,
 			IsPrimary:           choice.IsPrimary,
+			AutocryptEnabled:    choice.AutocryptEnabled,
 			HasPGPPrivateKey:    choice.HasPGPPrivateKey,
 			PGPPublicKeyArmored: choice.PGPPublicKeyArmored,
 		})
@@ -487,6 +490,7 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 				Header:              contactAddressHeader(label, email),
 				IconURL:             icons[identity.ContactID],
 				IsPrimary:           identity.IsPrimary,
+				AutocryptEnabled:    identity.AutocryptEnabled,
 			})
 		}
 		if len(out) > 0 {
@@ -506,12 +510,13 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 	}
 	label := strings.TrimSpace(cu.User.Name)
 	return []composeIdentity{{
-		ID:            0,
-		IMAPAccountID: imapAccountID,
-		Label:         firstNonEmpty(label, email),
-		Email:         email,
-		Header:        contactAddressHeader(label, email),
-		IsPrimary:     true,
+		ID:               0,
+		IMAPAccountID:    imapAccountID,
+		Label:            firstNonEmpty(label, email),
+		Email:            email,
+		Header:           contactAddressHeader(label, email),
+		IsPrimary:        true,
+		AutocryptEnabled: true,
 	}}
 }
 
@@ -638,6 +643,18 @@ func (s *Server) smtpAccountForIdentity(ctx context.Context, userID int64, ident
 		return accounts[0], nil
 	}
 	return store.SMTPAccount{}, fmt.Errorf("no SMTP server is assigned to %s", identity.Email)
+}
+
+func applyAutocryptHeader(msg *smtpclient.Message, identity composeIdentity) {
+	if msg == nil || !identity.AutocryptEnabled || strings.TrimSpace(identity.PGPPublicKeyArmored) == "" {
+		return
+	}
+	keyData, ok := autocrypt.KeyDataFromArmoredPublicKey(identity.PGPPublicKeyArmored)
+	if !ok {
+		return
+	}
+	msg.AutocryptAddr = identity.Email
+	msg.AutocryptKeyData = keyData
 }
 
 func (s *Server) sentMailboxForIdentity(ctx context.Context, userID int64, identity composeIdentity, smtpAccount store.SMTPAccount) (store.MailAccount, store.Mailbox, error) {
@@ -929,6 +946,9 @@ func (s *Server) saveComposeDraft(ctx context.Context, cu currentUser, form comp
 		MessageID:   messageID,
 		Date:        messageDate,
 		Attachments: attachments,
+	}
+	if s.pluginEnabled(ctx, plugins.ClientSidePGP) {
+		applyAutocryptHeader(&msg, identity)
 	}
 	raw, err := smtpclient.BuildDraftRaw(msg)
 	if err != nil {

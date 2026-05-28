@@ -101,6 +101,9 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 	if err := s.Store.CreateLocation(ctx, userID, msg.ID, mailbox.ID, item.UID); err != nil {
 		return store.MessageRecord{}, nil, err
 	}
+	if err := s.discoverAutocryptHeaders(ctx, userID, item.Raw, parsed.From); err != nil {
+		return store.MessageRecord{}, nil, err
+	}
 	attachmentDocs := make([]search.AttachmentDoc, 0, len(parsed.Files))
 	visibleAttachmentCount := 0
 	if len(parsed.Files) > 0 {

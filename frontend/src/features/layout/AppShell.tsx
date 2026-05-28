@@ -42,6 +42,7 @@ export function AppShell({
   pgpUnlock,
   openPGPUnlock,
   lockPGP,
+  logout,
   children
 }: AppShellProps) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -64,6 +65,7 @@ export function AppShell({
         pgpUnlock={pgpUnlock}
         openPGPUnlock={openPGPUnlock}
         lockPGP={lockPGP}
+        logout={logout}
         onMenu={() => setMobileSidebarOpen(true)}
       />
       <div className="app">
@@ -165,6 +167,7 @@ function Topbar({
   pgpUnlock,
   openPGPUnlock,
   lockPGP,
+  logout,
   onMenu
 }: {
   user: User;
@@ -175,13 +178,15 @@ function Topbar({
   notificationsEnabled: boolean;
   toggleNotifications: () => Promise<void>;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: () => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void) => void;
   lockPGP: () => void;
+  logout: () => Promise<void>;
   onMenu: () => void;
 }) {
   const [query, setQuery] = useState(() => searchRoute(currentLocation().path).query);
   const [focused, setFocused] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const accountMenuRef = useRef<HTMLDetailsElement>(null);
   const pluginKey = enabledPlugins.join("|");
   const pluginSet = useMemo(() => createPluginSet(enabledPlugins), [pluginKey]);
   const pgpEnabled = pluginSet.has(pluginIDs.clientSidePGP);
@@ -208,6 +213,27 @@ function Topbar({
     }
     navigate(searchURL(trimmed));
   }
+
+  function closeAccountMenu() {
+    if (accountMenuRef.current) accountMenuRef.current.open = false;
+  }
+
+  function menuNavigate(url: string) {
+    closeAccountMenu();
+    navigate(url);
+  }
+
+  async function menuToggleNotifications() {
+    await toggleNotifications();
+    closeAccountMenu();
+  }
+
+  async function menuLogout() {
+    closeAccountMenu();
+    await logout();
+  }
+
+  const accountLabel = user.name || user.email;
 
   return (
     <header className="topbar">
@@ -241,36 +267,53 @@ function Topbar({
         {focused ? <SearchAutocomplete items={autocomplete.items} activeIndex={autocomplete.activeIndex} onChoose={autocomplete.choose} /> : null}
       </form>
       <nav className="top-actions" aria-label="Account">
-        <button
-          className={notificationsEnabled ? "notification-toggle active" : "notification-toggle"}
-          type="button"
-          role="switch"
-          aria-checked={notificationsEnabled}
-          title={notificationsEnabled ? "Pause notifications" : "Enable notifications"}
-          onClick={() => void toggleNotifications()}
-        >
-          <Icon name="notifications" weight={notificationsEnabled ? "bold" : "regular"} />
-          <span className="notification-toggle-track"><span /></span>
-        </button>
         {pgpEnabled ? (
           <button
             className={pgpUnlocked ? "ghost pgp-lock-toggle active" : "ghost pgp-lock-toggle"}
             type="button"
             title={pgpUnlocked ? "Lock PGP keys" : "Unlock PGP key"}
-            onClick={pgpUnlocked ? lockPGP : openPGPUnlock}
+            onClick={pgpUnlocked ? lockPGP : () => openPGPUnlock()}
           >
             <Icon name={pgpUnlocked ? "lock_open" : "lock"} weight={pgpUnlocked ? "bold" : "regular"} />
           </button>
         ) : null}
-        <button className="ghost settings-action" type="button" title="Settings" onClick={() => navigate("/settings/account")}>
-          <Icon name="settings" />
-        </button>
-        {user.is_admin ? (
-          <button className="ghost admin-action" type="button" title="Users" onClick={() => navigate("/admin/users")}>
-            <Icon name="group" />
-          </button>
-        ) : null}
-        <span className="user-chip">{user.name || user.email}</span>
+        <details className="account-menu" ref={accountMenuRef}>
+          <summary className="user-chip account-menu-summary" title={accountLabel} aria-label="Account menu">
+            <span>{accountLabel}</span>
+            <Icon name="expand_more" />
+          </summary>
+          <div className="account-menu-panel" role="menu">
+            <div className="account-menu-identity">
+              <strong>{accountLabel}</strong>
+              <small>{user.email}</small>
+            </div>
+            <button
+              className={notificationsEnabled ? "account-menu-row account-menu-notifications active" : "account-menu-row account-menu-notifications"}
+              type="button"
+              role="switch"
+              aria-checked={notificationsEnabled}
+              onClick={() => void menuToggleNotifications()}
+            >
+              <Icon name="notifications" weight={notificationsEnabled ? "bold" : "regular"} />
+              <span><strong>Browser notifications</strong><small>{notificationsEnabled ? "Enabled for new mail" : "Paused for this browser"}</small></span>
+              <span className="notification-toggle-track"><span /></span>
+            </button>
+            <button className="account-menu-row" type="button" role="menuitem" onClick={() => menuNavigate("/settings/account")}>
+              <Icon name="settings" />
+              <span><strong>Settings</strong><small>Profile, servers, folders, and identities</small></span>
+            </button>
+            {user.is_admin ? (
+              <button className="account-menu-row" type="button" role="menuitem" onClick={() => menuNavigate("/admin/users")}>
+                <Icon name="group" />
+                <span><strong>Admin panel</strong><small>Users and server-wide controls</small></span>
+              </button>
+            ) : null}
+            <button className="account-menu-row danger" type="button" role="menuitem" onClick={() => void menuLogout()}>
+              <Icon name="logout" />
+              <span><strong>Log out</strong><small>End this browser session</small></span>
+            </button>
+          </div>
+        </details>
       </nav>
     </header>
   );

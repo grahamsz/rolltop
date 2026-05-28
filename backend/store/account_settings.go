@@ -163,8 +163,8 @@ func (s *Store) SyncMailIdentitiesForMeContacts(ctx context.Context, userID int6
 			primary := contact.IsPrimary && email.IsPrimary
 			defaults := s.identityMailboxDefaults(ctx, userID, address, defaultSMTPID, 0)
 			if _, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `INSERT INTO mail_identities
-					(user_id, contact_id, contact_email_id, smtp_account_id, imap_account_id, sent_mailbox_id, drafts_mailbox_id, email, display_name, signature, is_primary, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+					(user_id, contact_id, contact_email_id, smtp_account_id, imap_account_id, sent_mailbox_id, drafts_mailbox_id, email, display_name, signature, autocrypt_enabled, is_primary, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)
 				ON CONFLICT(user_id, contact_email_id) DO UPDATE SET
 					contact_id = excluded.contact_id,
 					smtp_account_id = CASE WHEN mail_identities.smtp_account_id = 0 THEN excluded.smtp_account_id ELSE mail_identities.smtp_account_id END,
@@ -240,6 +240,7 @@ func (s *Store) CreateMailIdentityForUser(ctx context.Context, userID int64, in 
 		next := identity
 		next.DisplayName = display
 		next.Signature = in.Signature
+		next.AutocryptEnabled = in.AutocryptEnabled
 		next.IsPrimary = in.IsPrimary || identity.IsPrimary
 		if in.SMTPAccountID > 0 {
 			next.SMTPAccountID = in.SMTPAccountID
@@ -258,7 +259,7 @@ func (s *Store) CreateMailIdentityForUser(ctx context.Context, userID int64, in 
 	return MailIdentity{}, ErrNotFound
 }
 
-// UpdateMailIdentityForUser updates server assignments, display name, signature, and primary state for one identity.
+// UpdateMailIdentityForUser updates server assignments, display name, signature, Autocrypt, and primary state for one identity.
 func (s *Store) UpdateMailIdentityForUser(ctx context.Context, userID int64, in MailIdentity) (MailIdentity, error) {
 	if in.ID <= 0 {
 		return MailIdentity{}, ErrNotFound
@@ -313,8 +314,8 @@ func (s *Store) UpdateMailIdentityForUser(ctx context.Context, userID int64, in 
 	if _, err = tx.ExecContext(ctx, `UPDATE contacts SET display_name = ?, is_me = 1, is_primary = CASE WHEN ? THEN 1 ELSE is_primary END, updated_at = ? WHERE user_id = ? AND id = ?`, display, boolInt(in.IsPrimary), nowUnix(), userID, current.ContactID); err != nil {
 		return rollback()
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE mail_identities SET smtp_account_id = ?, imap_account_id = ?, sent_mailbox_id = ?, drafts_mailbox_id = ?, display_name = ?, signature = ?, is_primary = ?, updated_at = ? WHERE user_id = ? AND id = ?`,
-		in.SMTPAccountID, in.IMAPAccountID, in.SentMailboxID, in.DraftsMailboxID, display, signature, boolInt(in.IsPrimary), nowUnix(), userID, current.ID)
+	res, err := tx.ExecContext(ctx, `UPDATE mail_identities SET smtp_account_id = ?, imap_account_id = ?, sent_mailbox_id = ?, drafts_mailbox_id = ?, display_name = ?, signature = ?, autocrypt_enabled = ?, is_primary = ?, updated_at = ? WHERE user_id = ? AND id = ?`,
+		in.SMTPAccountID, in.IMAPAccountID, in.SentMailboxID, in.DraftsMailboxID, display, signature, boolInt(in.AutocryptEnabled), boolInt(in.IsPrimary), nowUnix(), userID, current.ID)
 	if err != nil {
 		return rollback()
 	}
@@ -499,14 +500,15 @@ func (s *Store) validateIdentityMailboxRole(ctx context.Context, userID, mailbox
 }
 
 func mailIdentitySelectSQL() string {
-	return `SELECT id, user_id, contact_id, contact_email_id, smtp_account_id, imap_account_id, sent_mailbox_id, drafts_mailbox_id, email, display_name, signature, is_primary, created_at, updated_at FROM mail_identities`
+	return `SELECT id, user_id, contact_id, contact_email_id, smtp_account_id, imap_account_id, sent_mailbox_id, drafts_mailbox_id, email, display_name, signature, autocrypt_enabled, is_primary, created_at, updated_at FROM mail_identities`
 }
 
 func scanMailIdentity(row rowScanner) (MailIdentity, error) {
 	var ident MailIdentity
-	var primary int
+	var autocryptEnabled, primary int
 	var created, updated int64
-	err := row.Scan(&ident.ID, &ident.UserID, &ident.ContactID, &ident.ContactEmailID, &ident.SMTPAccountID, &ident.IMAPAccountID, &ident.SentMailboxID, &ident.DraftsMailboxID, &ident.Email, &ident.DisplayName, &ident.Signature, &primary, &created, &updated)
+	err := row.Scan(&ident.ID, &ident.UserID, &ident.ContactID, &ident.ContactEmailID, &ident.SMTPAccountID, &ident.IMAPAccountID, &ident.SentMailboxID, &ident.DraftsMailboxID, &ident.Email, &ident.DisplayName, &ident.Signature, &autocryptEnabled, &primary, &created, &updated)
+	ident.AutocryptEnabled = autocryptEnabled != 0
 	ident.IsPrimary = primary != 0
 	ident.CreatedAt = unixTime(created)
 	ident.UpdatedAt = unixTime(updated)

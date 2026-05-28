@@ -235,15 +235,10 @@
 
 .contact-pgp-import {
   display: grid;
-  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(160px, 240px) auto;
   gap: 8px;
-  align-items: start;
-
-  textarea {
-    min-height: 92px;
-    font: 12px/1.45 var(--font-mono);
-    resize: vertical;
-  }
+  align-items: center;
+  justify-content: start;
 }
 
 .contact-pgp-key-list {

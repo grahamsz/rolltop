@@ -7,6 +7,7 @@ import { api } from "../../api";
 import type { Contact, ContactAddress, ContactEmail, ContactPGPKey, ContactPhone, ContactURL } from "../../types";
 import type { Toast } from "../../appTypes";
 import { Icon } from "../../components/Icon";
+import { PGPKeyImportModal } from "../../components/PGPKeyImportModal";
 import { messageFromError } from "../../lib/errors";
 import { publicKeyRecordFromArmored } from "../../lib/pgp";
 
@@ -298,7 +299,7 @@ function ContactPGPKeyEditor({
 }) {
   const emailChoices = emails.map((item) => item.email.trim()).filter(Boolean);
   const [email, setEmail] = useState(emailChoices[0] || "");
-  const [armored, setArmored] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
   const [adding, setAdding] = useState(false);
 
   useEffect(() => {
@@ -306,14 +307,14 @@ function ContactPGPKeyEditor({
     setEmail(emailChoices[0] || "");
   }, [email, emailChoices.join("|")]);
 
-  async function addKey() {
+  async function addKey(armored: string) {
     if (!email || !armored.trim()) return;
     setAdding(true);
     try {
       const parsed = await publicKeyRecordFromArmored(armored, email);
       const hasPreferredForEmail = value.some((key) => key.email.toLowerCase() === email.toLowerCase() && key.is_preferred);
       onChange([...value, { ...parsed, email, is_preferred: !hasPreferredForEmail }]);
-      setArmored("");
+      setImportOpen(false);
       addToast("PGP public key added.");
     } catch (err) {
       addToast(messageFromError(err), "error");
@@ -341,15 +342,21 @@ function ContactPGPKeyEditor({
           {emailChoices.length === 0 ? <option value="">Add an email first</option> : null}
           {emailChoices.map((choice) => <option value={choice} key={choice}>{choice}</option>)}
         </select>
-        <textarea
-          value={armored}
-          placeholder="Paste an ASCII-armored public key"
-          onChange={(event) => setArmored(event.target.value)}
-        />
-        <button className="secondary" type="button" disabled={adding || !email || !armored.trim()} onClick={() => void addKey()}>
-          {adding ? "Reading key..." : "Add key"}
+        <button className="secondary" type="button" disabled={adding || !email} onClick={() => setImportOpen(true)}>
+          {adding ? "Reading key..." : "Import public key"}
         </button>
       </div>
+      {importOpen ? (
+        <PGPKeyImportModal
+          title="Import public key"
+          description={`Paste, drop, or choose an ASCII-armored public key for ${email || "this contact"}.`}
+          placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"
+          importLabel="Add key"
+          busy={adding}
+          onCancel={() => { if (!adding) setImportOpen(false); }}
+          onImport={(armored) => addKey(armored)}
+        />
+      ) : null}
       {value.length === 0 ? <div className="muted">No PGP public keys saved for this contact.</div> : null}
       <div className="contact-pgp-key-list">
         {value.map((key, index) => (

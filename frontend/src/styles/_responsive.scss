@@ -47,18 +47,15 @@
 
   .top-actions {
     margin-left: 0;
-    gap: 4px;
+    gap: 5px;
   }
 
-  .top-actions > .ghost:not(.settings-action),
-  .top-actions > .notification-toggle,
-  .top-actions > .secondary,
-  .top-actions > .user-chip {
-    display: none;
+  .user-chip {
+    max-width: min(42vw, 170px);
   }
 
-  .top-actions > .settings-action {
-    display: inline-flex;
+  .account-menu-panel {
+    right: 0;
   }
 
   .app {

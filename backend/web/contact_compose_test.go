@@ -10,10 +10,16 @@ import (
 	"time"
 
 	"mailmirror/backend/blob"
+	"mailmirror/backend/plugins"
 	"mailmirror/backend/smtpclient"
 	"mailmirror/backend/store"
 	"mailmirror/backend/syncer"
 )
+
+const composeAutocryptPublicKey = `-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+AQIDBAUGBwg=
+-----END PGP PUBLIC KEY BLOCK-----`
 
 type captureSender struct {
 	msg   smtpclient.Message
@@ -162,6 +168,49 @@ func TestSaveComposeDraftAppendsToDraftsMailbox(t *testing.T) {
 	form := server.draftComposeFormForMessage(ctx, currentUser{User: user}, draft)
 	if form.Bcc != "<hidden@example.test>" {
 		t.Fatalf("draft bcc = %q", form.Bcc)
+	}
+}
+
+func TestSendComposeAutocryptHeaderRequiresPluginAndIdentitySetting(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		enablePGPPlugin   bool
+		autocryptEnabled  bool
+		wantAutocryptAddr string
+	}{
+		{name: "plugin enabled", enablePGPPlugin: true, autocryptEnabled: true, wantAutocryptAddr: "me@example.test"},
+		{name: "plugin disabled", enablePGPPlugin: false, autocryptEnabled: true},
+		{name: "identity disabled", enablePGPPlugin: true, autocryptEnabled: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			server, user, fromID, sender, identity := setupAutocryptComposeTest(t, ctx, tc.enablePGPPlugin)
+			if identity.AutocryptEnabled != tc.autocryptEnabled {
+				identity.AutocryptEnabled = tc.autocryptEnabled
+				var err error
+				identity, err = server.store.UpdateMailIdentityForUser(ctx, user.ID, identity)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := server.sendCompose(ctx, currentUser{User: user}, composeForm{
+				To:             "recipient@example.test",
+				Subject:        "Autocrypt",
+				Body:           "body",
+				FromIdentityID: fromID,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if sender.msg.AutocryptAddr != tc.wantAutocryptAddr {
+				t.Fatalf("AutocryptAddr = %q, want %q", sender.msg.AutocryptAddr, tc.wantAutocryptAddr)
+			}
+			if tc.wantAutocryptAddr != "" && sender.msg.AutocryptKeyData != "AQIDBAUGBwg=" {
+				t.Fatalf("AutocryptKeyData = %q", sender.msg.AutocryptKeyData)
+			}
+			if tc.wantAutocryptAddr == "" && sender.msg.AutocryptKeyData != "" {
+				t.Fatalf("AutocryptKeyData = %q, want empty", sender.msg.AutocryptKeyData)
+			}
+		})
 	}
 }
 
@@ -321,4 +370,75 @@ func TestReplyComposeSelectsIdentityMatchingRecipient(t *testing.T) {
 	if form.FromIdentityID != alias.Emails[0].ID {
 		t.Fatalf("from_identity_id = %d, want %d", form.FromIdentityID, alias.Emails[0].ID)
 	}
+}
+
+func setupAutocryptComposeTest(t *testing.T, ctx context.Context, enablePGPPlugin bool) (*Server, store.User, int64, *captureSender, store.MailIdentity) {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if enablePGPPlugin {
+		if err := db.SetPluginEnabled(ctx, plugins.ClientSidePGP, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	user, err := db.CreateUser(ctx, "me@example.test", "Me", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.UpsertMailAccount(ctx, store.MailAccount{
+		UserID:            user.ID,
+		Email:             "me@example.test",
+		Host:              "imap.example.test",
+		Port:              993,
+		Username:          "me@example.test",
+		EncryptedPassword: "encrypted",
+		UseTLS:            true,
+		Mailbox:           "INBOX",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateSMTPAccount(ctx, store.SMTPAccount{UserID: user.ID, Label: "SMTP", Host: "smtp.example.test", Port: 587, Username: "me@example.test", EncryptedPassword: "encrypted", UseTLS: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Sent"); err != nil {
+		t.Fatal(err)
+	}
+	contact, err := db.CreateContact(ctx, user.ID, store.Contact{
+		DisplayName: "Me",
+		IsMe:        true,
+		IsPrimary:   true,
+		Emails:      []store.ContactEmail{{Email: "me@example.test", IsPrimary: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities, err := db.ListMailIdentitiesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(identities) != 1 {
+		t.Fatalf("identity count = %d, want 1", len(identities))
+	}
+	if _, err := db.UpsertIdentityPGPPrivateKey(ctx, store.IdentityPGPPrivateKey{
+		UserID:              user.ID,
+		IdentityID:          identities[0].ID,
+		Label:               "Me key",
+		Fingerprint:         "AABBCCDDEEFF00112233445566778899AABBCCDD",
+		KeyID:               "66778899AABBCCDD",
+		UserIDs:             "Me <me@example.test>",
+		PublicKeyArmored:    composeAutocryptPublicKey,
+		EncryptedPrivateKey: "encrypted",
+		IsActiveSigning:     true,
+		IsActiveEncryption:  true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sender := &captureSender{}
+	server := &Server{store: db, blobs: blob.New(dir), sender: sender, syncer: &syncer.Service{Fetcher: &captureAppendFetcher{}}}
+	return server, user, contact.Emails[0].ID, sender, identities[0]
 }

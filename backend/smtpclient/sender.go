@@ -35,18 +35,20 @@ type Attachment struct {
 
 // Message is the normalized outbound compose payload passed to the SMTP sender.
 type Message struct {
-	From        string
-	To          []string
-	Cc          []string
-	Bcc         []string
-	Subject     string
-	BodyText    string
-	BodyHTML    string
-	MessageID   string
-	InReplyTo   string
-	References  string
-	Date        time.Time
-	Attachments []Attachment
+	From             string
+	To               []string
+	Cc               []string
+	Bcc              []string
+	Subject          string
+	BodyText         string
+	BodyHTML         string
+	MessageID        string
+	InReplyTo        string
+	References       string
+	Date             time.Time
+	AutocryptAddr    string
+	AutocryptKeyData string
+	Attachments      []Attachment
 }
 
 // Sender sends compose messages through an encrypted MailMirror SMTP account.
@@ -200,6 +202,7 @@ func buildRaw(msg Message, requireRecipients bool) ([]byte, []string, error) {
 	writeHeader(w, "Subject", mime.QEncoding.Encode("utf-8", strings.TrimSpace(msg.Subject)))
 	writeHeader(w, "Date", msg.Date.Format(time.RFC1123Z))
 	writeHeader(w, "Message-ID", msg.MessageID)
+	writeAutocryptHeader(w, msg.AutocryptAddr, msg.AutocryptKeyData)
 	if strings.TrimSpace(msg.InReplyTo) != "" {
 		writeHeader(w, "In-Reply-To", sanitizeHeaderValue(msg.InReplyTo))
 	}
@@ -434,6 +437,45 @@ func addressListString(addrs []*mail.Address) string {
 
 func writeHeader(w *bufio.Writer, name, value string) {
 	_, _ = fmt.Fprintf(w, "%s: %s\r\n", name, sanitizeHeaderValue(value))
+}
+
+func writeAutocryptHeader(w *bufio.Writer, addr, keyData string) {
+	addr = sanitizeHeaderValue(addr)
+	keyData = strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\r', '\n':
+			return -1
+		default:
+			return r
+		}
+	}, strings.TrimSpace(keyData))
+	if addr == "" || keyData == "" {
+		return
+	}
+	prefix := "Autocrypt: addr=" + addr + "; prefer-encrypt=mutual; keydata="
+	_, _ = w.WriteString(prefix)
+	firstLineRemaining := 76 - len(prefix)
+	if firstLineRemaining < 16 {
+		firstLineRemaining = 16
+	}
+	writeFoldedToken(w, keyData, firstLineRemaining, 76)
+	_, _ = w.WriteString("\r\n")
+}
+
+func writeFoldedToken(w *bufio.Writer, value string, firstLine, nextLine int) {
+	lineLimit := firstLine
+	for len(value) > 0 {
+		n := lineLimit
+		if len(value) < n {
+			n = len(value)
+		}
+		_, _ = w.WriteString(value[:n])
+		value = value[n:]
+		if value != "" {
+			_, _ = w.WriteString("\r\n ")
+			lineLimit = nextLine
+		}
+	}
 }
 
 func sanitizeHeaderValue(value string) string {

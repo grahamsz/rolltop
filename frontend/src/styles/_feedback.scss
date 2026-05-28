@@ -258,3 +258,103 @@
   border-top-color: #fff;
   animation: spin .8s linear infinite;
 }
+
+.pgp-import-dialog,
+.pgp-generate-dialog {
+  width: min(580px, 100%);
+  display: grid;
+  gap: 12px;
+}
+
+.pgp-import-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+
+  h2 {
+    margin-bottom: 6px;
+  }
+
+  p {
+    margin-bottom: 0;
+    line-height: 1.4;
+  }
+}
+
+.pgp-import-file-button {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.pgp-import-drop {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+
+  &.dragging {
+    border-color: var(--ok);
+    background: color-mix(in srgb, var(--ok) 10%, var(--surface));
+    color: var(--text);
+  }
+
+  textarea {
+    min-height: 190px;
+    font: 12px/1.45 var(--font-mono);
+    resize: vertical;
+  }
+}
+
+.pgp-passphrase-fields {
+  display: grid;
+  gap: 9px;
+
+  label {
+    display: grid;
+    gap: 5px;
+    font-weight: 800;
+    color: var(--text);
+  }
+}
+
+.pgp-passphrase-rules {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--ok) 28%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--ok) 7%, var(--surface));
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+
+  strong {
+    color: var(--text);
+  }
+
+  ul {
+    margin: 2px 0 0 18px;
+    padding: 0;
+    color: var(--danger);
+  }
+}
+
+.pgp-passphrase-warning {
+  color: var(--danger);
+  font-weight: 800;
+}
+
+.pgp-import-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}

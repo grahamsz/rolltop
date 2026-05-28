@@ -31,6 +31,9 @@ func ensureIdentityIMAPColumn(ctx context.Context, s *Store) error {
 }
 
 func seedIdentityIMAPChoices(ctx context.Context, s *Store) error {
+	if err := ensureIdentityAutocryptColumn(ctx, s); err != nil {
+		return err
+	}
 	users, err := s.ListUsers(ctx)
 	if err != nil {
 		return err

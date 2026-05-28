@@ -31,6 +31,8 @@ export type UnlockedPGPKey = {
   label: string;
   fingerprint: string;
   public_key_armored: string;
+  algorithm?: string;
+  key_id?: string;
   privateKey: unknown;
 };
 
@@ -73,7 +75,8 @@ export type AppShellProps = {
   notificationsEnabled: boolean;
   toggleNotifications: () => Promise<void>;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: () => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void) => void;
   lockPGP: () => void;
+  logout: () => Promise<void>;
   children: ReactNode;
 };

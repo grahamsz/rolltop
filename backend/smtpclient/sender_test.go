@@ -57,6 +57,33 @@ func TestBuildRawRejectsHeaderInjection(t *testing.T) {
 	}
 }
 
+func TestBuildRawWritesFoldedAutocryptHeader(t *testing.T) {
+	keyData := strings.Repeat("AQIDBAUGBwg=", 12)
+	raw, _, err := BuildRaw(Message{
+		From:             "sender@example.test",
+		To:               []string{"to@example.test"},
+		Subject:          "Autocrypt",
+		BodyText:         "Body",
+		MessageID:        "<autocrypt@example.test>",
+		Date:             time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC),
+		AutocryptAddr:    "sender@example.test",
+		AutocryptKeyData: keyData,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "Autocrypt: addr=sender@example.test; prefer-encrypt=mutual; keydata=") {
+		t.Fatalf("raw missing Autocrypt header:\n%s", text)
+	}
+	if !strings.Contains(text, "\r\n ") {
+		t.Fatalf("Autocrypt header was not folded:\n%s", text)
+	}
+	if strings.Contains(text, "\nBcc:") {
+		t.Fatalf("raw message leaked an unexpected Bcc header:\n%s", text)
+	}
+}
+
 func TestBuildDraftRawAllowsNoRecipientsAndKeepsBcc(t *testing.T) {
 	raw, err := BuildDraftRaw(Message{
 		From:      "Sender <sender@example.test>",

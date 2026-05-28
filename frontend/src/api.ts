@@ -61,6 +61,19 @@ type MailListResponse = { conversations: Conversation[]; page: number; has_prev:
 const getCache = new Map<string, { etag: string; data: unknown }>();
 const getInflight = new Map<string, Promise<unknown>>();
 
+async function fetchGET(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    try {
+      return await fetch(url, init);
+    } catch {
+      throw err;
+    }
+  }
+}
+
 /**
  * GET JSON with lightweight ETag revalidation. The cache is process-local and
  * keyed by URL, so it only avoids repainting unchanged mailbox/search/settings
@@ -74,7 +87,7 @@ export async function getJSON<T>(url: string): Promise<T> {
     const headers: Record<string, string> = { Accept: "application/json" };
     const cached = getCache.get(url);
     if (cached?.etag) headers["If-None-Match"] = cached.etag;
-    const res = await fetch(url, { headers });
+    const res = await fetchGET(url, { headers });
     if (res.status === 304 && cached) return cached.data as T;
     const data = await parse<T>(res);
     const etag = res.headers.get("ETag") || "";
@@ -309,11 +322,14 @@ export const api = {
   savePGPPrivateKey: (csrf: string, key: IdentityPGPPrivateKey) =>
     postJSON<{ ok: boolean; key: IdentityPGPPrivateKey }>("/api/account/pgp/private-keys", csrf, key),
   deletePGPPrivateKey: (csrf: string, id: number) => deleteJSON<{ ok: boolean }>(`/api/account/pgp/private-keys/${id}`, csrf),
-  pgpPublicKeys: (emails: string[]) => {
+  pgpPublicKeys: (emails: string[], all = false) => {
     const q = new URLSearchParams();
     emails.forEach((email) => q.append("email", email));
+    if (all) q.set("all", "1");
     return getJSON<{ keys: ContactPGPKey[] }>(`/api/pgp/public-keys?${q}`);
   },
+  savePGPPublicKey: (csrf: string, key: ContactPGPKey) =>
+    postJSON<{ ok: boolean; key: ContactPGPKey }>("/api/pgp/public-keys", csrf, key),
   importContacts: (csrf: string, file: File) => {
     const form = new FormData();
     form.append("file", file);

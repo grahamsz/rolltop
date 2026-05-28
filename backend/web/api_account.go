@@ -576,15 +576,16 @@ func (s *Server) apiMailIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identityInput := store.MailIdentity{
-		ID:              in.ID,
-		SMTPAccountID:   in.SMTPAccountID,
-		IMAPAccountID:   in.IMAPAccountID,
-		SentMailboxID:   in.SentMailboxID,
-		DraftsMailboxID: in.DraftsMailboxID,
-		Email:           in.Email,
-		DisplayName:     in.DisplayName,
-		Signature:       in.Signature,
-		IsPrimary:       in.IsPrimary,
+		ID:               in.ID,
+		SMTPAccountID:    in.SMTPAccountID,
+		IMAPAccountID:    in.IMAPAccountID,
+		SentMailboxID:    in.SentMailboxID,
+		DraftsMailboxID:  in.DraftsMailboxID,
+		Email:            in.Email,
+		DisplayName:      in.DisplayName,
+		Signature:        in.Signature,
+		AutocryptEnabled: in.AutocryptEnabled,
+		IsPrimary:        in.IsPrimary,
 	}
 	var identity store.MailIdentity
 	var err error

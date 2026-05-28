@@ -1,9 +1,11 @@
 // File overview: PGP key API endpoints. Private-key passphrases stay browser-only;
-// the backend only stores and unwraps the server-side encrypted armored key text.
+// the backend stores master-key-encrypted armored private keys and serves them
+// back to the authenticated browser for unlock/export.
 
 package web
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -87,6 +89,21 @@ func (s *Server) apiPGPPrivateKeys(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "Private key is required.")
 			return
 		}
+		if key.ID == 0 && (strings.TrimSpace(key.Fingerprint) != "" || strings.TrimSpace(key.KeyID) != "") {
+			existingKeys, err := s.store.ListIdentityPGPPrivateKeysForUser(r.Context(), cu.User.ID)
+			if err != nil {
+				s.serverError(w, err)
+				return
+			}
+			for _, existing := range existingKeys {
+				sameFingerprint := key.Fingerprint != "" && strings.EqualFold(existing.Fingerprint, key.Fingerprint)
+				sameKeyID := key.Fingerprint == "" && key.KeyID != "" && strings.EqualFold(existing.KeyID, key.KeyID)
+				if sameFingerprint || sameKeyID {
+					writeAPIError(w, http.StatusConflict, "This PGP private key is already saved.")
+					return
+				}
+			}
+		}
 		saved, err := s.store.UpsertIdentityPGPPrivateKey(r.Context(), key)
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
@@ -151,7 +168,28 @@ func (s *Server) apiPGPPublicKeys(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, "PGP plugin is not enabled.")
 		return
 	}
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
+		if !s.verifyCSRF(w, r) {
+			return
+		}
+		var in apiContactPGPKey
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+		saved, err := s.saveDiscoveredContactPGPKey(r.Context(), cu.User.ID, in)
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "Could not save PGP public key.")
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "key": apiContactPGPKeyFromStore(saved)})
+		return
+	default:
 		methodNotAllowed(w)
 		return
 	}
@@ -159,7 +197,13 @@ func (s *Server) apiPGPPublicKeys(w http.ResponseWriter, r *http.Request) {
 	if joined := strings.TrimSpace(r.URL.Query().Get("emails")); joined != "" {
 		emails = append(emails, strings.Split(joined, ",")...)
 	}
-	keys, err := s.store.ListContactPGPPublicKeysForEmails(r.Context(), cu.User.ID, emails)
+	var keys []store.ContactPGPPublicKey
+	var err error
+	if r.URL.Query().Get("all") == "1" {
+		keys, err = s.store.ListAllContactPGPPublicKeysForEmails(r.Context(), cu.User.ID, emails)
+	} else {
+		keys, err = s.store.ListContactPGPPublicKeysForEmails(r.Context(), cu.User.ID, emails)
+	}
 	if err != nil {
 		s.serverError(w, err)
 		return
@@ -169,4 +213,61 @@ func (s *Server) apiPGPPublicKeys(w http.ResponseWriter, r *http.Request) {
 		out = append(out, apiContactPGPKeyFromStore(key))
 	}
 	writeJSON(w, map[string]any{"keys": out})
+}
+
+func (s *Server) saveDiscoveredContactPGPKey(ctx context.Context, userID int64, in apiContactPGPKey) (store.ContactPGPPublicKey, error) {
+	email := strings.TrimSpace(in.Email)
+	if store.NormalizeContactEmail(email) == "" || strings.TrimSpace(in.PublicKeyArmored) == "" {
+		return store.ContactPGPPublicKey{}, store.ErrNotFound
+	}
+	contactID := in.ContactID
+	if contactID == 0 {
+		contact, err := s.ensureContactForDiscoveredPGPKey(ctx, userID, email)
+		if err != nil {
+			return store.ContactPGPPublicKey{}, err
+		}
+		contactID = contact.ID
+	}
+	existingKeys, err := s.store.ListAllContactPGPPublicKeysForEmails(ctx, userID, []string{email})
+	if err != nil {
+		return store.ContactPGPPublicKey{}, err
+	}
+	for _, existing := range existingKeys {
+		if strings.TrimSpace(existing.PublicKeyArmored) != strings.TrimSpace(in.PublicKeyArmored) {
+			continue
+		}
+		if existing.IsPreferred && (in.ID == 0 || in.ID == existing.ID) {
+			return existing, nil
+		}
+		existing.IsPreferred = true
+		return s.store.UpsertContactPGPPublicKey(ctx, existing)
+	}
+	return s.store.UpsertContactPGPPublicKey(ctx, store.ContactPGPPublicKey{
+		ID:               in.ID,
+		UserID:           userID,
+		ContactID:        contactID,
+		Email:            email,
+		Label:            firstNonEmpty(in.Label, email),
+		Fingerprint:      in.Fingerprint,
+		KeyID:            in.KeyID,
+		UserIDs:          in.UserIDs,
+		PublicKeyArmored: strings.TrimSpace(in.PublicKeyArmored),
+		IsPreferred:      true,
+	})
+}
+
+func (s *Server) ensureContactForDiscoveredPGPKey(ctx context.Context, userID int64, email string) (store.Contact, error) {
+	if contact, err := s.store.GetContactByEmailForUser(ctx, userID, email); err == nil {
+		return contact, nil
+	} else if !store.IsNotFound(err) {
+		return store.Contact{}, err
+	}
+	return s.store.CreateContact(ctx, userID, store.Contact{
+		DisplayName: strings.TrimSpace(email),
+		Emails: []store.ContactEmail{{
+			Label:     "email",
+			Email:     email,
+			IsPrimary: true,
+		}},
+	})
 }

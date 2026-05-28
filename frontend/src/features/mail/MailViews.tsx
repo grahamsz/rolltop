@@ -12,6 +12,7 @@ import { ListHeader } from "../../components/common";
 import { messageFromError } from "../../lib/errors";
 import { displayTime } from "../../lib/format";
 import { effectiveMailboxSyncMode, mailboxActiveRun, mailboxNeedsSync, mailboxRefreshKey } from "../../lib/sync";
+import { pgpPreviewText } from "../../lib/pgpPreview";
 import { HighlightedText } from "../../lib/searchHighlight";
 import { mailPageSize } from "../../lib/constants";
 import { mailRoute, mailURL, messageURL, routeWithSearch, searchRoute, searchURL } from "../../lib/routes";
@@ -746,6 +747,7 @@ function MessageList({
         const href = openAsDraft ? `/compose?draft=${msg.id}` : messageURL(msg.id, searchQuery, matchTerms, returnURL, searchQuery ? msg.id : 0);
         const attachmentNames = conversation.attachment_names || [];
         const attachmentMatches = conversation.attachment_matches || [];
+        const previewText = pgpPreviewText(conversation.snippet, msg.is_encrypted, msg.is_signed);
         const selected = selectedIDs.has(msg.id);
         const movingOut = hiddenMessageIDs.has(msg.id);
         const participantText = showRecipients
@@ -789,8 +791,14 @@ function MessageList({
               <strong>
                 <HighlightedText text={msg.subject || "(no subject)"} query={searchQuery} terms={matchTerms} />
               </strong>
-              <span className="snippet">
-                <HighlightedText text={conversation.snippet} query={searchQuery} terms={matchTerms} />
+              {msg.is_encrypted || msg.is_signed ? (
+                <span className="message-pgp-icons" aria-label={[msg.is_encrypted ? "Encrypted" : "", msg.is_signed ? "Signed" : ""].filter(Boolean).join(", ")}>
+                  {msg.is_encrypted ? <span className="message-pgp-icon encrypted" title="Encrypted message"><Icon name="lock" weight="bold" /></span> : null}
+                  {msg.is_signed ? <span className="message-pgp-icon signature pending" title="Signature pending verification"><Icon name="signature" weight="bold" /></span> : null}
+                </span>
+              ) : null}
+              <span className={`snippet ${msg.is_encrypted ? "encrypted-preview" : ""}`}>
+                <HighlightedText text={previewText} query={msg.is_encrypted ? "" : searchQuery} terms={msg.is_encrypted ? [] : matchTerms} />
               </span>
               {attachmentNames.length > 0 ? (
                 <span className={`attachment-preview ${attachmentMatches.length > 0 || conversation.attachment_content_matched ? "matched" : ""}`}>

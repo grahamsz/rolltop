@@ -125,8 +125,8 @@ type apiMessageOriginalSource struct {
 }
 
 // apiMessageOriginal returns raw RFC822 source for one user-owned message. The
-// browser requests this only from the message action menu because raw messages can
-// be large when they include attachments.
+// browser requests this from the message action menu and PGP opener because raw
+// messages can be large when they include attachments.
 func (s *Server) apiMessageOriginal(w http.ResponseWriter, r *http.Request, id int64) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)

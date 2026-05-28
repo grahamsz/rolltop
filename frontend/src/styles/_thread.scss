@@ -94,6 +94,90 @@
   min-width: 0;
 }
 
+.pgp-status-pill,
+.pgp-signature-pill summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 7px;
+  border: 1px solid rgba(196, 107, 68, .42);
+  border-radius: 999px;
+  background: rgba(196, 107, 68, .12);
+  color: var(--accent-warm-strong);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.35;
+  white-space: nowrap;
+
+  .icon {
+    width: 13px;
+    height: 13px;
+    flex: none;
+  }
+}
+
+.pgp-status-pill {
+  min-height: 0;
+  cursor: pointer;
+
+  &.verified {
+    border-color: rgba(47, 125, 84, .4);
+    background: rgba(47, 125, 84, .13);
+    color: #236b45;
+  }
+
+  &.invalid {
+    border-color: rgba(169, 50, 38, .45);
+    background: rgba(169, 50, 38, .12);
+    color: #9f2f24;
+  }
+}
+
+.pgp-signature-pill {
+  position: relative;
+  display: inline-block;
+
+  summary {
+    list-style: none;
+    cursor: pointer;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+  }
+
+  &.verified summary {
+    border-color: rgba(47, 125, 84, .4);
+    background: rgba(47, 125, 84, .13);
+    color: #236b45;
+  }
+
+  &.invalid summary {
+    border-color: rgba(169, 50, 38, .45);
+    background: rgba(169, 50, 38, .12);
+    color: #9f2f24;
+  }
+}
+
+.pgp-signature-detail {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 35;
+  width: min(320px, calc(100vw - 32px));
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.4;
+  white-space: normal;
+}
+
 .unsubscribe-action {
   min-height: 24px;
   border: 0;
@@ -784,4 +868,56 @@
     font-size: 12px;
     font-weight: 700;
   }
+}
+
+.pgp-detail-block {
+  margin: 8px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 12px;
+
+  summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    cursor: pointer;
+    font-weight: 800;
+    color: var(--text);
+    list-style: none;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+  }
+
+  dl {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 12px;
+    margin: 0;
+    padding: 0 12px 12px;
+  }
+
+  dt {
+    font-weight: 800;
+    color: var(--text);
+  }
+
+  dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.pgp-encrypted-fallback {
+  min-height: 180px;
+  padding: 18px;
+  overflow: hidden;
+  background: #fff;
+  color: var(--text);
+  font: 14px/1.65 var(--font-mono);
+  word-break: break-word;
 }

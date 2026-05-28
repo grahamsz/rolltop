@@ -285,12 +285,45 @@
   }
 }
 
+.message-pgp-icons {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 7px;
+
+  .message-pgp-icon {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .icon {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+  }
+
+  .encrypted .icon {
+    color: var(--ok);
+  }
+
+  .signature .icon {
+    color: #c46b44;
+  }
+}
+
 .snippet {
   @include truncate;
   flex: 1 1 auto;
   color: var(--muted);
   margin-left: 6px;
   font-weight: 400;
+}
+
+.encrypted-preview {
+  filter: blur(2.5px);
+  opacity: .55;
+  user-select: none;
 }
 
 

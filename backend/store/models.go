@@ -74,20 +74,21 @@ type SMTPAccount struct {
 
 // MailIdentity links a Me contact email to an SMTP server, display name, and signature.
 type MailIdentity struct {
-	ID              int64
-	UserID          int64
-	ContactID       int64
-	ContactEmailID  int64
-	SMTPAccountID   int64
-	IMAPAccountID   int64
-	SentMailboxID   int64
-	DraftsMailboxID int64
-	Email           string
-	DisplayName     string
-	Signature       string
-	IsPrimary       bool
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID               int64
+	UserID           int64
+	ContactID        int64
+	ContactEmailID   int64
+	SMTPAccountID    int64
+	IMAPAccountID    int64
+	SentMailboxID    int64
+	DraftsMailboxID  int64
+	Email            string
+	DisplayName      string
+	Signature        string
+	AutocryptEnabled bool
+	IsPrimary        bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // IdentityPGPPrivateKey is passphrase-protected OpenPGP private key material for one outgoing identity.

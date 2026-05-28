@@ -507,12 +507,14 @@ func replaceContactChildren(ctx context.Context, tx *sql.Tx, userID, contactID i
 			return err
 		}
 	}
+	contactEmails := map[string]bool{}
 	for i, email := range c.Emails {
 		email.Email = strings.TrimSpace(email.Email)
 		email.NormalizedEmail = NormalizeContactEmail(email.Email)
 		if email.Email == "" || email.NormalizedEmail == "" {
 			continue
 		}
+		contactEmails[email.NormalizedEmail] = true
 		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_emails (user_id, contact_id, label, email, normalized_email, is_primary, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, userID, contactID, strings.TrimSpace(email.Label), email.Email, email.NormalizedEmail, boolInt(email.IsPrimary || i == 0), ts, ts); err != nil {
 			return err
@@ -547,17 +549,22 @@ func replaceContactChildren(ctx context.Context, tx *sql.Tx, userID, contactID i
 			return err
 		}
 	}
-	for i, key := range c.PGPKeys {
+	pgpInserted := 0
+	for _, key := range c.PGPKeys {
 		key.ContactID = contactID
 		key.UserID = userID
 		key = normalizeContactPGPPublicKey(key)
 		if key.NormalizedEmail == "" || key.PublicKeyArmored == "" {
 			continue
 		}
+		if !contactEmails[key.NormalizedEmail] {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_pgp_public_keys (user_id, contact_id, email, normalized_email, label, fingerprint, key_id, user_ids, public_key_armored, is_preferred, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, contactID, key.Email, key.NormalizedEmail, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, boolInt(key.IsPreferred || i == 0), ts, ts); err != nil {
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, contactID, key.Email, key.NormalizedEmail, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, boolInt(key.IsPreferred || pgpInserted == 0), ts, ts); err != nil {
 			return err
 		}
+		pgpInserted++
 	}
 	return nil
 }

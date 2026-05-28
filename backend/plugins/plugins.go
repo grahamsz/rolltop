@@ -84,7 +84,7 @@ func All() []Definition {
 		{
 			ID:          ClientSidePGP,
 			Name:        "Client-side PGP",
-			Description: "Adds browser-only PGP key unlock, decrypt, sign, and encrypt controls.",
+			Description: "Adds server-stored, passphrase-protected PGP keys with browser unlock, decrypt, sign, and encrypt controls.",
 			Heavy:       true,
 		},
 	}

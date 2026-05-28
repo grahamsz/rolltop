@@ -248,11 +248,154 @@
   }
 }
 
+.account-menu {
+  position: relative;
+  min-width: 0;
+
+  summary {
+    list-style: none;
+    cursor: pointer;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+  }
+}
+
 .user-chip {
-  @include truncate;
   min-width: 72px;
-  max-width: clamp(96px, 12vw, 190px);
+  max-width: clamp(112px, 14vw, 220px);
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-subtle);
   color: var(--text);
+
+  span {
+    @include truncate;
+    min-width: 0;
+  }
+
+  .icon {
+    flex: none;
+    width: 15px;
+    height: 15px;
+    color: var(--muted);
+    transition: transform .16s ease;
+  }
+}
+
+.account-menu[open] .account-menu-summary {
+  border-color: var(--active-strong);
+  background: var(--active);
+
+  .icon {
+    transform: rotate(180deg);
+  }
+}
+
+.account-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 40;
+  width: min(330px, calc(100vw - 20px));
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.account-menu-identity {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 7px 8px 9px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+
+  strong,
+  small {
+    @include truncate;
+  }
+
+  strong {
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  small {
+    color: var(--muted);
+    font-size: 12px;
+  }
+}
+
+.account-menu-row {
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  padding: 7px 8px;
+  text-align: left;
+  box-shadow: none;
+
+  &:hover {
+    background: var(--hover);
+    color: var(--accent-strong);
+  }
+
+  > .icon {
+    width: 18px;
+    height: 18px;
+    color: currentColor;
+  }
+
+  > span:not(.notification-toggle-track) {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  strong,
+  small {
+    @include truncate;
+  }
+
+  strong {
+    font-size: 13px;
+    line-height: 1.2;
+  }
+
+  small {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+  &.danger {
+    color: var(--danger);
+  }
+}
+
+.account-menu-notifications.active .notification-toggle-track {
+  background: var(--accent-strong);
+
+  span {
+    transform: translateX(8px);
+  }
 }
 
 .sidebar {

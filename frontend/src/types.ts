@@ -293,6 +293,7 @@ export type ComposeIdentity = {
   signature: string;
   icon_url: string;
   is_primary: boolean;
+  autocrypt_enabled: boolean;
   has_pgp_private_key?: boolean;
   pgp_public_key_armored?: string;
 };
@@ -402,6 +403,8 @@ export type IdentityPGPPrivateKey = {
   is_active_signing: boolean;
   is_active_encryption: boolean;
   is_decrypt_only: boolean;
+  created_at?: string;
+  updated_at?: string;
 };
 
 export type ComposeForm = {
@@ -474,5 +477,6 @@ export type MailIdentity = {
   email: string;
   display_name: string;
   signature: string;
+  autocrypt_enabled: boolean;
   is_primary: boolean;
 };

@@ -69,9 +69,11 @@
   background: #fff;
   display: flex;
   flex-direction: column;
-  min-height: 198px;
+  min-height: 328px;
 
   .compose-body {
+    flex: 1 1 190px;
+    min-height: 178px;
     padding: 0;
     color: var(--text);
   }
@@ -285,6 +287,7 @@
   overflow: auto;
   padding: 0 12px;
   overscroll-behavior: contain;
+  position: relative;
 
   textarea {
     display: none;
@@ -298,10 +301,11 @@
   outline: 0;
   font: 14px/1.5 var(--font-ui);
   white-space: pre-wrap;
+  transition: opacity .28s ease, filter .28s ease, transform .28s ease;
 
   .inline-compose &,
   .inline-reply & {
-    min-height: 112px;
+    min-height: 188px;
   }
 
   &:empty::before {
@@ -325,6 +329,48 @@
   }
 }
 
+
+.compose-body.pgp-transforming {
+  overflow: hidden;
+
+  .compose-editor {
+    opacity: .25;
+    filter: blur(4px);
+    transform: translateY(-2px);
+  }
+}
+
+.compose-body.pgp-transform-ciphertext {
+  .compose-editor {
+    opacity: .06;
+    filter: blur(8px);
+  }
+
+  .compose-pgp-ciphertext {
+    opacity: .96;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+.compose-pgp-ciphertext {
+  position: absolute;
+  inset: 12px;
+  margin: 0;
+  padding: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(196, 107, 68, .35);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: 12px/1.45 var(--font-mono);
+  white-space: pre-wrap;
+  opacity: 0;
+  filter: blur(10px);
+  transform: translateY(8px);
+  transition: opacity .32s ease, filter .32s ease, transform .32s ease;
+  pointer-events: none;
+}
 
 .compose-inline-media {
   display: block;
@@ -471,7 +517,7 @@
 }
 
 .send-button {
-  min-width: 116px;
+  min-width: 168px;
   border-radius: 7px;
   background: var(--accent-warm);
 
@@ -486,27 +532,62 @@
 }
 
 
-.compose-pgp-controls {
-  min-height: 40px;
-  margin: 0 12px 8px;
-  display: flex;
+.compose-lower-tools {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
-  color: var(--muted);
-  font-size: 13px;
+}
 
-  label {
+.compose-pgp-bar {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--ok) 34%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
+
+  .compose-pgp-label {
+    padding: 0 5px 0 4px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .compose-pgp-scope {
+    padding: 0 6px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  button {
+    min-width: 30px;
+    width: 30px;
     min-height: 30px;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin: 0;
-    padding: 4px 8px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--surface-subtle);
-    color: var(--text);
-    font-weight: 700;
+    height: 30px;
+    padding: 0;
+    border-radius: 6px;
+    color: var(--muted);
+
+    &:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--ok) 14%, transparent);
+      color: var(--ok);
+    }
+
+    &.active {
+      background: var(--ok);
+      color: var(--surface-ink);
+      border-color: var(--ok);
+    }
+
+    &.attention {
+      color: var(--ok);
+    }
   }
 }

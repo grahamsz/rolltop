@@ -78,6 +78,9 @@ export default function App() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(initialNotificationsEnabled);
   const [pgpUnlock, setPGPUnlock] = useState<PGPUnlockState>({ unlockedUntil: 0, keys: [] });
   const [pgpUnlockOpen, setPGPUnlockOpen] = useState(false);
+  const [pgpUnlockIdentityID, setPGPUnlockIdentityID] = useState<number | null>(null);
+  const pgpUnlockCallbackRef = useRef<((state: PGPUnlockState) => void) | null>(null);
+  const activeUserIDRef = useRef<number | null>(null);
 
   // Navigation is intentionally tiny and local: Go serves every SPA route, so
   // the client only needs to update history and reparse LocationState.
@@ -120,6 +123,16 @@ export default function App() {
     const theme = savedTheme === "classic_dark" || savedTheme === "matrix" ? savedTheme : "classic";
     document.documentElement.dataset.theme = theme;
   }, [bootstrap?.user?.theme]);
+
+  useEffect(() => {
+    const userID = bootstrap?.user?.id || null;
+    if (activeUserIDRef.current === userID) return;
+    activeUserIDRef.current = userID;
+    setPGPUnlock({ unlockedUntil: 0, keys: [] });
+    setPGPUnlockOpen(false);
+    setPGPUnlockIdentityID(null);
+    pgpUnlockCallbackRef.current = null;
+  }, [bootstrap?.user?.id]);
 
   // Once bootstrap is known, normalize the unauthenticated/authenticated routes
   // so setup/login/mail all share one source of truth.
@@ -166,11 +179,21 @@ export default function App() {
 
   const lockPGP = useCallback(() => {
     setPGPUnlock({ unlockedUntil: 0, keys: [] });
+    setPGPUnlockIdentityID(null);
+    pgpUnlockCallbackRef.current = null;
     addToast("PGP keys locked.");
   }, [addToast]);
 
-  const openPGPUnlock = useCallback(() => {
+  const openPGPUnlock = useCallback((identityID?: number, onUnlocked?: (state: PGPUnlockState) => void) => {
+    setPGPUnlockIdentityID(identityID || null);
+    pgpUnlockCallbackRef.current = onUnlocked || null;
     setPGPUnlockOpen(true);
+  }, []);
+
+  const closePGPUnlock = useCallback(() => {
+    setPGPUnlockOpen(false);
+    setPGPUnlockIdentityID(null);
+    pgpUnlockCallbackRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -324,6 +347,10 @@ export default function App() {
   const logout = useCallback(async () => {
     if (!bootstrap?.csrf) return;
     await api.logout(bootstrap.csrf);
+    setPGPUnlock({ unlockedUntil: 0, keys: [] });
+    setPGPUnlockOpen(false);
+    setPGPUnlockIdentityID(null);
+    pgpUnlockCallbackRef.current = null;
     setBootstrap((current) => (current ? { ...current, user: null, mailboxes: [] } : current));
     navigate("/login");
   }, [bootstrap?.csrf, navigate]);
@@ -382,6 +409,7 @@ export default function App() {
         pgpUnlock={pgpUnlock}
         openPGPUnlock={openPGPUnlock}
         lockPGP={lockPGP}
+        logout={logout}
       >
         <RouteView
           csrf={bootstrap.csrf}
@@ -395,7 +423,6 @@ export default function App() {
           hiddenMessageIDs={hiddenMessageIDs}
           openCompose={openCompose}
           refreshChrome={refreshBootstrap}
-          logout={logout}
           pgpUnlock={pgpUnlock}
           openPGPUnlock={openPGPUnlock}
           addToast={addToast}
@@ -414,8 +441,15 @@ export default function App() {
       ) : null}
       {pgpUnlockOpen ? (
         <PGPUnlockDialog
-          onClose={() => setPGPUnlockOpen(false)}
-          onUnlocked={(state) => setPGPUnlock(state)}
+          identityID={pgpUnlockIdentityID}
+          onClose={closePGPUnlock}
+          onUnlocked={(state) => {
+            setPGPUnlock(state);
+            setPGPUnlockIdentityID(null);
+            const callback = pgpUnlockCallbackRef.current;
+            pgpUnlockCallbackRef.current = null;
+            callback?.(state);
+          }}
           addToast={addToast}
         />
       ) : null}
@@ -425,10 +459,12 @@ export default function App() {
 }
 
 function PGPUnlockDialog({
+  identityID,
   onClose,
   onUnlocked,
   addToast
 }: {
+  identityID: number | null;
   onClose: () => void;
   onUnlocked: (state: PGPUnlockState) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
@@ -447,8 +483,9 @@ function PGPUnlockDialog({
       .then((data) => {
         if (cancelled) return;
         const list = data.keys || [];
+        const preferred = identityID ? list.find((key) => key.identity_id === identityID) : null;
         setKeys(list);
-        setSelectedID(list[0]?.id || 0);
+        setSelectedID(preferred?.id || list[0]?.id || 0);
       })
       .catch((err) => {
         if (!cancelled) setError(messageFromError(err));
@@ -457,7 +494,7 @@ function PGPUnlockDialog({
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [identityID]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -489,6 +526,7 @@ function PGPUnlockDialog({
         {!loading && keys.length === 0 ? <div className="muted">Add a PGP private key on an identity first.</div> : null}
         {keys.length > 0 ? (
           <>
+            <div className="notice subtle">Passphrase-protected private keys are stored on the rolltop server and sent to this browser for unlock/export. Your PGP passphrase is used only in this browser and is not sent back to the server.</div>
             <label>
               Key
               <select value={selectedID} onChange={(event) => setSelectedID(Number(event.target.value))}>

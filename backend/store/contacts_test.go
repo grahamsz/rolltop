@@ -52,6 +52,47 @@ func TestContactsAreScopedByUser(t *testing.T) {
 	}
 }
 
+func TestContactPGPKeysMustMatchContactEmail(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "pgp-contact@example.test", "PGP Contact", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contact, err := db.CreateContact(ctx, user.ID, Contact{
+		DisplayName: "Alice",
+		Emails:      []ContactEmail{{Email: "alice@example.test", IsPrimary: true}},
+		PGPKeys: []ContactPGPPublicKey{
+			{Email: "mallory@example.test", PublicKeyArmored: "mallory public key"},
+			{Email: "alice@example.test", PublicKeyArmored: "alice public key"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contact.PGPKeys) != 1 {
+		t.Fatalf("PGP key count = %d, want 1: %+v", len(contact.PGPKeys), contact.PGPKeys)
+	}
+	if contact.PGPKeys[0].NormalizedEmail != "alice@example.test" || contact.PGPKeys[0].PublicKeyArmored != "alice public key" {
+		t.Fatalf("PGP key = %+v", contact.PGPKeys[0])
+	}
+	if !contact.PGPKeys[0].IsPreferred {
+		t.Fatalf("matching PGP key was not made preferred: %+v", contact.PGPKeys[0])
+	}
+	if _, err := db.UpsertContactPGPPublicKey(ctx, ContactPGPPublicKey{
+		UserID:           user.ID,
+		ContactID:        contact.ID,
+		Email:            "mallory@example.test",
+		PublicKeyArmored: "mallory public key",
+	}); !IsNotFound(err) {
+		t.Fatalf("mismatched PGP upsert err = %v, want not found", err)
+	}
+}
+
 func TestContactIconsAreScopedByUser(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "mailmirror.db"))

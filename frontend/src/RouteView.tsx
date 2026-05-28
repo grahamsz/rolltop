@@ -26,7 +26,6 @@ export function RouteView({
   hiddenMessageIDs,
   openCompose,
   refreshChrome,
-  logout,
   pgpUnlock,
   openPGPUnlock,
   addToast
@@ -42,9 +41,8 @@ export function RouteView({
   hiddenMessageIDs: Set<number>;
   openCompose: (query?: string) => void;
   refreshChrome: () => Promise<Bootstrap | null>;
-  logout: () => void;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: () => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const pgpEnabled = enabledPlugins.includes("client_side_pgp");
@@ -75,7 +73,7 @@ export function RouteView({
     return <ContactsView csrf={csrf} pgpEnabled={pgpEnabled} addToast={addToast} />;
   }
   if (location.path === "/settings/account" || location.path.startsWith("/settings/account/")) {
-    return <SettingsView csrf={csrf} user={user} mailboxes={mailboxes} activeSyncRuns={activeSyncRuns} location={location} navigate={navigate} refreshChrome={refreshChrome} logout={logout} pgpEnabled={pgpEnabled} addToast={addToast} />;
+    return <SettingsView csrf={csrf} user={user} mailboxes={mailboxes} activeSyncRuns={activeSyncRuns} location={location} navigate={navigate} refreshChrome={refreshChrome} pgpEnabled={pgpEnabled} addToast={addToast} />;
   }
   if (location.path === "/admin/users" && user.is_admin) {
     return <AdminUsersView csrf={csrf} refreshChrome={refreshChrome} addToast={addToast} />;

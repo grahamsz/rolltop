@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"mailmirror/backend/plugins"
 	"mailmirror/backend/smtpclient"
 	"mailmirror/backend/store"
 )
@@ -459,6 +460,9 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 		MessageID:   smtpclient.NewMessageID(identity.Email),
 		Date:        time.Now(),
 		Attachments: attachments,
+	}
+	if s.pluginEnabled(ctx, plugins.ClientSidePGP) {
+		applyAutocryptHeader(&msg, identity)
 	}
 	if form.InReplyToID > 0 {
 		reply, err := s.store.GetMessageForUser(ctx, cu.User.ID, form.InReplyToID)
