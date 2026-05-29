@@ -210,6 +210,83 @@
   font-weight: 600;
 }
 
+.contact-pgp-key-list {
+  display: grid;
+  gap: 10px;
+}
+
+.contact-pgp-key-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+
+.contact-pgp-key-row > .icon {
+  flex: none;
+}
+
+.contact-pgp-key-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.contact-pgp-key-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+
+  strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.contact-pgp-key-email {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.contact-pgp-key-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  color: var(--muted);
+  min-width: 0;
+
+  span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.contact-pgp-key-source {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--surface-ink);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.contact-pgp-key-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 .icon-only {
   min-width: 34px;
   width: 34px;

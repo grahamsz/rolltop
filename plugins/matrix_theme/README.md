@@ -7,7 +7,8 @@ Adds the optional Matrix interface theme.
 - `manifest.json` declares the plugin and its theme bundle.
 - `frontend/` contains the small runtime module bundle.
 - `frontend_dist/` is the generated browser bundle emitted by `npm run build:plugins`.
-- `themes/matrix/theme.css` contains the theme stylesheet.
+- `themes/matrix/theme.scss` is the authored stylesheet source.
+- `frontend_dist/themes/matrix/theme.css` is the generated asset served at runtime.
 
 ## Hooks
 

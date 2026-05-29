@@ -13,7 +13,8 @@ Autocrypt, key APIs, and UI.
 - `frontend/` builds as a Vite ES module loaded only when the plugin is enabled.
 - `schema/` contains the shared plugin migration definitions used by the
   runtime loader and store tests.
-- `frontend/styles/pgp.css` contains the PGP UI styles loaded with the frontend module.
+- `frontend/styles/pgp.scss` is the authored stylesheet source.
+- `frontend_dist/styles/pgp.css` is the generated runtime stylesheet asset.
 
 ## Backend
 

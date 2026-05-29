@@ -354,6 +354,38 @@ function ContactPGPKeyEditor({
       <div>
         <h2>PGP public keys</h2>
       </div>
+      {value.length === 0 ? <div className="muted">No PGP public keys saved for this contact.</div> : null}
+      <div className="contact-pgp-key-list">
+        {value.map((key, index) => (
+          <div className="contact-pgp-key-row" key={`${key.fingerprint || key.key_id || index}:${index}`}>
+            {(() => {
+              const title = keyDisplayLabel(key);
+              const fingerprint = keyFingerprintLabel(key);
+              const userId = firstKeyUserID(key.user_ids);
+              const source = keySourceLabel(key);
+              return (
+                <>
+                  <Icon name="lock" />
+                  <div className="contact-pgp-key-main">
+                    <div className="contact-pgp-key-title">
+                      <strong>{title}</strong>
+                    </div>
+                    <div className="contact-pgp-key-meta">
+                      {fingerprint ? <span>{fingerprint}</span> : null}
+                      {userId ? <span>{userId}</span> : null}
+                      {source ? <span className="contact-pgp-key-source">{source}</span> : null}
+                    </div>
+                  </div>
+                  <div className="contact-pgp-key-controls">
+                    <label className="primary-toggle"><input type="radio" checked={key.is_preferred} onChange={() => preferKey(index)} /> Preferred</label>
+                    <RemoveButton onClick={() => onChange(removeAt(value, index))} />
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        ))}
+      </div>
       <div className="contact-pgp-import">
         <select value={email} disabled={emailChoices.length === 0} onChange={(event) => setEmail(event.target.value)}>
           {emailChoices.length === 0 ? <option value="">Add an email first</option> : null}
@@ -374,22 +406,18 @@ function ContactPGPKeyEditor({
           onImport={(armored) => addKey(armored)}
         />
       ) : null}
-      {value.length === 0 ? <div className="muted">No PGP public keys saved for this contact.</div> : null}
-      <div className="contact-pgp-key-list">
-        {value.map((key, index) => (
-          <div className="contact-pgp-key-row" key={`${key.fingerprint || key.key_id || index}:${index}`}>
-            <Icon name="lock" />
-            <span>
-              <strong>{key.label || key.email || "PGP key"}</strong>
-              <small>{[key.email, shortFingerprint(key.fingerprint || key.key_id), firstKeyUserID(key.user_ids), keySourceLabel(key)].filter(Boolean).join(" · ")}</small>
-            </span>
-            <label className="primary-toggle"><input type="radio" checked={key.is_preferred} onChange={() => preferKey(index)} /> Preferred</label>
-            <RemoveButton onClick={() => onChange(removeAt(value, index))} />
-          </div>
-        ))}
-      </div>
     </section>
   );
+}
+
+function keyDisplayLabel(key: ContactPGPKey): string {
+  const label = (key.label || "").trim();
+  const fingerprint = shortFingerprint(key.fingerprint || key.key_id);
+  return label || fingerprint || "PGP key";
+}
+
+function keyFingerprintLabel(key: ContactPGPKey): string {
+  return shortFingerprint(key.fingerprint || key.key_id);
 }
 
 function keySourceLabel(key: ContactPGPKey): string {

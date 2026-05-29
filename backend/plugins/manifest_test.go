@@ -10,17 +10,21 @@ func TestLoadManifestsReadsThemeBundles(t *testing.T) {
 	root := t.TempDir()
 	pluginDir := filepath.Join(root, "matrix_theme")
 	themeDir := filepath.Join(pluginDir, "themes", "matrix")
+	distDir := filepath.Join(pluginDir, "frontend_dist", "themes", "matrix")
 	if err := os.MkdirAll(themeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(themeDir, "theme.css"), []byte(":root{}"), 0o600); err != nil {
+	if err := os.MkdirAll(distDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "theme.css"), []byte(":root{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manifest := `{
 		"id": "matrix_theme",
 		"name": "Matrix theme",
 		"description": "Adds Matrix.",
-		"themes": [{"id": "matrix", "name": "Matrix", "css": "themes/matrix/theme.css"}]
+		"themes": [{"id": "matrix", "name": "Matrix", "css": "frontend_dist/themes/matrix/theme.css"}]
 	}`
 	if err := os.WriteFile(filepath.Join(pluginDir, "manifest.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)

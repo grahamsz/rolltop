@@ -73,6 +73,11 @@ export type PGPKeyImportModalProps = {
   onImport: (armored: string) => Promise<void> | void;
 };
 
+export type ContactPGPKeyImportResolution = {
+  status: "new" | "same" | "different";
+  existing?: ContactPGPKey;
+};
+
 export type PGPKeyGenerateModalProps = {
   email: string;
   busy?: boolean;
@@ -116,5 +121,6 @@ export type ClientSidePGPPlugin = {
   decryptedPlainText(content: string): string;
   decryptedMIMEAttachments(content: string): DecryptedMIMEAttachment[];
   encryptionRecipientKeyIDsFromSource(source: string): Promise<string[]>;
+  resolveContactPGPKeyImport(existingKeys: ContactPGPKey[], candidate: ContactPGPKey): ContactPGPKeyImportResolution;
   autocryptKeyRecordFromMessageSource(source: string, senderEmail?: string): Promise<ContactPGPKey | null>;
 };

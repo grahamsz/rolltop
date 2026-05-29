@@ -10,6 +10,6 @@
   },
   "frontend": {
     "module": "frontend/dist/index.js",
-    "css": "frontend/styles/pgp.css"
+    "css": "frontend_dist/styles/pgp.css"
   }
 }

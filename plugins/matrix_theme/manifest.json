@@ -8,7 +8,7 @@
     {
       "id": "matrix",
       "name": "Matrix",
-      "css": "themes/matrix/theme.css"
+      "css": "frontend_dist/themes/matrix/theme.css"
     }
   ],
   "frontend": {

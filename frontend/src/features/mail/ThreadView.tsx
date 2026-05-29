@@ -23,6 +23,7 @@ import { senderVisualURL } from "../../plugins/senderVisuals";
 import { TrustImageSourceAction } from "../../plugins/trustedImageSources/TrustImageSourceAction";
 import type { RuntimePlugin } from "../../plugins/runtime";
 import type { AutocryptGossipKey, ClientSidePGPPlugin, DecryptedMIMEAttachment, PGPMessageOpenResult, PGPSignatureStatus } from "../../../../plugins/client_side_pgp/frontend/types";
+import { resolveContactPGPKeyImport } from "../../../../plugins/client_side_pgp/frontend";
 
 type MessageLoadStatus = {
   conversation: number;
@@ -68,9 +69,10 @@ type PGPVerificationKeys = {
 };
 
 type AttachmentPGPImportState = {
-  status: "candidate" | "checking" | "ready" | "importing" | "imported" | "ignored" | "error";
+  status: "candidate" | "checking" | "ready" | "same" | "different" | "importing" | "imported" | "ignored" | "error";
   email?: string;
   key?: ContactPGPKey;
+  existing?: ContactPGPKey;
   error?: string;
 };
 
@@ -300,6 +302,21 @@ function PGPImportStatusAction({
       </button>
     );
   }
+  if (state.status === "same") {
+    return <span className="attachment-preview-link" title={`Already saved for ${state.email || fallbackEmail}`}>Already saved</span>;
+  }
+  if (state.status === "different") {
+    return (
+      <button
+        className="attachment-preview-link"
+        type="button"
+        title={`A different key is already saved for ${state.email || fallbackEmail}`}
+        onClick={onImport}
+      >
+        Import different key
+      </button>
+    );
+  }
   if (state.status === "importing") {
     return <span className="attachment-preview-link">Importing</span>;
   }
@@ -355,18 +372,6 @@ function pgpOpenStatus(result: PGPMessageOpenResult, signatureStatus = result.si
   if (signatureStatus === "invalid") return "Signature does not match the saved sender key.";
   if (signatureStatus === "unverified") return "Signature could not be verified because no saved sender key is available.";
   return "PGP content opened.";
-}
-
-function pgpPublicKeysMatch(left: ContactPGPKey, right: ContactPGPKey): boolean {
-  const leftArmor = left.public_key_armored.trim();
-  const rightArmor = right.public_key_armored.trim();
-  if (leftArmor && rightArmor && leftArmor === rightArmor) return true;
-  const leftFingerprint = (left.fingerprint || "").replace(/\s+/g, "").toUpperCase();
-  const rightFingerprint = (right.fingerprint || "").replace(/\s+/g, "").toUpperCase();
-  if (leftFingerprint && rightFingerprint && leftFingerprint === rightFingerprint) return true;
-  const leftKeyID = (left.key_id || "").replace(/\s+/g, "").toUpperCase();
-  const rightKeyID = (right.key_id || "").replace(/\s+/g, "").toUpperCase();
-  return Boolean(leftKeyID && rightKeyID && leftKeyID === rightKeyID);
 }
 
 function pgpKeyDiscoveryID(email: string, key: ContactPGPKey, index = 0): string {
@@ -861,8 +866,13 @@ export function ThreadView({
       }
       if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
       const key = await pgpPlugin.publicKeyRecordFromArmored(text, email, "message-attachment", attachment.filename || `message-${item.message.id}`);
-      if (await savedPGPPublicKeyExists(email, key)) {
-        setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ignored" } }));
+      const resolution = await savedPGPPublicKeyResolution(email, key);
+      if (resolution.status === "same") {
+        setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "same", email, key, existing: resolution.existing } }));
+        return;
+      }
+      if (resolution.status === "different") {
+        setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "different", email, key, existing: resolution.existing } }));
         return;
       }
       setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ready", email, key } }));
@@ -874,6 +884,15 @@ export function ThreadView({
   async function importAttachmentPGPPublicKey(attachment: Attachment) {
     let state = pgpAttachmentImports[attachment.id];
     if (!state || state.status === "ignored" || state.status === "imported") return;
+    const fallbackEmail = state.email || "";
+    if (state.status === "same") {
+      addToast(`PGP public key already saved for ${fallbackEmail || "this sender"}.`);
+      return;
+    }
+    if (state.status === "different") {
+      const accept = window.confirm(`A different PGP public key is already saved for ${fallbackEmail || "this sender"}. Import this one too?`);
+      if (!accept) return;
+    }
     setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { ...state, status: "importing" } }));
     try {
       let key = state.key;
@@ -885,7 +904,10 @@ export function ThreadView({
         state = { ...state, email, key };
       }
       if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-      await pgpPlugin.savePublicKey(csrf, { ...key, email: state.email || key.email, is_preferred: true });
+      const targetEmail = (email || state.email || key.email).toLowerCase();
+      const existing = await pgpPlugin.publicKeys([targetEmail], true).catch(() => ({ keys: [] as ContactPGPKey[] }));
+      const hasPreferred = (existing.keys || []).some((candidate) => candidate.email.toLowerCase() === targetEmail && candidate.is_preferred);
+      await pgpPlugin.savePublicKey(csrf, { ...key, email: state.email || key.email, is_preferred: !hasPreferred });
       setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { ...state, status: "imported" } }));
       addToast(`PGP public key imported for ${state.email || key.email}.`);
     } catch (err) {
@@ -910,8 +932,13 @@ export function ThreadView({
         setAutocryptImports((current) => ({ ...current, [messageID]: { status: "ignored" } }));
         return;
       }
-      if (await savedPGPPublicKeyExists(key.email || email, key)) {
-        setAutocryptImports((current) => ({ ...current, [messageID]: { status: "ignored" } }));
+      const resolution = await savedPGPPublicKeyResolution(key.email || email, key);
+      if (resolution.status === "same") {
+        setAutocryptImports((current) => ({ ...current, [messageID]: { status: "same", email: key.email || email, key, existing: resolution.existing } }));
+        return;
+      }
+      if (resolution.status === "different") {
+        setAutocryptImports((current) => ({ ...current, [messageID]: { status: "different", email: key.email || email, key, existing: resolution.existing } }));
         return;
       }
       setAutocryptImports((current) => ({ ...current, [messageID]: { status: "ready", email: key.email || email, key } }));
@@ -924,6 +951,14 @@ export function ThreadView({
     const messageID = item.message.id;
     let state = autocryptImports[messageID];
     if (!state || state.status === "ignored" || state.status === "imported" || state.status === "checking") return;
+    if (state.status === "same") {
+      addToast(`PGP public key already saved for ${state.email || item.sender_email.trim()}.`);
+      return;
+    }
+    if (state.status === "different") {
+      const accept = window.confirm(`A different PGP public key is already saved for ${state.email || item.sender_email.trim()}. Import this one too?`);
+      if (!accept) return;
+    }
     setAutocryptImports((current) => ({ ...current, [messageID]: { ...state, status: "importing" } }));
     try {
       let key = state.key;
@@ -936,7 +971,9 @@ export function ThreadView({
         state = { ...state, email: key.email || email, key };
       }
       if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-      await pgpPlugin.savePublicKey(csrf, { ...key, email: state.email || key.email, is_preferred: true });
+      const existing = await pgpPlugin.publicKeys([email], true).catch(() => ({ keys: [] as ContactPGPKey[] }));
+      const hasPreferred = (existing.keys || []).some((candidate) => candidate.email.toLowerCase() === email.toLowerCase() && candidate.is_preferred);
+      await pgpPlugin.savePublicKey(csrf, { ...key, email: state.email || key.email, is_preferred: !hasPreferred });
       setAutocryptImports((current) => ({ ...current, [messageID]: { ...state, status: "imported" } }));
       addToast(`PGP public key imported for ${state.email || key.email}.`);
     } catch (err) {
@@ -997,13 +1034,13 @@ export function ThreadView({
     return text;
   }
 
-  async function savedPGPPublicKeyExists(email: string, key: ContactPGPKey): Promise<boolean> {
-    if (!pgpPlugin) return false;
+  async function savedPGPPublicKeyResolution(email: string, key: ContactPGPKey) {
+    if (!pgpPlugin) return { status: "new" as const };
     try {
       const existing = await pgpPlugin.publicKeys([email], true);
-      return (existing.keys || []).some((candidate) => pgpPublicKeysMatch(candidate, key));
+      return resolveContactPGPKeyImport(existing.keys || [], key);
     } catch {
-      return false;
+      return { status: "new" as const };
     }
   }
 
@@ -1045,7 +1082,15 @@ export function ThreadView({
         if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
         const record = await pgpPlugin.publicKeyRecordFromArmored(item.publicKeyArmored, item.email, "autocrypt-gossip", item.email);
         const email = record.email || item.email;
-        if (await savedPGPPublicKeyExists(email, record)) continue;
+        const resolution = await savedPGPPublicKeyResolution(email, record);
+        if (resolution.status === "same") {
+          staged[pgpKeyDiscoveryID(email, record, index)] = { status: "same", email, key: { ...record, email, is_preferred: true }, existing: resolution.existing };
+          continue;
+        }
+        if (resolution.status === "different") {
+          staged[pgpKeyDiscoveryID(email, record, index)] = { status: "different", email, key: { ...record, email, is_preferred: true }, existing: resolution.existing };
+          continue;
+        }
         staged[pgpKeyDiscoveryID(email, record, index)] = { status: "ready", email, key: { ...record, email, is_preferred: true } };
       } catch {
         // Gossip is opportunistic key discovery. A malformed or duplicate key

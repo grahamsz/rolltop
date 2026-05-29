@@ -211,6 +211,32 @@ export async function publicKeyRecordFromArmored(
   };
 }
 
+export type ContactPGPKeyImportResolution = {
+  status: "new" | "same" | "different";
+  existing?: ContactPGPKey;
+};
+
+export function contactPGPKeysMatch(left: ContactPGPKey, right: ContactPGPKey): boolean {
+  const leftArmor = left.public_key_armored.trim();
+  const rightArmor = right.public_key_armored.trim();
+  if (leftArmor && rightArmor && leftArmor === rightArmor) return true;
+  const leftFingerprint = normalizedKeyID(left.fingerprint);
+  const rightFingerprint = normalizedKeyID(right.fingerprint);
+  if (leftFingerprint && rightFingerprint && leftFingerprint === rightFingerprint) return true;
+  const leftKeyID = normalizedKeyID(left.key_id);
+  const rightKeyID = normalizedKeyID(right.key_id);
+  return Boolean(leftKeyID && rightKeyID && leftKeyID === rightKeyID);
+}
+
+export function resolveContactPGPKeyImport(existingKeys: ContactPGPKey[], candidate: ContactPGPKey): ContactPGPKeyImportResolution {
+  const targetEmail = normalizedEmailAddress(candidate.email);
+  const existingForEmail = existingKeys.filter((key) => !targetEmail || normalizedEmailAddress(key.email) === targetEmail);
+  const same = existingForEmail.find((key) => contactPGPKeysMatch(key, candidate));
+  if (same) return { status: "same", existing: same };
+  if (existingForEmail.length > 0) return { status: "different", existing: existingForEmail[0] };
+  return { status: "new" };
+}
+
 export async function autocryptKeyRecordFromMessageSource(source: string, senderEmail = ""): Promise<ContactPGPKey | null> {
   const expectedEmail = normalizedEmailAddress(senderEmail);
   for (const value of rawHeaderValues(source, "Autocrypt")) {
@@ -1413,6 +1439,10 @@ function normalizedEmailAddress(value: string): string {
   const raw = (angle ? angle[1] : value).trim();
   const match = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   return (match ? match[0] : raw).trim().toLowerCase();
+}
+
+function normalizedKeyID(value: string): string {
+  return value.replace(/[\s:]/g, "").toUpperCase();
 }
 
 async function loadOpenPGP(): Promise<OpenPGPModule> {

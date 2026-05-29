@@ -30,7 +30,7 @@ func TestAvailableThemesIncludesEnabledPluginThemes(t *testing.T) {
 			Themes: []plugins.ThemeBundle{{
 				ID:   "matrix",
 				Name: "Matrix",
-				CSS:  "themes/matrix/theme.css",
+				CSS:  "frontend_dist/themes/matrix/theme.css",
 			}},
 		}},
 	}
@@ -40,7 +40,7 @@ func TestAvailableThemesIncludesEnabledPluginThemes(t *testing.T) {
 
 	themes := server.availableThemes(ctx)
 	if !slices.ContainsFunc(themes, func(theme apiThemeDefinition) bool {
-		return theme.ID == "matrix" && theme.PluginID == plugins.MatrixTheme && theme.CSSURL == "/plugins/matrix_theme/assets/themes/matrix/theme.css"
+		return theme.ID == "matrix" && theme.PluginID == plugins.MatrixTheme && theme.CSSURL == "/plugins/matrix_theme/assets/frontend_dist/themes/matrix/theme.css"
 	}) {
 		t.Fatalf("missing matrix plugin theme: %#v", themes)
 	}
@@ -70,7 +70,7 @@ func TestPluginAssetRouteServesEnabledThemeAsset(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/plugins/matrix_theme/assets/themes/matrix/theme.css", nil)
+	req := httptest.NewRequest(http.MethodGet, "/plugins/matrix_theme/assets/frontend_dist/themes/matrix/theme.css", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
@@ -89,7 +89,7 @@ func TestPluginAssetRouteServesEnabledThemeAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/plugins/matrix_theme/assets/themes/matrix/theme.css", nil)
+	req = httptest.NewRequest(http.MethodGet, "/plugins/matrix_theme/assets/frontend_dist/themes/matrix/theme.css", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("disabled status = %d", rec.Code)
@@ -167,10 +167,14 @@ func writeMatrixThemePlugin(t *testing.T, root string) {
 	t.Helper()
 	pluginDir := filepath.Join(root, "matrix_theme")
 	themeDir := filepath.Join(pluginDir, "themes", "matrix")
+	distDir := filepath.Join(pluginDir, "frontend_dist", "themes", "matrix")
 	if err := os.MkdirAll(themeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(themeDir, "theme.css"), []byte(`:root[data-theme="matrix"]{--accent:#00f5a0}`), 0o600); err != nil {
+	if err := os.MkdirAll(distDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "theme.css"), []byte(`:root[data-theme="matrix"]{--accent:#00f5a0}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manifest := `{
@@ -178,7 +182,7 @@ func writeMatrixThemePlugin(t *testing.T, root string) {
 		"name": "Matrix theme",
 		"description": "Adds Matrix.",
 		"enabled_by_default": true,
-		"themes": [{"id": "matrix", "name": "Matrix", "css": "themes/matrix/theme.css"}]
+		"themes": [{"id": "matrix", "name": "Matrix", "css": "frontend_dist/themes/matrix/theme.css"}]
 	}`
 	if err := os.WriteFile(filepath.Join(pluginDir, "manifest.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)

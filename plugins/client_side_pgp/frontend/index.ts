@@ -20,6 +20,7 @@ import {
   publicKeyRecordFromArmored,
   restorePGPUnlockState,
   serializePGPUnlockState,
+  resolveContactPGPKeyImport,
   signPGPMIMEEntity
 } from "./crypto/pgp";
 import { pgpMessageSecurityPreviewText, pgpMessageSecuritySnippetClassName, renderPGPMessageSecurityIndicators } from "./messageSecurity/indicators";
@@ -29,6 +30,7 @@ import { PGPUnlockDialog } from "./components/PGPUnlockDialog";
 import type { ClientSidePGPPlugin } from "./types";
 
 export type * from "./types";
+export { resolveContactPGPKeyImport } from "./crypto/pgp";
 
 const plugin: ClientSidePGPPlugin = {
   UnlockDialog: PGPUnlockDialog,
@@ -65,6 +67,7 @@ const plugin: ClientSidePGPPlugin = {
   decryptedPlainText,
   decryptedMIMEAttachments,
   encryptionRecipientKeyIDsFromSource,
+  resolveContactPGPKeyImport,
   autocryptKeyRecordFromMessageSource
 };
 
