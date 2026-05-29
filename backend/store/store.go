@@ -18,6 +18,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"rolltop/backend/plugins"
+	_ "rolltop/plugins/catalog"
 )
 
 var ErrNotFound = sql.ErrNoRows
