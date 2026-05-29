@@ -3,36 +3,50 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
 
 	"rolltop/backend/plugins"
-	"rolltop/plugins/client_side_pgp/schema"
 )
 
 func TestBundledPluginMigrationsRespectDatabaseScope(t *testing.T) {
 	ctx := context.Background()
 	_, file, _, _ := runtime.Caller(0)
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	manifests, err := plugins.LoadManifests(filepath.Join(repoRoot, "plugins"))
+	pluginRoot := filepath.Join(t.TempDir(), "plugins")
+	remoteRoot := filepath.Join(pluginRoot, plugins.RemoteImageBlocklist)
+	backendDir := filepath.Join(remoteRoot, "backend")
+	if err := os.MkdirAll(backendDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{
+		"id": "remote_image_blocklist",
+		"name": "Remote image blocklist",
+		"description": "Test remote image blocklist",
+		"backend": {"kind": "go-plugin", "binary": "backend/remote_image_blocklist.so"}
+	}`
+	if err := os.WriteFile(filepath.Join(remoteRoot, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "build", "-a", "-buildmode=plugin", "-o", filepath.Join(backendDir, "remote_image_blocklist.so"), "./plugins/remote_image_blocklist/backend")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "GOCACHE=/tmp/rolltop-go-build")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	manifests, err := plugins.LoadManifests(pluginRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := plugins.NewBackendManager(filepath.Join(repoRoot, "plugins"), manifests)
-	for _, pluginID := range []string{plugins.RemoteImageBlocklist} {
-		if _, ok, err := manager.Plugin(pluginID); err != nil {
-			t.Fatal(err)
-		} else if !ok {
-			t.Fatalf("plugin %s was not discovered", pluginID)
-		}
+	manager := plugins.NewBackendManager(pluginRoot, manifests)
+	if _, ok, err := manager.Plugin(plugins.RemoteImageBlocklist); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("remote image blocklist backend plugin was not discovered")
 	}
-	plugins.Register(plugins.Definition{
-		ID:          plugins.ClientSidePGP,
-		Name:        "Client-side PGP",
-		Description: "Adds browser-loaded OpenPGP decrypt, verify, sign, encrypt, Autocrypt, and key-management UI.",
-		Heavy:       true,
-	}, schema.Migrations()...)
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")
 	db, err := OpenServer(filepath.Join(dataDir, "rolltop.db"), dataDir)
