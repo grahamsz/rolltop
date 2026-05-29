@@ -9,7 +9,7 @@
     "binary": "backend/client_side_pgp.so"
   },
   "frontend": {
-    "module": "frontend_dist/index.js",
-    "css": "styles/pgp.css"
+    "module": "frontend/dist/index.js",
+    "css": "frontend/styles/pgp.css"
   }
 }

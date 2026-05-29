@@ -39,11 +39,21 @@ type Definition struct {
 
 // Migration describes one plugin-owned schema change and checksum source.
 type Migration struct {
-	Scope      string
-	PluginID   string
-	ID         string
-	Statements []string
-	Apply      func(context.Context, *sql.Tx) error
+	Scope         string
+	PluginID      string
+	ID            string
+	EnsureColumns []MigrationColumn
+	Statements    []string
+	Apply         func(context.Context, *sql.Tx) error
+}
+
+// MigrationColumn is an idempotent column addition requested by a plugin
+// migration. It is used by file-backed migrations because SQLite cannot
+// reliably express ADD COLUMN IF NOT EXISTS across every deployed version.
+type MigrationColumn struct {
+	Table  string
+	Column string
+	DDL    string
 }
 
 var registry = struct {
@@ -51,7 +61,8 @@ var registry = struct {
 	definitions map[string]Definition
 	order       []string
 	migrations  []Migration
-}{definitions: map[string]Definition{}}
+	hooks       map[string][]any
+}{definitions: map[string]Definition{}, hooks: map[string][]any{}}
 
 // Register adds one statically compiled plugin package to the runtime registry.
 // Plugin packages live under /plugins and call this from init so the main app can
@@ -83,6 +94,29 @@ func Register(def Definition, migrations ...Migration) {
 		registry.migrations = append(registry.migrations, migration)
 	}
 	log.Printf("debug plugin module registered plugin_id=%s migrations=%d enabled_by_default=%t heavy=%t", def.ID, len(migrations), def.EnabledByDefault, def.Heavy)
+}
+
+// RegisterHooks adds compiled plugin hook implementations without requiring the
+// host packages to import concrete plugin implementation packages.
+func RegisterHooks(pluginID string, hooks ...any) {
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" || len(hooks) == 0 {
+		return
+	}
+	registry.Lock()
+	defer registry.Unlock()
+	registry.hooks[pluginID] = append(registry.hooks[pluginID], hooks...)
+}
+
+// Hooks returns hook implementations registered for one compiled plugin.
+func Hooks(pluginID string) []any {
+	pluginID = strings.TrimSpace(pluginID)
+	registry.RLock()
+	defer registry.RUnlock()
+	registered := registry.hooks[pluginID]
+	out := make([]any, len(registered))
+	copy(out, registered)
+	return out
 }
 
 // All returns every compiled plugin definition in display order for admin settings and migration seeding.

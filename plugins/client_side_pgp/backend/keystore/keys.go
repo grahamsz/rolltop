@@ -22,6 +22,8 @@ type ContactPublicKeyInput struct {
 	KeyID            string
 	UserIDs          string
 	PublicKeyArmored string
+	SourceKind       string
+	SourceDetail     string
 	IsPreferred      bool
 }
 
@@ -135,6 +137,8 @@ func SaveDiscoveredContactKey(ctx context.Context, db *store.Store, userID int64
 		KeyID:            in.KeyID,
 		UserIDs:          in.UserIDs,
 		PublicKeyArmored: strings.TrimSpace(in.PublicKeyArmored),
+		SourceKind:       in.SourceKind,
+		SourceDetail:     in.SourceDetail,
 		IsPreferred:      true,
 	})
 }

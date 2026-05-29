@@ -245,6 +245,8 @@ export type ContactPGPKey = {
   key_id: string;
   user_ids: string;
   public_key_armored: string;
+  source_kind?: string;
+  source_detail?: string;
   is_preferred: boolean;
 };
 

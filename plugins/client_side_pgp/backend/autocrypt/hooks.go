@@ -52,6 +52,8 @@ func ImportIncomingMessage(ctx context.Context, db *store.Store, userID int64, r
 			Email:            header.Addr,
 			Label:            header.Addr,
 			PublicKeyArmored: header.PublicKey,
+			SourceKind:       "autocrypt",
+			SourceDetail:     header.Addr,
 			IsPreferred:      true,
 		})
 		return err

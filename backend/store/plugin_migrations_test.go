@@ -4,13 +4,35 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"rolltop/backend/plugins"
+	"rolltop/plugins/client_side_pgp/schema"
 )
 
 func TestBundledPluginMigrationsRespectDatabaseScope(t *testing.T) {
 	ctx := context.Background()
+	_, file, _, _ := runtime.Caller(0)
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	manifests, err := plugins.LoadManifests(filepath.Join(repoRoot, "plugins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := plugins.NewBackendManager(filepath.Join(repoRoot, "plugins"), manifests)
+	for _, pluginID := range []string{plugins.RemoteImageBlocklist} {
+		if _, ok, err := manager.Plugin(pluginID); err != nil {
+			t.Fatal(err)
+		} else if !ok {
+			t.Fatalf("plugin %s was not discovered", pluginID)
+		}
+	}
+	plugins.Register(plugins.Definition{
+		ID:          plugins.ClientSidePGP,
+		Name:        "Client-side PGP",
+		Description: "Adds browser-loaded OpenPGP decrypt, verify, sign, encrypt, Autocrypt, and key-management UI.",
+		Heavy:       true,
+	}, schema.Migrations()...)
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")
 	db, err := OpenServer(filepath.Join(dataDir, "rolltop.db"), dataDir)
@@ -33,7 +55,7 @@ func TestBundledPluginMigrationsRespectDatabaseScope(t *testing.T) {
 	assertTableExists(t, ctx, userDB, "identity_pgp_private_keys", true)
 	assertPluginMigrationCount(t, ctx, db.DB(), plugins.RemoteImageBlocklist, 1)
 	assertPluginMigrationCount(t, ctx, db.DB(), plugins.ClientSidePGP, 0)
-	assertPluginMigrationCount(t, ctx, userDB, plugins.ClientSidePGP, 4)
+	assertPluginMigrationCount(t, ctx, userDB, plugins.ClientSidePGP, 5)
 }
 
 func assertTableExists(t *testing.T, ctx context.Context, db *sql.DB, table string, want bool) {

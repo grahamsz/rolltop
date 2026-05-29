@@ -19,7 +19,6 @@ import (
 	"rolltop/backend/smtpclient"
 	"rolltop/backend/store"
 	"rolltop/backend/syncer"
-	languagesearch "rolltop/plugins/language_search/detector"
 )
 
 // replyComposeForm builds the server default for reply compose. The frontend may
@@ -1158,7 +1157,7 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 	}
 	languageCode := ""
 	if !form.PGPEncrypted && s.pluginEnabled(ctx, plugins.LanguageSearch) {
-		languageCode = languagesearch.DetectCode(form.Subject, outgoing.BodyText)
+		languageCode = detectLanguageCode(form.Subject, outgoing.BodyText)
 	}
 	msg, err := s.store.CreateMessage(ctx, store.CreateMessage{
 		UserID:           userID,

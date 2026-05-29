@@ -19,8 +19,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w -X rolltop/backend/buildinfo.Version=${ROLLTOP_VERSION} -X rolltop/backend/buildinfo.BuildDate=${ROLLTOP_BUILD_DATE} -X rolltop/backend/buildinfo.Commit=${ROLLTOP_COMMIT}" -o /out/rolltop ./cmd/rolltop
-RUN mkdir -p /out/plugins/client_side_pgp/backend \
-	&& CGO_ENABLED=1 GOOS=linux go build -buildmode=plugin -trimpath -ldflags="-s -w" -o /out/plugins/client_side_pgp/backend/client_side_pgp.so ./plugins/client_side_pgp/backend
+RUN set -eu; \
+	plugins='attachment_preview bimi_brand_icons gravatar_sender_icons language_search one_click_unsubscribe remote_image_blocklist trusted_image_sources client_side_pgp'; \
+	for plugin in $plugins; do \
+		mkdir -p "/out/plugins/${plugin}/backend"; \
+		CGO_ENABLED=1 GOOS=linux go build -buildmode=plugin -trimpath -ldflags="-s -w" -o "/out/plugins/${plugin}/backend/${plugin}.so" "./plugins/${plugin}/backend"; \
+	done
 
 FROM alpine:3.22
 

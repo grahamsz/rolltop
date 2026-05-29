@@ -10,7 +10,6 @@ import (
 
 	"rolltop/backend/plugins"
 	"rolltop/backend/store"
-	bimibrandicons "rolltop/plugins/bimi_brand_icons/bimi"
 )
 
 func (s *Server) apiBrandIcons(w http.ResponseWriter, r *http.Request) {
@@ -29,12 +28,17 @@ func (s *Server) apiBrandIcons(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	domains := parseBrandIconDomains(query["domain"], query.Get("domains"))
 	icons := map[string]string{}
+	hook, ok := bimiBrandIconsHook()
+	if !ok {
+		writeJSON(w, map[string]any{"icons": icons})
+		return
+	}
 	for _, domain := range domains {
 		icon, err := s.ensureBIMIIcon(r.Context(), cu.User.ID, domain)
 		if err != nil || icon.Status != "ok" || strings.TrimSpace(icon.SVG) == "" {
 			continue
 		}
-		icons[domain] = bimibrandicons.AssetURL(domain)
+		icons[domain] = hook.AssetURL(domain)
 	}
 	writeJSON(w, map[string]any{"icons": icons})
 }
@@ -56,7 +60,12 @@ func (s *Server) handleBrandIcon(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimPrefix(r.URL.Path, "/brand-icons/")
 	domain = strings.TrimPrefix(domain, "/plugins/bimi_brand_icons/brand-icons/")
 	domain = strings.TrimSuffix(domain, ".svg")
-	domain = bimibrandicons.NormalizeDomain(domain)
+	hook, ok := bimiBrandIconsHook()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	domain = hook.NormalizeDomain(domain)
 	if domain == "" {
 		http.NotFound(w, r)
 		return
@@ -66,7 +75,7 @@ func (s *Server) handleBrandIcon(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	icon, err := bimibrandicons.GetIcon(r.Context(), userDB, cu.User.ID, domain)
+	icon, err := hook.GetIcon(r.Context(), userDB, cu.User.ID, domain)
 	if store.IsNotFound(err) || err != nil || icon.Status != "ok" || strings.TrimSpace(icon.SVG) == "" {
 		http.NotFound(w, r)
 		return
@@ -77,22 +86,31 @@ func (s *Server) handleBrandIcon(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(icon.SVG))
 }
 
-func (s *Server) ensureBIMIIcon(ctx context.Context, userID int64, domain string) (bimibrandicons.Icon, error) {
-	domain = bimibrandicons.NormalizeDomain(domain)
+func (s *Server) ensureBIMIIcon(ctx context.Context, userID int64, domain string) (plugins.BIMIIcon, error) {
+	hook, ok := bimiBrandIconsHook()
+	if !ok {
+		return plugins.BIMIIcon{}, store.ErrNotFound
+	}
+	domain = hook.NormalizeDomain(domain)
 	if domain == "" {
-		return bimibrandicons.Icon{}, store.ErrNotFound
+		return plugins.BIMIIcon{}, store.ErrNotFound
 	}
 	userDB, err := s.store.UserDB(ctx, userID)
 	if err != nil {
-		return bimibrandicons.Icon{}, err
+		return plugins.BIMIIcon{}, err
 	}
-	if icon, err := bimibrandicons.GetIcon(ctx, userDB, userID, domain); err == nil && icon.ExpiresAt.After(time.Now()) {
-		return icon, nil
+	if icon, err := hook.GetIcon(ctx, userDB, userID, domain); err == nil {
+		if icon.Status == "ok" && icon.ExpiresAt.After(time.Now()) {
+			return icon, nil
+		}
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	result := bimibrandicons.Resolver{}.Fetch(fetchCtx, domain)
-	icon := bimibrandicons.Icon{
+	result, err := hook.Fetch(fetchCtx, domain)
+	if err != nil {
+		return plugins.BIMIIcon{}, err
+	}
+	icon := plugins.BIMIIcon{
 		UserID:    userID,
 		Domain:    result.Domain,
 		LogoURL:   result.LogoURL,
@@ -103,18 +121,22 @@ func (s *Server) ensureBIMIIcon(ctx context.Context, userID int64, domain string
 		ExpiresAt: result.ExpiresAt,
 		UpdatedAt: time.Now().UTC(),
 	}
-	if err := bimibrandicons.UpsertIcon(ctx, userDB, icon); err != nil {
-		return bimibrandicons.Icon{}, err
+	if err := hook.UpsertIcon(ctx, userDB, icon); err != nil {
+		return plugins.BIMIIcon{}, err
 	}
 	return icon, nil
 }
 
 func parseBrandIconDomains(domainValues []string, commaValues string) []string {
+	hook, ok := bimiBrandIconsHook()
+	if !ok {
+		return nil
+	}
 	seen := map[string]bool{}
 	var out []string
 	for _, value := range append(domainValues, commaValues) {
 		for _, raw := range strings.Split(value, ",") {
-			domain := bimibrandicons.NormalizeDomain(raw)
+			domain := hook.NormalizeDomain(raw)
 			if domain == "" || seen[domain] {
 				continue
 			}

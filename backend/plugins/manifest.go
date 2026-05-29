@@ -28,6 +28,7 @@ type Manifest struct {
 	Backend          *BackendBundle  `json:"backend,omitempty"`
 	Frontend         *FrontendBundle `json:"frontend,omitempty"`
 	Themes           []ThemeBundle   `json:"themes,omitempty"`
+	Migrations       []Migration     `json:"-"`
 	Dir              string          `json:"-"`
 }
 
@@ -86,8 +87,11 @@ func LoadManifests(root string) ([]Manifest, error) {
 		if err := validateManifest(manifest); err != nil {
 			return nil, fmt.Errorf("%s: %w", manifestPath, err)
 		}
+		if err := loadManifestMigrations(&manifest); err != nil {
+			return nil, fmt.Errorf("%s: %w", manifestPath, err)
+		}
 		out = append(out, manifest)
-		log.Printf("debug plugin manifest loaded plugin_id=%s dir=%s backend=%s frontend=%t themes=%d", manifest.ID, manifest.Dir, manifestBackendKind(manifest), manifest.Frontend != nil, len(manifest.Themes))
+		log.Printf("debug plugin manifest loaded plugin_id=%s dir=%s backend=%s frontend=%t themes=%d migrations=%d", manifest.ID, manifest.Dir, manifestBackendKind(manifest), manifest.Frontend != nil, len(manifest.Themes), len(manifest.Migrations))
 	}
 	return out, nil
 }
@@ -105,6 +109,30 @@ func DefinitionsFromManifests(manifests []Manifest) []Definition {
 			Heavy:            manifest.Heavy,
 		})
 	}
+	return out
+}
+
+// MigrationsFromManifests returns file-backed plugin migrations discovered
+// while scanning plugin folders. Empty scope means all scopes.
+func MigrationsFromManifests(manifests []Manifest, scope string) []Migration {
+	scope = strings.TrimSpace(scope)
+	var out []Migration
+	for _, manifest := range manifests {
+		for _, migration := range manifest.Migrations {
+			if scope == "" || migration.Scope == scope {
+				out = append(out, migration)
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].PluginID != out[j].PluginID {
+			return out[i].PluginID < out[j].PluginID
+		}
+		if out[i].Scope != out[j].Scope {
+			return out[i].Scope < out[j].Scope
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 

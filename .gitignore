@@ -9,7 +9,7 @@ test-results/
 godoc/
 node_modules/
 frontend/dist/
-plugins/*/frontend_dist/
+plugins/*/frontend/dist/
 plugins/*/backend/*.so
 *.db
 *.db-*

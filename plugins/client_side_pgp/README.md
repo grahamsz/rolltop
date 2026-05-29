@@ -9,16 +9,17 @@ Autocrypt, key APIs, and UI.
 
 - `manifest.json` declares the plugin ID, backend shared object, frontend module,
   and CSS bundle.
-- `plugin.go` and `migrations.go` register the built-in plugin metadata and
-  user-scoped database migrations.
 - `backend/` builds as a Go plugin with `-buildmode=plugin`.
 - `frontend/` builds as a Vite ES module loaded only when the plugin is enabled.
-- `styles/pgp.css` contains the PGP UI styles loaded with the frontend module.
+- `schema/` contains the shared plugin migration definitions used by the
+  runtime loader and store tests.
+- `frontend/styles/pgp.css` contains the PGP UI styles loaded with the frontend module.
 
 ## Backend
 
 `backend/main.go` is intentionally small. It exports `RolltopPlugin`, identifies
-the plugin, and registers protected API routes in `Start`:
+the plugin, and registers protected API routes in `Start`. `backend/register.go`
+registers the plugin metadata and shared migrations:
 
 - `/api/plugins/client_side_pgp/private-keys`
 - `/api/plugins/client_side_pgp/private-keys/:id`
@@ -69,7 +70,7 @@ Frontend source is grouped by responsibility:
 - `types.ts` is the stable frontend plugin contract used by core views.
 
 The plugin frontend is bundled with `vite.plugins.config.ts` into
-`frontend_dist/index.js`. React is provided by the host runtime shim, while
+`frontend/dist/index.js`. React is provided by the host runtime shim, while
 OpenPGP.js and DOMPurify are bundled into the plugin because they are only needed
 when this plugin is enabled.
 
@@ -91,7 +92,7 @@ the service worker window state.
 Build the backend shared object:
 
 ```sh
-GOCACHE=/tmp/mailmirror-go-build go build -buildmode=plugin -o plugins/client_side_pgp/backend/client_side_pgp.so ./plugins/client_side_pgp/backend
+GOCACHE=/tmp/rolltop-go-build go build -buildmode=plugin -o plugins/client_side_pgp/backend/client_side_pgp.so ./plugins/client_side_pgp/backend
 ```
 
 Build the frontend plugin bundle:

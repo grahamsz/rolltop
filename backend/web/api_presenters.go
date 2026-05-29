@@ -500,6 +500,8 @@ func apiContactPGPKeyFromStore(key store.ContactPGPPublicKey) apiContactPGPKey {
 		KeyID:            key.KeyID,
 		UserIDs:          key.UserIDs,
 		PublicKeyArmored: key.PublicKeyArmored,
+		SourceKind:       key.SourceKind,
+		SourceDetail:     key.SourceDetail,
 		IsPreferred:      key.IsPreferred,
 	}
 }

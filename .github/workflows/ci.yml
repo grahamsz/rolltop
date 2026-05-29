@@ -83,26 +83,48 @@ jobs:
           mkdir -p test-results build-artifacts
           set +e
           npm run build:vite 2>&1 | tee test-results/frontend-build.log
-          status=${PIPESTATUS[0]}
+          frontend_status=${PIPESTATUS[0]}
+          npm run build:plugins 2>&1 | tee test-results/plugin-frontend-build.log
+          plugin_status=${PIPESTATUS[0]}
           set -e
           {
             echo "### Frontend Build"
             echo
-            if [ "$status" -eq 0 ]; then
+            if [ "$frontend_status" -eq 0 ] && [ "$plugin_status" -eq 0 ]; then
               echo "Status: pass"
             else
               echo "Status: fail"
             fi
             echo
             echo "Build log: \`test-results/frontend-build.log\`"
+            echo "Plugin build log: \`test-results/plugin-frontend-build.log\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          exit "$status"
+          if [ "$frontend_status" -ne 0 ]; then
+            exit "$frontend_status"
+          fi
+          exit "$plugin_status"
 
       - name: Upload Frontend Build
         uses: actions/upload-artifact@v4
         with:
           name: frontend-dist-${{ steps.build-meta.outputs.version }}
           path: frontend/dist
+          if-no-files-found: error
+
+      - name: Build Plugin Backends
+        run: |
+          mkdir -p build-artifacts/plugins
+          plugins='attachment_preview bimi_brand_icons gravatar_sender_icons language_search one_click_unsubscribe remote_image_blocklist trusted_image_sources client_side_pgp'
+          for plugin in $plugins; do
+            mkdir -p "build-artifacts/plugins/${plugin}/backend"
+            CGO_ENABLED=1 GOOS=linux go build -buildmode=plugin -trimpath -ldflags="-s -w" -o "build-artifacts/plugins/${plugin}/backend/${plugin}.so" "./plugins/${plugin}/backend"
+          done
+
+      - name: Upload Plugin Backends
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-backends-${{ steps.build-meta.outputs.version }}
+          path: build-artifacts/plugins
           if-no-files-found: error
 
       - name: Run Go Tests

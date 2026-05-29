@@ -560,8 +560,8 @@ func replaceContactChildren(ctx context.Context, tx *sql.Tx, userID, contactID i
 		if !contactEmails[key.NormalizedEmail] {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_pgp_public_keys (user_id, contact_id, email, normalized_email, label, fingerprint, key_id, user_ids, public_key_armored, is_preferred, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, contactID, key.Email, key.NormalizedEmail, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, boolInt(key.IsPreferred || pgpInserted == 0), ts, ts); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_pgp_public_keys (user_id, contact_id, email, normalized_email, label, fingerprint, key_id, user_ids, public_key_armored, source_kind, source_detail, is_preferred, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, contactID, key.Email, key.NormalizedEmail, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, key.SourceKind, key.SourceDetail, boolInt(key.IsPreferred || pgpInserted == 0), ts, ts); err != nil {
 			return err
 		}
 		pgpInserted++

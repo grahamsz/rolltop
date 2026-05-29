@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"rolltop/backend/plugins"
-	_ "rolltop/plugins/bundled"
 )
 
 // PluginSetting is the persisted admin enablement state for one plugin definition.
@@ -59,7 +58,7 @@ func (s *Store) initPluginTables(ctx context.Context) error {
 }
 
 func (s *Store) seedPluginSettings(ctx context.Context) error {
-	return s.SyncPluginDefinitions(ctx, plugins.All())
+	return s.SyncPluginDefinitions(ctx, s.pluginDefinitions)
 }
 
 // SyncPluginDefinitions upserts admin-visible plugin metadata while preserving
@@ -120,7 +119,7 @@ func (s *Store) PluginEnabled(ctx context.Context, id string) (bool, error) {
 	var enabled int
 	err := s.db.QueryRowContext(ctx, `SELECT enabled FROM plugin_settings WHERE id = ?`, id).Scan(&enabled)
 	if errors.Is(err, sql.ErrNoRows) {
-		def, ok := plugins.Lookup(id)
+		def, ok := s.pluginDefinitionByID(id)
 		if !ok {
 			return false, nil
 		}
@@ -178,7 +177,7 @@ func (s *Store) ApplyEnabledPluginMigrations(ctx context.Context) error {
 // ApplyPluginMigrations applies migrations for one plugin after it is enabled.
 func (s *Store) ApplyPluginMigrations(ctx context.Context, pluginID string) error {
 	pluginID = strings.TrimSpace(pluginID)
-	if _, ok := plugins.Lookup(pluginID); !ok {
+	if _, ok := s.pluginDefinitionByID(pluginID); !ok {
 		if _, _, ok, err := s.pluginDefinition(ctx, pluginID); err != nil {
 			return err
 		} else if !ok {
@@ -186,15 +185,28 @@ func (s *Store) ApplyPluginMigrations(ctx context.Context, pluginID string) erro
 		}
 		return nil
 	}
-	for _, migration := range pluginMigrations() {
-		if migration.PluginID != pluginID {
-			continue
-		}
-		if err := s.applyPluginMigration(ctx, migration); err != nil {
-			return err
+	for _, scope := range s.pluginMigrationScopes() {
+		for _, migration := range s.pluginMigrationsForScope(scope) {
+			if migration.PluginID != pluginID {
+				continue
+			}
+			if err := s.applyPluginMigration(ctx, migration); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+func (s *Store) pluginMigrationScopes() []string {
+	switch s.schema {
+	case schemaSystem:
+		return []string{plugins.ScopeSystem}
+	case schemaUser:
+		return []string{plugins.ScopeUser}
+	default:
+		return []string{plugins.ScopeSystem, plugins.ScopeUser}
+	}
 }
 
 func (s *Store) pluginDefinition(ctx context.Context, id string) (plugins.Definition, bool, bool, error) {
@@ -202,7 +214,7 @@ func (s *Store) pluginDefinition(ctx context.Context, id string) (plugins.Defini
 	if id == "" {
 		return plugins.Definition{}, false, false, nil
 	}
-	if def, ok := plugins.Lookup(id); ok {
+	if def, ok := s.pluginDefinitionByID(id); ok {
 		return def, true, true, nil
 	}
 	var def plugins.Definition
@@ -242,6 +254,21 @@ func (s *Store) applyPluginMigration(ctx context.Context, migration plugins.Migr
 		return err
 	}
 	defer tx.Rollback()
+	for _, column := range migration.EnsureColumns {
+		if strings.TrimSpace(column.Table) == "" || strings.TrimSpace(column.Column) == "" || strings.TrimSpace(column.DDL) == "" {
+			continue
+		}
+		exists, err := pluginColumnExists(ctx, tx, column.Table, column.Column)
+		if err != nil {
+			return fmt.Errorf("apply plugin migration %s/%s: %w", migration.PluginID, migration.ID, err)
+		}
+		if exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, column.DDL); err != nil {
+			return fmt.Errorf("apply plugin migration %s/%s: %w", migration.PluginID, migration.ID, err)
+		}
+	}
 	for _, stmt := range migration.Statements {
 		if strings.TrimSpace(stmt) == "" {
 			continue
@@ -267,6 +294,14 @@ func pluginMigrationChecksum(m plugins.Migration) string {
 	_, _ = h.Write([]byte(m.PluginID))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(m.ID))
+	for _, column := range m.EnsureColumns {
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(strings.TrimSpace(column.Table)))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(strings.TrimSpace(column.Column)))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(strings.TrimSpace(column.DDL)))
+	}
 	for _, stmt := range m.Statements {
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte(strings.TrimSpace(stmt)))
@@ -278,17 +313,59 @@ func pluginMigrationChecksum(m plugins.Migration) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func pluginMigrations() []plugins.Migration {
-	return plugins.Migrations(plugins.ScopeSystem)
-}
-
 func (s *Store) applyPluginMigrationsForScope(ctx context.Context, scope string) error {
-	for _, migration := range plugins.Migrations(scope) {
+	for _, migration := range s.pluginMigrationsForScope(scope) {
 		if err := s.applyPluginMigration(ctx, migration); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func pluginColumnExists(ctx context.Context, tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func (s *Store) pluginMigrationsForScope(scope string) []plugins.Migration {
+	scope = strings.TrimSpace(scope)
+	out := make([]plugins.Migration, 0, len(s.pluginMigrations))
+	for _, migration := range s.pluginMigrations {
+		if scope == "" || migration.Scope == scope {
+			out = append(out, migration)
+		}
+	}
+	return out
+}
+
+func (s *Store) pluginDefinitionByID(id string) (plugins.Definition, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return plugins.Definition{}, false
+	}
+	for _, def := range s.pluginDefinitions {
+		if def.ID == id {
+			return def, true
+		}
+	}
+	return plugins.Definition{}, false
 }
 
 func (s *Store) ensurePluginMigrationTable(ctx context.Context) error {

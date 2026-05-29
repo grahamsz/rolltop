@@ -92,7 +92,7 @@ export type ClientSidePGPPlugin = {
   savePublicKey(csrf: string, key: ContactPGPKey): Promise<{ ok: boolean; key: ContactPGPKey }>;
   serializeUnlockState(state: PGPUnlockState): Promise<unknown>;
   restoreUnlockState(state: unknown): Promise<PGPUnlockState>;
-  publicKeyRecordFromArmored(publicKeyArmored: string, email?: string): Promise<ContactPGPKey>;
+  publicKeyRecordFromArmored(publicKeyArmored: string, email?: string, sourceKind?: string, sourceDetail?: string): Promise<ContactPGPKey>;
   privateKeyRecordFromArmoredSource(privateKeyArmored: string, publicKeyArmored?: string, email?: string): Promise<IdentityPGPPrivateKey>;
   generatePrivateKey(name: string, email: string, passphrase: string): Promise<IdentityPGPPrivateKey>;
   pgpPassphraseIssues(passphrase: string, identityValues: string[]): string[];

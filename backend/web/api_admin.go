@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	"rolltop/backend/auth"
+	"rolltop/backend/plugins"
 	"rolltop/backend/store"
-	remoteimageblocklist "rolltop/plugins/remote_image_blocklist/rules"
 )
 
 func (s *Server) apiAdminUsers(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +223,10 @@ func (s *Server) apiAdminPlugin(w http.ResponseWriter, r *http.Request, rest str
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	if err := s.store.SyncPluginDefinitions(r.Context(), plugins.DefinitionsFromManifests(s.pluginManifests)); err != nil {
+		s.serverError(w, err)
+		return
+	}
 	if err := s.store.SetPluginEnabled(r.Context(), pluginID, in.Enabled); err != nil {
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
@@ -256,7 +260,12 @@ func (s *Server) apiAdminRemoteImageBlocklist(w http.ResponseWriter, r *http.Req
 	}
 	switch r.Method {
 	case http.MethodGet:
-		rules, err := remoteimageblocklist.ListRules(r.Context(), s.store.DB())
+		hook, ok := remoteImageBlocklistHook()
+		if !ok || !s.pluginEnabled(r.Context(), plugins.RemoteImageBlocklist) {
+			writeJSON(w, map[string]any{"patterns": []string{}})
+			return
+		}
+		rules, err := hook.ListRemoteImageRules(r.Context(), s.store.DB())
 		if err != nil {
 			s.serverError(w, err)
 			return
@@ -288,7 +297,12 @@ func (s *Server) apiAdminRemoteImageBlocklist(w http.ResponseWriter, r *http.Req
 			writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := remoteimageblocklist.ReplaceRules(r.Context(), s.store.DB(), patterns); err != nil {
+		hook, ok := remoteImageBlocklistHook()
+		if !ok || !s.pluginEnabled(r.Context(), plugins.RemoteImageBlocklist) {
+			http.NotFound(w, r)
+			return
+		}
+		if err := hook.ReplaceRemoteImageRules(r.Context(), s.store.DB(), patterns); err != nil {
 			s.serverError(w, err)
 			return
 		}

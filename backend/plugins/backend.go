@@ -71,6 +71,18 @@ type BackendPlugin interface {
 	Stop(BackendStartHost) error
 }
 
+// NoopBackendPlugin satisfies the backend ABI for plugins that only need to
+// register hooks and do not own lifecycle-managed routes or resources.
+type NoopBackendPlugin struct {
+	PluginID string
+}
+
+func (p NoopBackendPlugin) ID() string { return strings.TrimSpace(p.PluginID) }
+
+func (p NoopBackendPlugin) Start(BackendStartHost) error { return nil }
+
+func (p NoopBackendPlugin) Stop(BackendStartHost) error { return nil }
+
 // ErrUnsupported lets a plugin decline a generic hook request without making the
 // host treat that plugin as broken.
 var ErrUnsupported = errors.New("plugin hook unsupported")

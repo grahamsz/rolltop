@@ -860,7 +860,7 @@ export function ThreadView({
         return;
       }
       if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-      const key = await pgpPlugin.publicKeyRecordFromArmored(text, email);
+      const key = await pgpPlugin.publicKeyRecordFromArmored(text, email, "message-attachment", attachment.filename || `message-${item.message.id}`);
       if (await savedPGPPublicKeyExists(email, key)) {
         setPGPAttachmentImports((current) => ({ ...current, [attachment.id]: { status: "ignored" } }));
         return;
@@ -881,7 +881,7 @@ export function ThreadView({
       if (!key) {
         const text = await fetchPGPKeyAttachmentText(attachment);
         if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-        key = await pgpPlugin.publicKeyRecordFromArmored(text, email);
+        key = await pgpPlugin.publicKeyRecordFromArmored(text, email, "message-attachment", attachment.filename || `message-${attachment.id}`);
         state = { ...state, email, key };
       }
       if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
@@ -1043,7 +1043,7 @@ export function ThreadView({
     for (const [index, item] of gossip.entries()) {
       try {
         if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-        const record = await pgpPlugin.publicKeyRecordFromArmored(item.publicKeyArmored, item.email);
+        const record = await pgpPlugin.publicKeyRecordFromArmored(item.publicKeyArmored, item.email, "autocrypt-gossip", item.email);
         const email = record.email || item.email;
         if (await savedPGPPublicKeyExists(email, record)) continue;
         staged[pgpKeyDiscoveryID(email, record, index)] = { status: "ready", email, key: { ...record, email, is_preferred: true } };

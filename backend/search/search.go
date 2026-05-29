@@ -22,7 +22,6 @@ import (
 	blevequery "github.com/blevesearch/bleve/v2/search/query"
 
 	"rolltop/backend/store"
-	languagesearch "rolltop/plugins/language_search/detector"
 )
 
 // Service owns Bleve indexes and query construction for either combined-test or per-user production mode.
@@ -532,7 +531,7 @@ func buildMessageDocument(msg store.MessageRecord, attachments []AttachmentDoc) 
 		"is_starred":           strconv.FormatBool(msg.IsStarred),
 		"is_encrypted":         strconv.FormatBool(msg.IsEncrypted),
 		"is_signed":            strconv.FormatBool(msg.IsSigned),
-		"plugin_language_code": languagesearch.NormalizeCode(msg.LanguageCode),
+		"plugin_language_code": normalizeLanguageCode(msg.LanguageCode),
 		"has_attachment":       strconv.FormatBool(hasAttachment),
 		"attachment_names":     strings.Join(names, " "),
 		"attachment_types":     strings.Join(contentTypes, " "),
@@ -2036,7 +2035,7 @@ func parseQuery(queryText string) parsedQuery {
 			v := negated
 			out.IsSigned = &v
 		case strings.HasPrefix(lower, "lang:"):
-			out.Language = languagesearch.NormalizeCode(strings.Trim(operatorValue(token), `"`))
+			out.Language = normalizeLanguageCode(strings.Trim(operatorValue(token), `"`))
 		case strings.HasPrefix(lower, "filename:"):
 			out.Filename = strings.Trim(operatorValue(token), `"`)
 		case strings.HasPrefix(lower, "from:"):

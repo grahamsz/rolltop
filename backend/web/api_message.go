@@ -16,9 +16,6 @@ import (
 	"rolltop/backend/plugins"
 	"rolltop/backend/search"
 	"rolltop/backend/store"
-	oneclickunsubscribe "rolltop/plugins/one_click_unsubscribe/history"
-	remoteimageblocklist "rolltop/plugins/remote_image_blocklist/rules"
-	trustedimagesources "rolltop/plugins/trusted_image_sources/sources"
 )
 
 // apiMessagePath is the subrouter for /api/messages/:id. It keeps per-message
@@ -970,7 +967,12 @@ func (s *Server) apiOneClickUnsubscribe(w http.ResponseWriter, r *http.Request, 
 		s.serverError(w, err)
 		return
 	}
-	if previous, prevErr := oneclickunsubscribe.LatestSend(r.Context(), userDB, cu.User.ID, msg.ID, target.String(), time.Now().Add(-oneClickUnsubscribeRecentWindow)); prevErr == nil {
+	hook, ok := oneClickUnsubscribeHook()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if previous, prevErr := hook.LatestOneClickSend(r.Context(), userDB, cu.User.ID, msg.ID, target.String(), time.Now().Add(-oneClickUnsubscribeRecentWindow)); prevErr == nil {
 		writeJSON(w, map[string]any{"ok": true, "already_sent": true, "sent_at": timeString(previous.SentAt)})
 		return
 	}
@@ -983,7 +985,7 @@ func (s *Server) apiOneClickUnsubscribe(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	sentAt := time.Now()
-	if err := oneclickunsubscribe.RecordSend(r.Context(), userDB, cu.User.ID, msg.ID, msg.FromAddr, target.String(), sentAt); err != nil {
+	if err := hook.RecordOneClickSend(r.Context(), userDB, cu.User.ID, msg.ID, msg.FromAddr, target.String(), sentAt); err != nil {
 		s.serverError(w, err)
 		return
 	}
@@ -1016,7 +1018,12 @@ func (s *Server) apiTrustImages(w http.ResponseWriter, r *http.Request, id int64
 		s.serverError(w, err)
 		return
 	}
-	if err := trustedimagesources.TrustSender(r.Context(), userDB, cu.User.ID, msg.FromAddr); err != nil {
+	hook, ok := trustedImageSourcesHook()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if err := hook.TrustImageSender(r.Context(), userDB, cu.User.ID, msg.FromAddr); err != nil {
 		s.serverError(w, err)
 		return
 	}
@@ -1038,9 +1045,11 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 	}
 	var imageBlockRules []string
 	if remoteImageBlockingEnabled {
-		imageBlockRules, err = remoteimageblocklist.ListPatterns(ctx, s.store.DB())
-		if err != nil {
-			return nil, msg, err
+		if hook, ok := remoteImageBlocklistHook(); ok {
+			imageBlockRules, err = hook.ListRemoteImagePatterns(ctx, s.store.DB())
+			if err != nil {
+				return nil, msg, err
+			}
 		}
 	}
 	matchDetails := s.threadSearchMatchDetails(ctx, cu.User, threadMessages, query)
@@ -1084,8 +1093,11 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 		remoteImages := remoteImageBlockingEnabled && hasRemoteImages(sourceHTML)
 		imagesAllowed := showImages || !remoteImageBlockingEnabled
 		if remoteImageBlockingEnabled && trustedImageSourcesEnabled && remoteImages && !imagesAllowed {
-			if trusted, trustErr := trustedimagesources.IsSenderTrusted(ctx, trustedDB, cu.User.ID, threadMsg.FromAddr); trustErr == nil && trusted {
-				imagesAllowed = true
+			hook, ok := trustedImageSourcesHook()
+			if ok {
+				if trusted, trustErr := hook.IsImageSenderTrusted(ctx, trustedDB, cu.User.ID, threadMsg.FromAddr); trustErr == nil && trusted {
+					imagesAllowed = true
+				}
 			}
 		}
 		oneClickTarget, oneClickUnsub := s.oneClickUnsubscribeTarget(ctx, cu.User.ID, threadMsg)

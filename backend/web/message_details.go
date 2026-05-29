@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"rolltop/backend/store"
-	oneclickunsubscribe "rolltop/plugins/one_click_unsubscribe/history"
 )
 
 var errOneClickUnavailable = errors.New("one-click unsubscribe unavailable")
@@ -81,7 +80,11 @@ func (s *Server) recentOneClickUnsubscribeSentAt(ctx context.Context, userID int
 	if err != nil {
 		return time.Time{}
 	}
-	send, err := oneclickunsubscribe.LatestSend(ctx, userDB, userID, msg.ID, target, time.Now().Add(-oneClickUnsubscribeRecentWindow))
+	hook, ok := oneClickUnsubscribeHook()
+	if !ok {
+		return time.Time{}
+	}
+	send, err := hook.LatestOneClickSend(ctx, userDB, userID, msg.ID, target, time.Now().Add(-oneClickUnsubscribeRecentWindow))
 	if err != nil {
 		return time.Time{}
 	}

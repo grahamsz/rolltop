@@ -317,7 +317,7 @@ function ContactPGPKeyEditor({
     setAdding(true);
     try {
       if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-      const parsed = await pgpPlugin.publicKeyRecordFromArmored(armored, email);
+      const parsed = await pgpPlugin.publicKeyRecordFromArmored(armored, email, "manual", email);
       const parsedFingerprint = normalizedPGPIdentifier(parsed.fingerprint);
       const parsedKeyID = normalizedPGPIdentifier(parsed.key_id);
       const duplicate = value.find((key) =>
@@ -381,7 +381,7 @@ function ContactPGPKeyEditor({
             <Icon name="lock" />
             <span>
               <strong>{key.label || key.email || "PGP key"}</strong>
-              <small>{[key.email, shortFingerprint(key.fingerprint || key.key_id), firstKeyUserID(key.user_ids)].filter(Boolean).join(" · ")}</small>
+              <small>{[key.email, shortFingerprint(key.fingerprint || key.key_id), firstKeyUserID(key.user_ids), keySourceLabel(key)].filter(Boolean).join(" · ")}</small>
             </span>
             <label className="primary-toggle"><input type="radio" checked={key.is_preferred} onChange={() => preferKey(index)} /> Preferred</label>
             <RemoveButton onClick={() => onChange(removeAt(value, index))} />
@@ -390,6 +390,14 @@ function ContactPGPKeyEditor({
       </div>
     </section>
   );
+}
+
+function keySourceLabel(key: ContactPGPKey): string {
+  const kind = (key.source_kind || "").trim().toLowerCase();
+  const detail = (key.source_detail || "").trim();
+  if (!kind && !detail) return "";
+  const label = kind ? kind.replace(/[-_]+/g, " ") : "source";
+  return detail ? `${label}: ${detail}` : label;
 }
 
 function ContactPhoneEditor({ value, onChange }: { value: ContactPhone[]; onChange: (value: ContactPhone[]) => void }) {

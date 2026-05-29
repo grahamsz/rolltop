@@ -38,6 +38,9 @@ func Load() (Config, error) {
 	dbPath := env("ROLLTOP_DB_PATH", filepath.Join(dataDir, "rolltop.db"))
 	indexPath := env("ROLLTOP_INDEX_PATH", filepath.Join(dataDir, "bleve"))
 	pluginDir := env("ROLLTOP_PLUGIN_DIR", "plugins")
+	if abs, err := filepath.Abs(pluginDir); err == nil {
+		pluginDir = abs
+	}
 
 	key, err := ParseMasterKey(os.Getenv("ROLLTOP_MASTER_KEY"))
 	if err != nil {

@@ -185,7 +185,12 @@ export function pgpUserIDEmails(userIDs: string): string[] {
   return out;
 }
 
-export async function publicKeyRecordFromArmored(publicKeyArmored: string, email = ""): Promise<ContactPGPKey> {
+export async function publicKeyRecordFromArmored(
+  publicKeyArmored: string,
+  email = "",
+  sourceKind = "manual",
+  sourceDetail = ""
+): Promise<ContactPGPKey> {
   assertPublicKeyImportText(publicKeyArmored);
   const openpgp = await loadOpenPGP();
   const publicKey = await openpgp.readKey({ armoredKey: publicKeyArmored });
@@ -200,6 +205,8 @@ export async function publicKeyRecordFromArmored(publicKeyArmored: string, email
     key_id: keyIDFromKey(publicKey),
     user_ids: userIDs.join("\n"),
     public_key_armored: publicKeyArmored.trim(),
+    source_kind: sourceKind || "manual",
+    source_detail: sourceDetail,
     is_preferred: false
   };
 }
@@ -210,7 +217,7 @@ export async function autocryptKeyRecordFromMessageSource(source: string, sender
     const parsed = parseAutocryptHeaderValue(value);
     if (!parsed) continue;
     if (expectedEmail && normalizedEmailAddress(parsed.email) !== expectedEmail) continue;
-    const record = await publicKeyRecordFromArmored(parsed.publicKeyArmored);
+    const record = await publicKeyRecordFromArmored(parsed.publicKeyArmored, parsed.email, "autocrypt", parsed.email);
     return {
       ...record,
       email: parsed.email,

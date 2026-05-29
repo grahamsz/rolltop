@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"rolltop/backend/plugins"
-	bimibrandicons "rolltop/plugins/bimi_brand_icons/bimi"
-	gravatarsendericons "rolltop/plugins/gravatar_sender_icons/gravatar"
 )
 
 func (s *Server) pluginEnabled(ctx context.Context, pluginID string) bool {
@@ -138,29 +136,33 @@ func (s *Server) senderVisual(ctx context.Context, userID int64, sender string) 
 	domain := senderDomain(sender)
 	userDB, dbErr := s.store.UserDB(ctx, userID)
 	if domain != "" && dbErr == nil && s.pluginEnabled(ctx, plugins.BIMIBrandIcons) {
-		if icon, err := bimibrandicons.GetIcon(ctx, userDB, userID, domain); err == nil && icon.Status == "ok" && strings.TrimSpace(icon.SVG) != "" {
-			return apiSenderVisual{
-				PluginID: plugins.BIMIBrandIcons,
-				Kind:     "brand",
-				URL:      bimibrandicons.AssetURL(domain),
-			}, true
+		if hook, ok := bimiBrandIconsHook(); ok {
+			if icon, err := hook.GetIcon(ctx, userDB, userID, domain); err == nil && icon.Status == "ok" && strings.TrimSpace(icon.SVG) != "" {
+				return apiSenderVisual{
+					PluginID: plugins.BIMIBrandIcons,
+					Kind:     "brand",
+					URL:      hook.AssetURL(domain),
+				}, true
+			}
 		}
 	}
 	if email != "" && dbErr == nil && s.pluginEnabled(ctx, plugins.GravatarSenderIcons) {
-		hash := gravatarsendericons.Hash(email)
-		image, err := gravatarsendericons.GetImage(ctx, userDB, userID, hash)
-		if err == nil && image.Status == "ok" && len(image.Image) > 0 {
-			return apiSenderVisual{
-				PluginID: plugins.GravatarSenderIcons,
-				Kind:     "avatar",
-				URL:      gravatarsendericons.AssetURL(hash),
-			}, true
-		}
-		if err == nil && image.ExpiresAt.After(time.Now()) {
-			return apiSenderVisual{}, false
-		}
-		if err == nil || err == sql.ErrNoRows {
-			go s.refreshGravatarImage(userID, hash)
+		if hook, ok := gravatarSenderIconsHook(); ok {
+			hash := hook.Hash(email)
+			image, err := hook.GetImage(ctx, userDB, userID, hash)
+			if err == nil && image.Status == "ok" && len(image.Image) > 0 {
+				return apiSenderVisual{
+					PluginID: plugins.GravatarSenderIcons,
+					Kind:     "avatar",
+					URL:      hook.AssetURL(hash),
+				}, true
+			}
+			if err == nil && image.ExpiresAt.After(time.Now()) {
+				return apiSenderVisual{}, false
+			}
+			if err == nil || err == sql.ErrNoRows {
+				go s.refreshGravatarImage(userID, hash)
+			}
 		}
 	}
 	return apiSenderVisual{}, false

@@ -1,4 +1,4 @@
-package client_side_pgp
+package schema
 
 import (
 	"context"
@@ -86,6 +86,17 @@ func Migrations() []plugins.Migration {
 			ID:       "004_private_key_storage",
 			Apply: func(ctx context.Context, tx *sql.Tx) error {
 				return ensureColumn(ctx, tx, "identity_pgp_private_keys", "private_key_storage", `ALTER TABLE identity_pgp_private_keys ADD COLUMN private_key_storage TEXT NOT NULL DEFAULT 'server'`)
+			},
+		},
+		{
+			Scope:    plugins.ScopeUser,
+			PluginID: plugins.ClientSidePGP,
+			ID:       "005_contact_key_source",
+			Apply: func(ctx context.Context, tx *sql.Tx) error {
+				if err := ensureColumn(ctx, tx, "contact_pgp_public_keys", "source_kind", `ALTER TABLE contact_pgp_public_keys ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'manual'`); err != nil {
+					return err
+				}
+				return ensureColumn(ctx, tx, "contact_pgp_public_keys", "source_detail", `ALTER TABLE contact_pgp_public_keys ADD COLUMN source_detail TEXT NOT NULL DEFAULT ''`)
 			},
 		},
 	}

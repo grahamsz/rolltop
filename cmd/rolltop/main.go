@@ -25,6 +25,7 @@ import (
 	"rolltop/backend/blob"
 	"rolltop/backend/config"
 	"rolltop/backend/imapclient"
+	"rolltop/backend/plugins"
 	"rolltop/backend/search"
 	"rolltop/backend/store"
 	"rolltop/backend/syncer"
@@ -278,6 +279,19 @@ func run() error {
 // user stores, interrupted sync cleanup, search indexes, then web/sync services.
 func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*appRuntime, error) {
 	startup.update("System database", "opening", 0, 1)
+	pluginManifests, err := plugins.LoadManifests(cfg.PluginDir)
+	if err != nil {
+		return nil, err
+	}
+	backendPlugins := plugins.NewBackendManager(cfg.PluginDir, pluginManifests)
+	for _, manifest := range pluginManifests {
+		if manifest.Backend == nil || manifest.Backend.Kind != "go-plugin" {
+			continue
+		}
+		if _, _, err := backendPlugins.Plugin(manifest.ID); err != nil {
+			return nil, err
+		}
+	}
 	reporter := func(p store.MigrationProgress) {
 		phase := "System database"
 		if p.Scope == "user" {
@@ -286,7 +300,7 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 		detail := strings.TrimSpace(p.Migration + " - " + p.Step)
 		startup.update(phase, detail, p.Done, p.Total)
 	}
-	db, err := store.OpenServerWithProgress(cfg.DatabasePath, cfg.DataDir, reporter)
+	db, err := store.OpenServerWithPluginManifests(cfg.DatabasePath, cfg.DataDir, pluginManifests, reporter)
 	if err != nil {
 		return nil, err
 	}

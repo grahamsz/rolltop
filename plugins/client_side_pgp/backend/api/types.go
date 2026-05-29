@@ -17,6 +17,8 @@ type ContactPGPKey struct {
 	KeyID            string `json:"key_id"`
 	UserIDs          string `json:"user_ids"`
 	PublicKeyArmored string `json:"public_key_armored"`
+	SourceKind       string `json:"source_kind,omitempty"`
+	SourceDetail     string `json:"source_detail,omitempty"`
 	IsPreferred      bool   `json:"is_preferred"`
 }
 
@@ -48,6 +50,8 @@ func ContactKeyFromStore(key store.ContactPGPPublicKey) ContactPGPKey {
 		KeyID:            key.KeyID,
 		UserIDs:          key.UserIDs,
 		PublicKeyArmored: key.PublicKeyArmored,
+		SourceKind:       key.SourceKind,
+		SourceDetail:     key.SourceDetail,
 		IsPreferred:      key.IsPreferred,
 	}
 }
@@ -62,6 +66,8 @@ func ContactKeyInput(in ContactPGPKey) keystore.ContactPublicKeyInput {
 		KeyID:            in.KeyID,
 		UserIDs:          in.UserIDs,
 		PublicKeyArmored: in.PublicKeyArmored,
+		SourceKind:       in.SourceKind,
+		SourceDetail:     in.SourceDetail,
 		IsPreferred:      in.IsPreferred,
 	}
 }

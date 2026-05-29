@@ -17,8 +17,6 @@ import (
 	"rolltop/backend/mailparse"
 	"rolltop/backend/plugins"
 	"rolltop/backend/store"
-	attachmentpreview "rolltop/plugins/attachment_preview/preview"
-	gravatarsendericons "rolltop/plugins/gravatar_sender_icons/gravatar"
 )
 
 func (s *Server) handlePluginRoute(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +104,11 @@ func pluginAssetAllowed(manifest plugins.Manifest, clean string) bool {
 }
 
 func (s *Server) attachmentPreview(att store.Attachment) *apiAttachmentPreview {
-	preview, ok := attachmentpreview.ForAttachment(attachmentpreview.Attachment{
+	hook, ok := attachmentPreviewHook()
+	if !ok {
+		return nil
+	}
+	preview, ok := hook.PreviewForAttachment(plugins.AttachmentPreviewInput{
 		ID:          att.ID,
 		Filename:    att.Filename,
 		ContentType: att.ContentType,
@@ -151,25 +153,30 @@ func (s *Server) handleAttachmentPreview(w http.ResponseWriter, r *http.Request,
 		s.serverError(w, err)
 		return
 	}
-	kind := attachmentpreview.Kind(attachmentpreview.Attachment{ID: att.ID, Filename: att.Filename, ContentType: att.ContentType})
+	hook, ok := attachmentPreviewHook()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	kind := hook.PreviewKind(plugins.AttachmentPreviewInput{ID: att.ID, Filename: att.Filename, ContentType: att.ContentType})
 	if kind == "" {
 		http.Error(w, "attachment preview is not supported", http.StatusUnsupportedMediaType)
 		return
 	}
-	content, contentType, err := s.attachmentContentBytes(r.Context(), cu.User.ID, att, attachmentpreview.MaxBytes)
+	content, contentType, err := s.attachmentContentBytes(r.Context(), cu.User.ID, att, hook.MaxPreviewBytes())
 	if err != nil {
 		http.Error(w, "attachment body is not available locally and could not be fetched from IMAP", http.StatusGone)
 		return
 	}
-	contentType = attachmentpreview.CleanContentType(contentType)
-	if kind == "image" && !attachmentpreview.SupportedImageType(contentType) {
-		if guessed := attachmentpreview.ImageTypeFromName(att.Filename); guessed != "" {
+	contentType = hook.CleanPreviewContentType(contentType)
+	if kind == "image" && !hook.SupportedPreviewImageType(contentType) {
+		if guessed := hook.PreviewImageTypeFromName(att.Filename); guessed != "" {
 			contentType = guessed
 		}
 	}
 	if kind == "pdf" {
 		contentType = "application/pdf"
-	} else if !attachmentpreview.SupportedImageType(contentType) {
+	} else if !hook.SupportedPreviewImageType(contentType) {
 		http.Error(w, "attachment preview is not supported", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -184,8 +191,12 @@ func (s *Server) handleAttachmentPreview(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Server) attachmentContentBytes(ctx context.Context, userID int64, att store.Attachment, maxBytes int64) ([]byte, string, error) {
+	hook, ok := attachmentPreviewHook()
+	if !ok {
+		return nil, "", store.ErrNotFound
+	}
 	if maxBytes <= 0 {
-		maxBytes = attachmentpreview.MaxBytes
+		maxBytes = hook.MaxPreviewBytes()
 	}
 	if strings.TrimSpace(att.BlobPath) != "" {
 		if s.blobs == nil {
@@ -196,7 +207,7 @@ func (s *Server) attachmentContentBytes(ctx context.Context, userID int64, att s
 			return nil, "", err
 		}
 		defer file.Close()
-		data, err := attachmentpreview.ReadLimited(file, maxBytes)
+		data, err := hook.ReadPreviewLimited(file, maxBytes)
 		return data, att.ContentType, err
 	}
 	msg, err := s.store.GetMessageForUser(ctx, userID, att.MessageID)
@@ -238,7 +249,12 @@ func (s *Server) handleGravatarAvatar(w http.ResponseWriter, r *http.Request, ha
 	if !ok {
 		return
 	}
-	hash = gravatarsendericons.NormalizeHash(hash)
+	hook, ok := gravatarSenderIconsHook()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	hash = hook.NormalizeHash(hash)
 	if hash == "" {
 		http.NotFound(w, r)
 		return
@@ -248,7 +264,7 @@ func (s *Server) handleGravatarAvatar(w http.ResponseWriter, r *http.Request, ha
 		http.NotFound(w, r)
 		return
 	}
-	image, err := gravatarsendericons.GetImage(r.Context(), userDB, cu.User.ID, hash)
+	image, err := hook.GetImage(r.Context(), userDB, cu.User.ID, hash)
 	if err != nil || image.Status != "ok" || len(image.Image) == 0 {
 		http.NotFound(w, r)
 		return
@@ -262,67 +278,72 @@ func (s *Server) handleGravatarAvatar(w http.ResponseWriter, r *http.Request, ha
 	_, _ = w.Write(image.Image)
 }
 
-func (s *Server) ensureGravatarImage(ctx context.Context, userID int64, hash string) (gravatarsendericons.Image, error) {
+func (s *Server) ensureGravatarImage(ctx context.Context, userID int64, hash string) (plugins.GravatarImage, error) {
+	hook, ok := gravatarSenderIconsHook()
+	if !ok {
+		return plugins.GravatarImage{}, store.ErrNotFound
+	}
 	userDB, err := s.store.UserDB(ctx, userID)
 	if err != nil {
-		return gravatarsendericons.Image{}, err
+		return plugins.GravatarImage{}, err
 	}
-	if image, err := gravatarsendericons.GetImage(ctx, userDB, userID, hash); err == nil && image.ExpiresAt.After(time.Now()) {
+	if image, err := hook.GetImage(ctx, userDB, userID, hash); err == nil && image.ExpiresAt.After(time.Now()) {
 		return image, nil
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, gravatarsendericons.FetchURL(hash), nil)
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, hook.FetchURL(hash), nil)
 	if err != nil {
-		return gravatarsendericons.Image{}, err
+		return plugins.GravatarImage{}, err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	now := time.Now().UTC()
-	image := gravatarsendericons.Image{
+	image := plugins.GravatarImage{
 		UserID:    userID,
 		EmailHash: hash,
 		Status:    "error",
 		FetchedAt: now,
-		ExpiresAt: gravatarsendericons.ErrorTTL(now),
+		ExpiresAt: hook.ErrorTTL(now),
 		UpdatedAt: now,
 	}
 	if err != nil {
 		image.Error = "fetch failed"
-		_ = gravatarsendericons.UpsertImage(ctx, userDB, image)
+		_ = hook.UpsertImage(ctx, userDB, image)
 		return image, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		image.Status = "missing"
 		image.Error = "not found"
-		image.ExpiresAt = gravatarsendericons.MissingTTL(now)
-		_ = gravatarsendericons.UpsertImage(ctx, userDB, image)
+		image.ExpiresAt = hook.MissingTTL(now)
+		_ = hook.UpsertImage(ctx, userDB, image)
 		return image, store.ErrNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		image.Error = "non-2xx response"
-		_ = gravatarsendericons.UpsertImage(ctx, userDB, image)
+		_ = hook.UpsertImage(ctx, userDB, image)
 		return image, fmt.Errorf("gravatar returned %d", resp.StatusCode)
 	}
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
-	if !attachmentpreview.SupportedImageType(contentType) {
+	previewHook, previewOK := attachmentPreviewHook()
+	if !previewOK || !previewHook.SupportedPreviewImageType(contentType) {
 		image.Error = "unsupported image type"
-		_ = gravatarsendericons.UpsertImage(ctx, userDB, image)
+		_ = hook.UpsertImage(ctx, userDB, image)
 		return image, fmt.Errorf("unsupported gravatar content type")
 	}
-	data, err := attachmentpreview.ReadLimited(resp.Body, gravatarsendericons.MaxImageBytes)
+	data, err := previewHook.ReadPreviewLimited(resp.Body, hook.MaxImageBytes())
 	if err != nil {
 		image.Error = "image too large"
-		_ = gravatarsendericons.UpsertImage(ctx, userDB, image)
+		_ = hook.UpsertImage(ctx, userDB, image)
 		return image, err
 	}
 	image.ContentType = contentType
 	image.Image = data
 	image.Status = "ok"
 	image.Error = ""
-	image.ExpiresAt = gravatarsendericons.PositiveTTL(now)
-	if err := gravatarsendericons.UpsertImage(ctx, userDB, image); err != nil {
-		return gravatarsendericons.Image{}, err
+	image.ExpiresAt = hook.PositiveTTL(now)
+	if err := hook.UpsertImage(ctx, userDB, image); err != nil {
+		return plugins.GravatarImage{}, err
 	}
 	return image, nil
 }

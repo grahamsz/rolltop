@@ -115,7 +115,7 @@ func testClientSidePGPPluginDir(t *testing.T) string {
 		}
 		cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", filepath.Join(backendDir, "client_side_pgp.so"), "./plugins/client_side_pgp/backend")
 		cmd.Dir = repoRoot
-		cmd.Env = append(os.Environ(), "GOCACHE=/tmp/mailmirror-go-build")
+		cmd.Env = append(os.Environ(), "GOCACHE=/tmp/rolltop-go-build")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			testPGPPluginErr = &execBuildError{err: err, out: string(out)}
 		}
@@ -137,7 +137,18 @@ func (e *execBuildError) Error() string {
 
 func autocryptTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	root := testClientSidePGPPluginDir(t)
+	manifests, err := plugins.LoadManifests(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := plugins.NewBackendManager(root, manifests)
+	if _, ok, err := manager.Plugin(plugins.ClientSidePGP); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("client_side_pgp backend plugin was not discovered")
+	}
+	db, err := store.OpenServerWithPluginManifests(filepath.Join(t.TempDir(), "rolltop.db"), t.TempDir(), manifests, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

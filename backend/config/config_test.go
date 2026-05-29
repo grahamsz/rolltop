@@ -20,7 +20,11 @@ func TestLoadUsesRolltopDefaults(t *testing.T) {
 	if cfg.DataDir != "/data" {
 		t.Fatalf("data dir = %q", cfg.DataDir)
 	}
-	if cfg.PluginDir != "plugins" {
+	wantPluginDir, err := filepath.Abs("plugins")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PluginDir != wantPluginDir {
 		t.Fatalf("plugin dir = %q", cfg.PluginDir)
 	}
 }

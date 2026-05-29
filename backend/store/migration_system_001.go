@@ -11,7 +11,7 @@ package store
 import (
 	"context"
 
-	remoteimageblocklist "rolltop/plugins/remote_image_blocklist/rules"
+	"rolltop/backend/plugins"
 )
 
 // systemMigrationSet returns the single clean-start system schema. Auth and
@@ -77,7 +77,15 @@ func systemMigrationSet() migrationSet {
 		},
 		After: []migrationStep{
 			{Label: "seed plugin settings", Run: func(ctx context.Context, s *Store) error { return s.seedPluginSettings(ctx) }},
-			{Label: "seed remote image blocklist", Run: func(ctx context.Context, s *Store) error { return remoteimageblocklist.SeedRules(ctx, s.db) }},
+			{Label: "seed remote image blocklist", Run: func(ctx context.Context, s *Store) error {
+				for _, hook := range plugins.Hooks(plugins.RemoteImageBlocklist) {
+					typed, ok := hook.(plugins.RemoteImageBlocklistHook)
+					if ok {
+						return typed.SeedRemoteImageRules(ctx, s.db)
+					}
+				}
+				return nil
+			}},
 		},
 	}
 }

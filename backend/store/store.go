@@ -17,6 +17,7 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"rolltop/backend/plugins"
 )
 
 var ErrNotFound = sql.ErrNoRows
@@ -28,17 +29,20 @@ const (
 
 // Store is the SQLite access layer; in production the root store opens the system DB and caches per-user stores.
 type Store struct {
-	db         *sql.DB
-	dataDir    string
-	split      bool
-	mu         sync.Mutex
-	userStores map[int64]*Store
+	db                *sql.DB
+	dataDir           string
+	schema            schemaKind
+	split             bool
+	pluginDefinitions []plugins.Definition
+	pluginMigrations  []plugins.Migration
+	mu                sync.Mutex
+	userStores        map[int64]*Store
 }
 
 // Open creates a combined store in one SQLite file. It is mostly used by tests
 // and small helpers that do not need the production system/user split.
 func Open(path string) (*Store, error) {
-	return open(path, "", false, schemaCombined, nil)
+	return open(path, "", false, schemaCombined, nil, defaultPluginCatalog())
 }
 
 // OpenServer opens the production system store without progress reporting.
@@ -51,14 +55,20 @@ func OpenServer(path string, dataDir string) (*Store, error) {
 // databases are opened lazily through UserStore so tenant-owned data remains in
 // data/users/<id>/rolltop.db.
 func OpenServerWithProgress(path string, dataDir string, progress MigrationReporter) (*Store, error) {
-	return open(path, dataDir, true, schemaSystem, progress)
+	return open(path, dataDir, true, schemaSystem, progress, defaultPluginCatalog())
+}
+
+// OpenServerWithPluginManifests opens the production system store with a plugin
+// catalog derived from scanned plugin manifests.
+func OpenServerWithPluginManifests(path string, dataDir string, manifests []plugins.Manifest, progress MigrationReporter) (*Store, error) {
+	return open(path, dataDir, true, schemaSystem, progress, pluginCatalogFromManifests(manifests))
 }
 
 // open is the shared constructor behind all Store entrypoints. It creates the
 // SQLite parent directory, opens the connection with foreign keys and a busy
 // timeout, installs the right migration set, and configures split-mode user-store
 // caching only for the production system database.
-func open(path string, dataDir string, split bool, schema schemaKind, progress MigrationReporter) (*Store, error) {
+func open(path string, dataDir string, split bool, schema schemaKind, progress MigrationReporter, catalog pluginCatalog) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
@@ -67,7 +77,14 @@ func open(path string, dataDir string, split bool, schema schemaKind, progress M
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, dataDir: dataDir, split: split}
+	s := &Store{
+		db:                db,
+		dataDir:           dataDir,
+		schema:            schema,
+		split:             split,
+		pluginDefinitions: append([]plugins.Definition(nil), catalog.definitions...),
+		pluginMigrations:  append([]plugins.Migration(nil), catalog.migrations...),
+	}
 	if split {
 		s.userStores = make(map[int64]*Store)
 	}
@@ -158,7 +175,10 @@ func (s *Store) userStore(ctx context.Context, userID int64, progress MigrationR
 		return nil, err
 	}
 	userDBPath := filepath.Join(userDir, databaseFilename)
-	us, err := open(userDBPath, "", false, schemaUser, progress)
+	us, err := open(userDBPath, "", false, schemaUser, progress, pluginCatalog{
+		definitions: s.pluginDefinitions,
+		migrations:  s.pluginMigrations,
+	})
 	if err != nil {
 		return nil, err
 	}

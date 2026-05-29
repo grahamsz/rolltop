@@ -21,7 +21,7 @@ export default defineConfig({
     ]
   },
   build: {
-    outDir: "plugins/client_side_pgp/frontend_dist",
+    outDir: "plugins/client_side_pgp/frontend/dist",
     emptyOutDir: true,
     sourcemap: true,
     lib: {

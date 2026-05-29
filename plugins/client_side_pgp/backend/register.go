@@ -1,6 +1,9 @@
-package client_side_pgp
+package main
 
-import "rolltop/backend/plugins"
+import (
+	"rolltop/backend/plugins"
+	"rolltop/plugins/client_side_pgp/schema"
+)
 
 func init() {
 	plugins.Register(plugins.Definition{
@@ -8,5 +11,5 @@ func init() {
 		Name:        "Client-side PGP",
 		Description: "Adds browser-loaded OpenPGP decrypt, verify, sign, encrypt, Autocrypt, and key-management UI.",
 		Heavy:       true,
-	}, Migrations()...)
+	}, schema.Migrations()...)
 }

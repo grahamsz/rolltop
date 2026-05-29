@@ -10,7 +10,6 @@ import (
 	"rolltop/backend/plugins"
 	"rolltop/backend/search"
 	"rolltop/backend/store"
-	languagesearch "rolltop/plugins/language_search/detector"
 )
 
 func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox, item FetchedMessage) (store.MessageRecord, *pendingFetchedSearchIndex, error) {
@@ -75,7 +74,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 
 	languageCode := ""
 	if s.pluginEnabled(ctx, plugins.LanguageSearch) {
-		languageCode = languagesearch.DetectCode(parsed.Subject, parsed.Text)
+		languageCode = detectLanguageCode(parsed.Subject, parsed.Text)
 	}
 	msg, err := s.Store.CreateMessage(ctx, store.CreateMessage{
 		UserID:           userID,
@@ -235,7 +234,7 @@ func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.M
 			}
 		}
 		if msg.LanguageCode == "" && s.pluginEnabled(ctx, plugins.LanguageSearch) {
-			msg.LanguageCode = languagesearch.DetectCode(msg.Subject, msg.BodyText)
+			msg.LanguageCode = detectLanguageCode(msg.Subject, msg.BodyText)
 			if err := s.Store.UpdateMessageLanguage(ctx, msg.UserID, msg.ID, msg.LanguageCode); err != nil {
 				return nil, err
 			}
@@ -300,7 +299,7 @@ func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.M
 	msg.BodyText = parsed.Text
 	msg.BodyHTML = ""
 	if s.pluginEnabled(ctx, plugins.LanguageSearch) {
-		msg.LanguageCode = languagesearch.DetectCode(parsed.Subject, parsed.Text)
+		msg.LanguageCode = detectLanguageCode(parsed.Subject, parsed.Text)
 		if err := s.Store.UpdateMessageLanguage(ctx, msg.UserID, msg.ID, msg.LanguageCode); err != nil {
 			return nil, err
 		}

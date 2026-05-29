@@ -234,9 +234,9 @@ func (s *Store) UpsertContactPGPPublicKey(ctx context.Context, key ContactPGPPub
 	}
 	if key.ID == 0 {
 		res, err := tx.ExecContext(ctx, `INSERT INTO contact_pgp_public_keys
-			(user_id, contact_id, email, normalized_email, label, fingerprint, key_id, user_ids, public_key_armored, is_preferred, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			key.UserID, key.ContactID, key.Email, key.NormalizedEmail, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, boolInt(key.IsPreferred), ts, ts)
+			(user_id, contact_id, email, normalized_email, label, fingerprint, key_id, user_ids, public_key_armored, source_kind, source_detail, is_preferred, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			key.UserID, key.ContactID, key.Email, key.NormalizedEmail, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, key.SourceKind, key.SourceDetail, boolInt(key.IsPreferred), ts, ts)
 		if err != nil {
 			return rollback()
 		}
@@ -245,9 +245,9 @@ func (s *Store) UpsertContactPGPPublicKey(ctx context.Context, key ContactPGPPub
 			return rollback()
 		}
 	} else {
-		res, err := tx.ExecContext(ctx, `UPDATE contact_pgp_public_keys SET email = ?, normalized_email = ?, label = ?, fingerprint = ?, key_id = ?, user_ids = ?, public_key_armored = ?, is_preferred = ?, updated_at = ?
+		res, err := tx.ExecContext(ctx, `UPDATE contact_pgp_public_keys SET email = ?, normalized_email = ?, label = ?, fingerprint = ?, key_id = ?, user_ids = ?, public_key_armored = ?, source_kind = ?, source_detail = ?, is_preferred = ?, updated_at = ?
 			WHERE user_id = ? AND contact_id = ? AND id = ?`,
-			key.Email, key.NormalizedEmail, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, boolInt(key.IsPreferred), ts, key.UserID, key.ContactID, key.ID)
+			key.Email, key.NormalizedEmail, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, key.SourceKind, key.SourceDetail, boolInt(key.IsPreferred), ts, key.UserID, key.ContactID, key.ID)
 		if err != nil {
 			return rollback()
 		}
@@ -317,7 +317,7 @@ func scanIdentityPGPPrivateKey(row rowScanner) (IdentityPGPPrivateKey, error) {
 }
 
 func contactPGPPublicKeySelectSQL() string {
-	return `SELECT id, user_id, contact_id, email, normalized_email, label, fingerprint, key_id, user_ids, public_key_armored, is_preferred, created_at, updated_at FROM contact_pgp_public_keys`
+	return `SELECT id, user_id, contact_id, email, normalized_email, label, fingerprint, key_id, user_ids, public_key_armored, source_kind, source_detail, is_preferred, created_at, updated_at FROM contact_pgp_public_keys`
 }
 
 func scanContactPGPPublicKeys(rows *sql.Rows) ([]ContactPGPPublicKey, error) {
@@ -336,7 +336,7 @@ func scanContactPGPPublicKey(row rowScanner) (ContactPGPPublicKey, error) {
 	var key ContactPGPPublicKey
 	var preferred int
 	var created, updated int64
-	err := row.Scan(&key.ID, &key.UserID, &key.ContactID, &key.Email, &key.NormalizedEmail, &key.Label, &key.Fingerprint, &key.KeyID, &key.UserIDs, &key.PublicKeyArmored, &preferred, &created, &updated)
+	err := row.Scan(&key.ID, &key.UserID, &key.ContactID, &key.Email, &key.NormalizedEmail, &key.Label, &key.Fingerprint, &key.KeyID, &key.UserIDs, &key.PublicKeyArmored, &key.SourceKind, &key.SourceDetail, &preferred, &created, &updated)
 	key.IsPreferred = preferred != 0
 	key.CreatedAt = unixTime(created)
 	key.UpdatedAt = unixTime(updated)
@@ -374,6 +374,11 @@ func normalizeContactPGPPublicKey(key ContactPGPPublicKey) ContactPGPPublicKey {
 	key.KeyID = trimLimit(key.KeyID, 80)
 	key.UserIDs = trimLimit(key.UserIDs, 2000)
 	key.PublicKeyArmored = strings.TrimSpace(key.PublicKeyArmored)
+	key.SourceKind = trimLimit(strings.ToLower(strings.TrimSpace(key.SourceKind)), 80)
+	key.SourceDetail = trimLimit(strings.TrimSpace(key.SourceDetail), 240)
+	if key.SourceKind == "" {
+		key.SourceKind = "manual"
+	}
 	if key.Label == "" {
 		key.Label = firstNonEmpty(key.Email, key.KeyID, "PGP key")
 	}

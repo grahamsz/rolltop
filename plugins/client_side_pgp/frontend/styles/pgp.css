@@ -1,0 +1,220 @@
+/* Runtime styles for the client-side PGP plugin. */
+
+.pgp-lock-toggle {
+  min-width: 34px;
+  width: 34px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+}
+
+.pgp-lock-toggle.active {
+  border-color: var(--accent);
+  background: var(--active);
+  color: var(--accent-strong);
+}
+
+.pgp-unlock-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(21, 31, 46, .36);
+}
+
+.pgp-unlock-dialog {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.pgp-unlock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.message-pgp-icons {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 7px;
+}
+
+.message-pgp-icons .message-pgp-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.message-pgp-icons .icon {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+}
+
+.message-pgp-icons .encrypted .icon {
+  color: var(--ok);
+}
+
+.message-pgp-icons .signature .icon {
+  color: #c46b44;
+}
+
+.encrypted-preview {
+  filter: blur(2.5px);
+  opacity: .55;
+  user-select: none;
+}
+
+.pgp-status-pill,
+.pgp-signature-pill summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 7px;
+  border: 1px solid rgba(196, 107, 68, .42);
+  border-radius: 999px;
+  background: rgba(196, 107, 68, .12);
+  color: var(--accent-warm-strong);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.pgp-status-pill .icon,
+.pgp-signature-pill summary .icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.pgp-status-pill {
+  min-height: 0;
+  cursor: pointer;
+}
+
+.pgp-status-pill.verified,
+.pgp-signature-pill.verified summary {
+  border-color: rgba(47, 125, 84, .4);
+  background: rgba(47, 125, 84, .13);
+  color: #236b45;
+}
+
+.pgp-status-pill.invalid,
+.pgp-signature-pill.invalid summary {
+  border-color: rgba(169, 50, 38, .45);
+  background: rgba(169, 50, 38, .12);
+  color: #9f2f24;
+}
+
+.pgp-signature-pill {
+  position: relative;
+  display: inline-block;
+}
+
+.pgp-signature-pill summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.pgp-signature-pill summary::-webkit-details-marker {
+  display: none;
+}
+
+.pgp-signature-detail {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 35;
+  width: min(440px, calc(100vw - 32px));
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: normal;
+  display: grid;
+  gap: 8px;
+}
+
+.pgp-pill-detail-summary {
+  color: var(--text);
+  font-weight: 750;
+}
+
+.pgp-pill-detail-rows {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 11px;
+  margin: 0;
+}
+
+.pgp-pill-detail-rows dt {
+  color: var(--muted);
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.pgp-pill-detail-rows dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.pgp-key-attachment-group .icon {
+  color: var(--accent-warm-strong);
+}
+
+.decrypted-attachment .attachment {
+  align-items: flex-start;
+}
+
+.decrypted-attachment .attachment > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.decrypted-attachment .icon {
+  color: var(--accent-strong);
+  margin-top: 1px;
+}
+
+.decrypted-attachment strong {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.decrypted-attachment small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.attachment.pgp-key-attachment {
+  cursor: default;
+}
+
+.attachment.pgp-key-attachment:hover {
+  background: transparent;
+}

@@ -56,7 +56,7 @@ func testClientSidePGPPluginDir(t *testing.T) string {
 		}
 		cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", filepath.Join(backendDir, "client_side_pgp.so"), "./plugins/client_side_pgp/backend")
 		cmd.Dir = repoRoot
-		cmd.Env = append(os.Environ(), "GOCACHE=/tmp/mailmirror-go-build")
+		cmd.Env = append(os.Environ(), "GOCACHE=/tmp/rolltop-go-build")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			testPGPPluginErr = &execBuildError{err: err, out: string(out)}
 		}
@@ -83,7 +83,8 @@ func TestClientSidePGPBackendTestPluginLoads(t *testing.T) {
 
 func TestBackendPluginRegistersAndUnregistersProtectedAPIRoutes(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	manifests, manager := testClientSidePGPBackendPlugins(t)
+	db, err := store.OpenServerWithPluginManifests(filepath.Join(t.TempDir(), "rolltop.db"), t.TempDir(), manifests, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +92,6 @@ func TestBackendPluginRegistersAndUnregistersProtectedAPIRoutes(t *testing.T) {
 	if err := db.SetPluginEnabled(ctx, plugins.ClientSidePGP, true); err != nil {
 		t.Fatal(err)
 	}
-	manifests, manager := testClientSidePGPBackendPlugins(t)
 	server := &Server{
 		store:              db,
 		pluginManifests:    manifests,

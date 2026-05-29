@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "enabled_by_default": true,
   "backend": {
-    "kind": "builtin"
+    "kind": "go-plugin",
+    "binary": "backend/bimi_brand_icons.so"
   }
 }

@@ -334,6 +334,8 @@ type ContactPGPPublicKey struct {
 	KeyID            string
 	UserIDs          string
 	PublicKeyArmored string
+	SourceKind       string
+	SourceDetail     string
 	IsPreferred      bool
 	CreatedAt        time.Time
 	UpdatedAt        time.Time

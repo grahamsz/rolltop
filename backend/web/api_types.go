@@ -328,6 +328,8 @@ type apiContactPGPKey struct {
 	KeyID            string `json:"key_id"`
 	UserIDs          string `json:"user_ids"`
 	PublicKeyArmored string `json:"public_key_armored"`
+	SourceKind       string `json:"source_kind,omitempty"`
+	SourceDetail     string `json:"source_detail,omitempty"`
 	IsPreferred      bool   `json:"is_preferred"`
 }
 
