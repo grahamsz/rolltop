@@ -183,6 +183,14 @@ async function poll(){try{const r=await fetch('/api/startup',{cache:'no-store'})
 </html>`, percent, html.EscapeString(snapshot.Phase), html.EscapeString(snapshot.Detail), html.EscapeString(snapshot.Error))
 }
 
+func startupListenAddr() string {
+	addr := strings.TrimSpace(os.Getenv("ROLLTOP_ADDR"))
+	if addr == "" {
+		return ":8080"
+	}
+	return addr
+}
+
 type appRuntime struct {
 	db      *store.Store
 	search  *search.Service
@@ -205,24 +213,19 @@ func (a *appRuntime) close() {
 // database migrations or index opens show progress in the browser rather than
 // making the app look down.
 func run() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	startup := newStartupState()
 	gate := &startupGate{state: startup}
 	server := &http.Server{
-		Addr:              cfg.Addr,
+		Addr:              startupListenAddr(),
 		Handler:           gate,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	serverErr := make(chan error, 1)
 	go func() {
-		log.Printf("rolltop starting on %s", cfg.Addr)
+		log.Printf("rolltop starting on %s", server.Addr)
 		err := server.ListenAndServe()
 		if errors.Is(err, http.ErrServerClosed) {
 			serverErr <- nil
@@ -230,6 +233,21 @@ func run() error {
 		}
 		serverErr <- err
 	}()
+
+	cfg, err := config.Load()
+	if err != nil {
+		startup.fail(err)
+		log.Printf("rolltop startup failed: %v", err)
+		select {
+		case <-ctx.Done():
+		case listenErr := <-serverErr:
+			return listenErr
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		return err
+	}
 
 	app, err := startApp(ctx, cfg, startup)
 	if err != nil {
