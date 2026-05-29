@@ -10,5 +10,8 @@
       "name": "Matrix",
       "css": "themes/matrix/theme.css"
     }
-  ]
+  ],
+  "frontend": {
+    "module": "frontend_dist/index.js"
+  }
 }

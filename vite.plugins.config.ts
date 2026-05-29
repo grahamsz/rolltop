@@ -6,6 +6,51 @@ import react from "@vitejs/plugin-react";
 
 const fromRoot = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 
+const target = (process.env.ROLLTOP_PLUGIN_TARGET || "client_side_pgp").trim();
+const pluginConfig: Record<string, { entry: string; outDir: string }> = {
+  attachment_preview: {
+    entry: "plugins/attachment_preview/frontend/index.tsx",
+    outDir: "plugins/attachment_preview/frontend_dist"
+  },
+  client_side_pgp: {
+    entry: "plugins/client_side_pgp/frontend/index.ts",
+    outDir: "plugins/client_side_pgp/frontend/dist"
+  },
+  gravatar_sender_icons: {
+    entry: "plugins/gravatar_sender_icons/frontend/index.ts",
+    outDir: "plugins/gravatar_sender_icons/frontend_dist"
+  },
+  bimi_brand_icons: {
+    entry: "plugins/bimi_brand_icons/frontend/index.ts",
+    outDir: "plugins/bimi_brand_icons/frontend_dist"
+  },
+  language_search: {
+    entry: "plugins/language_search/frontend/index.ts",
+    outDir: "plugins/language_search/frontend_dist"
+  },
+  one_click_unsubscribe: {
+    entry: "plugins/one_click_unsubscribe/frontend/index.tsx",
+    outDir: "plugins/one_click_unsubscribe/frontend_dist"
+  },
+  remote_image_blocklist: {
+    entry: "plugins/remote_image_blocklist/frontend/index.tsx",
+    outDir: "plugins/remote_image_blocklist/frontend_dist"
+  },
+  trusted_image_sources: {
+    entry: "plugins/trusted_image_sources/frontend/index.tsx",
+    outDir: "plugins/trusted_image_sources/frontend_dist"
+  },
+  matrix_theme: {
+    entry: "plugins/matrix_theme/frontend/index.ts",
+    outDir: "plugins/matrix_theme/frontend_dist"
+  }
+};
+
+const selected = pluginConfig[target];
+if (!selected) {
+  throw new Error(`Unknown plugin build target: ${target}`);
+}
+
 export default defineConfig({
   root: ".",
   plugins: [react()],
@@ -21,11 +66,11 @@ export default defineConfig({
     ]
   },
   build: {
-    outDir: "plugins/client_side_pgp/frontend/dist",
+    outDir: selected.outDir,
     emptyOutDir: true,
     sourcemap: true,
     lib: {
-      entry: "plugins/client_side_pgp/frontend/index.ts",
+      entry: selected.entry,
       formats: ["es"],
       fileName: () => "index.js"
     },

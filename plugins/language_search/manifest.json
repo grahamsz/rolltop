@@ -8,5 +8,8 @@
   "backend": {
     "kind": "go-plugin",
     "binary": "backend/language_search.so"
+  },
+  "frontend": {
+    "module": "frontend_dist/index.js"
   }
 }

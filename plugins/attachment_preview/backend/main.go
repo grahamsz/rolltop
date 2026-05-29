@@ -49,13 +49,3 @@ func (attachmentPreviewHook) PreviewImageTypeFromName(filename string) string {
 func (attachmentPreviewHook) ReadPreviewLimited(r io.Reader, maxBytes int64) ([]byte, error) {
 	return preview.ReadLimited(r, maxBytes)
 }
-
-func init() {
-	plugins.Register(plugins.Definition{
-		ID:          plugins.AttachmentPreview,
-		Name:        "Attachment preview",
-		Description: "Adds authenticated browser previews for supported image and PDF attachments.",
-		Heavy:       true,
-	}, preview.Migrations()...)
-	plugins.RegisterHooks(plugins.AttachmentPreview, attachmentPreviewHook{})
-}

@@ -5,6 +5,7 @@ tmp
 node_modules
 frontend/dist
 plugins/*/frontend/dist
+plugins/*/frontend_dist
 *.db
 *.db-*
 coverage.out

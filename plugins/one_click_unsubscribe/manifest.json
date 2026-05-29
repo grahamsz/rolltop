@@ -7,5 +7,8 @@
   "backend": {
     "kind": "go-plugin",
     "binary": "backend/one_click_unsubscribe.so"
+  },
+  "frontend": {
+    "module": "frontend_dist/index.js"
   }
 }

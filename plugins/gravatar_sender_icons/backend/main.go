@@ -60,12 +60,3 @@ func (gravatarSenderIconsHook) UpsertImage(ctx context.Context, db *sql.DB, imag
 		UpdatedAt:   image.UpdatedAt,
 	})
 }
-
-func init() {
-	plugins.Register(plugins.Definition{
-		ID:          plugins.GravatarSenderIcons,
-		Name:        "Gravatar sender icons",
-		Description: "Optionally proxies and caches Gravatar images for sender email addresses.",
-	}, gravatar.Migrations()...)
-	plugins.RegisterHooks(plugins.GravatarSenderIcons, gravatarSenderIconsHook{})
-}

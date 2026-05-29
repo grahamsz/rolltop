@@ -7,5 +7,8 @@
   "backend": {
     "kind": "go-plugin",
     "binary": "backend/bimi_brand_icons.so"
+  },
+  "frontend": {
+    "module": "frontend_dist/index.js"
   }
 }

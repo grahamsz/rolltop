@@ -6,7 +6,7 @@
     "dev": "vite --host 127.0.0.1",
     "typecheck": "tsc -b --pretty false",
     "build": "npm run typecheck && vite build && npm run build:plugins",
-    "build:plugins": "vite build --config vite.plugins.config.ts",
+    "build:plugins": "ROLLTOP_PLUGIN_TARGET=attachment_preview vite build --config vite.plugins.config.ts && ROLLTOP_PLUGIN_TARGET=bimi_brand_icons vite build --config vite.plugins.config.ts && ROLLTOP_PLUGIN_TARGET=gravatar_sender_icons vite build --config vite.plugins.config.ts && ROLLTOP_PLUGIN_TARGET=language_search vite build --config vite.plugins.config.ts && ROLLTOP_PLUGIN_TARGET=matrix_theme vite build --config vite.plugins.config.ts && ROLLTOP_PLUGIN_TARGET=one_click_unsubscribe vite build --config vite.plugins.config.ts && ROLLTOP_PLUGIN_TARGET=remote_image_blocklist vite build --config vite.plugins.config.ts && ROLLTOP_PLUGIN_TARGET=trusted_image_sources vite build --config vite.plugins.config.ts && ROLLTOP_PLUGIN_TARGET=client_side_pgp vite build --config vite.plugins.config.ts",
     "build:vite": "vite build",
     "preview": "vite preview --host 127.0.0.1"
   },

@@ -22,13 +22,3 @@ func (trustedImageSourcesHook) TrustImageSender(ctx context.Context, db *sql.DB,
 func (trustedImageSourcesHook) IsImageSenderTrusted(ctx context.Context, db *sql.DB, userID int64, sender string) (bool, error) {
 	return sources.IsSenderTrusted(ctx, db, userID, sender)
 }
-
-func init() {
-	plugins.Register(plugins.Definition{
-		ID:               plugins.TrustedImageSources,
-		Name:             "Trusted image sources",
-		Description:      "Remembers senders whose remote images may load automatically.",
-		EnabledByDefault: true,
-	}, sources.Migrations()...)
-	plugins.RegisterHooks(plugins.TrustedImageSources, trustedImageSourcesHook{})
-}

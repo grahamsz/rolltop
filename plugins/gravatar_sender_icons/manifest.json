@@ -6,5 +6,8 @@
   "backend": {
     "kind": "go-plugin",
     "binary": "backend/gravatar_sender_icons.so"
+  },
+  "frontend": {
+    "module": "frontend_dist/index.js"
   }
 }

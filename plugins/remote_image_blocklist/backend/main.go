@@ -34,13 +34,3 @@ func (remoteImageBlocklistHook) ListRemoteImagePatterns(ctx context.Context, db 
 func (remoteImageBlocklistHook) ReplaceRemoteImageRules(ctx context.Context, db *sql.DB, patterns []string) error {
 	return rules.ReplaceRules(ctx, db, patterns)
 }
-
-func init() {
-	plugins.Register(plugins.Definition{
-		ID:               plugins.RemoteImageBlocklist,
-		Name:             "Remote image blocklist",
-		Description:      "Blocks remote tracking images and allows admin-maintained URL block patterns.",
-		EnabledByDefault: true,
-	}, rules.Migrations()...)
-	plugins.RegisterHooks(plugins.RemoteImageBlocklist, remoteImageBlocklistHook{})
-}

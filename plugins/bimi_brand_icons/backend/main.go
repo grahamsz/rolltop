@@ -69,13 +69,3 @@ func (bimiBrandIconsHook) Fetch(ctx context.Context, domain string) (plugins.BIM
 		ExpiresAt: result.ExpiresAt,
 	}, nil
 }
-
-func init() {
-	plugins.Register(plugins.Definition{
-		ID:               plugins.BIMIBrandIcons,
-		Name:             "BIMI brand icons",
-		Description:      "Fetches and caches verified BIMI SVG logos for sender domains.",
-		EnabledByDefault: true,
-	}, bimi.Migrations()...)
-	plugins.RegisterHooks(plugins.BIMIBrandIcons, bimiBrandIconsHook{})
-}
