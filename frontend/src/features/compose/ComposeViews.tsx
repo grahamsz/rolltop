@@ -44,7 +44,7 @@ export function ComposeOverlay({
   pgpEnabled: boolean;
   pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
   onClose: () => void;
 }) {
@@ -122,7 +122,7 @@ export function ComposePage({
   pgpEnabled: boolean;
   pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const [form, setForm] = useState<ComposeForm | null>(null);
@@ -198,7 +198,7 @@ export function ComposeBox({
   pgpEnabled?: boolean;
   pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
   onSent: () => void;
   onCancel?: () => void;
@@ -701,7 +701,7 @@ export function ComposeBox({
       ) : (
         <div className="inline-reply-meta">
           {identities.length > 1 ? (
-            <>
+            <div className="inline-reply-from">
               <span>From</span>
               <select
                 value={form.from_identity_id || primaryIdentity?.id || 0}
@@ -713,15 +713,19 @@ export function ComposeBox({
                   </option>
                 ))}
               </select>
-            </>
+            </div>
           ) : null}
-          <span>To</span>
-          <strong>{form.to}</strong>
-          <button className="ghost text-link" type="button" onClick={() => setShowCc((value) => !value)}>Cc</button>
-          <button className="ghost text-link" type="button" onClick={() => setShowBcc((value) => !value)}>Bcc</button>
-          <button className="ghost inline-close" type="button" title="Discard reply" onClick={onCancel}>
-            <Icon name="close" />
-          </button>
+          <div className="inline-reply-to">
+            <span>To</span>
+            <strong>{form.to}</strong>
+          </div>
+          <div className="inline-reply-actions">
+            <button className="ghost text-link" type="button" onClick={() => setShowCc((value) => !value)}>Cc</button>
+            <button className="ghost text-link" type="button" onClick={() => setShowBcc((value) => !value)}>Bcc</button>
+            <button className="ghost inline-close" type="button" title="Discard reply" onClick={onCancel}>
+              <Icon name="close" />
+            </button>
+          </div>
         </div>
       )}
       {inline && showCc ? (
@@ -865,9 +869,11 @@ export function ComposeBox({
       <div className="compose-sendbar">
         <div className="compose-send-actions">
           <button className="send-button" disabled={sending || savingDraft || resizing}>
+            <Icon name="send" />
             {sendButtonLabel}
           </button>
           <button className="secondary save-draft-button" type="button" disabled={sending || savingDraft || resizing} onClick={() => void saveDraft()}>
+            <Icon name="draft" />
             {savingDraft ? "Saving..." : "Save draft"}
           </button>
           <div className="compose-lower-tools" aria-label="Message tools">

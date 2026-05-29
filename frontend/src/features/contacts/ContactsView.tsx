@@ -203,19 +203,35 @@ export function ContactsView({
               {draft.icon_url ? <button className="ghost text-link" type="button" onClick={() => void removeIcon()}>Remove icon</button> : null}
             </div>
           </div>
-          <div className="contact-grid">
-            <Field label="Display name" value={draft.display_name} required onChange={(value) => setField("display_name", value)} />
-            <Field label="Nickname" value={draft.nickname} onChange={(value) => setField("nickname", value)} />
-            <Field label="Prefix" value={draft.name_prefix} onChange={(value) => setField("name_prefix", value)} />
-            <Field label="Given" value={draft.given_name} onChange={(value) => setField("given_name", value)} />
-            <Field label="Middle" value={draft.additional_name} onChange={(value) => setField("additional_name", value)} />
-            <Field label="Family" value={draft.family_name} onChange={(value) => setField("family_name", value)} />
-            <Field label="Suffix" value={draft.name_suffix} onChange={(value) => setField("name_suffix", value)} />
-            <Field label="Organization" value={draft.organization} onChange={(value) => setField("organization", value)} />
-            <Field label="Department" value={draft.department} onChange={(value) => setField("department", value)} />
-            <Field label="Job title" value={draft.job_title} onChange={(value) => setField("job_title", value)} />
-            <Field label="Birthday" value={draft.birthday} type="text" placeholder="YYYY-MM-DD" onChange={(value) => setField("birthday", value)} />
-            <Field label="Categories" value={draft.categories} onChange={(value) => setField("categories", value)} />
+          <div className="contact-editor-sections">
+            <section className="contact-section">
+              <div className="contact-section-head">
+                <h2>Name</h2>
+              </div>
+              <div className="contact-grid contact-grid-name">
+                <Field className="contact-field contact-field-wide" label="Display name" value={draft.display_name} required onChange={(value) => setField("display_name", value)} />
+                <Field className="contact-field" label="Nickname" value={draft.nickname} onChange={(value) => setField("nickname", value)} />
+              </div>
+              <div className="contact-name-row">
+                <Field className="contact-field" label="Prefix" value={draft.name_prefix} onChange={(value) => setField("name_prefix", value)} />
+                <Field className="contact-field" label="Given" value={draft.given_name} onChange={(value) => setField("given_name", value)} />
+                <Field className="contact-field" label="Middle" value={draft.additional_name} onChange={(value) => setField("additional_name", value)} />
+                <Field className="contact-field" label="Family" value={draft.family_name} onChange={(value) => setField("family_name", value)} />
+                <Field className="contact-field" label="Suffix" value={draft.name_suffix} onChange={(value) => setField("name_suffix", value)} />
+              </div>
+            </section>
+            <section className="contact-section">
+              <div className="contact-section-head">
+                <h2>Details</h2>
+              </div>
+              <div className="contact-grid contact-grid-details">
+                <Field className="contact-field contact-field-wide" label="Organization" value={draft.organization} onChange={(value) => setField("organization", value)} />
+                <Field className="contact-field" label="Department" value={draft.department} onChange={(value) => setField("department", value)} />
+                <Field className="contact-field" label="Job title" value={draft.job_title} onChange={(value) => setField("job_title", value)} />
+                <Field className="contact-field" label="Birthday" value={draft.birthday} type="text" placeholder="YYYY-MM-DD" onChange={(value) => setField("birthday", value)} />
+                <Field className="contact-field contact-field-wide" label="Categories" value={draft.categories} onChange={(value) => setField("categories", value)} />
+              </div>
+            </section>
           </div>
           <div className="contact-flags">
             <label><input type="checkbox" checked={draft.is_me} onChange={(event) => setField("is_me", event.target.checked)} /> Me identity</label>
@@ -254,6 +270,7 @@ function Field({
   type = "text",
   placeholder = "",
   required = false,
+  className = "",
   onChange
 }: {
   label: string;
@@ -261,10 +278,11 @@ function Field({
   type?: string;
   placeholder?: string;
   required?: boolean;
+  className?: string;
   onChange: (value: string) => void;
 }) {
   return (
-    <label>
+    <label className={className}>
       {label}
       <input type={type} value={value} placeholder={placeholder} required={required} onChange={(event) => onChange(event.target.value)} />
     </label>
@@ -272,9 +290,9 @@ function Field({
 }
 
 function ContactEmailEditor({ value, onChange }: { value: ContactEmail[]; onChange: (value: ContactEmail[]) => void }) {
-  const rows = value.length > 0 ? value : [{ label: "Email", email: "", is_primary: true }];
+  const rows = value.length > 0 ? value : [{ label: "", email: "", is_primary: true }];
   return (
-    <ContactSection title="Emails" onAdd={() => onChange([...rows, { label: "Email", email: "", is_primary: false }])}>
+    <ContactSection title="Emails" onAdd={() => onChange([...rows, { label: "", email: "", is_primary: false }])}>
       {rows.map((row, index) => (
         <div className="contact-repeat-row" key={index}>
           <input value={row.label} placeholder="Label" onChange={(event) => onChange(updateAt(rows, index, { ...row, label: event.target.value }))} />
@@ -302,22 +320,22 @@ function ContactPGPKeyEditor({
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const emailChoices = emails.map((item) => item.email.trim()).filter(Boolean);
-  const [email, setEmail] = useState(emailChoices[0] || "");
   const [importOpen, setImportOpen] = useState(false);
   const [adding, setAdding] = useState(false);
 
-  useEffect(() => {
-    if (email && emailChoices.includes(email)) return;
-    setEmail(emailChoices[0] || "");
-  }, [email, emailChoices.join("|")]);
-
   async function addKey(armored: string) {
-    if (!email) throw new Error("Add or select a contact email before importing a PGP public key.");
+    if (emailChoices.length === 0) throw new Error("Add a contact email before importing a PGP public key.");
     if (!armored.trim()) throw new Error("Paste an ASCII-armored PGP public key first.");
     setAdding(true);
     try {
       if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-      const parsed = await pgpPlugin.publicKeyRecordFromArmored(armored, email, "manual", email);
+      const parsed = await pgpPlugin.publicKeyRecordFromArmored(armored);
+      const parsedEmails = new Set(pgpPlugin.pgpUserIDEmails(parsed.user_ids).map(normalizeEmailForMatch));
+      const matchingEmail = emailChoices.find((candidate) => parsedEmails.has(normalizeEmailForMatch(candidate))) || "";
+      if (!matchingEmail) {
+        throw new Error(`This public key does not list any of this contact's email addresses (${emailChoices.join(", ")}).`);
+      }
+      const validated = await pgpPlugin.publicKeyRecordFromArmored(armored, matchingEmail, "manual", matchingEmail);
       const parsedFingerprint = normalizedPGPIdentifier(parsed.fingerprint);
       const parsedKeyID = normalizedPGPIdentifier(parsed.key_id);
       const duplicate = value.find((key) =>
@@ -325,10 +343,10 @@ function ContactPGPKeyEditor({
         (!parsedFingerprint && parsedKeyID && normalizedPGPIdentifier(key.key_id) === parsedKeyID)
       );
       if (duplicate) {
-        throw new Error(`This public key is already saved for ${duplicate.email || email}.`);
+        throw new Error(`This public key is already saved for ${duplicate.email || matchingEmail}.`);
       }
-      const hasPreferredForEmail = value.some((key) => key.email.toLowerCase() === email.toLowerCase() && key.is_preferred);
-      onChange([...value, { ...parsed, email, is_preferred: !hasPreferredForEmail }]);
+      const hasPreferredForEmail = value.some((key) => normalizeEmailForMatch(key.email) === normalizeEmailForMatch(matchingEmail) && key.is_preferred);
+      onChange([...value, { ...validated, email: matchingEmail, is_preferred: !hasPreferredForEmail }]);
       setImportOpen(false);
       addToast("PGP public key added.");
     } catch (err) {
@@ -387,18 +405,15 @@ function ContactPGPKeyEditor({
         ))}
       </div>
       <div className="contact-pgp-import">
-        <select value={email} disabled={emailChoices.length === 0} onChange={(event) => setEmail(event.target.value)}>
-          {emailChoices.length === 0 ? <option value="">Add an email first</option> : null}
-          {emailChoices.map((choice) => <option value={choice} key={choice}>{choice}</option>)}
-        </select>
-        <button className="secondary" type="button" disabled={adding || !email} onClick={() => setImportOpen(true)}>
+        <button className="secondary" type="button" disabled={adding || emailChoices.length === 0} onClick={() => setImportOpen(true)}>
           {adding ? "Reading key..." : "Import public key"}
         </button>
+        {emailChoices.length === 0 ? <span className="muted">Add at least one email first.</span> : <span className="muted">The key must list one of this contact's email addresses.</span>}
       </div>
       {importOpen && pgpPlugin?.KeyImportModal ? (
         <pgpPlugin.KeyImportModal
           title="Import public key"
-          description={`Paste, drop, or choose an ASCII-armored public key for ${email || "this contact"}.`}
+          description="Paste, drop, or choose an ASCII-armored public key. Rolltop will match it against this contact's email addresses."
           placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"
           importLabel="Add key"
           busy={adding}
@@ -549,6 +564,10 @@ function shortFingerprint(value: string): string {
 
 function normalizedPGPIdentifier(value: string): string {
   return value.replace(/[\s:]/g, "").toUpperCase();
+}
+
+function normalizeEmailForMatch(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function firstKeyUserID(value: string): string {

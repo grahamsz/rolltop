@@ -65,6 +65,40 @@ func TestImmutableFrontendAssetCacheScope(t *testing.T) {
 	}
 }
 
+func TestHandleAppServesContactsRoute(t *testing.T) {
+	dir := t.TempDir()
+	distDir := filepath.Join(dir, frontendDistDir)
+	if err := os.MkdirAll(distDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "index.html"), []byte("<!doctype html><html><body>contacts</body></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+
+	server := &Server{}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/contacts", nil)
+
+	server.handleApp(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "contacts") {
+		t.Fatalf("body = %q", body)
+	}
+}
+
 func TestAPIMailCachedETagShortCircuitsBeforeStore(t *testing.T) {
 	user := store.User{ID: 42, Email: "cache@example.test", Name: "Cache"}
 	server := &Server{mailListCache: newMailListCache()}

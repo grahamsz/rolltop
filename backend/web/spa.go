@@ -65,11 +65,11 @@ func isImmutableFrontendAsset(cleanPath string) bool {
 
 func isAppRoute(p string) bool {
 	switch {
-	case p == "/setup", p == "/login", p == "/mail", p == "/search", p == "/compose", p == "/settings/account", p == "/admin/users":
+	case p == "/setup", p == "/login", p == "/mail", p == "/search", p == "/compose", p == "/contacts", p == "/settings/account", p == "/admin/users":
 		return true
 	case strings.HasPrefix(p, "/mail/"), strings.HasPrefix(p, "/mailbox/"), strings.HasPrefix(p, "/search/"):
 		return true
-	case strings.HasPrefix(p, "/messages/"), strings.HasPrefix(p, "/sync-runs/"), strings.HasPrefix(p, "/settings/account/"):
+	case strings.HasPrefix(p, "/messages/"), strings.HasPrefix(p, "/sync-runs/"), strings.HasPrefix(p, "/settings/account/"), strings.HasPrefix(p, "/contacts/"):
 		return true
 	default:
 		return false

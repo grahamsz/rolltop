@@ -50,7 +50,7 @@ export function RouteView({
   runtimePlugins: RuntimePlugins;
   pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const pgpEnabled = enabledPlugins.includes("client_side_pgp") && Boolean(pgpPlugin);

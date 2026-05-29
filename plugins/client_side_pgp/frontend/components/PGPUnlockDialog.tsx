@@ -3,7 +3,7 @@ import type { FormEvent } from "react";
 import { messageFromError } from "../../../../frontend/src/lib/errors";
 import type { IdentityPGPPrivateKey } from "../../../../frontend/src/types";
 import { pgpPrivateKeys } from "../api/keys";
-import { matchingPGPPrivateKeyIDForRecipients, unlockPrivateKey } from "../crypto/pgp";
+import { matchingPGPPrivateKeyIDForRecipients, pgpUserIDsMatchEmail, unlockPrivateKey } from "../crypto/pgp";
 import { hydrateBrowserPGPPrivateKeys } from "../storage/browserPGPKeys";
 import type { PGPUnlockDialogProps } from "../types";
 
@@ -11,6 +11,7 @@ export function PGPUnlockDialog({
   userID,
   identityID,
   recipientKeyIDs,
+  fallbackEmail,
   onClose,
   onUnlocked,
   addToast
@@ -33,15 +34,17 @@ export function PGPUnlockDialog({
       .then((list) => {
         if (cancelled || !list) return;
         const preferred = identityID ? list.find((key) => key.identity_id === identityID) : null;
+        const preferredByEmail = fallbackEmail
+          ? list.find((key) => pgpUserIDsMatchEmail(key.user_ids || "", fallbackEmail))
+          : null;
+        setKeys(list);
         if (recipientKeyIDs.length === 0) {
-          setKeys(list);
-          setSelectedID(preferred?.id || list[0]?.id || 0);
+          setSelectedID(preferred?.id || preferredByEmail?.id || list[0]?.id || 0);
           return;
         }
         return matchingPGPPrivateKeyIDForRecipients(list, recipientKeyIDs).then((matchedID) => {
           if (cancelled) return;
-          setKeys(list);
-          setSelectedID(matchedID || preferred?.id || list[0]?.id || 0);
+          setSelectedID(matchedID || preferred?.id || preferredByEmail?.id || list[0]?.id || 0);
         });
       })
       .catch((err) => {
@@ -51,7 +54,7 @@ export function PGPUnlockDialog({
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [identityID, recipientKeyIDs, userID]);
+  }, [fallbackEmail, identityID, recipientKeyIDs, userID]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();

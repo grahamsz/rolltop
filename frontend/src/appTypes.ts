@@ -78,7 +78,7 @@ export type AppShellProps = {
   toggleNotifications: () => Promise<void>;
   pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
   lockPGP: () => void;
   logout: () => Promise<void>;
   children: ReactNode;

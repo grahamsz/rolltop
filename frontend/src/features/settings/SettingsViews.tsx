@@ -15,6 +15,7 @@ import { folderParentNames, folderTree, type FolderNode } from "../../lib/folder
 import { effectiveMailboxSyncMode, mergeSyncRuns } from "../../lib/sync";
 import { pluginIDs } from "../../plugins/registry";
 import type { ClientSidePGPPlugin } from "../../../../plugins/client_side_pgp/frontend/types";
+import { hydrateBrowserPGPPrivateKeys } from "../../../../plugins/client_side_pgp/frontend/storage/browserPGPKeys";
 import { AdminRemoteImageBlocklist } from "../../plugins/remoteImageBlocklist/AdminRemoteImageBlocklist";
 import { PluginTogglePanel } from "./admin/PluginTogglePanel";
 
@@ -626,8 +627,8 @@ export function SettingsView({
       return;
     }
     const data = await pgpPlugin.privateKeys();
-    setPGPKeys(data.keys || []);
-  }, [pgpEnabled, pgpPlugin]);
+    setPGPKeys(await hydrateBrowserPGPPrivateKeys(user.id, data.keys || []));
+  }, [pgpEnabled, pgpPlugin, user.id]);
 
   // The account endpoint returns several related tables at once. Loading derives
   // selected IMAP/SMTP rows from the route, then rebuilds form state from those
@@ -951,6 +952,14 @@ export function SettingsView({
       );
       if (duplicate) {
         const duplicateIdentity = identities.find((identity) => identity.id === duplicate.identity_id);
+        if (duplicate.private_key_storage === "browser" && !duplicate.private_key_armored?.trim()) {
+          if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
+          await pgpPlugin.saveBrowserPGPPrivateKey(user.id, duplicate, parsed.private_key_armored || "");
+          setPGPKeys((current) => current.map((key) => key.id === duplicate.id ? { ...key, private_key_armored: parsed.private_key_armored || "" } : key));
+          setPGPPrivateImportOpen(false);
+          addToast("Browser copy restored.");
+          return;
+        }
         throw new Error(`This private key is already saved${duplicateIdentity?.email ? ` for ${duplicateIdentity.email}` : ""}.`);
       }
       const saved = await pgpPlugin.savePrivateKey(csrf, {
@@ -1517,7 +1526,9 @@ export function SettingsView({
                 <small>{[
                   shortPGPValue(key.fingerprint || key.key_id),
                   firstPGPUserID(key.user_ids),
-                  key.private_key_storage === "browser" ? "Private key in browser storage" : "Private key server-stored",
+                  key.private_key_storage === "browser"
+                    ? (key.private_key_armored?.trim() ? "Private key in this browser" : "Browser copy missing here")
+                    : "Private key server-stored",
                   key.created_at ? `Imported ${displayDateTime(key.created_at, user)}` : ""
                 ].filter(Boolean).join(" · ")}</small>
               </span>

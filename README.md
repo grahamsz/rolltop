@@ -1,14 +1,14 @@
 # rolltop
 
-rolltop is a single-container Go app that mirrors one IMAP account per local user into local storage for Gmail-like search, viewing, composing, and mailbox moves. The public project site is https://rolltop.app; production mail data stays on the user's own Docker instance.
+rolltop is a single-container Go app that mirrors one IMAP account per local user into local storage for search, viewing, composing, and mailbox moves. Production mail data stays in the user's own Docker instance. Project site: https://rolltop.app, coming soon. Contact: graham@rolltop.app.
 
-V1 stores:
+## What It Stores
 
 - SQLite metadata at `/data/rolltop.db`
 - Bleve search index at `/data/bleve`
 - Raw `.eml` and attachment blobs under `/data/blobs/users/{user_id}/...`
-- Incremental sync progress in `sync_runs`, updated while each folder is processed.
-- A compiled React + Vite + TypeScript frontend served by the Go process.
+- Incremental sync progress in `sync_runs`
+- A compiled React + Vite + TypeScript frontend served by the Go process
 
 ## Security Model
 
@@ -54,13 +54,14 @@ export ROLLTOP_COOKIE_SECURE="false"
 export ROLLTOP_WEBHOOK_TOKEN=""
 ```
 
-Use `ROLLTOP_COOKIE_SECURE=true` when serving over HTTPS.
+Set `ROLLTOP_COOKIE_SECURE=true` when serving over HTTPS.
 
 ## Run Locally
 
 ```sh
 npm install
 npm run build
+npm run build:plugins
 go test ./...
 test -f .env.rolltop || (
   umask 077
@@ -126,10 +127,15 @@ rolltop uses IMAP `IDLE` for INBOX wakeups when the server supports it and keeps
 
 See `SECURITY_AUDIT.md` for the current route and storage security review.
 
+## License And Contributions
+
+rolltop is intended to be distributed under the AGPL-3.0-or-later. By contributing code, documentation, assets, or other original work to this repository, you agree to license that contribution under AGPL-3.0-or-later unless you have a separate written agreement with the project owner.
+
 ## Development Checks
 
 ```sh
 npm run build
+npm run build:plugins
 go test ./...
 docker build -t rolltop:dev .
 ```

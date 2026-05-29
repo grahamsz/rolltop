@@ -118,13 +118,17 @@
 
 .contact-editor {
   padding: 16px;
+  display: grid;
+  gap: 18px;
 }
 
 .contact-editor-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 14px;
-  margin-bottom: 16px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
 }
 
 .icon-upload {
@@ -143,9 +147,29 @@
   }
 }
 
+.contact-editor-sections {
+  display: grid;
+  gap: 18px;
+}
+
+.contact-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+
+  h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+}
+
 .contact-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 12px;
 
   label {
@@ -153,12 +177,31 @@
   }
 }
 
+.contact-grid-name,
+.contact-grid-details {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.contact-name-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+
+  .contact-field {
+    min-width: 0;
+  }
+}
+
+.contact-field-wide {
+  grid-column: 1 / -1;
+}
+
 .contact-flags {
   display: flex;
   align-items: center;
   gap: 18px;
   flex-wrap: wrap;
-  margin: 14px 0;
+  padding: 2px 0 4px;
 
   label {
     display: inline-flex;
@@ -172,7 +215,7 @@
 .contact-section {
   display: grid;
   gap: 8px;
-  margin-top: 16px;
+  padding-top: 2px;
 
   > div:first-child {
     display: flex;
@@ -194,7 +237,7 @@
 }
 
 .contact-repeat-row {
-  grid-template-columns: minmax(90px, 150px) minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(78px, 132px) minmax(0, 1fr) auto auto;
 }
 
 .contact-address-row {
@@ -307,4 +350,26 @@
   gap: 10px;
   align-items: center;
   margin-top: 14px;
+}
+
+.contact-pgp-section,
+.contact-section {
+  padding-top: 0;
+}
+
+.contact-pgp-section > div:first-child,
+.contact-section > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.contact-pgp-section h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
 }

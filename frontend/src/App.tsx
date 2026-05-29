@@ -137,6 +137,7 @@ export default function App() {
   const [pgpUnlockOpen, setPGPUnlockOpen] = useState(false);
   const [pgpUnlockIdentityID, setPGPUnlockIdentityID] = useState<number | null>(null);
   const [pgpUnlockRecipientKeyIDs, setPGPUnlockRecipientKeyIDs] = useState<string[]>([]);
+  const [pgpUnlockFallbackEmail, setPGPUnlockFallbackEmail] = useState("");
   const pgpUnlockCallbackRef = useRef<((state: PGPUnlockState) => void) | null>(null);
   const pgpUnlockRef = useRef<PGPUnlockState>(emptyPGPUnlockState);
   const activeUserIDRef = useRef<number | null>(null);
@@ -195,6 +196,8 @@ export default function App() {
     setPGPUnlock(emptyPGPUnlockState);
     setPGPUnlockOpen(false);
     setPGPUnlockIdentityID(null);
+    setPGPUnlockRecipientKeyIDs([]);
+    setPGPUnlockFallbackEmail("");
     pgpUnlockCallbackRef.current = null;
     if (previousUserID) void publishPGPUnlockToWorker(previousUserID, emptyPGPUnlockState, runtimePluginsRef.current);
     if (userID) requestPGPUnlockFromWorker(userID);
@@ -271,17 +274,19 @@ export default function App() {
     applyPGPUnlock(emptyPGPUnlockState, true);
     setPGPUnlockIdentityID(null);
     setPGPUnlockRecipientKeyIDs([]);
+    setPGPUnlockFallbackEmail("");
     pgpUnlockCallbackRef.current = null;
     addToast("PGP keys locked.");
   }, [addToast, applyPGPUnlock]);
 
-  const openPGPUnlock = useCallback((identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs: string[] = []) => {
+  const openPGPUnlock = useCallback((identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs: string[] = [], fallbackEmail = "") => {
     if (!runtimePluginsRef.current.clientSidePGP) {
       addToast("PGP is still loading. Try again in a moment.", "error");
       return;
     }
     setPGPUnlockIdentityID(identityID || null);
     setPGPUnlockRecipientKeyIDs(recipientKeyIDs);
+    setPGPUnlockFallbackEmail(fallbackEmail);
     pgpUnlockCallbackRef.current = onUnlocked || null;
     setPGPUnlockOpen(true);
   }, [addToast]);
@@ -290,6 +295,7 @@ export default function App() {
     setPGPUnlockOpen(false);
     setPGPUnlockIdentityID(null);
     setPGPUnlockRecipientKeyIDs([]);
+    setPGPUnlockFallbackEmail("");
     pgpUnlockCallbackRef.current = null;
   }, []);
 
@@ -582,11 +588,13 @@ export default function App() {
           userID={bootstrap.user.id}
           identityID={pgpUnlockIdentityID}
           recipientKeyIDs={pgpUnlockRecipientKeyIDs}
+          fallbackEmail={pgpUnlockFallbackEmail}
           onClose={closePGPUnlock}
           onUnlocked={(state) => {
             applyPGPUnlock(state, true);
             setPGPUnlockIdentityID(null);
             setPGPUnlockRecipientKeyIDs([]);
+            setPGPUnlockFallbackEmail("");
             const callback = pgpUnlockCallbackRef.current;
             pgpUnlockCallbackRef.current = null;
             callback?.(state);

@@ -355,7 +355,7 @@ function PGPKeyDiscoveryAttachment({
         <Icon name="key" />
         <span>
           <strong>{email || "Unknown email"}</strong>
-          <small>{kind}</small>
+          <small> {kind}</small>
         </span>
       </span>
       <PGPImportStatusAction state={state} fallbackEmail={email} onImport={onImport} />
@@ -473,6 +473,16 @@ function identityIDForMessageRecipients(item: ThreadMessage, identities: Compose
   if (messageEmails.size === 0) return 0;
   const identity = identities.find((candidate) => messageEmails.has(candidate.email.trim().toLowerCase()));
   return identity?.pgp_identity_id || 0;
+}
+
+function recipientEmailForMessage(item: ThreadMessage, source = "") {
+  const fromMessage = [
+    ...emailAddressesFromText(item.message.to_addr),
+    ...emailAddressesFromText(item.message.cc_addr),
+    ...emailAddressesFromText(item.recipient_line),
+    ...emailAddressesFromMessageHeaders(source)
+  ];
+  return fromMessage[0] || "";
 }
 
 function emailAddressesFromMessageHeaders(source: string): string[] {
@@ -631,7 +641,7 @@ export function ThreadView({
   messageSecurityPlugins?: RuntimePlugin[];
   pgpPlugin?: ClientSidePGPPlugin;
   pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[]) => void;
+  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const id = location.path.split("/").pop() || "";
@@ -1186,10 +1196,10 @@ export function ThreadView({
       if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
       const recipientKeyIDs = await pgpPlugin.encryptionRecipientKeyIDsFromSource(original.source);
       const identityID = identityIDForMessageRecipients(item, fromIdentities, original.source);
-      openPGPUnlock(identityID || undefined, undefined, recipientKeyIDs);
+      openPGPUnlock(identityID || undefined, undefined, recipientKeyIDs, recipientEmailForMessage(item, original.source));
     } catch {
       const identityID = identityIDForMessageRecipients(item, fromIdentities);
-      openPGPUnlock(identityID || undefined);
+      openPGPUnlock(identityID || undefined, undefined, undefined, recipientEmailForMessage(item));
     }
   }
 
@@ -1415,7 +1425,22 @@ export function ThreadView({
             const showAutocryptImport = Boolean(pgpEnabled && autocryptImport && !["ignored", "checking"].includes(autocryptImport.status));
             const gossipImportEntries = Object.entries(autocryptGossipImports[item.message.id] || {})
               .filter(([, state]) => !["ignored", "checking"].includes(state.status));
-            const showAttachments = item.attachments.length > 0 || decryptedAttachments.length > 0 || showAutocryptImport || gossipImportEntries.length > 0;
+            const autocryptDiscoveryItems = showAutocryptImport && autocryptImport ? [{
+              id: `autocrypt-${item.message.id}`,
+              kind: "Autocrypt public key",
+              email: autocryptImport.email || item.sender_email,
+              state: autocryptImport,
+              onImport: () => void importAutocryptPGPPublicKey(item)
+            }] : [];
+            const gossipDiscoveryItems = gossipImportEntries.map(([discoveryID, state]) => ({
+              id: `gossip-${item.message.id}-${discoveryID}`,
+              kind: "Autocrypt-Gossip public key",
+              email: state.email || state.key?.email || "",
+              state,
+              onImport: () => void importAutocryptGossipPGPPublicKey(item.message.id, discoveryID)
+            }));
+            const pgpDiscoveryItems = [...autocryptDiscoveryItems, ...gossipDiscoveryItems];
+            const showAttachments = item.attachments.length > 0 || decryptedAttachments.length > 0 || pgpDiscoveryItems.length > 0;
             return (
               <article className={`thread-card ${isExpanded ? "" : "collapsed"}`} key={item.message.id}>
                 <div
@@ -1600,24 +1625,25 @@ export function ThreadView({
                 </div>
                 {showAttachments ? (
                   <div className="attachments">
-                    {showAutocryptImport ? (
-                      <PGPKeyDiscoveryAttachment
-                        key={`autocrypt-${item.message.id}`}
-                        kind="Autocrypt public key"
-                        email={autocryptImport?.email || item.sender_email}
-                        state={autocryptImport}
-                        onImport={() => void importAutocryptPGPPublicKey(item)}
-                      />
+                    {pgpDiscoveryItems.length > 0 ? (
+                      <details className="pgp-key-attachment-group">
+                        <summary className="pgp-key-attachment-toggle" title={`Attached Public Keys: ${pgpDiscoveryItems.length} ${pgpDiscoveryItems.length === 1 ? "key" : "keys"}`} aria-label="Attached Public Keys">
+                          <Icon name="chevron_right" />
+                          <span>{pgpDiscoveryItems.length} Attached Public {pgpDiscoveryItems.length === 1 ? "Key" : "Keys"}</span>
+                        </summary>
+                        <div className="attachment-group-list">
+                          {pgpDiscoveryItems.map((item) => (
+                            <PGPKeyDiscoveryAttachment
+                              key={item.id}
+                              kind={item.kind}
+                              email={item.email}
+                              state={item.state}
+                              onImport={item.onImport}
+                            />
+                          ))}
+                        </div>
+                      </details>
                     ) : null}
-                    {gossipImportEntries.map(([discoveryID, state]) => (
-                      <PGPKeyDiscoveryAttachment
-                        key={`gossip-${item.message.id}-${discoveryID}`}
-                        kind="Autocrypt-Gossip public key"
-                        email={state.email || state.key?.email || ""}
-                        state={state}
-                        onImport={() => void importAutocryptGossipPGPPublicKey(item.message.id, discoveryID)}
-                      />
-                    ))}
                     {decryptedAttachments.map((attachment) => (
                       <div className="attachment-group decrypted-attachment" key={`decrypted-${attachment.id}`}>
                         <a

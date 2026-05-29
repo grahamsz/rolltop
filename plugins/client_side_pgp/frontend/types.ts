@@ -58,6 +58,7 @@ export type PGPUnlockDialogProps = {
   userID: number;
   identityID: number | null;
   recipientKeyIDs: string[];
+  fallbackEmail?: string;
   onClose: () => void;
   onUnlocked: (state: PGPUnlockState) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
