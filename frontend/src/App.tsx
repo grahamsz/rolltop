@@ -37,6 +37,7 @@ const allMailWakePrefetchAfterMS = 3 * 60 * 1000;
 const notificationPreferenceKey = "rolltop.notifications.enabled";
 const emptyPGPUnlockState: PGPUnlockState = { unlockedUntil: 0, keys: [] };
 const pluginThemeLinkID = "rolltop-plugin-theme-css";
+const notificationIconURL = "/icon.svg?v=transparent-logo-v2";
 
 function themeChoices(themes: ThemeDefinition[] | undefined): ThemeDefinition[] {
   return themes && themes.length > 0 ? themes : [
@@ -374,7 +375,9 @@ export default function App() {
       : fallback;
     new Notification(title, {
       body,
-      tag: "rolltop-new-mail"
+      tag: "rolltop-new-mail",
+      icon: notificationIconURL,
+      badge: notificationIconURL
     });
   }, [notificationsEnabled]);
 

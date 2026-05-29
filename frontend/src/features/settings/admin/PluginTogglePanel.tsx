@@ -6,6 +6,7 @@ import { api } from "../../../api";
 import type { AddToast } from "../../../appTypes";
 import type { PluginSetting } from "../../../types";
 import { messageFromError } from "../../../lib/errors";
+import { pluginIDs } from "../../../plugins/registry";
 
 /** PluginTogglePanel renders admin plugin enablement toggles and saves them through the API. */
 export function PluginTogglePanel({
@@ -77,7 +78,7 @@ export function PluginTogglePanel({
             <span>
               <strong>{plugin.name}</strong>
               <small>{plugin.description}</small>
-              {plugin.heavy ? <em>Lazy loaded</em> : null}
+              {plugin.id === pluginIDs.clientSidePGP ? <strong className="plugin-experimental-badge">EXPERIMENTAL</strong> : null}
             </span>
           </label>
         ))}

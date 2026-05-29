@@ -197,6 +197,19 @@
   }
 }
 
+.compose-head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.compose-head-mark {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
 .compose-head-actions {
   display: flex;
   align-items: center;
@@ -582,6 +595,19 @@
   min-height: 32px;
   height: 32px;
   border-radius: 6px;
+}
+
+.compose-pgp-bar .icon-toggle.active,
+.compose-pgp-bar .pgp-security-option.active {
+  border-color: var(--accent);
+  background: var(--active);
+  color: var(--accent-strong);
+  box-shadow: 0 0 0 1px rgba(47, 125, 84, .08) inset;
+}
+
+.compose-pgp-bar .icon-toggle.active .icon,
+.compose-pgp-bar .pgp-security-option.active .icon {
+  color: var(--accent-strong);
 }
 
 .compose-pgp-send-choice {

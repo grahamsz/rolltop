@@ -348,8 +348,8 @@ func (s *Server) composeFormForRequest(r *http.Request) (composeForm, error) {
 		if err != nil {
 			return composeForm{}, err
 		}
-		form := replyAllComposeForm(msg, thread, s.ownAddresses(r.Context(), cu.User))
-		form.FromIdentityID = s.replyFromIdentityID(r.Context(), cu, msg, thread)
+		form := s.replyAllComposeFormForMessage(r.Context(), cu, msg, thread, s.ownAddresses(r.Context(), cu.User))
+		s.applyReplyComposeDefaults(r.Context(), cu, msg, thread, &form)
 		attachments, err := s.composeExistingAttachmentsForMessage(r.Context(), cu.User.ID, msg.ID)
 		if err != nil {
 			return composeForm{}, err
@@ -371,8 +371,8 @@ func (s *Server) composeFormForRequest(r *http.Request) (composeForm, error) {
 		if err != nil {
 			return composeForm{}, err
 		}
-		form := replyComposeForm(msg, thread, s.ownAddresses(r.Context(), cu.User))
-		form.FromIdentityID = s.replyFromIdentityID(r.Context(), cu, msg, thread)
+		form := s.replyComposeFormForMessage(r.Context(), cu, msg, thread, s.ownAddresses(r.Context(), cu.User))
+		s.applyReplyComposeDefaults(r.Context(), cu, msg, thread, &form)
 		attachments, err := s.composeExistingAttachmentsForMessage(r.Context(), cu.User.ID, msg.ID)
 		if err != nil {
 			return composeForm{}, err

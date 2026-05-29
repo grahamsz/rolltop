@@ -6,7 +6,7 @@ import type { ClipboardEvent, DragEvent, FormEvent } from "react";
 import { api } from "../../api";
 import type { LocationState, PGPUnlockState, Toast } from "../../appTypes";
 import type { ContactAutocomplete, ContactPGPKey, ComposeAttachmentUpload, ComposeExistingAttachment, ComposeForm, ComposeIdentity } from "../../types";
-import { Icon } from "../../components/Icon";
+import { Icon, LogoMark } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { textToHTML } from "../../lib/html";
 import type { ClientSidePGPPlugin, PGPMIMEAttachmentInput } from "../../../../plugins/client_side_pgp/frontend/types";
@@ -93,7 +93,10 @@ export function ComposeOverlay({
       ) : (
         <div className="compose-window compose-loading">
           <div className="compose-head">
-            <span>New Message</span>
+            <span className="compose-head-title">
+              <LogoMark className="compose-head-mark" />
+              <span>New Message</span>
+            </span>
             <button className="ghost" type="button" title="Close" onClick={onClose}>
               <Icon name="close" />
             </button>
@@ -640,7 +643,10 @@ export function ComposeBox({
     <form ref={formRef} className={inline ? "inline-reply" : "compose-window"} onSubmit={submit}>
       {!inline ? (
         <div className="compose-head">
-          <span>New Message</span>
+          <span className="compose-head-title">
+            <LogoMark className="compose-head-mark" />
+            <span>New Message</span>
+          </span>
           <div className="compose-head-actions">
             <button className="ghost" type="button" title="Minimize" onClick={onCancel}>
               <Icon name="minimize" />

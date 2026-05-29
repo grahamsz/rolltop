@@ -35,6 +35,56 @@ func replyAllComposeForm(msg store.MessageRecord, thread []store.MessageRecord, 
 	return replyComposeFormWithRecipients(msg, to, cc)
 }
 
+func (s *Server) replyComposeFormForMessage(ctx context.Context, cu currentUser, msg store.MessageRecord, thread []store.MessageRecord, own map[string]bool) composeForm {
+	bodyHTML, bodyText, _ := s.displayBodiesForMessage(ctx, cu.User.ID, msg)
+	if strings.TrimSpace(bodyHTML) != "" {
+		msg.BodyHTML = bodyHTML
+	}
+	if strings.TrimSpace(bodyText) != "" {
+		msg.BodyText = bodyText
+	}
+	return replyComposeForm(msg, thread, own)
+}
+
+func (s *Server) replyAllComposeFormForMessage(ctx context.Context, cu currentUser, msg store.MessageRecord, thread []store.MessageRecord, own map[string]bool) composeForm {
+	bodyHTML, bodyText, _ := s.displayBodiesForMessage(ctx, cu.User.ID, msg)
+	if strings.TrimSpace(bodyHTML) != "" {
+		msg.BodyHTML = bodyHTML
+	}
+	if strings.TrimSpace(bodyText) != "" {
+		msg.BodyText = bodyText
+	}
+	return replyAllComposeForm(msg, thread, own)
+}
+
+func (s *Server) applyReplyComposeDefaults(ctx context.Context, cu currentUser, msg store.MessageRecord, thread []store.MessageRecord, form *composeForm) {
+	if form == nil {
+		return
+	}
+	form.FromIdentityID = s.replyFromIdentityID(ctx, cu, msg, thread)
+	if !(msg.IsEncrypted || msg.IsSigned) {
+		return
+	}
+	identity, err := s.selectedComposeIdentity(ctx, cu, form.FromIdentityID)
+	if err != nil {
+		return
+	}
+	form.PGPEncrypted, form.PGPSigned = replyPGPDefaults(identity, msg)
+}
+
+func replyPGPDefaults(identity composeIdentity, msg store.MessageRecord) (bool, bool) {
+	if !identity.HasPGPPrivateKey {
+		return false, false
+	}
+	if msg.IsEncrypted && strings.TrimSpace(identity.PGPPublicKeyArmored) != "" {
+		return true, true
+	}
+	if msg.IsSigned {
+		return false, true
+	}
+	return false, false
+}
+
 func replyComposeFormWithRecipients(msg store.MessageRecord, to, cc string) composeForm {
 	subject := strings.TrimSpace(msg.Subject)
 	if subject == "" {
@@ -48,7 +98,7 @@ func replyComposeFormWithRecipients(msg store.MessageRecord, to, cc string) comp
 		Cc:          cc,
 		Subject:     subject,
 		Body:        quotedReplyBody(msg),
-		BodyHTML:    "",
+		BodyHTML:    quotedReplyBodyHTML(msg),
 		InReplyToID: msg.ID,
 	}
 }
@@ -255,6 +305,30 @@ func quotedReplyBody(msg store.MessageRecord) string {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
+	return b.String()
+}
+
+func quotedReplyBodyHTML(msg store.MessageRecord) string {
+	var b strings.Builder
+	b.WriteString(`<br><br><div>`)
+	if !msg.Date.IsZero() || strings.TrimSpace(msg.FromAddr) != "" {
+		b.WriteString("On ")
+		if !msg.Date.IsZero() {
+			b.WriteString(html.EscapeString(msg.Date.Local().Format("Jan 2, 2006 at 3:04 PM")))
+		}
+		if strings.TrimSpace(msg.FromAddr) != "" {
+			b.WriteString(", ")
+			b.WriteString(html.EscapeString(msg.FromAddr))
+		}
+		b.WriteString(" wrote:")
+	}
+	b.WriteString(`</div><blockquote class="rolltop-reply-body">`)
+	if strings.TrimSpace(msg.BodyHTML) != "" {
+		b.WriteString(sanitizeComposeHTML(msg.BodyHTML))
+	} else {
+		b.WriteString(plainTextBodyHTML(msg.BodyText))
+	}
+	b.WriteString(`</blockquote>`)
 	return b.String()
 }
 
