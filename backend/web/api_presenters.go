@@ -89,6 +89,13 @@ func apiMailboxFromStore(box store.Mailbox) apiMailbox {
 	}
 }
 
+func apiMailboxFromStoreForAccount(box store.Mailbox, account store.MailAccount) apiMailbox {
+	out := apiMailboxFromStore(box)
+	out.AccountEmail = account.Email
+	out.AccountLabel = account.Label
+	return out
+}
+
 func apiAccountFromStore(account store.MailAccount) apiAccount {
 	return apiAccount{
 		ID:                  account.ID,

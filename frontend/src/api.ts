@@ -11,6 +11,7 @@ import type {
   ComposeForm,
   ComposeIdentity,
   Conversation,
+  Mailbox,
   MailIdentity,
   MessageOriginalSource,
   PluginSetting,
@@ -363,6 +364,8 @@ export const api = {
     getJSON<AccountPurgeEstimate>(`/api/account/imap/${id}/purge-estimate`),
   deleteIMAPAccount: (csrf: string, id: number, confirm: string) =>
     postJSON<{ ok: boolean; queued: boolean; run_id: number; estimate: AccountPurgeEstimate }>(`/api/account/imap/${id}/delete`, csrf, { confirm }),
+  createIMAPFolder: (csrf: string, accountID: number, name: string) =>
+    postJSON<{ ok: boolean; mailbox: Mailbox }>(`/api/account/imap/${accountID}/folders`, csrf, { name }),
   saveSMTPAccount: (csrf: string, account: Record<string, unknown>) =>
     postJSON<{ ok: boolean; smtp_account: SMTPAccount }>("/api/account/smtp", csrf, account),
   deleteSMTPAccount: (csrf: string, id: number) =>

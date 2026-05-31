@@ -1,0 +1,15 @@
+{
+  "id": "mail_filters",
+  "name": "Mail filters",
+  "description": "Runs Gmail-style search filters against new and existing mail with action audit history.",
+  "version": "1.0.0",
+  "auto_start": true,
+  "backend": {
+    "kind": "go-plugin",
+    "binary": "backend/mail_filters.so"
+  },
+  "frontend": {
+    "module": "frontend_dist/index.js",
+    "css": "frontend_dist/styles.css"
+  }
+}

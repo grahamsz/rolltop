@@ -47,6 +47,26 @@ type OriginalSourceState = {
   data: MessageOriginalSource | null;
 };
 
+type MessagePluginPanelState = {
+  messageID: number;
+  panelID: string;
+};
+
+type MessageActionPlugin = RuntimePlugin & {
+  renderMessageMenuActions?: (context: MessageActionContext) => ReactNode;
+  renderMessageActionPanels?: (context: MessageActionContext) => ReactNode;
+};
+
+type MessageActionContext = {
+  csrf: string;
+  item: ThreadMessage;
+  datePrefs: DatePrefs;
+  activePanel: string;
+  openPanel: (panelID: string) => void;
+  closePanel: () => void;
+  addToast: (message: string, kind?: Toast["kind"]) => number;
+};
+
 type PGPBodyState = {
   loading: boolean;
   error: string;
@@ -109,6 +129,36 @@ function loadStatusDetail(status: MessageLoadStatus): string {
     return "Everything needed for this conversation is already in the local blob store.";
   }
   return "Using local message data; no IMAP fetch is needed.";
+}
+
+function messageActionContext({
+  csrf,
+  item,
+  datePrefs,
+  activePanel,
+  openPanel,
+  closePanel,
+  addToast
+}: MessageActionContext): MessageActionContext {
+  return { csrf, item, datePrefs, activePanel, openPanel, closePanel, addToast };
+}
+
+function messageMenuActionNodes(plugins: readonly RuntimePlugin[], context: MessageActionContext) {
+  return (plugins as readonly MessageActionPlugin[])
+    .map((plugin, index) => {
+      const node = plugin.renderMessageMenuActions?.(context);
+      return node ? <Fragment key={`message-menu-plugin-${index}`}>{node}</Fragment> : null;
+    })
+    .filter(Boolean);
+}
+
+function messageActionPanelNodes(plugins: readonly RuntimePlugin[], context: MessageActionContext) {
+  return (plugins as readonly MessageActionPlugin[])
+    .map((plugin, index) => {
+      const node = plugin.renderMessageActionPanels?.(context);
+      return node ? <Fragment key={`message-panel-plugin-${index}`}>{node}</Fragment> : null;
+    })
+    .filter(Boolean);
 }
 
 // MessageDetailsToggle keeps the Gmail-style compact recipient line but exposes
@@ -657,6 +707,7 @@ export function ThreadView({
   const [unsubscribingID, setUnsubscribingID] = useState<number | null>(null);
   const [pendingUnsubscribe, setPendingUnsubscribe] = useState<ThreadMessage | null>(null);
   const [originalSource, setOriginalSource] = useState<OriginalSourceState | null>(null);
+  const [messagePluginPanel, setMessagePluginPanel] = useState<MessagePluginPanelState | null>(null);
   const [pgpBodies, setPGPBodies] = useState<Record<number, PGPBodyState>>({});
   const [pgpAttachmentImports, setPGPAttachmentImports] = useState<Record<number, AttachmentPGPImportState>>({});
   const [autocryptImports, setAutocryptImports] = useState<Record<number, AttachmentPGPImportState>>({});
@@ -706,6 +757,7 @@ export function ThreadView({
       setError("");
       setLoadStatus(null);
       setOriginalSource(null);
+      setMessagePluginPanel(null);
       Object.values(pgpBodiesRef.current).forEach((body) => revokeDecryptedMIMEAttachments(body.decryptedAttachments));
       setPGPBodies({});
       setPGPAttachmentImports({});
@@ -1272,6 +1324,14 @@ export function ThreadView({
     });
   }
 
+  function openMessagePluginPanel(messageID: number, panelID: string) {
+    setMessagePluginPanel({ messageID, panelID });
+  }
+
+  function closeMessagePluginPanel(messageID: number, panelID: string) {
+    setMessagePluginPanel((current) => current?.messageID === messageID && current.panelID === panelID ? null : current);
+  }
+
   async function confirmUnsubscribe() {
     if (!pendingUnsubscribe) return;
     const item = pendingUnsubscribe;
@@ -1439,6 +1499,16 @@ export function ThreadView({
             }));
             const pgpDiscoveryItems = [...autocryptDiscoveryItems, ...gossipDiscoveryItems];
             const showAttachments = item.attachments.length > 0 || decryptedAttachments.length > 0 || pgpDiscoveryItems.length > 0;
+            const activeMessagePanel = messagePluginPanel?.messageID === item.message.id ? messagePluginPanel.panelID : "";
+            const actionContext = messageActionContext({
+              csrf,
+              item,
+              datePrefs,
+              activePanel: activeMessagePanel,
+              openPanel: (panelID) => openMessagePluginPanel(item.message.id, panelID),
+              closePanel: () => closeMessagePluginPanel(item.message.id, activeMessagePanel),
+              addToast
+            });
             return (
               <article className={`thread-card ${isExpanded ? "" : "collapsed"}`} key={item.message.id}>
                 <div
@@ -1553,6 +1623,7 @@ export function ThreadView({
                           sentLabel={unsubscribeSent}
                           onRequest={requestUnsubscribe}
                         />
+                        {messageMenuActionNodes(messageSecurityPlugins, actionContext)}
                       </div>
                     </details>
                   </div>
@@ -1560,6 +1631,7 @@ export function ThreadView({
                 {searchExplanations[item.message.id]?.open ? (
                   <SearchExplanationPanel state={searchExplanations[item.message.id]} onClose={() => closeSearchExplanation(item.message.id)} />
                 ) : null}
+                {messageActionPanelNodes(messageSecurityPlugins, actionContext)}
                 <RemoteImageNotice
                   item={item}
                   plugins={pluginSet}

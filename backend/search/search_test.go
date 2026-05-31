@@ -1043,6 +1043,40 @@ func TestSearchDateOperators(t *testing.T) {
 	}
 }
 
+func TestSearchRelativeDateOperators(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	now := time.Now().UTC()
+	messages := []store.MessageRecord{
+		{ID: 1, UserID: 1, Subject: "old reservation", BodyText: "yoga", Date: now.Add(-10 * 24 * time.Hour)},
+		{ID: 2, UserID: 1, Subject: "new reservation", BodyText: "yoga", Date: now.Add(-2 * 24 * time.Hour)},
+	}
+	for _, msg := range messages {
+		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids, err := svc.Search(ctx, 1, "yoga older_than:7d", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("older_than ids = %v", ids)
+	}
+	ids, err = svc.Search(ctx, 1, "yoga newer_than:7d", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != 2 {
+		t.Fatalf("newer_than ids = %v", ids)
+	}
+}
+
 func TestSearchPlainNegatedTermExcludesMatches(t *testing.T) {
 	ctx := context.Background()
 	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))

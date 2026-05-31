@@ -89,6 +89,29 @@ func (f *Fetcher) MailboxStatus(ctx context.Context, account store.MailAccount, 
 	return syncer.MailboxStatus{Messages: status.Messages, Unseen: status.Unseen, UIDNext: status.UidNext, UIDValidity: status.UidValidity}, nil
 }
 
+// CreateMailbox issues IMAP CREATE for a server-side folder. Rolltop creates the
+// local mailbox row only after this succeeds.
+func (f *Fetcher) CreateMailbox(ctx context.Context, account store.MailAccount, mailbox string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	mailbox = strings.TrimSpace(mailbox)
+	if mailbox == "" {
+		return fmt.Errorf("folder name is required")
+	}
+	c, err := f.login(account)
+	if err != nil {
+		return err
+	}
+	defer c.Logout()
+	if err := c.Create(mailbox); err != nil {
+		return fmt.Errorf("create IMAP folder %q: %w", mailbox, err)
+	}
+	return nil
+}
+
 // UIDs returns every UID currently present in a mailbox for local deletion/reconciliation checks.
 func (f *Fetcher) UIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error) {
 	select {

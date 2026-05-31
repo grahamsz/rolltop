@@ -14,6 +14,7 @@ import (
 	goplugin "plugin"
 	"strings"
 	"sync"
+	"time"
 )
 
 // CurrentUser is the authenticated user shape exposed to backend plugins.
@@ -26,6 +27,44 @@ type BackendHost interface {
 	Store() any
 	MasterKey() []byte
 	PluginEnabled(context.Context, string) bool
+}
+
+// StoredMessageContext is the host-owned subset of a newly mirrored message
+// passed to plugins that need to react after a message row exists.
+type StoredMessageContext struct {
+	UserID      int64
+	MessageID   int64
+	AccountID   int64
+	MailboxID   int64
+	MailboxName string
+	UID         uint32
+	Date        time.Time
+	From        string
+	To          string
+	CC          string
+	Subject     string
+	IsRead      bool
+	IsStarred   bool
+}
+
+// SearchMatchResult mirrors the search service's per-message match metadata in
+// a plugin-neutral shape.
+type SearchMatchResult struct {
+	Matched    bool
+	Score      float64
+	Terms      []string
+	QueryTerms []string
+	Fields     []string
+}
+
+// StoredMessageHost exposes existing mail operations that stored-message hooks
+// may apply after they have made a user-scoped decision.
+type StoredMessageHost interface {
+	BackendHost
+	MatchMessageSearch(context.Context, int64, int64, string) (SearchMatchResult, error)
+	StarMessage(context.Context, int64, int64, bool) error
+	MoveMessage(context.Context, int64, int64, int64) error
+	ForwardMessage(context.Context, int64, int64, string, []MailHeader) error
 }
 
 // APIHost adds the HTTP helpers needed by plugin-owned API routes.
@@ -192,6 +231,14 @@ type IncomingMessageHook interface {
 	ImportIncomingMessage(context.Context, BackendHost, int64, []byte, string) error
 }
 
+// StoredMessageHook receives a full stored-message context after a message row
+// and mailbox location have been created. Plugins should keep their own state
+// user-scoped and return ErrUnsupported when no work is needed.
+type StoredMessageHook interface {
+	BackendPlugin
+	ImportStoredMessage(context.Context, StoredMessageHost, StoredMessageContext) error
+}
+
 // AttachmentInfo is the host-provided subset of a stored attachment used by
 // plugin action providers.
 type AttachmentInfo struct {
@@ -346,6 +393,9 @@ func backendHookNames(plugin BackendPlugin) []string {
 	}
 	if _, ok := plugin.(IncomingMessageHook); ok {
 		names = append(names, "incoming-message")
+	}
+	if _, ok := plugin.(StoredMessageHook); ok {
+		names = append(names, "stored-message")
 	}
 	if _, ok := plugin.(AttachmentActionProvider); ok {
 		names = append(names, "attachment-actions")

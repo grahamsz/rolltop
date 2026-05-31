@@ -264,6 +264,7 @@ func New(opts Options) (*Server, error) {
 	if opts.Syncer != nil {
 		opts.Syncer.Notify = srv.notifyUserChanged
 	}
+	srv.startAutoStartBackendPlugins(context.Background())
 	return srv, nil
 }
 

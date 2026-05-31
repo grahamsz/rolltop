@@ -4,6 +4,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"sync"
 
 	"rolltop/backend/plugins"
+	"rolltop/backend/search"
 )
 
 func (s *Server) Store() any {
@@ -57,6 +59,62 @@ func (s *Server) WriteAPIError(w http.ResponseWriter, status int, message string
 
 func (s *Server) ServerError(w http.ResponseWriter, err error) {
 	s.serverError(w, err)
+}
+
+func (s *Server) MatchMessageSearch(ctx context.Context, userID, messageID int64, query string) (plugins.SearchMatchResult, error) {
+	if s == nil || s.search == nil {
+		return plugins.SearchMatchResult{}, errors.New("search is not configured")
+	}
+	hit, ok, err := s.search.MatchMessageWithOptions(ctx, userID, messageID, query, search.SearchOptions{})
+	if err != nil {
+		return plugins.SearchMatchResult{}, err
+	}
+	return plugins.SearchMatchResult{
+		Matched:    ok,
+		Score:      hit.Score,
+		Terms:      hit.Terms,
+		QueryTerms: hit.QueryTerms,
+		Fields:     hit.Fields,
+	}, nil
+}
+
+func (s *Server) StarMessage(ctx context.Context, userID, messageID int64, starred bool) error {
+	if s == nil || s.syncer == nil {
+		return errors.New("sync service is not configured")
+	}
+	msg, err := s.syncer.SetStarredForMessage(ctx, userID, messageID, starred)
+	if err != nil {
+		return err
+	}
+	if err := s.syncer.SyncStarStateForMessage(ctx, userID, msg.ID); err != nil {
+		return err
+	}
+	s.notifyUserChanged(userID)
+	return nil
+}
+
+func (s *Server) MoveMessage(ctx context.Context, userID, messageID, destMailboxID int64) error {
+	if s == nil || s.syncer == nil {
+		return errors.New("sync service is not configured")
+	}
+	if err := s.syncer.MoveMessage(ctx, userID, messageID, destMailboxID); err != nil {
+		return err
+	}
+	s.notifyUserChanged(userID)
+	return nil
+}
+
+func (s *Server) ForwardMessage(ctx context.Context, userID, messageID int64, to string, headers []plugins.MailHeader) error {
+	if s == nil || s.syncer == nil {
+		return errors.New("sync service is not configured")
+	}
+	if s.syncer.Sender == nil {
+		s.syncer.Sender = s.sender
+	}
+	if len(s.syncer.MasterKey) == 0 {
+		s.syncer.MasterKey = s.masterKey
+	}
+	return s.syncer.ForwardMessage(ctx, userID, messageID, to, headers)
 }
 
 func (s *Server) RegisterProtectedAPI(pluginID string, route plugins.ProtectedAPIRoute) (plugins.ProtectedAPIRouteHandle, error) {
@@ -202,6 +260,26 @@ func (s *Server) enabledBackendPlugins(ctx context.Context) ([]plugins.BackendPl
 		}
 	}
 	return out, nil
+}
+
+func (s *Server) startAutoStartBackendPlugins(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	for _, manifest := range s.pluginManifests {
+		if !manifest.AutoStart || strings.TrimSpace(manifest.ID) == "" {
+			continue
+		}
+		pluginID := manifest.ID
+		if !s.pluginEnabled(ctx, pluginID) {
+			continue
+		}
+		go func() {
+			if _, _, err := s.startBackendPlugin(context.Background(), pluginID); err != nil {
+				log.Printf("start backend plugin %s: %v", pluginID, err)
+			}
+		}()
+	}
 }
 
 type protectedAPIRouteRegistry struct {

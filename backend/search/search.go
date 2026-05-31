@@ -1984,7 +1984,7 @@ type negatedTextTerm struct {
 	Quoted bool
 }
 
-var operatorRE = regexp.MustCompile(`(?i)(^|\s)(-?)(has:attachment|is:read|is:unread|is:starred|is:notstarred|is:encrypted|is:unencrypted|is:signed|is:unsigned|lang:("[^"]+"|\S+)|filename:("[^"]+"|\S+)|from:("[^"]+"|\S+)|to:("[^"]+"|\S+)|cc:("[^"]+"|\S+)|subject:("[^"]+"|\S+)|after:("[^"]+"|\S+)|before:("[^"]+"|\S+)|year:("[^"]+"|\S+))`)
+var operatorRE = regexp.MustCompile(`(?i)(^|\s)(-?)(has:attachment|is:read|is:unread|is:starred|is:notstarred|is:encrypted|is:unencrypted|is:signed|is:unsigned|lang:("[^"]+"|\S+)|filename:("[^"]+"|\S+)|from:("[^"]+"|\S+)|to:("[^"]+"|\S+)|cc:("[^"]+"|\S+)|subject:("[^"]+"|\S+)|after:("[^"]+"|\S+)|before:("[^"]+"|\S+)|older_than:("[^"]+"|\S+)|newer_than:("[^"]+"|\S+)|year:("[^"]+"|\S+))`)
 
 // parseQuery extracts supported operators while preserving the remaining free text.
 // The parser is intentionally small and predictable rather than a full Gmail clone.
@@ -2050,6 +2050,10 @@ func parseQuery(queryText string) parsedQuery {
 			out.After = parseSearchDate(operatorValue(token), false)
 		case strings.HasPrefix(lower, "before:"):
 			out.Before = parseSearchDate(operatorValue(token), false)
+		case strings.HasPrefix(lower, "older_than:"):
+			out.Before = parseRelativeSearchDate(operatorValue(token))
+		case strings.HasPrefix(lower, "newer_than:"):
+			out.After = parseRelativeSearchDate(operatorValue(token))
 		case strings.HasPrefix(lower, "year:"):
 			if start, end := parseSearchYear(operatorValue(token)); !start.IsZero() {
 				out.After = start
@@ -2153,6 +2157,37 @@ func parseSearchDate(value string, endOfDay bool) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+func parseRelativeSearchDate(value string) time.Time {
+	duration, ok := parseRelativeSearchDuration(value)
+	if !ok {
+		return time.Time{}
+	}
+	return time.Now().UTC().Add(-duration)
+}
+
+func parseRelativeSearchDuration(value string) (time.Duration, bool) {
+	value = strings.ToLower(strings.Trim(strings.TrimSpace(value), `"`))
+	if value == "" {
+		return 0, false
+	}
+	unit := value[len(value)-1]
+	n, err := strconv.Atoi(value[:len(value)-1])
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	switch unit {
+	case 'd':
+		return time.Duration(n) * 24 * time.Hour, true
+	case 'w':
+		return time.Duration(n) * 7 * 24 * time.Hour, true
+	case 'm':
+		return time.Duration(n) * 30 * 24 * time.Hour, true
+	case 'y':
+		return time.Duration(n) * 365 * 24 * time.Hour, true
+	}
+	return 0, false
 }
 
 func parseSearchYear(value string) (time.Time, time.Time) {

@@ -26,6 +26,7 @@ type Manifest struct {
 	EnabledByDefault bool            `json:"enabled_by_default"`
 	Heavy            bool            `json:"heavy"`
 	Experimental     bool            `json:"experimental"`
+	AutoStart        bool            `json:"auto_start"`
 	Backend          *BackendBundle  `json:"backend,omitempty"`
 	Frontend         *FrontendBundle `json:"frontend,omitempty"`
 	Themes           []ThemeBundle   `json:"themes,omitempty"`

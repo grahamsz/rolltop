@@ -1,5 +1,13 @@
 @use "mixins/components" as *;
 
+.search-result-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
 .message-table {
   --new-mail-row-height: 45px;
   background: transparent;

@@ -414,6 +414,28 @@
   gap: 10px;
 }
 
+.folder-settings-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+
+  h2 {
+    margin: 0;
+  }
+}
+
+.folder-create-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) auto;
+  gap: 8px;
+  align-items: center;
+
+  input {
+    min-width: 0;
+  }
+}
+
 .folder-sync-list {
   display: grid;
   border-top: 1px solid var(--border);
@@ -905,6 +927,16 @@
 }
 
 @media (max-width: 760px) {
+  .folder-settings-header,
+  .folder-create-form {
+    grid-template-columns: 1fr;
+  }
+
+  .folder-settings-header {
+    display: grid;
+    align-items: stretch;
+  }
+
   .folder-sync-summary,
   .folder-edit-body {
     grid-template-columns: 1fr;

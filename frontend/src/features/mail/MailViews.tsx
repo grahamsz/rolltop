@@ -18,6 +18,20 @@ import { mailRoute, mailURL, messageURL, routeWithSearch, searchRoute, searchURL
 import { messageSecurityIndicators, messageSecurityPreviewText, messageSecuritySnippetClassName } from "../../plugins/messageSecurity";
 import type { RuntimePlugin } from "../../plugins/runtime";
 
+type SearchActionPlugin = RuntimePlugin & {
+  renderSearchActions?: (context: {
+    query: string;
+    navigate: (url: string) => void;
+  }) => ReactNode;
+};
+
+function searchActionNodes(plugins: RuntimePlugin[], query: string, navigate: (url: string) => void) {
+  if (!query) return [];
+  return (plugins as SearchActionPlugin[])
+    .map((plugin) => plugin.renderSearchActions?.({ query, navigate }))
+    .filter(Boolean);
+}
+
 /**
  * MailView fetches one page of mailbox/all-mail conversations. It clears stale
  * rows when the URL changes, animates newly delivered messages on the first page,
@@ -325,6 +339,7 @@ export function SearchView({
   datePrefs,
   activeSyncRuns,
   messageSecurityPlugins = [],
+  searchActionPlugins = [],
   addToast
 }: {
   csrf: string;
@@ -334,6 +349,7 @@ export function SearchView({
   datePrefs: DatePrefs;
   activeSyncRuns: SyncRun[];
   messageSecurityPlugins?: RuntimePlugin[];
+  searchActionPlugins?: RuntimePlugin[];
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -386,6 +402,7 @@ export function SearchView({
   const pageURL = (nextPage: number) => searchURL(query, nextPage);
   const returnURL = routeWithSearch(location.path, location.search);
   const maintenanceRun = activeSearchMaintenanceRun(activeSyncRuns);
+  const pluginSearchActions = searchActionNodes(searchActionPlugins, query, navigate);
 
   function updateStarred(messageID: number, starredMessageID: number, starred: boolean) {
     setConversations((current) => current.map((conversation) => {
@@ -414,7 +431,12 @@ export function SearchView({
           loading: listPending
         }}
       />
-      {query ? <div className="muted">Results for <strong>{query}</strong></div> : null}
+      {query ? (
+        <div className="search-result-actions">
+          <div className="muted">Results for <strong>{query}</strong></div>
+          {pluginSearchActions}
+        </div>
+      ) : null}
       {maintenanceRun ? <SearchMaintenanceNotice run={maintenanceRun} /> : null}
       {error ? <div className="error">{error}</div> : null}
       {!error ? (

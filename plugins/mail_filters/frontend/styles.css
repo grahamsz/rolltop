@@ -1,0 +1,126 @@
+.mail-filter-settings {
+  display: grid;
+  gap: 16px;
+}
+
+.mail-filter-editor {
+  display: grid;
+  gap: 14px;
+}
+
+.mail-filter-editor input,
+.mail-filter-editor select {
+  width: 100%;
+}
+
+.mail-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.mail-filter-account-list,
+.mail-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  align-items: center;
+}
+
+.mail-filter-forward {
+  min-width: min(360px, 100%);
+  flex: 1;
+}
+
+.mail-filter-rule-list,
+.mail-filter-message-evaluations {
+  display: grid;
+  gap: 8px;
+}
+
+.mail-filter-rule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--border, #d5cec7);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.mail-filter-rule-row > button:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+  border: 0;
+  padding: 4px;
+}
+
+.mail-filter-rule-row small,
+.mail-filter-message-evaluation small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mail-filter-message-panel {
+  display: block;
+}
+
+.mail-filter-message-evaluation {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: start;
+  border-bottom: 1px solid var(--border, #d5cec7);
+  padding: 8px 0;
+}
+
+.mail-filter-message-evaluation:last-child {
+  border-bottom: 0;
+}
+
+.mail-filter-message-evaluation > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mail-filter-message-evaluation small {
+  color: var(--muted, #6f6a63);
+  font-size: 12px;
+}
+
+.mail-filter-status {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  background: #eee7df;
+}
+
+.mail-filter-status.matched {
+  background: #dcebdc;
+  color: #23512a;
+}
+
+.mail-filter-status.action_failed,
+.mail-filter-status.loop_prevented {
+  background: #f0d8d2;
+  color: #7a2f20;
+}
+
+.mail-filter-status.scheduled {
+  background: #dbe7f2;
+  color: #234a68;
+}
+
+@media (max-width: 760px) {
+  .mail-filter-rule-row,
+  .mail-filter-message-evaluation {
+    grid-template-columns: 1fr;
+  }
+}

@@ -19,6 +19,28 @@ import { identitySecuritySettings } from "../../plugins/identitySecurity";
 import { AdminRemoteImageBlocklist } from "../../plugins/remoteImageBlocklist/AdminRemoteImageBlocklist";
 import { PluginTogglePanel } from "./admin/PluginTogglePanel";
 
+type AccountSettingsSummaryPlugin = RuntimePlugin & {
+  renderAccountSettingsSummary?: (context: {
+    csrf: string;
+    user: User;
+    mailboxes: Mailbox[];
+    navigate: (url: string) => void;
+    addToast: (message: string, kind?: Toast["kind"]) => number;
+  }) => ReactNode;
+};
+
+function accountSettingsSummaryNodes(plugins: readonly RuntimePlugin[], context: {
+  csrf: string;
+  user: User;
+  mailboxes: Mailbox[];
+  navigate: (url: string) => void;
+  addToast: (message: string, kind?: Toast["kind"]) => number;
+}) {
+  return (plugins as readonly AccountSettingsSummaryPlugin[])
+    .map((plugin) => plugin.renderAccountSettingsSummary?.(context))
+    .filter(Boolean);
+}
+
 function emptySMTPForm() {
   return {
     label: "",
@@ -594,8 +616,10 @@ export function SettingsView({
   const [profileForm, setProfileForm] = useState(() => profileFormForUser(user, availableThemes));
   const [editingFolderID, setEditingFolderID] = useState<number | null>(null);
   const [folderDraft, setFolderDraft] = useState<FolderSettingsDraft | null>(null);
+  const [newFolderName, setNewFolderName] = useState("");
   const [deletingAccountID, setDeletingAccountID] = useState<number | null>(null);
   const [deletingSMTPID, setDeletingSMTPID] = useState<number | null>(null);
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const [savingIdentity, setSavingIdentity] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -1046,6 +1070,28 @@ export function SettingsView({
       await load();
     } catch (err) {
       addToast(messageFromError(err), "error");
+    }
+  }
+
+  async function createFolder(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedAccountID || creatingFolder) return;
+    const name = newFolderName.trim();
+    if (!name) {
+      addToast("Folder name is required.", "error");
+      return;
+    }
+    setCreatingFolder(true);
+    try {
+      const data = await api.createIMAPFolder(csrf, selectedAccountID, name);
+      setNewFolderName("");
+      addToast(`${data.mailbox.name} created on the IMAP server.`);
+      await load();
+      await refreshChrome();
+    } catch (err) {
+      addToast(messageFromError(err), "error");
+    } finally {
+      setCreatingFolder(false);
     }
   }
 
@@ -1696,8 +1742,26 @@ export function SettingsView({
     return (
       <>
         <section className="panel folder-settings-panel">
-          <h2>Folder sync</h2>
-          <div className="muted">Folders under {selectedAccountLabel}</div>
+          <div className="folder-settings-header">
+            <div>
+              <h2>Folder sync</h2>
+              <div className="muted">Folders under {selectedAccountLabel}</div>
+            </div>
+            {selectedAccountID ? (
+              <form className="folder-create-form" onSubmit={createFolder}>
+                <input
+                  value={newFolderName}
+                  onChange={(event) => setNewFolderName(event.target.value)}
+                  placeholder="New folder"
+                  aria-label="New IMAP folder name"
+                  disabled={creatingFolder}
+                />
+                <button className="secondary" type="submit" disabled={creatingFolder || !newFolderName.trim()}>
+                  <Icon name="create_new_folder" />Create
+                </button>
+              </form>
+            ) : null}
+          </div>
           <div className="folder-sync-list">
             {folderNodes.length > 0 ? renderFolderItems(folderNodes) : <div className="muted">No folders discovered yet. Sync this account to discover folders.</div>}
           </div>
@@ -1851,6 +1915,7 @@ export function SettingsView({
         {renderIMAPList()}
         {renderSMTPList()}
         {renderIdentitySummary()}
+        {accountSettingsSummaryNodes(identitySecurityPlugins, { csrf, user, mailboxes, navigate, addToast })}
       </div>
       {renderDisplaySettings()}
       {renderSearchSettings()}

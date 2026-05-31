@@ -13,6 +13,7 @@ import (
 
 	mmcrypto "rolltop/backend/crypto"
 	"rolltop/backend/store"
+	"rolltop/backend/syncer"
 )
 
 type accountSettingsInput struct {
@@ -138,6 +139,8 @@ func (s *Server) apiIMAPAccountPath(w http.ResponseWriter, r *http.Request, path
 		return
 	}
 	switch parts[1] {
+	case "folders":
+		s.apiCreateIMAPFolder(w, r, accountID)
 	case "purge-estimate":
 		s.apiIMAPAccountPurgeEstimate(w, r, accountID)
 	case "delete":
@@ -145,6 +148,55 @@ func (s *Server) apiIMAPAccountPath(w http.ResponseWriter, r *http.Request, path
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+type createIMAPFolderInput struct {
+	Name string `json:"name"`
+}
+
+func (s *Server) apiCreateIMAPFolder(w http.ResponseWriter, r *http.Request, accountID int64) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	if s.syncer == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "IMAP sync is not configured.")
+		return
+	}
+	account, err := s.store.GetMailAccountForUser(r.Context(), cu.User.ID, accountID)
+	if store.IsNotFound(err) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	var in createIMAPFolderInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	mb, err := s.syncer.CreateRemoteFolder(r.Context(), cu.User.ID, accountID, in.Name)
+	if err != nil {
+		switch {
+		case errors.Is(err, syncer.ErrFolderExists):
+			writeAPIError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, syncer.ErrRemoteFolderCreateUnsupported):
+			writeAPIError(w, http.StatusServiceUnavailable, "This IMAP connection cannot create folders.")
+		default:
+			writeAPIError(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+	s.notifyUserChanged(cu.User.ID)
+	writeJSON(w, map[string]any{"ok": true, "mailbox": apiMailboxFromStoreForAccount(mb, account)})
 }
 
 func (s *Server) apiIMAPAccountPurgeEstimate(w http.ResponseWriter, r *http.Request, accountID int64) {

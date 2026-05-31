@@ -27,6 +27,7 @@ import (
 	"rolltop/backend/imapclient"
 	"rolltop/backend/plugins"
 	"rolltop/backend/search"
+	"rolltop/backend/smtpclient"
 	"rolltop/backend/store"
 	"rolltop/backend/syncer"
 	"rolltop/backend/web"
@@ -372,8 +373,10 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 		Blobs:         blobStore,
 		Search:        searchSvc,
 		Fetcher:       imapFetcher,
+		Sender:        &smtpclient.Sender{MasterKey: cfg.MasterKey},
 		BlobRetention: cfg.BlobRetention,
 		PluginDir:     cfg.PluginDir,
+		MasterKey:     cfg.MasterKey,
 	}
 	syncRunner := syncer.NewRunnerWithContext(ctx, syncSvc)
 	webServer, err := web.New(web.Options{

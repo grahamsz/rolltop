@@ -14,6 +14,7 @@ import (
 	"rolltop/backend/blob"
 	"rolltop/backend/plugins"
 	"rolltop/backend/search"
+	"rolltop/backend/smtpclient"
 	"rolltop/backend/store"
 )
 
@@ -66,6 +67,11 @@ type Fetcher interface {
 	MoveMessage(ctx context.Context, account store.MailAccount, sourceMailbox string, destMailbox string, uid uint32) error
 }
 
+// MailSender is the SMTP boundary used by filter-style background actions.
+type MailSender interface {
+	Send(ctx context.Context, account store.MailAccount, msg smtpclient.Message) ([]byte, error)
+}
+
 // Service is the sync orchestrator. It owns no goroutine scheduling itself; the
 // Runner decides when work starts, then Service performs one account/mailbox sync
 // against Store, Blob, Search, and Fetcher dependencies.
@@ -74,10 +80,12 @@ type Service struct {
 	Blobs   *blob.Store
 	Search  *search.Service
 	Fetcher Fetcher
+	Sender  MailSender
 
 	BlobRetention time.Duration
 	Notify        func(userID int64)
 	PluginDir     string
+	MasterKey     []byte
 
 	pluginOnce     sync.Once
 	pluginLoadErr  error
@@ -398,6 +406,16 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			if err := searchBatch.Add(ctx, pendingIndex); err != nil {
 				return err
 			}
+			if hooks, err := s.storedMessageHooks(ctx); err != nil {
+				return err
+			} else if len(hooks) > 0 {
+				if err := searchBatch.Flush(ctx); err != nil {
+					return err
+				}
+				if err := s.importStoredMessageHooks(ctx, hooks, msg, mailbox); err != nil {
+					return err
+				}
+			}
 			progress.MessagesStored++
 			if shouldNotifyNewMail(mailbox, mailboxLastUIDAtStart, item) {
 				progress.NewMessages++
@@ -537,6 +555,16 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 		}
 		if err := searchBatch.Add(ctx, pendingIndex); err != nil {
 			return err
+		}
+		if hooks, err := s.storedMessageHooks(ctx); err != nil {
+			return err
+		} else if len(hooks) > 0 {
+			if err := searchBatch.Flush(ctx); err != nil {
+				return err
+			}
+			if err := s.importStoredMessageHooks(ctx, hooks, msg, mailbox); err != nil {
+				return err
+			}
 		}
 		if progress != nil {
 			progress.MessagesStored++

@@ -43,6 +43,10 @@ const pluginConfig: Record<string, { entry: string; outDir: string }> = {
   matrix_theme: {
     entry: "plugins/matrix_theme/frontend/index.ts",
     outDir: "plugins/matrix_theme/frontend_dist"
+  },
+  mail_filters: {
+    entry: "plugins/mail_filters/frontend/index.tsx",
+    outDir: "plugins/mail_filters/frontend_dist"
   }
 };
 
