@@ -367,9 +367,6 @@ func apiContactFromStore(c store.Contact) apiContact {
 	for _, email := range c.Emails {
 		out.Emails = append(out.Emails, apiContactEmail{ID: email.ID, Label: email.Label, Email: email.Email, IsPrimary: email.IsPrimary})
 	}
-	for _, key := range c.PGPKeys {
-		out.PGPKeys = append(out.PGPKeys, apiContactPGPKeyFromStore(key))
-	}
 	for _, phone := range c.Phones {
 		out.Phones = append(out.Phones, apiContactPhone{ID: phone.ID, Label: phone.Label, Number: phone.Number, IsPrimary: phone.IsPrimary})
 	}
@@ -463,6 +460,7 @@ func apiPluginSettings(settings []store.PluginSetting) []apiPluginSetting {
 			Enabled:          setting.Enabled,
 			EnabledByDefault: setting.EnabledByDefault,
 			Heavy:            setting.Heavy,
+			Experimental:     setting.Experimental,
 		})
 	}
 	return out
@@ -488,43 +486,4 @@ func shortDateString(t time.Time) string {
 		return local.Format("Jan 2")
 	}
 	return local.Format("1/2/06")
-}
-
-func apiContactPGPKeyFromStore(key store.ContactPGPPublicKey) apiContactPGPKey {
-	return apiContactPGPKey{
-		ID:               key.ID,
-		ContactID:        key.ContactID,
-		Email:            key.Email,
-		Label:            key.Label,
-		Fingerprint:      key.Fingerprint,
-		KeyID:            key.KeyID,
-		UserIDs:          key.UserIDs,
-		PublicKeyArmored: key.PublicKeyArmored,
-		SourceKind:       key.SourceKind,
-		SourceDetail:     key.SourceDetail,
-		IsPreferred:      key.IsPreferred,
-	}
-}
-
-func apiIdentityPGPPrivateKeyFromStore(key store.IdentityPGPPrivateKey, includePrivate bool) apiIdentityPGPPrivateKey {
-	out := apiIdentityPGPPrivateKey{
-		ID:                    key.ID,
-		IdentityID:            key.IdentityID,
-		Label:                 key.Label,
-		Fingerprint:           key.Fingerprint,
-		KeyID:                 key.KeyID,
-		UserIDs:               key.UserIDs,
-		PublicKeyArmored:      key.PublicKeyArmored,
-		PrivateKeyStorage:     firstNonEmpty(key.PrivateKeyStorage, "server"),
-		RevocationCertificate: key.RevocationCertificate,
-		IsActiveSigning:       key.IsActiveSigning,
-		IsActiveEncryption:    key.IsActiveEncryption,
-		IsDecryptOnly:         key.IsDecryptOnly,
-		CreatedAt:             timeString(key.CreatedAt),
-		UpdatedAt:             timeString(key.UpdatedAt),
-	}
-	if includePrivate {
-		out.PrivateKeyArmored = key.PrivateKeyArmored
-	}
-	return out
 }

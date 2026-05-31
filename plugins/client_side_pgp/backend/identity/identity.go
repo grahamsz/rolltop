@@ -7,13 +7,14 @@ import (
 
 	"rolltop/backend/plugins"
 	"rolltop/backend/store"
+	"rolltop/plugins/client_side_pgp/backend/keystore"
 )
 
 func Security(ctx context.Context, db *store.Store, userID int64, identity plugins.MailIdentityContext) (plugins.IdentitySecurityInfo, error) {
 	if identity.ID == 0 {
 		return plugins.IdentitySecurityInfo{}, store.ErrNotFound
 	}
-	key, err := db.ActiveIdentityPGPPublicKeyForUser(ctx, userID, identity.ID)
+	key, err := keystore.ActiveIdentityPublicKeyForUser(ctx, db, userID, identity.ID)
 	if err != nil {
 		return plugins.IdentitySecurityInfo{}, err
 	}
@@ -45,7 +46,7 @@ func activePublicKey(ctx context.Context, db *store.Store, userID, identityID in
 	if identityID == 0 {
 		return store.IdentityPGPPrivateKey{}, errors.New("this identity does not have a PGP public key")
 	}
-	key, err := db.ActiveIdentityPGPPublicKeyForUser(ctx, userID, identityID)
+	key, err := keystore.ActiveIdentityPublicKeyForUser(ctx, db, userID, identityID)
 	if err != nil {
 		if store.IsNotFound(err) {
 			return store.IdentityPGPPrivateKey{}, errors.New("this identity does not have a PGP public key")

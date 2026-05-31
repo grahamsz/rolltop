@@ -16,7 +16,7 @@ func OutboundMailHeaders(ctx context.Context, db *store.Store, userID int64, ide
 	if identity.Preferences["autocrypt_enabled"] != "true" || identity.ID == 0 {
 		return nil, nil
 	}
-	key, err := db.ActiveIdentityPGPPublicKeyForUser(ctx, userID, identity.ID)
+	key, err := keystore.ActiveIdentityPublicKeyForUser(ctx, db, userID, identity.ID)
 	if err != nil || strings.TrimSpace(key.PublicKeyArmored) == "" {
 		return nil, nil
 	}

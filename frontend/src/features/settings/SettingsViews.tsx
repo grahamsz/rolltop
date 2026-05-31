@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../api";
 import type { DatePrefs, LocationState, Toast } from "../../appTypes";
-import type { Account, AccountPurgeEstimate, Bootstrap, IdentityPGPPrivateKey, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SyncFolder, SyncRun, ThemeDefinition, User } from "../../types";
+import type { Account, AccountPurgeEstimate, Bootstrap, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SyncFolder, SyncRun, ThemeDefinition, User } from "../../types";
 import { Icon } from "../../components/Icon";
 import { Field, Stat } from "../../components/common";
 import { emptyAccountForm, accountToForm } from "../../lib/accountForm";
@@ -14,8 +14,8 @@ import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
 import { folderParentNames, folderTree, type FolderNode } from "../../lib/folders";
 import { effectiveMailboxSyncMode, mergeSyncRuns } from "../../lib/sync";
 import { pluginIDs } from "../../plugins/registry";
-import type { ClientSidePGPPlugin } from "../../../../plugins/client_side_pgp/frontend/types";
-import { hydrateBrowserPGPPrivateKeys } from "../../../../plugins/client_side_pgp/frontend/storage/browserPGPKeys";
+import type { RuntimePlugin } from "../../plugins/runtime";
+import { identitySecuritySettings } from "../../plugins/identitySecurity";
 import { AdminRemoteImageBlocklist } from "../../plugins/remoteImageBlocklist/AdminRemoteImageBlocklist";
 import { PluginTogglePanel } from "./admin/PluginTogglePanel";
 
@@ -51,8 +51,6 @@ type StorageIndexBreakdownView = {
   RootBytes?: unknown;
   OtherBytes?: unknown;
 };
-
-type PGPPrivateKeyStorage = "browser" | "server";
 
 function storageIndexBreakdown(stats: StorageStats): StorageIndexBreakdownView {
   const value = stats.IndexBreakdown;
@@ -561,8 +559,7 @@ export function SettingsView({
   location,
   navigate,
   refreshChrome,
-  pgpEnabled,
-  pgpPlugin,
+  identitySecurityPlugins,
   addToast
 }: {
   csrf: string;
@@ -573,8 +570,7 @@ export function SettingsView({
   location: LocationState;
   navigate: (url: string) => void;
   refreshChrome: () => Promise<Bootstrap | null>;
-  pgpEnabled: boolean;
-  pgpPlugin?: ClientSidePGPPlugin;
+  identitySecurityPlugins: readonly RuntimePlugin[];
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const route = settingsRouteFromPath(location.path);
@@ -601,12 +597,6 @@ export function SettingsView({
   const [deletingAccountID, setDeletingAccountID] = useState<number | null>(null);
   const [deletingSMTPID, setDeletingSMTPID] = useState<number | null>(null);
   const [savingIdentity, setSavingIdentity] = useState(false);
-  const [pgpKeys, setPGPKeys] = useState<IdentityPGPPrivateKey[]>([]);
-  const [pgpPrivateKeyStorage, setPGPPrivateKeyStorage] = useState<PGPPrivateKeyStorage>("browser");
-  const [pgpPrivateImportOpen, setPGPPrivateImportOpen] = useState(false);
-  const [pgpGenerateOpen, setPGPGenerateOpen] = useState(false);
-  const [pgpSaving, setPGPSaving] = useState(false);
-  const [pgpGenerating, setPGPGenerating] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const loadStorage = useCallback(async () => {
@@ -620,15 +610,6 @@ export function SettingsView({
       setStorageLoading(false);
     }
   }, []);
-
-  const loadPGPKeys = useCallback(async () => {
-    if (!pgpEnabled || !pgpPlugin) {
-      setPGPKeys([]);
-      return;
-    }
-    const data = await pgpPlugin.privateKeys();
-    setPGPKeys(await hydrateBrowserPGPPrivateKeys(user.id, data.keys || []));
-  }, [pgpEnabled, pgpPlugin, user.id]);
 
   // The account endpoint returns several related tables at once. Loading derives
   // selected IMAP/SMTP rows from the route, then rebuilds form state from those
@@ -700,10 +681,6 @@ export function SettingsView({
   useEffect(() => {
     void load().catch((err) => addToast(messageFromError(err), "error"));
   }, [addToast, load]);
-
-  useEffect(() => {
-    void loadPGPKeys().catch((err) => addToast(messageFromError(err), "error"));
-  }, [addToast, loadPGPKeys]);
 
   useEffect(() => {
     setProfileForm(profileFormForUser(user, availableThemes));
@@ -922,191 +899,6 @@ export function SettingsView({
     setIdentities((current) => current.map((identity) => identity.id === identityID ? { ...identity, autocrypt_enabled: true } : identity));
     setIdentityDraft((current) => current.id === identityID ? { ...current, autocrypt_enabled: true } : current);
   }
-
-  function identityPGPPassphraseValues() {
-    return [user.email, user.name, identityDraft.email, identityDraft.display_name, identityDraft.email.split("@")[0] || "", identityDraft.email.split("@")[1] || ""];
-  }
-
-  async function importIdentityPGPKey(armored: string) {
-    if (!identityDraft.id) {
-      throw new Error("Save the identity before adding a PGP key.");
-    }
-    setPGPSaving(true);
-    try {
-      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-      const parsed = await pgpPlugin.privateKeyRecordFromArmoredSource(armored);
-      const matchingIdentity = identities.find((identity) => pgpPlugin.pgpUserIDsMatchEmail(parsed.user_ids, identity.email));
-      if (!matchingIdentity) {
-        const keyEmails = pgpPlugin.pgpUserIDEmails(parsed.user_ids);
-        const detail = keyEmails.length > 0 ? ` It lists ${keyEmails.join(", ")}.` : "";
-        throw new Error(`This private key is not for one of your profile email addresses.${detail}`);
-      }
-      if (matchingIdentity.id !== identityDraft.id) {
-        throw new Error(`This private key is for ${matchingIdentity.email}. Select that identity before importing it.`);
-      }
-      const parsedFingerprint = normalizedPGPIdentifier(parsed.fingerprint);
-      const parsedKeyID = normalizedPGPIdentifier(parsed.key_id);
-      const duplicate = pgpKeys.find((key) =>
-        (parsedFingerprint && normalizedPGPIdentifier(key.fingerprint) === parsedFingerprint) ||
-        (!parsedFingerprint && parsedKeyID && normalizedPGPIdentifier(key.key_id) === parsedKeyID)
-      );
-      if (duplicate) {
-        const duplicateIdentity = identities.find((identity) => identity.id === duplicate.identity_id);
-        if (duplicate.private_key_storage === "browser" && !duplicate.private_key_armored?.trim()) {
-          if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-          await pgpPlugin.saveBrowserPGPPrivateKey(user.id, duplicate, parsed.private_key_armored || "");
-          setPGPKeys((current) => current.map((key) => key.id === duplicate.id ? { ...key, private_key_armored: parsed.private_key_armored || "" } : key));
-          setPGPPrivateImportOpen(false);
-          addToast("Browser copy restored.");
-          return;
-        }
-        throw new Error(`This private key is already saved${duplicateIdentity?.email ? ` for ${duplicateIdentity.email}` : ""}.`);
-      }
-      const saved = await pgpPlugin.savePrivateKey(csrf, {
-        ...parsed,
-        identity_id: identityDraft.id,
-        label: identityDraft.email || firstPGPUserID(parsed.user_ids) || parsed.label || "PGP key",
-        private_key_armored: pgpPrivateKeyStorage === "server" ? parsed.private_key_armored : "",
-        private_key_storage: pgpPrivateKeyStorage,
-        is_active_signing: true,
-        is_active_encryption: true,
-        is_decrypt_only: false
-      });
-      if (pgpPrivateKeyStorage === "browser") {
-        try {
-          await pgpPlugin.saveBrowserPGPPrivateKey(user.id, saved.key, parsed.private_key_armored || "");
-        } catch (err) {
-          if (saved.key.id) {
-            await pgpPlugin.deletePrivateKey(csrf, saved.key.id).catch(() => undefined);
-          }
-          throw err;
-        }
-      }
-      const firstIdentityKey = !pgpKeys.some((key) => key.identity_id === identityDraft.id);
-      setPGPKeys((current) => [...current.filter((key) => key.id !== saved.key.id), saved.key]);
-      if (firstIdentityKey && saved.key.is_active_encryption && !saved.key.is_decrypt_only) {
-        markIdentityAutocryptEnabled(identityDraft.id);
-      }
-      setPGPPrivateImportOpen(false);
-      addToast(pgpPrivateKeyStorage === "browser" ? "PGP private key imported in this browser." : "PGP private key imported.");
-    } catch (err) {
-      const message = messageFromError(err);
-      addToast(message, "error");
-      throw new Error(message);
-    } finally {
-      setPGPSaving(false);
-    }
-  }
-
-  async function generateIdentityPGPKey(passphrase: string) {
-    if (!identityDraft.id) {
-      addToast("Save the identity before generating a PGP key.", "error");
-      return;
-    }
-    if (!pgpPlugin) {
-      addToast("PGP plugin is still loading. Try again in a moment.", "error");
-      return;
-    }
-    const issues = pgpPlugin.pgpPassphraseIssues(passphrase, identityPGPPassphraseValues());
-    if (issues.length > 0) {
-      addToast(issues[0], "error");
-      return;
-    }
-    setPGPGenerating(true);
-    try {
-      const generated = await pgpPlugin.generatePrivateKey(identityDraft.display_name, identityDraft.email, passphrase);
-      const saved = await pgpPlugin.savePrivateKey(csrf, {
-        ...generated,
-        identity_id: identityDraft.id,
-        label: generated.label || identityDraft.email || "PGP key",
-        private_key_armored: pgpPrivateKeyStorage === "server" ? generated.private_key_armored : "",
-        private_key_storage: pgpPrivateKeyStorage,
-        is_active_signing: true,
-        is_active_encryption: true,
-        is_decrypt_only: false
-      });
-      if (pgpPrivateKeyStorage === "browser") {
-        try {
-          await pgpPlugin.saveBrowserPGPPrivateKey(user.id, saved.key, generated.private_key_armored || "");
-        } catch (err) {
-          if (saved.key.id) {
-            await pgpPlugin.deletePrivateKey(csrf, saved.key.id).catch(() => undefined);
-          }
-          throw err;
-        }
-      }
-      const firstIdentityKey = !pgpKeys.some((key) => key.identity_id === identityDraft.id);
-      setPGPKeys((current) => [...current.filter((key) => key.id !== saved.key.id), saved.key]);
-      if (firstIdentityKey && saved.key.is_active_encryption && !saved.key.is_decrypt_only) {
-        markIdentityAutocryptEnabled(identityDraft.id);
-      }
-      setPGPGenerateOpen(false);
-      addToast(pgpPrivateKeyStorage === "browser" ? "PGP private key generated and saved in this browser." : "PGP private key generated in this browser.");
-    } catch (err) {
-      addToast(messageFromError(err), "error");
-    } finally {
-      setPGPGenerating(false);
-    }
-  }
-
-  async function deleteIdentityPGPKey(id: number) {
-    const key = pgpKeys.find((item) => item.id === id);
-    const storageLabel = key?.private_key_storage === "browser" ? "browser private key and server public-key metadata" : "PGP private key from rolltop";
-    if (!window.confirm(`Remove this ${storageLabel}? Export it first if this is your only copy.`)) return;
-    try {
-      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-      await pgpPlugin.deletePrivateKey(csrf, id);
-      if (key?.private_key_storage === "browser") {
-        await pgpPlugin?.deleteBrowserPGPPrivateKey(user.id, id).catch(() => undefined);
-      }
-      setPGPKeys((current) => current.filter((key) => key.id !== id));
-      addToast("PGP private key removed.");
-    } catch (err) {
-      addToast(messageFromError(err), "error");
-    }
-  }
-
-  async function exportIdentityPGPKey(key: IdentityPGPPrivateKey, kind: "private" | "public" | "revocation") {
-    let data = kind === "private" ? key.private_key_armored : kind === "public" ? key.public_key_armored : key.revocation_certificate;
-    if (kind === "private" && key.private_key_storage === "browser" && !data?.trim() && key.id) {
-      try {
-        if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-        data = await pgpPlugin.loadBrowserPGPPrivateKey(user.id, key.id);
-      } catch (err) {
-        addToast(messageFromError(err), "error");
-        return;
-      }
-    }
-    if (!data) {
-      addToast(key.private_key_storage === "browser" ? "This private key is not saved in this browser." : "No key material available to export.", "error");
-      return;
-    }
-    if (kind === "private" && !window.confirm([
-      "Export this PGP private key?",
-      "",
-      "Do not send your private key or passphrase to anyone. Anyone with both can decrypt mail encrypted to you and sign mail as you.",
-      "",
-      "Only save it somewhere you control."
-    ].join("\n"))) {
-      return;
-    }
-    if (kind === "revocation" && !window.confirm([
-      "Export this revocation certificate?",
-      "",
-      "This is the public kill switch for the key. Publish it only if the private key is lost, compromised, or retired."
-    ].join("\n"))) {
-      return;
-    }
-    const suffix = kind === "private" ? "private" : kind === "public" ? "public" : "publishable-revocation-certificate";
-    const blob = new Blob([data], { type: "application/pgp-keys" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${identityDraft.email || "pgp-key"}-${suffix}.asc`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
 
   async function saveProfile(event: FormEvent) {
     event.preventDefault();
@@ -1495,133 +1287,6 @@ export function SettingsView({
     });
   }
 
-  function renderIdentityPGPSettings() {
-    const keys = identityDraft.id ? pgpKeys.filter((key) => key.identity_id === identityDraft.id) : [];
-    const PGPKeyImportModal = pgpPlugin?.KeyImportModal;
-    const PGPKeyGenerateModal = pgpPlugin?.KeyGenerateModal;
-    return (
-      <section className="identity-pgp-settings">
-        <div className="panel-headline">
-          <div>
-            <h3>PGP keys</h3>
-            <div className="muted">Public keys are saved on the rolltop server so Autocrypt and public-key attachments work from every browser. Private keys can stay in this browser only, or be stored as a server-encrypted copy for unlock/export on other browsers. Your PGP passphrase, key unlock, and message decryption stay in this browser.</div>
-          </div>
-        </div>
-        {!identityDraft.id ? <div className="notice subtle">Save this identity before adding PGP keys.</div> : null}
-        <label className="identity-primary identity-autocrypt-toggle">
-          <input
-            type="checkbox"
-            checked={identityDraft.autocrypt_enabled ?? true}
-            onChange={(event) => updateIdentityDraft({ autocrypt_enabled: event.target.checked })}
-          />
-          Advertise public key with Autocrypt
-        </label>
-        <div className="identity-pgp-key-list">
-          {keys.length === 0 ? <div className="muted">No PGP private keys saved for this identity.</div> : null}
-          {keys.map((key) => (
-            <div className="identity-pgp-key-row" key={key.id || key.fingerprint}>
-              <Icon name="lock" />
-              <span>
-                <strong>{key.label || key.fingerprint || "PGP key"}</strong>
-                <small>{[
-                  shortPGPValue(key.fingerprint || key.key_id),
-                  firstPGPUserID(key.user_ids),
-                  key.private_key_storage === "browser"
-                    ? (key.private_key_armored?.trim() ? "Private key in this browser" : "Browser copy missing here")
-                    : "Private key server-stored",
-                  key.created_at ? `Imported ${displayDateTime(key.created_at, user)}` : ""
-                ].filter(Boolean).join(" · ")}</small>
-              </span>
-              <div className="identity-pgp-key-actions">
-                <details className="message-menu identity-pgp-key-menu">
-                  <summary className="icon-action" title="PGP key actions" aria-label="PGP key actions">
-                    <Icon name="more_vert" />
-                  </summary>
-                  <div className="message-menu-panel identity-pgp-key-menu-panel">
-                    <button type="button" onClick={() => void exportIdentityPGPKey(key, "public")}>
-                      <Icon name="signature" />
-                      <span><strong>Export public key</strong><small>Share this so others can encrypt mail to you and verify your signatures.</small></span>
-                    </button>
-                    <button type="button" onClick={() => void exportIdentityPGPKey(key, "private")}>
-                      <Icon name="lock" />
-                      <span><strong>Export private key</strong><small>Danger: never send this key or its passphrase to anyone.</small></span>
-                    </button>
-                    {key.revocation_certificate ? (
-                      <button type="button" onClick={() => void exportIdentityPGPKey(key, "revocation")}>
-                        <Icon name="report" />
-                        <span><strong>Download publishable revocation certificate</strong><small>Publish this only if the key is lost, compromised, or retired.</small></span>
-                      </button>
-                    ) : null}
-                    {key.id ? (
-                      <button className="danger" type="button" onClick={() => void deleteIdentityPGPKey(key.id || 0)}>
-                        <Icon name="delete" />
-                        <span><strong>Remove saved private key</strong><small>Deletes this rolltop server copy; it does not revoke the key.</small></span>
-                      </button>
-                    ) : null}
-                  </div>
-                </details>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="identity-pgp-storage-choice">
-          <strong>Private key storage for new keys</strong>
-          <label>
-            <input
-              type="radio"
-              checked={pgpPrivateKeyStorage === "browser"}
-              onChange={() => setPGPPrivateKeyStorage("browser")}
-            />
-            <span><strong>This browser only</strong><small>Best server compromise: rolltop saves the public key, while this browser keeps the private key. Other browsers must import the same private key before they can decrypt or sign.</small></span>
-          </label>
-          <label>
-            <input
-              type="radio"
-              checked={pgpPrivateKeyStorage === "server"}
-              onChange={() => setPGPPrivateKeyStorage("server")}
-            />
-            <span><strong>Server-encrypted copy</strong><small>More convenient across browsers. The server stores the armored private key encrypted with the rolltop master key, and your PGP passphrase is still required in the browser.</small></span>
-          </label>
-        </div>
-        <div className="identity-pgp-grid">
-          <section className="identity-pgp-action-card">
-            <h4>Import private key</h4>
-            <p>Bring in an existing ASCII-armored private key from a file or pasted text.</p>
-            <button className="secondary" type="button" disabled={!identityDraft.id || pgpSaving} onClick={() => setPGPPrivateImportOpen(true)}>
-              {pgpSaving ? "Importing..." : "Import key"}
-            </button>
-          </section>
-          <section className="identity-pgp-action-card">
-            <h4>Generate private key</h4>
-            <p>Create a new passphrase-protected key in this browser using the storage choice above.</p>
-            <button className="secondary" type="button" disabled={!identityDraft.id || pgpGenerating} onClick={() => setPGPGenerateOpen(true)}>
-              {pgpGenerating ? "Generating..." : "Generate key"}
-            </button>
-          </section>
-        </div>
-        {pgpPrivateImportOpen && PGPKeyImportModal ? (
-          <PGPKeyImportModal
-            title="Import private key"
-            description={pgpPrivateKeyStorage === "browser" ? "Paste, drop, or choose a passphrase-protected ASCII-armored PGP private key. rolltop saves the public key on the server and keeps the private key in this browser only." : "Paste, drop, or choose a passphrase-protected ASCII-armored PGP private key. rolltop stores a server-encrypted private-key copy for unlock/export in your browsers."}
-            placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"
-            busy={pgpSaving}
-            onCancel={() => { if (!pgpSaving) setPGPPrivateImportOpen(false); }}
-            onImport={(armored) => importIdentityPGPKey(armored)}
-          />
-        ) : null}
-        {pgpGenerateOpen && PGPKeyGenerateModal ? (
-          <PGPKeyGenerateModal
-            email={identityDraft.email}
-            busy={pgpGenerating}
-            validatePassphrase={(passphrase) => pgpPlugin?.pgpPassphraseIssues(passphrase, identityPGPPassphraseValues()) || []}
-            onCancel={() => { if (!pgpGenerating) setPGPGenerateOpen(false); }}
-            onGenerate={(passphrase) => generateIdentityPGPKey(passphrase)}
-          />
-        ) : null}
-      </section>
-    );
-  }
-
   function renderIdentitySettings() {
     const selectedTitle = selectedIdentityID === "new" ? "New identity" : identityDraft.display_name || identityDraft.email || "Identity";
     return (
@@ -1675,7 +1340,15 @@ export function SettingsView({
             <label className="identity-primary"><input type="checkbox" checked={identityDraft.is_primary} onChange={(event) => updateIdentityDraft({ is_primary: event.target.checked })} /> Primary</label>
           </div>
           <IdentityMailboxFields identity={identityDraft} accounts={imapAccounts} smtpAccounts={smtpAccounts} mailboxes={allFolderMailboxes} updateIdentity={(_, patch) => updateIdentityDraft(patch)} />
-          {pgpEnabled ? renderIdentityPGPSettings() : null}
+          {identitySecuritySettings(identitySecurityPlugins, {
+            csrf,
+            user,
+            identities,
+            identityDraft,
+            updateIdentityDraft,
+            markIdentitySecurityReady: markIdentityAutocryptEnabled,
+            addToast
+          })}
           <div>
             <label>Signature</label>
             <RichSignatureEditor value={identityDraft.signature} onChange={(value) => updateIdentityDraft({ signature: value })} />
@@ -2187,20 +1860,6 @@ export function SettingsView({
   );
 }
 
-
-function shortPGPValue(value: string): string {
-  const clean = value.replace(/\s+/g, "");
-  if (clean.length <= 16) return clean;
-  return `${clean.slice(0, 8)}...${clean.slice(-8)}`;
-}
-
-function normalizedPGPIdentifier(value: string): string {
-  return value.replace(/[\s:]/g, "").toUpperCase();
-}
-
-function firstPGPUserID(value: string): string {
-  return value.split(/\r?\n/).map((item) => item.trim()).find(Boolean) || "";
-}
 
 /** AdminUsersView lets an admin create local users and refreshes chrome after user changes. */
 export function AdminUsersView({

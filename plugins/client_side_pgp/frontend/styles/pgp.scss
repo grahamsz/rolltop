@@ -1,6 +1,6 @@
 /* Runtime styles for the client-side PGP plugin. */
 
-.pgp-lock-toggle {
+.security-lock-toggle {
   min-width: 34px;
   width: 34px;
   height: 32px;
@@ -11,7 +11,7 @@
   color: var(--muted);
 }
 
-.pgp-lock-toggle.active {
+.security-lock-toggle.active {
   border-color: var(--accent);
   background: var(--active);
   color: var(--accent-strong);
@@ -217,4 +217,332 @@
 
 .attachment.pgp-key-attachment:hover {
   background: transparent;
+}
+
+.compose-pgp-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 38px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: #37413e;
+
+  &.suggested {
+    border-color: rgba(196, 107, 68, .45);
+    background: rgba(246, 227, 218, .55);
+    box-shadow: 0 0 0 1px rgba(196, 107, 68, .12) inset;
+  }
+}
+
+.compose-pgp-label {
+  padding-inline: 2px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.compose-pgp-scope {
+  padding-inline: 6px;
+  color: var(--accent-warm-strong);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.compose-pgp-bar .icon-toggle {
+  min-width: 32px;
+  width: 32px;
+  min-height: 32px;
+  height: 32px;
+  border-radius: 6px;
+}
+
+.compose-pgp-bar .icon-toggle.active,
+.compose-pgp-bar .pgp-security-option.active {
+  border-color: var(--accent);
+  background: var(--active);
+  color: var(--accent-strong);
+  box-shadow: 0 0 0 1px rgba(47, 125, 84, .08) inset;
+}
+
+.compose-pgp-bar .icon-toggle.active .icon,
+.compose-pgp-bar .pgp-security-option.active .icon {
+  color: var(--accent-strong);
+}
+
+.compose-pgp-send-choice {
+  display: grid;
+  gap: 8px;
+  margin: 0 12px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: var(--text);
+
+  > span {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+}
+
+.compose-pgp-ciphertext {
+  margin: 0;
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  font: 12px/1.45 var(--font-mono, monospace);
+  color: var(--muted);
+  background: rgba(32, 38, 56, .04);
+  border-top: 1px solid var(--border);
+}
+
+.identity-pgp-settings {
+  display: grid;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.identity-pgp-key-list {
+  display: grid;
+  gap: 10px;
+}
+
+.identity-pgp-key-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+
+  > .icon {
+    flex: none;
+    color: var(--accent-strong);
+  }
+
+  > span {
+    min-width: 0;
+    display: grid;
+    gap: 4px;
+  }
+
+  strong,
+  small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  small {
+    color: var(--muted);
+  }
+}
+
+.identity-pgp-key-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.identity-pgp-key-menu-panel {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.identity-pgp-storage-choice {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+
+  > strong {
+    font-size: 13px;
+    letter-spacing: .02em;
+  }
+
+  label {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    margin: 0;
+    font-weight: 600;
+
+    input {
+      margin-top: 3px;
+    }
+
+    span {
+      display: grid;
+      gap: 3px;
+    }
+
+    small {
+      color: var(--muted);
+      font-weight: 500;
+    }
+  }
+}
+
+.identity-pgp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.identity-pgp-action-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+
+  h4 {
+    margin: 0;
+  }
+}
+
+.contact-pgp-key-list {
+  display: grid;
+  gap: 10px;
+}
+
+.contact-pgp-key-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+
+.contact-pgp-key-row > .icon {
+  flex: none;
+}
+
+.contact-pgp-key-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.contact-pgp-key-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+
+  strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.contact-pgp-key-email {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.contact-pgp-key-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  color: var(--muted);
+  min-width: 0;
+
+  span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.contact-pgp-key-source {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--surface-ink);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.contact-pgp-key-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.contact-pgp-section {
+  padding-top: 0;
+
+  > div:first-child {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+}
+
+.pgp-key-attachment-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 700;
+
+  &::-webkit-details-marker {
+    display: none;
+  }
+
+  .icon {
+    transition: transform 120ms ease;
+  }
+
+  details[open] > & .icon {
+    transform: rotate(90deg);
+  }
+}
+
+.pgp-key-attachment-group > .attachment-group-list {
+  margin-top: 8px;
+}
+
+@media (max-width: 760px) {
+  .identity-pgp-grid,
+  .identity-pgp-key-row,
+  .identity-pgp-storage-choice label {
+    grid-template-columns: 1fr;
+  }
 }

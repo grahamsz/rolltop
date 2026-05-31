@@ -25,3 +25,7 @@ export function pgpPublicKeys(emails: string[], all = false) {
 export function savePGPPublicKey(csrf: string, key: ContactPGPKey) {
   return postJSON<{ ok: boolean; key: ContactPGPKey }>(`${pluginAPIBase}/public-keys`, csrf, key);
 }
+
+export function deletePGPPublicKey(csrf: string, id: number) {
+  return deleteJSON<{ ok: boolean }>(`${pluginAPIBase}/public-keys/${id}`, csrf);
+}

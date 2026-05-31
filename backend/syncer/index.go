@@ -229,7 +229,7 @@ func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.M
 		if securityHandled {
 			msg.IsEncrypted = securityState.Encrypted
 			msg.IsSigned = securityState.Signed
-			if err := s.Store.UpdateMessagePGPState(ctx, msg.UserID, msg.ID, msg.IsEncrypted, msg.IsSigned); err != nil {
+			if err := s.Store.UpdateMessageSecurityState(ctx, msg.UserID, msg.ID, msg.IsEncrypted, msg.IsSigned); err != nil {
 				return nil, err
 			}
 		}
@@ -262,7 +262,7 @@ func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.M
 	}
 	msg.IsEncrypted = parsed.IsEncrypted
 	msg.IsSigned = parsed.IsSigned
-	if err := s.Store.UpdateMessagePGPState(ctx, msg.UserID, msg.ID, msg.IsEncrypted, msg.IsSigned); err != nil {
+	if err := s.Store.UpdateMessageSecurityState(ctx, msg.UserID, msg.ID, msg.IsEncrypted, msg.IsSigned); err != nil {
 		return nil, err
 	}
 	if len(parsed.Files) > 0 {

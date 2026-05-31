@@ -14,6 +14,7 @@ import (
 	"rolltop/backend/smtpclient"
 	"rolltop/backend/store"
 	"rolltop/backend/syncer"
+	"rolltop/plugins/client_side_pgp/backend/keystore"
 )
 
 const composeAutocryptPublicKey = `-----BEGIN PGP PUBLIC KEY BLOCK-----
@@ -224,16 +225,16 @@ func TestSendComposeAutocryptHeaderRequiresPluginAndIdentitySetting(t *testing.T
 	}
 }
 
-func TestSendComposePGPMIMEEncryptedForm(t *testing.T) {
+func TestSendComposeSecurityMIMEEncryptedForm(t *testing.T) {
 	ctx := context.Background()
 	server, user, fromID, sender, _ := setupAutocryptComposeTest(t, ctx, true)
 	if _, err := server.sendCompose(ctx, currentUser{User: user}, composeForm{
-		To:             "recipient@example.test",
-		Subject:        "PGP/MIME",
-		Body:           "-----BEGIN PGP MESSAGE-----\n\nciphertext\n-----END PGP MESSAGE-----",
-		FromIdentityID: fromID,
-		PGPEncrypted:   true,
-		PGPMIME:        true,
+		To:                "recipient@example.test",
+		Subject:           "PGP/MIME",
+		Body:              "-----BEGIN PGP MESSAGE-----\n\nciphertext\n-----END PGP MESSAGE-----",
+		FromIdentityID:    fromID,
+		SecurityEncrypted: true,
+		SecurityMIME:      true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -242,17 +243,17 @@ func TestSendComposePGPMIMEEncryptedForm(t *testing.T) {
 	}
 }
 
-func TestSendComposePGPMIMESignedForm(t *testing.T) {
+func TestSendComposeSecurityMIMESignedForm(t *testing.T) {
 	ctx := context.Background()
 	server, user, fromID, sender, _ := setupAutocryptComposeTest(t, ctx, true)
 	if _, err := server.sendCompose(ctx, currentUser{User: user}, composeForm{
-		To:             "recipient@example.test",
-		Subject:        "PGP/MIME signed",
-		Body:           "Content-Type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\nSigned text\r\n",
-		PGPSignature:   "-----BEGIN PGP SIGNATURE-----\n\nsignature\n-----END PGP SIGNATURE-----",
-		FromIdentityID: fromID,
-		PGPSigned:      true,
-		PGPMIME:        true,
+		To:                "recipient@example.test",
+		Subject:           "PGP/MIME signed",
+		Body:              "Content-Type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: 8bit\r\n\r\nSigned text\r\n",
+		SecuritySignature: "-----BEGIN PGP SIGNATURE-----\n\nsignature\n-----END PGP SIGNATURE-----",
+		FromIdentityID:    fromID,
+		SecuritySigned:    true,
+		SecurityMIME:      true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +478,7 @@ func setupAutocryptComposeTest(t *testing.T, ctx context.Context, enablePGPPlugi
 	if len(identities) != 1 {
 		t.Fatalf("identity count = %d, want 1", len(identities))
 	}
-	if _, err := db.UpsertIdentityPGPPrivateKey(ctx, store.IdentityPGPPrivateKey{
+	if _, err := keystore.UpsertIdentityPrivateKey(ctx, db, store.IdentityPGPPrivateKey{
 		UserID:              user.ID,
 		IdentityID:          identities[0].ID,
 		Label:               "Me key",

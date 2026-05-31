@@ -40,7 +40,7 @@ func FillEncryptedPrivateKey(ctx context.Context, db *store.Store, masterKey []b
 		key.EncryptedPrivateKey = encrypted
 		return nil
 	case inputID > 0:
-		existing, err := db.GetIdentityPGPPrivateKeyForUser(ctx, userID, inputID)
+		existing, err := GetIdentityPrivateKeyForUser(ctx, db, userID, inputID)
 		if err != nil {
 			return err
 		}
@@ -55,7 +55,7 @@ func RejectDuplicatePrivateKey(ctx context.Context, db *store.Store, userID int6
 	if key.ID != 0 || (strings.TrimSpace(key.Fingerprint) == "" && strings.TrimSpace(key.KeyID) == "") {
 		return nil
 	}
-	existingKeys, err := db.ListIdentityPGPPrivateKeysForUser(ctx, userID)
+	existingKeys, err := ListIdentityPrivateKeysForUser(ctx, db, userID)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func ShouldEnableAutocryptForNewIdentityKey(ctx context.Context, db *store.Store
 	if key.ID != 0 || key.IdentityID == 0 || !key.IsActiveEncryption || key.IsDecryptOnly || strings.TrimSpace(key.PublicKeyArmored) == "" {
 		return false, nil
 	}
-	existing, err := db.ListIdentityPGPPrivateKeysForIdentity(ctx, userID, key.IdentityID)
+	existing, err := ListIdentityPrivateKeysForIdentity(ctx, db, userID, key.IdentityID)
 	if err != nil {
 		return false, err
 	}
@@ -113,7 +113,7 @@ func SaveDiscoveredContactKey(ctx context.Context, db *store.Store, userID int64
 		}
 		contactID = contact.ID
 	}
-	existingKeys, err := db.ListAllContactPGPPublicKeysForEmails(ctx, userID, []string{email})
+	existingKeys, err := ListAllPublicKeysForEmails(ctx, db, userID, []string{email})
 	if err != nil {
 		return store.ContactPGPPublicKey{}, err
 	}
@@ -125,9 +125,9 @@ func SaveDiscoveredContactKey(ctx context.Context, db *store.Store, userID int64
 			return existing, nil
 		}
 		existing.IsPreferred = true
-		return db.UpsertContactPGPPublicKey(ctx, existing)
+		return UpsertContactPublicKey(ctx, db, existing)
 	}
-	return db.UpsertContactPGPPublicKey(ctx, store.ContactPGPPublicKey{
+	return UpsertContactPublicKey(ctx, db, store.ContactPGPPublicKey{
 		ID:               in.ID,
 		UserID:           userID,
 		ContactID:        contactID,

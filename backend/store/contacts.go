@@ -488,11 +488,6 @@ func (s *Store) loadContactDetails(ctx context.Context, userID int64, c *Contact
 	c.Phones = phones
 	c.Addresses = addresses
 	c.URLs = urls
-	pgpKeys, err := s.ListContactPGPPublicKeysForContact(ctx, userID, c.ID)
-	if err != nil {
-		return err
-	}
-	c.PGPKeys = pgpKeys
 	if icon, err := s.GetContactIconForUser(ctx, userID, c.ID); err == nil {
 		c.Icon = &icon
 	} else if err != nil && !IsNotFound(err) {
@@ -502,19 +497,17 @@ func (s *Store) loadContactDetails(ctx context.Context, userID int64, c *Contact
 }
 
 func replaceContactChildren(ctx context.Context, tx *sql.Tx, userID, contactID int64, c Contact, ts int64) error {
-	for _, table := range []string{"contact_emails", "contact_phones", "contact_addresses", "contact_urls", "contact_pgp_public_keys"} {
+	for _, table := range []string{"contact_emails", "contact_phones", "contact_addresses", "contact_urls"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE user_id = ? AND contact_id = ?`, userID, contactID); err != nil {
 			return err
 		}
 	}
-	contactEmails := map[string]bool{}
 	for i, email := range c.Emails {
 		email.Email = strings.TrimSpace(email.Email)
 		email.NormalizedEmail = NormalizeContactEmail(email.Email)
 		if email.Email == "" || email.NormalizedEmail == "" {
 			continue
 		}
-		contactEmails[email.NormalizedEmail] = true
 		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_emails (user_id, contact_id, label, email, normalized_email, is_primary, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, userID, contactID, strings.TrimSpace(email.Label), email.Email, email.NormalizedEmail, boolInt(email.IsPrimary || i == 0), ts, ts); err != nil {
 			return err
@@ -548,23 +541,6 @@ func replaceContactChildren(ctx context.Context, tx *sql.Tx, userID, contactID i
 			VALUES (?, ?, ?, ?, ?, ?, ?)`, userID, contactID, strings.TrimSpace(u.Label), u.URL, boolInt(u.IsPrimary || i == 0), ts, ts); err != nil {
 			return err
 		}
-	}
-	pgpInserted := 0
-	for _, key := range c.PGPKeys {
-		key.ContactID = contactID
-		key.UserID = userID
-		key = normalizeContactPGPPublicKey(key)
-		if key.NormalizedEmail == "" || key.PublicKeyArmored == "" {
-			continue
-		}
-		if !contactEmails[key.NormalizedEmail] {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_pgp_public_keys (user_id, contact_id, email, normalized_email, label, fingerprint, key_id, user_ids, public_key_armored, source_kind, source_detail, is_preferred, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, userID, contactID, key.Email, key.NormalizedEmail, key.Label, key.Fingerprint, key.KeyID, key.UserIDs, key.PublicKeyArmored, key.SourceKind, key.SourceDetail, boolInt(key.IsPreferred || pgpInserted == 0), ts, ts); err != nil {
-			return err
-		}
-		pgpInserted++
 	}
 	return nil
 }

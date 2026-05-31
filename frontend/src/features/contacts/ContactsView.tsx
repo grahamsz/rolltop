@@ -4,22 +4,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../api";
-import type { Contact, ContactAddress, ContactEmail, ContactPGPKey, ContactPhone, ContactURL } from "../../types";
+import type { Contact, ContactAddress, ContactEmail, ContactPhone, ContactURL } from "../../types";
 import type { Toast } from "../../appTypes";
 import { Icon } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
-import type { ClientSidePGPPlugin } from "../../../../plugins/client_side_pgp/frontend/types";
+import type { RuntimePlugin } from "../../plugins/runtime";
+import { contactKeyEditors } from "../../plugins/contactDetails";
 
 /** ContactsView manages the user address book and Me contacts used by compose/reply identity logic. */
 export function ContactsView({
   csrf,
-  pgpEnabled,
-  pgpPlugin,
+  contactPlugins,
   addToast
 }: {
   csrf: string;
-  pgpEnabled: boolean;
-  pgpPlugin?: ClientSidePGPPlugin;
+  contactPlugins: readonly RuntimePlugin[];
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -238,15 +237,12 @@ export function ContactsView({
             <label><input type="checkbox" checked={draft.is_primary} disabled={!draft.is_me} onChange={(event) => setField("is_primary", event.target.checked)} /> Primary From identity</label>
           </div>
           <ContactEmailEditor value={draft.emails} onChange={(emails) => setField("emails", emails)} />
-          {pgpEnabled ? (
-            <ContactPGPKeyEditor
-              emails={draft.emails}
-              value={draft.pgp_keys || []}
-              onChange={(keys) => setField("pgp_keys", keys)}
-              pgpPlugin={pgpPlugin}
-              addToast={addToast}
-            />
-          ) : null}
+          {contactKeyEditors(contactPlugins, {
+            csrf,
+            contactID: draft.id || 0,
+            emails: draft.emails,
+            addToast
+          })}
           <ContactPhoneEditor value={draft.phones} onChange={(phones) => setField("phones", phones)} />
           <ContactAddressEditor value={draft.addresses} onChange={(addresses) => setField("addresses", addresses)} />
           <ContactURLEditor value={draft.urls} onChange={(urls) => setField("urls", urls)} />
@@ -305,143 +301,6 @@ function ContactEmailEditor({ value, onChange }: { value: ContactEmail[]; onChan
   );
 }
 
-
-function ContactPGPKeyEditor({
-  emails,
-  value,
-  onChange,
-  pgpPlugin,
-  addToast
-}: {
-  emails: ContactEmail[];
-  value: ContactPGPKey[];
-  onChange: (value: ContactPGPKey[]) => void;
-  pgpPlugin?: ClientSidePGPPlugin;
-  addToast: (message: string, kind?: Toast["kind"]) => number;
-}) {
-  const emailChoices = emails.map((item) => item.email.trim()).filter(Boolean);
-  const [importOpen, setImportOpen] = useState(false);
-  const [adding, setAdding] = useState(false);
-
-  async function addKey(armored: string) {
-    if (emailChoices.length === 0) throw new Error("Add a contact email before importing a PGP public key.");
-    if (!armored.trim()) throw new Error("Paste an ASCII-armored PGP public key first.");
-    setAdding(true);
-    try {
-      if (!pgpPlugin) throw new Error("PGP plugin is still loading. Try again in a moment.");
-      const parsed = await pgpPlugin.publicKeyRecordFromArmored(armored);
-      const parsedEmails = new Set(pgpPlugin.pgpUserIDEmails(parsed.user_ids).map(normalizeEmailForMatch));
-      const matchingEmail = emailChoices.find((candidate) => parsedEmails.has(normalizeEmailForMatch(candidate))) || "";
-      if (!matchingEmail) {
-        throw new Error(`This public key does not list any of this contact's email addresses (${emailChoices.join(", ")}).`);
-      }
-      const validated = await pgpPlugin.publicKeyRecordFromArmored(armored, matchingEmail, "manual", matchingEmail);
-      const parsedFingerprint = normalizedPGPIdentifier(parsed.fingerprint);
-      const parsedKeyID = normalizedPGPIdentifier(parsed.key_id);
-      const duplicate = value.find((key) =>
-        (parsedFingerprint && normalizedPGPIdentifier(key.fingerprint) === parsedFingerprint) ||
-        (!parsedFingerprint && parsedKeyID && normalizedPGPIdentifier(key.key_id) === parsedKeyID)
-      );
-      if (duplicate) {
-        throw new Error(`This public key is already saved for ${duplicate.email || matchingEmail}.`);
-      }
-      const hasPreferredForEmail = value.some((key) => normalizeEmailForMatch(key.email) === normalizeEmailForMatch(matchingEmail) && key.is_preferred);
-      onChange([...value, { ...validated, email: matchingEmail, is_preferred: !hasPreferredForEmail }]);
-      setImportOpen(false);
-      addToast("PGP public key added.");
-    } catch (err) {
-      const message = messageFromError(err);
-      addToast(message, "error");
-      throw new Error(message);
-    } finally {
-      setAdding(false);
-    }
-  }
-
-  function preferKey(index: number) {
-    const selected = value[index];
-    if (!selected) return;
-    onChange(value.map((key, keyIndex) => ({
-      ...key,
-      is_preferred: key.email.toLowerCase() === selected.email.toLowerCase() ? keyIndex === index : key.is_preferred
-    })));
-  }
-
-  return (
-    <section className="contact-section contact-pgp-section">
-      <div>
-        <h2>PGP public keys</h2>
-      </div>
-      {value.length === 0 ? <div className="muted">No PGP public keys saved for this contact.</div> : null}
-      <div className="contact-pgp-key-list">
-        {value.map((key, index) => (
-          <div className="contact-pgp-key-row" key={`${key.fingerprint || key.key_id || index}:${index}`}>
-            {(() => {
-              const title = keyDisplayLabel(key);
-              const fingerprint = keyFingerprintLabel(key);
-              const userId = firstKeyUserID(key.user_ids);
-              const source = keySourceLabel(key);
-              return (
-                <>
-                  <Icon name="lock" />
-                  <div className="contact-pgp-key-main">
-                    <div className="contact-pgp-key-title">
-                      <strong>{title}</strong>
-                    </div>
-                    <div className="contact-pgp-key-meta">
-                      {fingerprint ? <span>{fingerprint}</span> : null}
-                      {userId ? <span>{userId}</span> : null}
-                      {source ? <span className="contact-pgp-key-source">{source}</span> : null}
-                    </div>
-                  </div>
-                  <div className="contact-pgp-key-controls">
-                    <label className="primary-toggle"><input type="radio" checked={key.is_preferred} onChange={() => preferKey(index)} /> Preferred</label>
-                    <RemoveButton onClick={() => onChange(removeAt(value, index))} />
-                  </div>
-                </>
-              );
-            })()}
-          </div>
-        ))}
-      </div>
-      <div className="contact-pgp-import">
-        <button className="secondary" type="button" disabled={adding || emailChoices.length === 0} onClick={() => setImportOpen(true)}>
-          {adding ? "Reading key..." : "Import public key"}
-        </button>
-        {emailChoices.length === 0 ? <span className="muted">Add at least one email first.</span> : <span className="muted">The key must list one of this contact's email addresses.</span>}
-      </div>
-      {importOpen && pgpPlugin?.KeyImportModal ? (
-        <pgpPlugin.KeyImportModal
-          title="Import public key"
-          description="Paste, drop, or choose an ASCII-armored public key. Rolltop will match it against this contact's email addresses."
-          placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"
-          importLabel="Add key"
-          busy={adding}
-          onCancel={() => { if (!adding) setImportOpen(false); }}
-          onImport={(armored) => addKey(armored)}
-        />
-      ) : null}
-    </section>
-  );
-}
-
-function keyDisplayLabel(key: ContactPGPKey): string {
-  const label = (key.label || "").trim();
-  const fingerprint = shortFingerprint(key.fingerprint || key.key_id);
-  return label || fingerprint || "PGP key";
-}
-
-function keyFingerprintLabel(key: ContactPGPKey): string {
-  return shortFingerprint(key.fingerprint || key.key_id);
-}
-
-function keySourceLabel(key: ContactPGPKey): string {
-  const kind = (key.source_kind || "").trim().toLowerCase();
-  const detail = (key.source_detail || "").trim();
-  if (!kind && !detail) return "";
-  const label = kind ? kind.replace(/[-_]+/g, " ") : "source";
-  return detail ? `${label}: ${detail}` : label;
-}
 
 function ContactPhoneEditor({ value, onChange }: { value: ContactPhone[]; onChange: (value: ContactPhone[]) => void }) {
   return (
@@ -555,24 +414,6 @@ function primaryEmail(contact: Contact): string {
   return contact.emails.find((email) => email.is_primary && email.email.trim())?.email || contact.emails.find((email) => email.email.trim())?.email || "";
 }
 
-
-function shortFingerprint(value: string): string {
-  const clean = value.replace(/\s+/g, "");
-  if (clean.length <= 16) return clean;
-  return `${clean.slice(0, 8)}...${clean.slice(-8)}`;
-}
-
-function normalizedPGPIdentifier(value: string): string {
-  return value.replace(/[\s:]/g, "").toUpperCase();
-}
-
-function normalizeEmailForMatch(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function firstKeyUserID(value: string): string {
-  return value.split(/\r?\n/).map((item) => item.trim()).find(Boolean) || "";
-}
 
 function updateAt<T>(items: T[], index: number, value: T): T[] {
   return items.map((item, itemIndex) => itemIndex === index ? value : item);

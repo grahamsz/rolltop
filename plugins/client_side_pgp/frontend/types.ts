@@ -1,6 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
-import type { PGPUnlockState, Toast } from "../../../frontend/src/appTypes";
-import type { ContactPGPKey, IdentityPGPPrivateKey } from "../../../frontend/src/types";
+import type { SecurityUnlockState, Toast } from "../../../frontend/src/appTypes";
+import type { ContactEmail, ContactPGPKey, IdentityPGPPrivateKey, MailIdentity, User } from "../../../frontend/src/types";
 
 export type PGPSignatureStatus = "none" | "verified" | "unverified" | "invalid";
 
@@ -60,7 +60,7 @@ export type PGPUnlockDialogProps = {
   recipientKeyIDs: string[];
   fallbackEmail?: string;
   onClose: () => void;
-  onUnlocked: (state: PGPUnlockState) => void;
+  onUnlocked: (state: SecurityUnlockState) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 };
 
@@ -87,17 +87,37 @@ export type PGPKeyGenerateModalProps = {
   onGenerate: (passphrase: string) => Promise<void> | void;
 };
 
+export type ContactKeyEditorContext = {
+  csrf: string;
+  contactID: number;
+  emails: ContactEmail[];
+  addToast: (message: string, kind?: Toast["kind"]) => number;
+};
+
+export type IdentitySecuritySettingsContext = {
+  csrf: string;
+  user: User;
+  identities: MailIdentity[];
+  identityDraft: MailIdentity;
+  updateIdentityDraft: (patch: Partial<MailIdentity>) => void;
+  markIdentitySecurityReady: (identityID: number) => void;
+  addToast: (message: string, kind?: Toast["kind"]) => number;
+};
+
 export type ClientSidePGPPlugin = {
   UnlockDialog: ComponentType<PGPUnlockDialogProps>;
   KeyImportModal: ComponentType<PGPKeyImportModalProps>;
   KeyGenerateModal: ComponentType<PGPKeyGenerateModalProps>;
+  renderContactKeyEditor(context: ContactKeyEditorContext): ReactNode;
+  renderIdentitySecuritySettings(context: IdentitySecuritySettingsContext): ReactNode;
   privateKeys(): Promise<{ keys: IdentityPGPPrivateKey[] }>;
   savePrivateKey(csrf: string, key: IdentityPGPPrivateKey): Promise<{ ok: boolean; key: IdentityPGPPrivateKey }>;
   deletePrivateKey(csrf: string, id: number): Promise<{ ok: boolean }>;
   publicKeys(emails: string[], all?: boolean): Promise<{ keys: ContactPGPKey[] }>;
   savePublicKey(csrf: string, key: ContactPGPKey): Promise<{ ok: boolean; key: ContactPGPKey }>;
-  serializeUnlockState(state: PGPUnlockState): Promise<unknown>;
-  restoreUnlockState(state: unknown): Promise<PGPUnlockState>;
+  deletePublicKey(csrf: string, id: number): Promise<{ ok: boolean }>;
+  serializeUnlockState(state: SecurityUnlockState): Promise<unknown>;
+  restoreUnlockState(state: unknown): Promise<SecurityUnlockState>;
   publicKeyRecordFromArmored(publicKeyArmored: string, email?: string, sourceKind?: string, sourceDetail?: string): Promise<ContactPGPKey>;
   privateKeyRecordFromArmoredSource(privateKeyArmored: string, publicKeyArmored?: string, email?: string): Promise<IdentityPGPPrivateKey>;
   generatePrivateKey(name: string, email: string, passphrase: string): Promise<IdentityPGPPrivateKey>;
@@ -112,12 +132,13 @@ export type ClientSidePGPPlugin = {
   messageSecurityPreviewText(snippet: string, state: MessageSecurityState): string;
   messageSecuritySnippetClassName(state: MessageSecurityState): string;
   renderMessageSecurityIndicators(context: MessageSecurityIndicatorContext): ReactNode;
-  encryptMessageText(text: string, recipientKeys: ContactPGPKey[], signingKey?: PGPUnlockState["keys"][number]): Promise<string>;
-  signPGPMIMEEntity(entity: string, signingKey: PGPUnlockState["keys"][number]): Promise<string>;
+  encryptMessageText(text: string, recipientKeys: ContactPGPKey[], signingKey?: SecurityUnlockState["keys"][number]): Promise<string>;
+  signPGPMIMEEntity(entity: string, signingKey: SecurityUnlockState["keys"][number]): Promise<string>;
   pgpMIMEEntityFromBody(text: string, html: string, attachments?: PGPMIMEAttachmentInput[]): string;
   addAutocryptGossipHeaders(payload: string, keys: ContactPGPKey[]): string;
   encryptionKeyRecordsForRecipients(recipientEmails: string[], candidateKeys: ContactPGPKey[]): Promise<ContactPGPKey[]>;
-  decryptPGPSource(source: string, keys: PGPUnlockState["keys"], verificationKeyArmors?: string[]): Promise<PGPMessageOpenResult>;
+  decryptPGPSource(source: string, keys: SecurityUnlockState["keys"], verificationKeyArmors?: string[]): Promise<PGPMessageOpenResult>;
+  openSecureMessageSource(source: string, keys: SecurityUnlockState["keys"], verificationKeyArmors?: string[]): Promise<PGPMessageOpenResult & { secureMime?: boolean }>;
   decryptedHTMLDoc(content: string, attachments?: DecryptedMIMEAttachment[]): Promise<string>;
   decryptedPlainText(content: string): string;
   decryptedMIMEAttachments(content: string): DecryptedMIMEAttachment[];

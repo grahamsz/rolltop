@@ -1,6 +1,4 @@
 import type { FrontendPluginDefinition } from "../types";
-import { pluginIDs } from "./registry";
-import type { ClientSidePGPPlugin } from "../../../plugins/client_side_pgp/frontend/types";
 
 export type RuntimePluginModule = {
   default?: unknown;
@@ -11,7 +9,6 @@ export type RuntimePlugin = Record<string, unknown>;
 export type RuntimePlugins = {
   all: RuntimePlugin[];
   byID: Record<string, RuntimePlugin>;
-  clientSidePGP?: ClientSidePGPPlugin;
 };
 
 export function emptyRuntimePlugins(): RuntimePlugins {
@@ -28,7 +25,6 @@ export async function loadRuntimePlugins(definitions: readonly FrontendPluginDef
     if (!plugin) return;
     plugins.all.push(plugin);
     plugins.byID[definition.id] = plugin;
-    if (definition.id === pluginIDs.clientSidePGP) plugins.clientSidePGP = plugin as ClientSidePGPPlugin;
   }));
   return plugins;
 }

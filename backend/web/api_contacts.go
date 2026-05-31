@@ -460,12 +460,6 @@ func contactFromAPI(in apiContact) store.Contact {
 	for _, item := range in.URLs {
 		c.URLs = append(c.URLs, store.ContactURL{Label: item.Label, URL: item.URL, IsPrimary: item.IsPrimary})
 	}
-	for _, item := range in.PGPKeys {
-		c.PGPKeys = append(c.PGPKeys, store.ContactPGPPublicKey{
-			ID: item.ID, Label: item.Label, Email: item.Email, Fingerprint: item.Fingerprint, KeyID: item.KeyID,
-			UserIDs: item.UserIDs, PublicKeyArmored: item.PublicKeyArmored, IsPreferred: item.IsPreferred,
-		})
-	}
 	return c
 }
 

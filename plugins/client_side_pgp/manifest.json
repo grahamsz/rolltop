@@ -4,6 +4,7 @@
   "description": "Adds browser-loaded OpenPGP decrypt, verify, sign, encrypt, Autocrypt, and key-management UI.",
   "version": "1.0.0",
   "heavy": true,
+  "experimental": true,
   "backend": {
     "kind": "go-plugin",
     "binary": "backend/client_side_pgp.so"

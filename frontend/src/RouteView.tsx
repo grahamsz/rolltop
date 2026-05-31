@@ -1,15 +1,15 @@
 // File overview: Small route switch for the single-page app. It translates the parsed location
 // into feature views while passing only the shared state each view needs.
 
-import type { LocationState, PGPUnlockState, Toast } from "./appTypes";
+import type { LocationState, SecurityUnlockState, Toast } from "./appTypes";
 import type { Bootstrap, Mailbox, SyncRun, ThemeDefinition, User } from "./types";
-import type { ClientSidePGPPlugin } from "../../plugins/client_side_pgp/frontend/types";
 import { MailView, SearchView } from "./features/mail/MailViews";
 import { ThreadView } from "./features/mail/ThreadView";
 import { ComposePage } from "./features/compose/ComposeViews";
 import { ContactsView } from "./features/contacts/ContactsView";
 import { SettingsView, AdminUsersView, SyncRunView } from "./features/settings/SettingsViews";
 import type { RuntimePlugins } from "./plugins/runtime";
+import { securityUnlockPlugin } from "./plugins/securityUnlock";
 
 /**
  * RouteView is the app's manual router. Each branch maps one URL family to a
@@ -30,9 +30,8 @@ export function RouteView({
   openCompose,
   refreshChrome,
   runtimePlugins,
-  pgpPlugin,
-  pgpUnlock,
-  openPGPUnlock,
+  securityUnlock,
+  openSecurityUnlock,
   addToast
 }: {
   csrf: string;
@@ -48,12 +47,11 @@ export function RouteView({
   openCompose: (query?: string) => void;
   refreshChrome: () => Promise<Bootstrap | null>;
   runtimePlugins: RuntimePlugins;
-  pgpPlugin?: ClientSidePGPPlugin;
-  pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
+  securityUnlock: SecurityUnlockState;
+  openSecurityUnlock: (identityID?: number, onUnlocked?: (state: SecurityUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
-  const pgpEnabled = enabledPlugins.includes("client_side_pgp") && Boolean(pgpPlugin);
+  const securityEnabled = Boolean(securityUnlockPlugin(runtimePlugins.all));
   if (location.path === "/search" || location.path.startsWith("/search/")) {
     return <SearchView csrf={csrf} location={location} navigate={navigate} hiddenMessageIDs={hiddenMessageIDs} datePrefs={user} activeSyncRuns={activeSyncRuns} messageSecurityPlugins={runtimePlugins.all} addToast={addToast} />;
   }
@@ -69,21 +67,20 @@ export function RouteView({
         refreshChrome={refreshChrome}
         openCompose={openCompose}
         messageSecurityPlugins={runtimePlugins.all}
-        pgpPlugin={pgpPlugin}
-        pgpUnlock={pgpUnlock}
-        openPGPUnlock={openPGPUnlock}
+        securityUnlock={securityUnlock}
+        openSecurityUnlock={openSecurityUnlock}
         addToast={addToast}
       />
     );
   }
   if (location.path === "/compose") {
-    return <ComposePage csrf={csrf} location={location} navigate={navigate} pgpEnabled={pgpEnabled} pgpPlugin={pgpPlugin} pgpUnlock={pgpUnlock} openPGPUnlock={openPGPUnlock} addToast={addToast} />;
+    return <ComposePage csrf={csrf} location={location} navigate={navigate} securityEnabled={securityEnabled} securityPlugins={runtimePlugins.all} securityUnlock={securityUnlock} openSecurityUnlock={openSecurityUnlock} addToast={addToast} />;
   }
   if (location.path === "/contacts") {
-    return <ContactsView csrf={csrf} pgpEnabled={pgpEnabled} pgpPlugin={pgpPlugin} addToast={addToast} />;
+    return <ContactsView csrf={csrf} contactPlugins={runtimePlugins.all} addToast={addToast} />;
   }
   if (location.path === "/settings/account" || location.path.startsWith("/settings/account/")) {
-    return <SettingsView csrf={csrf} user={user} mailboxes={mailboxes} activeSyncRuns={activeSyncRuns} availableThemes={availableThemes} location={location} navigate={navigate} refreshChrome={refreshChrome} pgpEnabled={pgpEnabled} pgpPlugin={pgpPlugin} addToast={addToast} />;
+    return <SettingsView csrf={csrf} user={user} mailboxes={mailboxes} activeSyncRuns={activeSyncRuns} availableThemes={availableThemes} location={location} navigate={navigate} refreshChrome={refreshChrome} identitySecurityPlugins={runtimePlugins.all} addToast={addToast} />;
   }
   if (location.path === "/admin/users" && user.is_admin) {
     return <AdminUsersView csrf={csrf} refreshChrome={refreshChrome} addToast={addToast} />;

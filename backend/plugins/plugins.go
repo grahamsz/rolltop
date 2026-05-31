@@ -35,6 +35,7 @@ type Definition struct {
 	Description      string
 	EnabledByDefault bool
 	Heavy            bool
+	Experimental     bool
 }
 
 // Migration describes one plugin-owned schema change and checksum source.

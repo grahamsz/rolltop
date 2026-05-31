@@ -559,36 +559,6 @@
   }
 }
 
-.pgp-key-attachment-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  list-style: none;
-  font-size: 12px;
-  font-weight: 700;
-
-  &::-webkit-details-marker {
-    display: none;
-  }
-
-  .icon {
-    transition: transform 120ms ease;
-  }
-
-  details[open] > & .icon {
-    transform: rotate(90deg);
-  }
-}
-
-.pgp-key-attachment-group > .attachment-group-list {
-  margin-top: 8px;
-}
-
 .attachment {
   padding: 9px 12px;
   text-decoration: none;

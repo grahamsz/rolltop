@@ -181,7 +181,6 @@ type apiContact struct {
 	Addresses      []apiContactAddress `json:"addresses"`
 	URLs           []apiContactURL     `json:"urls"`
 	IconURL        string              `json:"icon_url"`
-	PGPKeys        []apiContactPGPKey  `json:"pgp_keys,omitempty"`
 }
 
 type apiContactEmail struct {
@@ -225,17 +224,17 @@ type apiContactAutocomplete struct {
 }
 
 type apiComposeIdentity struct {
-	ID                  int64  `json:"id"`
-	PGPIdentityID       int64  `json:"pgp_identity_id"`
-	Label               string `json:"label"`
-	Email               string `json:"email"`
-	Header              string `json:"header"`
-	Signature           string `json:"signature"`
-	IconURL             string `json:"icon_url"`
-	IsPrimary           bool   `json:"is_primary"`
-	AutocryptEnabled    bool   `json:"autocrypt_enabled"`
-	HasPGPPrivateKey    bool   `json:"has_pgp_private_key"`
-	PGPPublicKeyArmored string `json:"pgp_public_key_armored,omitempty"`
+	ID                     int64  `json:"id"`
+	SecurityIdentityID     int64  `json:"pgp_identity_id"`
+	Label                  string `json:"label"`
+	Email                  string `json:"email"`
+	Header                 string `json:"header"`
+	Signature              string `json:"signature"`
+	IconURL                string `json:"icon_url"`
+	IsPrimary              bool   `json:"is_primary"`
+	AutocryptEnabled       bool   `json:"autocrypt_enabled"`
+	HasSecurityPrivateKey  bool   `json:"has_pgp_private_key"`
+	SecurityPublicMaterial string `json:"pgp_public_key_armored,omitempty"`
 }
 
 type apiThreadMessage struct {
@@ -302,6 +301,7 @@ type apiPluginSetting struct {
 	Enabled          bool   `json:"enabled"`
 	EnabledByDefault bool   `json:"enabled_by_default"`
 	Heavy            bool   `json:"heavy"`
+	Experimental     bool   `json:"experimental"`
 }
 
 type apiThemeDefinition struct {
@@ -317,36 +317,4 @@ type apiFrontendPlugin struct {
 	Version   string `json:"version,omitempty"`
 	ModuleURL string `json:"module_url"`
 	CSSURL    string `json:"css_url,omitempty"`
-}
-
-type apiContactPGPKey struct {
-	ID               int64  `json:"id,omitempty"`
-	ContactID        int64  `json:"contact_id,omitempty"`
-	Email            string `json:"email"`
-	Label            string `json:"label"`
-	Fingerprint      string `json:"fingerprint"`
-	KeyID            string `json:"key_id"`
-	UserIDs          string `json:"user_ids"`
-	PublicKeyArmored string `json:"public_key_armored"`
-	SourceKind       string `json:"source_kind,omitempty"`
-	SourceDetail     string `json:"source_detail,omitempty"`
-	IsPreferred      bool   `json:"is_preferred"`
-}
-
-type apiIdentityPGPPrivateKey struct {
-	ID                    int64  `json:"id,omitempty"`
-	IdentityID            int64  `json:"identity_id"`
-	Label                 string `json:"label"`
-	Fingerprint           string `json:"fingerprint"`
-	KeyID                 string `json:"key_id"`
-	UserIDs               string `json:"user_ids"`
-	PublicKeyArmored      string `json:"public_key_armored"`
-	PrivateKeyArmored     string `json:"private_key_armored,omitempty"`
-	PrivateKeyStorage     string `json:"private_key_storage,omitempty"`
-	RevocationCertificate string `json:"revocation_certificate,omitempty"`
-	IsActiveSigning       bool   `json:"is_active_signing"`
-	IsActiveEncryption    bool   `json:"is_active_encryption"`
-	IsDecryptOnly         bool   `json:"is_decrypt_only"`
-	CreatedAt             string `json:"created_at,omitempty"`
-	UpdatedAt             string `json:"updated_at,omitempty"`
 }

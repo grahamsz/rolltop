@@ -85,8 +85,8 @@ func (s *Store) upsertPluginMessageLanguage(ctx context.Context, userID, message
 	return err
 }
 
-// UpdateMessagePGPState stores PGP encrypted/signed metadata discovered while parsing raw messages.
-func (s *Store) UpdateMessagePGPState(ctx context.Context, userID, messageID int64, encrypted, signed bool) error {
+// UpdateMessageSecurityState stores plugin-detected encrypted/signed metadata discovered while parsing raw messages.
+func (s *Store) UpdateMessageSecurityState(ctx context.Context, userID, messageID int64, encrypted, signed bool) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET is_encrypted = ?, is_signed = ?, updated_at = ?
 		WHERE user_id = ? AND id = ?`, boolInt(encrypted), boolInt(signed), nowUnix(), userID, messageID)
 	return err

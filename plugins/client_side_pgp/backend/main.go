@@ -52,6 +52,7 @@ func (p *pgpBackend) protectedAPIRoutes() []plugins.ProtectedAPIRoute {
 		{Path: api.Path + "/private-keys", Handle: api.PrivateKeys},
 		{Path: api.Path + "/private-keys", Prefix: true, Handle: api.PrivateKeyRoute},
 		{Path: api.Path + "/public-keys", Handle: api.PublicKeys},
+		{Path: api.Path + "/public-keys", Prefix: true, Handle: api.PublicKeyRoute},
 	}
 }
 

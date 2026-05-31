@@ -1,6 +1,9 @@
-import { deletePGPPrivateKey, pgpPrivateKeys, pgpPublicKeys, savePGPPrivateKey, savePGPPublicKey } from "./api/keys";
+import { createElement } from "react";
+import { deletePGPPrivateKey, deletePGPPublicKey, pgpPrivateKeys, pgpPublicKeys, savePGPPrivateKey, savePGPPublicKey } from "./api/keys";
 import { PGPKeyGenerateModal } from "./components/PGPKeyGenerateModal";
 import { PGPKeyImportModal } from "./components/PGPKeyImportModal";
+import { ContactPGPKeyEditor } from "./contact/ContactPGPKeyEditor";
+import { IdentityPGPSettings } from "./settings/IdentityPGPSettings";
 import {
   addAutocryptGossipHeaders,
   autocryptKeyRecordFromMessageSource,
@@ -12,6 +15,7 @@ import {
   encryptionKeyRecordsForRecipients,
   encryptionRecipientKeyIDsFromSource,
   generatePrivateKey,
+  openSecureMessageSource,
   pgpMIMEEntityFromBody,
   pgpPassphraseIssues,
   pgpUserIDEmails,
@@ -36,11 +40,29 @@ const plugin: ClientSidePGPPlugin = {
   UnlockDialog: PGPUnlockDialog,
   KeyImportModal: PGPKeyImportModal,
   KeyGenerateModal: PGPKeyGenerateModal,
+  renderContactKeyEditor: (context) => createElement(ContactPGPKeyEditor, {
+    csrf: context.csrf,
+    contactID: context.contactID,
+    emails: context.emails,
+    pgpPlugin: plugin,
+    addToast: context.addToast
+  }),
+  renderIdentitySecuritySettings: (context) => createElement(IdentityPGPSettings, {
+    csrf: context.csrf,
+    user: context.user,
+    identities: context.identities,
+    identityDraft: context.identityDraft,
+    updateIdentityDraft: context.updateIdentityDraft,
+    markIdentitySecurityReady: context.markIdentitySecurityReady,
+    pgpPlugin: plugin,
+    addToast: context.addToast
+  }),
   privateKeys: pgpPrivateKeys,
   savePrivateKey: savePGPPrivateKey,
   deletePrivateKey: deletePGPPrivateKey,
   publicKeys: pgpPublicKeys,
   savePublicKey: savePGPPublicKey,
+  deletePublicKey: deletePGPPublicKey,
   serializeUnlockState: serializePGPUnlockState,
   restoreUnlockState: restorePGPUnlockState,
   publicKeyRecordFromArmored,
@@ -63,6 +85,7 @@ const plugin: ClientSidePGPPlugin = {
   addAutocryptGossipHeaders,
   encryptionKeyRecordsForRecipients,
   decryptPGPSource,
+  openSecureMessageSource,
   decryptedHTMLDoc,
   decryptedPlainText,
   decryptedMIMEAttachments,

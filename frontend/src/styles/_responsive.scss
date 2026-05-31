@@ -201,13 +201,7 @@
 
   .settings-split-panel,
   .identity-main,
-  .identity-mailbox-fields,
-  .identity-pgp-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .identity-pgp-key-row,
-  .identity-pgp-storage-choice label {
+  .identity-mailbox-fields {
     grid-template-columns: 1fr;
   }
 

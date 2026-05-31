@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import type { Bootstrap, ChromeEvent, SyncRun, ThemeDefinition } from "./types";
-import type { LocationState, MessageTransferAction, MoveTarget, PGPUnlockState, Toast } from "./appTypes";
+import type { LocationState, MessageTransferAction, MoveTarget, SecurityUnlockState, Toast } from "./appTypes";
 import { ToastStack } from "./components/common";
 import { LogoMark } from "./components/Icon";
 import { SetupPage, LoginPage, PasswordResetPage } from "./features/auth/AuthPages";
@@ -14,6 +14,7 @@ import { RouteView } from "./RouteView";
 import { messageFromError } from "./lib/errors";
 import { currentLocation } from "./lib/routes";
 import { emptyRuntimePlugins, loadRuntimePlugins, type RuntimePlugins } from "./plugins/runtime";
+import { emptySecurityUnlockState, securityUnlockPlugin } from "./plugins/securityUnlock";
 
 
 // Push notifications should identify the human sender when possible. This helper
@@ -35,7 +36,6 @@ function truncateNotificationText(value: string, max: number) {
 
 const allMailWakePrefetchAfterMS = 3 * 60 * 1000;
 const notificationPreferenceKey = "rolltop.notifications.enabled";
-const emptyPGPUnlockState: PGPUnlockState = { unlockedUntil: 0, keys: [] };
 const pluginThemeLinkID = "rolltop-plugin-theme-css";
 const notificationIconURL = "/icon.svg?v=transparent-logo-v2";
 
@@ -64,13 +64,13 @@ function loadPluginThemeCSS(theme: ThemeDefinition | undefined) {
   }
 }
 
-type PGPUnlockWorkerMessage = {
-  type: "rolltop:pgp-unlock-get" | "rolltop:pgp-unlock-set";
+type SecurityUnlockWorkerMessage = {
+  type: "rolltop:security-unlock-get" | "rolltop:security-unlock-set";
   userID: number;
   state?: unknown;
 };
 
-function postServiceWorkerMessage(message: PGPUnlockWorkerMessage) {
+function postServiceWorkerMessage(message: SecurityUnlockWorkerMessage) {
   if (!("serviceWorker" in navigator)) return;
   const controller = navigator.serviceWorker.controller;
   if (controller) {
@@ -80,18 +80,19 @@ function postServiceWorkerMessage(message: PGPUnlockWorkerMessage) {
   navigator.serviceWorker.ready
     .then((registration) => registration.active?.postMessage(message))
     .catch(() => {
-      // The tab-level PGP unlock state still works without the service worker.
+      // The tab-level unlock state still works without the service worker.
     });
 }
 
-async function publishPGPUnlockToWorker(userID: number, state: PGPUnlockState, runtimePlugins: RuntimePlugins) {
-  if (!runtimePlugins.clientSidePGP) return;
-  const serialized = await runtimePlugins.clientSidePGP.serializeUnlockState(state);
-  postServiceWorkerMessage({ type: "rolltop:pgp-unlock-set", userID, state: serialized });
+async function publishSecurityUnlockToWorker(userID: number, state: SecurityUnlockState, runtimePlugins: RuntimePlugins) {
+  const plugin = securityUnlockPlugin(runtimePlugins.all);
+  if (!plugin) return;
+  const serialized = await plugin.serializeUnlockState(state);
+  postServiceWorkerMessage({ type: "rolltop:security-unlock-set", userID, state: serialized });
 }
 
-function requestPGPUnlockFromWorker(userID: number) {
-  postServiceWorkerMessage({ type: "rolltop:pgp-unlock-get", userID });
+function requestSecurityUnlockFromWorker(userID: number) {
+  postServiceWorkerMessage({ type: "rolltop:security-unlock-get", userID });
 }
 
 function notificationPreference() {
@@ -134,13 +135,13 @@ export default function App() {
   const lastMouseActivityAt = useRef(Date.now());
   const lastAllMailWakePrefetchAt = useRef(0);
   const [notificationsEnabled, setNotificationsEnabled] = useState(initialNotificationsEnabled);
-  const [pgpUnlock, setPGPUnlock] = useState<PGPUnlockState>({ unlockedUntil: 0, keys: [] });
-  const [pgpUnlockOpen, setPGPUnlockOpen] = useState(false);
-  const [pgpUnlockIdentityID, setPGPUnlockIdentityID] = useState<number | null>(null);
-  const [pgpUnlockRecipientKeyIDs, setPGPUnlockRecipientKeyIDs] = useState<string[]>([]);
-  const [pgpUnlockFallbackEmail, setPGPUnlockFallbackEmail] = useState("");
-  const pgpUnlockCallbackRef = useRef<((state: PGPUnlockState) => void) | null>(null);
-  const pgpUnlockRef = useRef<PGPUnlockState>(emptyPGPUnlockState);
+  const [securityUnlock, setSecurityUnlock] = useState<SecurityUnlockState>({ unlockedUntil: 0, keys: [] });
+  const [securityUnlockOpen, setSecurityUnlockOpen] = useState(false);
+  const [securityUnlockIdentityID, setSecurityUnlockIdentityID] = useState<number | null>(null);
+  const [securityUnlockRecipientKeyIDs, setSecurityUnlockRecipientKeyIDs] = useState<string[]>([]);
+  const [securityUnlockFallbackEmail, setSecurityUnlockFallbackEmail] = useState("");
+  const securityUnlockCallbackRef = useRef<((state: SecurityUnlockState) => void) | null>(null);
+  const securityUnlockRef = useRef<SecurityUnlockState>(emptySecurityUnlockState);
   const activeUserIDRef = useRef<number | null>(null);
   const runtimePluginsRef = useRef<RuntimePlugins>(emptyRuntimePlugins());
 
@@ -193,15 +194,15 @@ export default function App() {
     if (activeUserIDRef.current === userID) return;
     const previousUserID = activeUserIDRef.current;
     activeUserIDRef.current = userID;
-    pgpUnlockRef.current = emptyPGPUnlockState;
-    setPGPUnlock(emptyPGPUnlockState);
-    setPGPUnlockOpen(false);
-    setPGPUnlockIdentityID(null);
-    setPGPUnlockRecipientKeyIDs([]);
-    setPGPUnlockFallbackEmail("");
-    pgpUnlockCallbackRef.current = null;
-    if (previousUserID) void publishPGPUnlockToWorker(previousUserID, emptyPGPUnlockState, runtimePluginsRef.current);
-    if (userID) requestPGPUnlockFromWorker(userID);
+    securityUnlockRef.current = emptySecurityUnlockState;
+    setSecurityUnlock(emptySecurityUnlockState);
+    setSecurityUnlockOpen(false);
+    setSecurityUnlockIdentityID(null);
+    setSecurityUnlockRecipientKeyIDs([]);
+    setSecurityUnlockFallbackEmail("");
+    securityUnlockCallbackRef.current = null;
+    if (previousUserID) void publishSecurityUnlockToWorker(previousUserID, emptySecurityUnlockState, runtimePluginsRef.current);
+    if (userID) requestSecurityUnlockFromWorker(userID);
   }, [bootstrap?.user?.id]);
 
   // Once bootstrap is known, normalize the unauthenticated/authenticated routes
@@ -263,49 +264,51 @@ export default function App() {
     };
   }, [addToast, bootstrap?.frontend_plugins]);
 
-  const applyPGPUnlock = useCallback((state: PGPUnlockState, broadcast = false) => {
-    pgpUnlockRef.current = state;
-    setPGPUnlock(state);
+  const applySecurityUnlock = useCallback((state: SecurityUnlockState, broadcast = false) => {
+    securityUnlockRef.current = state;
+    setSecurityUnlock(state);
     if (broadcast && activeUserIDRef.current) {
-      void publishPGPUnlockToWorker(activeUserIDRef.current, state, runtimePluginsRef.current);
+      void publishSecurityUnlockToWorker(activeUserIDRef.current, state, runtimePluginsRef.current);
     }
   }, []);
 
-  const lockPGP = useCallback(() => {
-    applyPGPUnlock(emptyPGPUnlockState, true);
-    setPGPUnlockIdentityID(null);
-    setPGPUnlockRecipientKeyIDs([]);
-    setPGPUnlockFallbackEmail("");
-    pgpUnlockCallbackRef.current = null;
-    addToast("PGP keys locked.");
-  }, [addToast, applyPGPUnlock]);
+  const lockSecurity = useCallback(() => {
+    applySecurityUnlock(emptySecurityUnlockState, true);
+    setSecurityUnlockIdentityID(null);
+    setSecurityUnlockRecipientKeyIDs([]);
+    setSecurityUnlockFallbackEmail("");
+    securityUnlockCallbackRef.current = null;
+    const plugin = securityUnlockPlugin(runtimePluginsRef.current.all);
+    addToast(plugin?.lockedToast || "Security keys locked.");
+  }, [addToast, applySecurityUnlock]);
 
-  const openPGPUnlock = useCallback((identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs: string[] = [], fallbackEmail = "") => {
-    if (!runtimePluginsRef.current.clientSidePGP) {
-      addToast("PGP is still loading. Try again in a moment.", "error");
+  const openSecurityUnlock = useCallback((identityID?: number, onUnlocked?: (state: SecurityUnlockState) => void, recipientKeyIDs: string[] = [], fallbackEmail = "") => {
+    const plugin = securityUnlockPlugin(runtimePluginsRef.current.all);
+    if (!plugin) {
+      addToast("Message security is still loading. Try again in a moment.", "error");
       return;
     }
-    setPGPUnlockIdentityID(identityID || null);
-    setPGPUnlockRecipientKeyIDs(recipientKeyIDs);
-    setPGPUnlockFallbackEmail(fallbackEmail);
-    pgpUnlockCallbackRef.current = onUnlocked || null;
-    setPGPUnlockOpen(true);
+    setSecurityUnlockIdentityID(identityID || null);
+    setSecurityUnlockRecipientKeyIDs(recipientKeyIDs);
+    setSecurityUnlockFallbackEmail(fallbackEmail);
+    securityUnlockCallbackRef.current = onUnlocked || null;
+    setSecurityUnlockOpen(true);
   }, [addToast]);
 
-  const closePGPUnlock = useCallback(() => {
-    setPGPUnlockOpen(false);
-    setPGPUnlockIdentityID(null);
-    setPGPUnlockRecipientKeyIDs([]);
-    setPGPUnlockFallbackEmail("");
-    pgpUnlockCallbackRef.current = null;
+  const closeSecurityUnlock = useCallback(() => {
+    setSecurityUnlockOpen(false);
+    setSecurityUnlockIdentityID(null);
+    setSecurityUnlockRecipientKeyIDs([]);
+    setSecurityUnlockFallbackEmail("");
+    securityUnlockCallbackRef.current = null;
   }, []);
 
   useEffect(() => {
-    if (!pgpUnlock.unlockedUntil) return;
-    const delay = Math.max(0, pgpUnlock.unlockedUntil - Date.now());
-    const timer = window.setTimeout(() => applyPGPUnlock(emptyPGPUnlockState, true), delay);
+    if (!securityUnlock.unlockedUntil) return;
+    const delay = Math.max(0, securityUnlock.unlockedUntil - Date.now());
+    const timer = window.setTimeout(() => applySecurityUnlock(emptySecurityUnlockState, true), delay);
     return () => window.clearTimeout(timer);
-  }, [applyPGPUnlock, pgpUnlock.unlockedUntil]);
+  }, [applySecurityUnlock, securityUnlock.unlockedUntil]);
 
   useEffect(() => {
     const userID = bootstrap?.user?.id || 0;
@@ -313,28 +316,28 @@ export default function App() {
     let cancelled = false;
     function onMessage(event: MessageEvent) {
       const data = event.data as { type?: string; userID?: number; state?: unknown };
-      if (data?.type === "rolltop:pgp-unlock-request" && data.userID === userID && pgpUnlockRef.current.unlockedUntil > Date.now()) {
-        void publishPGPUnlockToWorker(userID, pgpUnlockRef.current, runtimePluginsRef.current);
+      if (data?.type === "rolltop:security-unlock-request" && data.userID === userID && securityUnlockRef.current.unlockedUntil > Date.now()) {
+        void publishSecurityUnlockToWorker(userID, securityUnlockRef.current, runtimePluginsRef.current);
         return;
       }
-      if (data?.type !== "rolltop:pgp-unlock-state" || data.userID !== userID || !data.state) return;
-      const pgp = runtimePluginsRef.current.clientSidePGP;
-      if (!pgp) return;
-      void pgp.restoreUnlockState(data.state).then((state) => {
+      if (data?.type !== "rolltop:security-unlock-state" || data.userID !== userID || !data.state) return;
+      const plugin = securityUnlockPlugin(runtimePluginsRef.current.all);
+      if (!plugin) return;
+      void plugin.restoreUnlockState(data.state).then((state) => {
         if (cancelled) return;
-        pgpUnlockRef.current = state;
-        setPGPUnlock(state);
+        securityUnlockRef.current = state;
+        setSecurityUnlock(state);
         if (state.keys.length > 0) {
-          setPGPUnlockOpen(false);
-          setPGPUnlockIdentityID(null);
-          const callback = pgpUnlockCallbackRef.current;
-          pgpUnlockCallbackRef.current = null;
+          setSecurityUnlockOpen(false);
+          setSecurityUnlockIdentityID(null);
+          const callback = securityUnlockCallbackRef.current;
+          securityUnlockCallbackRef.current = null;
           callback?.(state);
         }
       });
     }
     navigator.serviceWorker.addEventListener("message", onMessage);
-    requestPGPUnlockFromWorker(userID);
+    requestSecurityUnlockFromWorker(userID);
     return () => {
       cancelled = true;
       navigator.serviceWorker.removeEventListener("message", onMessage);
@@ -487,17 +490,19 @@ export default function App() {
   const logout = useCallback(async () => {
     if (!bootstrap?.csrf) return;
     await api.logout(bootstrap.csrf);
-    applyPGPUnlock(emptyPGPUnlockState, true);
-    setPGPUnlockOpen(false);
-    setPGPUnlockIdentityID(null);
-    pgpUnlockCallbackRef.current = null;
+    applySecurityUnlock(emptySecurityUnlockState, true);
+    setSecurityUnlockOpen(false);
+    setSecurityUnlockIdentityID(null);
+    securityUnlockCallbackRef.current = null;
     setBootstrap((current) => (current ? { ...current, user: null, mailboxes: [] } : current));
     navigate("/login");
-  }, [applyPGPUnlock, bootstrap?.csrf, navigate]);
+  }, [applySecurityUnlock, bootstrap?.csrf, navigate]);
 
   const openCompose = useCallback((query = "") => {
     setComposeOverlayQuery(query.replace(/^\?/, ""));
   }, []);
+
+  const unlockPlugin = securityUnlockPlugin(runtimePlugins.all);
 
   if (!bootstrap) {
     return (
@@ -548,10 +553,10 @@ export default function App() {
         refreshChrome={refreshBootstrap}
         notificationsEnabled={notificationsEnabled}
         toggleNotifications={toggleNotifications}
-        pgpPlugin={runtimePlugins.clientSidePGP}
-        pgpUnlock={pgpUnlock}
-        openPGPUnlock={openPGPUnlock}
-        lockPGP={lockPGP}
+        securityUnlockAvailable={Boolean(unlockPlugin)}
+        securityUnlock={securityUnlock}
+        openSecurityUnlock={openSecurityUnlock}
+        lockSecurity={lockSecurity}
         logout={logout}
       >
         <RouteView
@@ -568,9 +573,8 @@ export default function App() {
           openCompose={openCompose}
           refreshChrome={refreshBootstrap}
           runtimePlugins={runtimePlugins}
-          pgpPlugin={runtimePlugins.clientSidePGP}
-          pgpUnlock={pgpUnlock}
-          openPGPUnlock={openPGPUnlock}
+          securityUnlock={securityUnlock}
+          openSecurityUnlock={openSecurityUnlock}
           addToast={addToast}
         />
       </AppShell>
@@ -578,28 +582,28 @@ export default function App() {
         <ComposeOverlay
           csrf={bootstrap.csrf}
           query={composeOverlayQuery}
-          pgpEnabled={(bootstrap.enabled_plugins || []).includes("client_side_pgp") && Boolean(runtimePlugins.clientSidePGP)}
-          pgpPlugin={runtimePlugins.clientSidePGP}
-          pgpUnlock={pgpUnlock}
-          openPGPUnlock={openPGPUnlock}
+          securityEnabled={Boolean(unlockPlugin)}
+          securityPlugins={runtimePlugins.all}
+          securityUnlock={securityUnlock}
+          openSecurityUnlock={openSecurityUnlock}
           addToast={addToast}
           onClose={() => setComposeOverlayQuery(null)}
         />
       ) : null}
-      {pgpUnlockOpen && runtimePlugins.clientSidePGP ? (
-        <runtimePlugins.clientSidePGP.UnlockDialog
+      {securityUnlockOpen && unlockPlugin ? (
+        <unlockPlugin.UnlockDialog
           userID={bootstrap.user.id}
-          identityID={pgpUnlockIdentityID}
-          recipientKeyIDs={pgpUnlockRecipientKeyIDs}
-          fallbackEmail={pgpUnlockFallbackEmail}
-          onClose={closePGPUnlock}
+          identityID={securityUnlockIdentityID}
+          recipientKeyIDs={securityUnlockRecipientKeyIDs}
+          fallbackEmail={securityUnlockFallbackEmail}
+          onClose={closeSecurityUnlock}
           onUnlocked={(state) => {
-            applyPGPUnlock(state, true);
-            setPGPUnlockIdentityID(null);
-            setPGPUnlockRecipientKeyIDs([]);
-            setPGPUnlockFallbackEmail("");
-            const callback = pgpUnlockCallbackRef.current;
-            pgpUnlockCallbackRef.current = null;
+            applySecurityUnlock(state, true);
+            setSecurityUnlockIdentityID(null);
+            setSecurityUnlockRecipientKeyIDs([]);
+            setSecurityUnlockFallbackEmail("");
+            const callback = securityUnlockCallbackRef.current;
+            securityUnlockCallbackRef.current = null;
             callback?.(state);
           }}
           addToast={addToast}

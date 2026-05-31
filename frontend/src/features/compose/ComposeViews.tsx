@@ -4,12 +4,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ClipboardEvent, DragEvent, FormEvent } from "react";
 import { api } from "../../api";
-import type { LocationState, PGPUnlockState, Toast } from "../../appTypes";
-import type { ContactAutocomplete, ContactPGPKey, ComposeAttachmentUpload, ComposeExistingAttachment, ComposeForm, ComposeIdentity } from "../../types";
+import type { LocationState, Toast } from "../../appTypes";
+import type { ContactAutocomplete, ComposeAttachmentUpload, ComposeExistingAttachment, ComposeForm, ComposeIdentity } from "../../types";
 import { Icon, LogoMark } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { textToHTML } from "../../lib/html";
-import type { ClientSidePGPPlugin, PGPMIMEAttachmentInput } from "../../../../plugins/client_side_pgp/frontend/types";
+import type { RuntimePlugin } from "../../plugins/runtime";
+import { useComposeSecurity } from "../../plugins/composeSecurity";
+import type { ComposeSecurityUnlockState, OpenComposeSecurityUnlock } from "../../plugins/composeSecurity";
 
 const ATTACHMENT_WARNING_BYTES = 20 * 1024 * 1024;
 const RESIZE_PHOTO_MAX_EDGE = 1920;
@@ -20,31 +22,23 @@ type ComposeAttachment = ComposeAttachmentUpload & {
   objectURL?: string;
 };
 
-type PGPTransformState = {
-  active: boolean;
-  phase: "plaintext" | "ciphertext";
-  ciphertext: string;
-};
-
-type PGPSendChoice = "plain" | "signed" | "signed_encrypted";
-
 /** Floating compose dialog used by the shell for new mail, replies, and forwards. */
 export function ComposeOverlay({
   csrf,
   query,
-  pgpEnabled,
-  pgpPlugin,
-  pgpUnlock,
-  openPGPUnlock,
+  securityEnabled,
+  securityPlugins,
+  securityUnlock,
+  openSecurityUnlock,
   addToast,
   onClose
 }: {
   csrf: string;
   query: string;
-  pgpEnabled: boolean;
-  pgpPlugin?: ClientSidePGPPlugin;
-  pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
+  securityEnabled: boolean;
+  securityPlugins: readonly RuntimePlugin[];
+  securityUnlock: ComposeSecurityUnlockState;
+  openSecurityUnlock: OpenComposeSecurityUnlock;
   addToast: (message: string, kind?: Toast["kind"]) => number;
   onClose: () => void;
 }) {
@@ -82,10 +76,10 @@ export function ComposeOverlay({
           composeFrom={from}
           identities={identities}
           initial={form}
-          pgpEnabled={pgpEnabled}
-          pgpPlugin={pgpPlugin}
-          pgpUnlock={pgpUnlock}
-          openPGPUnlock={openPGPUnlock}
+          securityEnabled={securityEnabled}
+          securityPlugins={securityPlugins}
+          securityUnlock={securityUnlock}
+          openSecurityUnlock={openSecurityUnlock}
           addToast={addToast}
           onSent={onClose}
           onCancel={onClose}
@@ -113,19 +107,19 @@ export function ComposePage({
   csrf,
   location,
   navigate,
-  pgpEnabled,
-  pgpPlugin,
-  pgpUnlock,
-  openPGPUnlock,
+  securityEnabled,
+  securityPlugins,
+  securityUnlock,
+  openSecurityUnlock,
   addToast
 }: {
   csrf: string;
   location: LocationState;
   navigate: (url: string) => void;
-  pgpEnabled: boolean;
-  pgpPlugin?: ClientSidePGPPlugin;
-  pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
+  securityEnabled: boolean;
+  securityPlugins: readonly RuntimePlugin[];
+  securityUnlock: ComposeSecurityUnlockState;
+  openSecurityUnlock: OpenComposeSecurityUnlock;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const [form, setForm] = useState<ComposeForm | null>(null);
@@ -160,10 +154,10 @@ export function ComposePage({
           composeFrom={from}
           identities={identities}
           initial={form}
-        pgpEnabled={pgpEnabled}
-        pgpPlugin={pgpPlugin}
-        pgpUnlock={pgpUnlock}
-          openPGPUnlock={openPGPUnlock}
+          securityEnabled={securityEnabled}
+          securityPlugins={securityPlugins}
+          securityUnlock={securityUnlock}
+          openSecurityUnlock={openSecurityUnlock}
           addToast={addToast}
           onSent={() => navigate("/mail")}
           onCancel={() => navigate("/mail")}
@@ -185,10 +179,10 @@ export function ComposeBox({
   identities = [],
   initial,
   inline = false,
-  pgpEnabled = false,
-  pgpPlugin,
-  pgpUnlock,
-  openPGPUnlock,
+  securityEnabled = false,
+  securityPlugins,
+  securityUnlock,
+  openSecurityUnlock,
   addToast,
   onSent,
   onCancel
@@ -198,10 +192,10 @@ export function ComposeBox({
   identities?: ComposeIdentity[];
   initial: ComposeForm;
   inline?: boolean;
-  pgpEnabled?: boolean;
-  pgpPlugin?: ClientSidePGPPlugin;
-  pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
+  securityEnabled?: boolean;
+  securityPlugins: readonly RuntimePlugin[];
+  securityUnlock: ComposeSecurityUnlockState;
+  openSecurityUnlock: OpenComposeSecurityUnlock;
   addToast: (message: string, kind?: Toast["kind"]) => number;
   onSent: () => void;
   onCancel?: () => void;
@@ -212,19 +206,12 @@ export function ComposeBox({
   const [sending, setSending] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [resizing, setResizing] = useState(false);
-  const [pgpTransform, setPGPTransform] = useState<PGPTransformState>({ active: false, phase: "plaintext", ciphertext: "" });
-  const [pgpEncrypt, setPGPEncrypt] = useState(Boolean(initial.pgp_encrypted));
-  const [pgpSign, setPGPSign] = useState(Boolean(initial.pgp_signed));
-  const [attachPublicKey, setAttachPublicKey] = useState(Boolean(initial.attach_public_key));
-  const [pgpSendPromptOpen, setPGPSendPromptOpen] = useState(false);
-  const [pgpSendSuggestionAvailable, setPGPSendSuggestionAvailable] = useState(false);
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const inlineMediaInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsRef = useRef<ComposeAttachment[]>([]);
-  const pgpSendChoiceBypassRef = useRef(false);
   const primaryIdentity = useMemo(() => identities.find((identity) => identity.is_primary) || identities[0] || null, [identities]);
   const availableExistingAttachments = form.available_attachments || [];
   const includedExistingAttachmentIDs = form.include_attachment_ids || [];
@@ -244,20 +231,19 @@ export function ComposeBox({
   const canResizePhotos = attachments.some((attachment) => isResizablePhoto(attachment.file));
   const selectedIdentity = identities.find((identity) => identity.id === (form.from_identity_id || primaryIdentity?.id || 0)) || primaryIdentity;
   const hasAttachedItems = attachments.length > 0 || includedExistingAttachments.length > 0 || Boolean(forwardedMessageAttachment);
-  const selectedIdentityCanEncrypt = Boolean(selectedIdentity?.has_pgp_private_key && selectedIdentity?.pgp_public_key_armored?.trim());
-  const pgpActive = pgpEnabled && (pgpEncrypt || pgpSign);
   const recipientEmails = useMemo(() => recipientEmailAddresses([form.to, form.cc, form.bcc]), [form.to, form.cc, form.bcc]);
-  const recipientEmailKey = recipientEmails.join("|");
-  const pgpSendSuggestionPulse = pgpSendSuggestionAvailable && !pgpActive;
-  const sendButtonLabel = sending
-    ? pgpActive ? "Preparing PGP..." : "Sending..."
-    : pgpEncrypt && pgpSign ? "Sign, Encrypt & Send"
-      : pgpEncrypt ? "Encrypt & Send"
-        : pgpSign ? "Sign & Send"
-          : "Send";
-  const unlockedSigningKey = selectedIdentity
-    ? pgpUnlock.keys.find((key) => key.identity_id === selectedIdentity.pgp_identity_id) || null
-    : null;
+  const composeSecurity = useComposeSecurity({
+    enabled: securityEnabled,
+    plugins: securityPlugins,
+    initial,
+    selectedIdentity,
+    recipientEmails,
+    includedExistingAttachments,
+    forwardedMessageAttachment,
+    unlockState: securityUnlock,
+    openUnlock: openSecurityUnlock,
+    addToast
+  });
 
   useEffect(() => {
     setForm({
@@ -266,12 +252,6 @@ export function ComposeBox({
     });
     setShowCc(Boolean(initial.cc));
     setShowBcc(Boolean(initial.bcc));
-    setPGPEncrypt(Boolean(initial.pgp_encrypted));
-    setPGPSign(Boolean(initial.pgp_signed));
-    setAttachPublicKey(Boolean(initial.attach_public_key));
-    setPGPSendPromptOpen(false);
-    setPGPSendSuggestionAvailable(false);
-    setPGPTransform({ active: false, phase: "plaintext", ciphertext: "" });
     setAttachments((current) => {
       revokeAttachmentObjectURLs(current);
       return [];
@@ -287,34 +267,6 @@ export function ComposeBox({
   }, [attachments]);
 
   useEffect(() => () => revokeAttachmentObjectURLs(attachmentsRef.current), []);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer = 0;
-    if (!pgpEnabled || pgpActive || !selectedIdentityCanEncrypt || recipientEmails.length === 0) {
-      setPGPSendSuggestionAvailable(false);
-      setPGPSendPromptOpen(false);
-      return;
-    }
-    timer = window.setTimeout(() => {
-      if (!pgpPlugin) {
-        setPGPSendSuggestionAvailable(false);
-        return;
-      }
-      pgpPlugin.publicKeys(recipientEmails, true)
-        .then(async (data) => {
-          await pgpPlugin.encryptionKeyRecordsForRecipients(recipientEmails, data.keys || []);
-          if (!cancelled) setPGPSendSuggestionAvailable(true);
-        })
-        .catch(() => {
-          if (!cancelled) setPGPSendSuggestionAvailable(false);
-        });
-    }, 350);
-    return () => {
-      cancelled = true;
-      if (timer) window.clearTimeout(timer);
-    };
-  }, [pgpActive, pgpEnabled, pgpPlugin, recipientEmailKey, selectedIdentityCanEncrypt]);
 
   function setField<K extends keyof ComposeForm>(field: K, value: ComposeForm[K]) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -445,21 +397,7 @@ export function ComposeBox({
   // inline files that are still referenced in the edited body.
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (pgpSendSuggestionAvailable && !pgpActive && !pgpSendChoiceBypassRef.current) {
-      setPGPSendPromptOpen(true);
-      return;
-    }
-    pgpSendChoiceBypassRef.current = false;
-    if (pgpEnabled && pgpSign && !unlockedSigningKey) {
-      if (!selectedIdentity?.has_pgp_private_key) {
-        addToast("Add a PGP private key to this identity before signing.", "error");
-        return;
-      }
-      openPGPUnlock(selectedIdentity.pgp_identity_id || undefined, () => {
-        window.setTimeout(() => formRef.current?.requestSubmit(), 0);
-      });
-      return;
-    }
+    if (!composeSecurity.beginSubmit(formRef)) return;
     const editor = editorRef.current;
     const preparedHTML = prepareComposeHTML(editor?.innerHTML || "", attachments);
     const uploadAttachments = attachments.filter((attachment) => !attachment.inline || preparedHTML.inlineIDs.has(attachment.id));
@@ -468,19 +406,19 @@ export function ComposeBox({
       from_identity_id: form.from_identity_id || primaryIdentity?.id || 0,
       body: editor?.innerText || "",
       body_html: preparedHTML.html,
-      attach_public_key: attachPublicKey
+      attach_public_key: composeSecurity.attachPublicKey
     };
     let sent = false;
     setSending(true);
-    if (pgpActive) {
-      setPGPTransform({ active: true, phase: "plaintext", ciphertext: "" });
+    if (composeSecurity.active) {
+      composeSecurity.setTransform({ active: true, phase: "plaintext", ciphertext: "" });
       await waitForFrame();
     }
     try {
-      const prepared = await preparePGPSubmitForm(nextForm, uploadAttachments, (ciphertext) => {
-        setPGPTransform({ active: true, phase: "ciphertext", ciphertext });
+      const prepared = await composeSecurity.prepareSubmitForm(nextForm, uploadAttachments, (ciphertext) => {
+        composeSecurity.setTransform({ active: true, phase: "ciphertext", ciphertext });
       });
-      if (pgpActive) await delay(520);
+      if (composeSecurity.active) await delay(520);
       await api.send(csrf, prepared.form, prepared.attachments);
       sent = true;
       addToast("Message sent.");
@@ -488,131 +426,9 @@ export function ComposeBox({
     } catch (err) {
       addToast(messageFromError(err), "error");
     } finally {
-      if (!sent) setPGPTransform({ active: false, phase: "plaintext", ciphertext: "" });
+      if (!sent) composeSecurity.setTransform({ active: false, phase: "plaintext", ciphertext: "" });
       setSending(false);
     }
-  }
-
-  function choosePGPSend(choice: PGPSendChoice) {
-    setPGPSendPromptOpen(false);
-    pgpSendChoiceBypassRef.current = true;
-    if (choice === "plain") {
-      setPGPEncrypt(false);
-      setPGPSign(false);
-    } else if (choice === "signed") {
-      setPGPEncrypt(false);
-      setPGPSign(true);
-      setAttachPublicKey(false);
-    } else {
-      setPGPEncrypt(true);
-      setPGPSign(true);
-      setAttachPublicKey(false);
-    }
-    window.setTimeout(() => formRef.current?.requestSubmit(), 0);
-  }
-
-
-  async function preparePGPSubmitForm(nextForm: ComposeForm, uploadAttachments: ComposeAttachment[], onPGPArmored?: (armored: string) => void) {
-    if (!pgpEnabled || (!pgpEncrypt && !pgpSign)) {
-      return { form: { ...nextForm, pgp_encrypted: false, pgp_signed: false, pgp_mime: false }, attachments: uploadAttachments };
-    }
-    if (!pgpPlugin) {
-      throw new Error("PGP plugin is still loading. Try again in a moment.");
-    }
-    if (pgpSign && !unlockedSigningKey) {
-      openPGPUnlock(selectedIdentity?.pgp_identity_id || undefined);
-      throw new Error("Unlock this identity's PGP key before signing.");
-    }
-    if (pgpEncrypt && !selectedIdentityCanEncrypt) {
-      throw new Error("Add an active PGP encryption key to this identity before encrypting. Rolltop encrypts a copy to your own key so sent mail stays readable.");
-    }
-    const payload = nextForm.body_html.trim() ? nextForm.body_html : nextForm.body;
-    let armored = payload;
-    let pgpMime = false;
-    let pgpSignature = "";
-    const pgpAttachments = await pgpMIMEAttachments(uploadAttachments);
-    if (pgpEncrypt) {
-      const recipientEmails = recipientEmailAddresses([nextForm.to, nextForm.cc, nextForm.bcc]);
-      let data;
-      try {
-        data = await pgpPlugin.publicKeys(recipientEmails, true);
-      } catch (err) {
-        throw new Error(`Could not load recipient PGP public keys: ${messageFromError(err)}`);
-      }
-      const recipientKeys = await pgpPlugin.encryptionKeyRecordsForRecipients(recipientEmails, data.keys || []);
-      const keys = encryptionKeysWithSender(recipientKeys);
-      pgpMime = true;
-      const mimeEntity = pgpPlugin.pgpMIMEEntityFromBody(nextForm.body, nextForm.body_html, pgpAttachments);
-      armored = await pgpPlugin.encryptMessageText(pgpPlugin.addAutocryptGossipHeaders(mimeEntity, keys), keys, pgpSign ? unlockedSigningKey || undefined : undefined);
-    } else if (pgpSign && unlockedSigningKey) {
-      pgpMime = true;
-      const mimeEntity = pgpPlugin.pgpMIMEEntityFromBody(nextForm.body, nextForm.body_html, pgpAttachments);
-      armored = mimeEntity;
-      pgpSignature = await pgpPlugin.signPGPMIMEEntity(mimeEntity, unlockedSigningKey);
-    }
-    onPGPArmored?.(armored);
-    return {
-      form: { ...nextForm, body: armored, body_html: "", include_attachment_ids: [], forward_attachment_message_id: 0, attach_public_key: false, pgp_encrypted: pgpEncrypt, pgp_signed: pgpSign, pgp_mime: pgpMime, pgp_signature: pgpSignature },
-      attachments: [] as ComposeAttachment[]
-    };
-  }
-
-  async function pgpMIMEAttachments(uploadAttachments: ComposeAttachment[]): Promise<PGPMIMEAttachmentInput[]> {
-    const out: PGPMIMEAttachmentInput[] = [];
-    for (const attachment of uploadAttachments) {
-      out.push({
-        filename: attachment.filename,
-        contentType: attachment.content_type,
-        contentID: attachment.content_id,
-        inline: attachment.inline,
-        data: new Uint8Array(await attachment.file.arrayBuffer())
-      });
-    }
-    for (const attachment of includedExistingAttachments) {
-      out.push(await pgpMIMEAttachmentFromExisting(attachment));
-    }
-    if (forwardedMessageAttachment) {
-      out.push(await pgpMIMEAttachmentFromExisting(forwardedMessageAttachment));
-    }
-    if (attachPublicKey && selectedIdentity?.pgp_public_key_armored?.trim()) {
-      const filename = `OpenPGP_${(selectedIdentity.email || "public-key").replace(/[^A-Za-z0-9_.-]/g, "_")}.asc`;
-      out.push({
-        filename,
-        contentType: "application/pgp-keys",
-        data: new TextEncoder().encode(selectedIdentity.pgp_public_key_armored.trim() + "\n")
-      });
-    }
-    return out;
-  }
-
-  async function pgpMIMEAttachmentFromExisting(attachment: ComposeExistingAttachment): Promise<PGPMIMEAttachmentInput> {
-    const response = await fetch(attachment.download_url, { credentials: "same-origin" });
-    if (!response.ok) {
-      throw new Error(`Could not load ${composeExistingAttachmentName(attachment)} for PGP/MIME packaging.`);
-    }
-    return {
-      filename: composeExistingAttachmentName(attachment),
-      contentType: attachment.content_type || response.headers.get("Content-Type") || "application/octet-stream",
-      data: new Uint8Array(await response.arrayBuffer())
-    };
-  }
-
-  function encryptionKeysWithSender(keys: ContactPGPKey[]): ContactPGPKey[] {
-    const selfArmored = selectedIdentity?.pgp_public_key_armored?.trim() || "";
-    if (!selfArmored) return keys;
-    if (keys.some((key) => key.public_key_armored.trim() === selfArmored)) return keys;
-    return [
-      ...keys,
-      {
-        email: selectedIdentity?.email || "",
-        label: selectedIdentity?.email ? `${selectedIdentity.email} sender key` : "Sender key",
-        fingerprint: "",
-        key_id: "",
-        user_ids: selectedIdentity?.header || selectedIdentity?.email || "",
-        public_key_armored: selfArmored,
-        is_preferred: false
-      }
-    ];
   }
 
   async function saveDraft() {
@@ -624,11 +440,11 @@ export function ComposeBox({
       from_identity_id: form.from_identity_id || primaryIdentity?.id || 0,
       body: editor?.innerText || "",
       body_html: preparedHTML.html,
-      attach_public_key: attachPublicKey
+      attach_public_key: composeSecurity.attachPublicKey
     };
     setSavingDraft(true);
     try {
-      const prepared = await preparePGPSubmitForm(nextForm, uploadAttachments);
+      const prepared = await composeSecurity.prepareSubmitForm(nextForm, uploadAttachments);
       const data = await api.saveDraft(csrf, prepared.form, prepared.attachments);
       setForm((current) => ({ ...current, draft_message_id: data.message_id }));
       addToast("Draft saved.");
@@ -747,7 +563,7 @@ export function ComposeBox({
         </div>
       ) : null}
       <div
-        className={`compose-body ${pgpTransform.active ? `pgp-transforming pgp-transform-${pgpTransform.phase}` : ""}`}
+        className={`compose-body ${composeSecurity.transform.active ? `pgp-transforming pgp-transform-${composeSecurity.transform.phase}` : ""}`}
         onDragOver={(event) => event.preventDefault()}
         onDrop={handleComposeDrop}
       >
@@ -759,9 +575,9 @@ export function ComposeBox({
           onPaste={handleEditorPaste}
           suppressContentEditableWarning
         />
-        {pgpTransform.active ? (
+        {composeSecurity.transform.active ? (
           <pre className="compose-pgp-ciphertext" aria-hidden="true">
-            {pgpTransform.ciphertext || "Preparing PGP message..."}
+            {composeSecurity.transform.ciphertext || "Preparing PGP message..."}
           </pre>
         ) : null}
       </div>
@@ -864,70 +680,19 @@ export function ComposeBox({
           event.currentTarget.value = "";
         }}
       />
-      {pgpSendPromptOpen ? (
-        <div className="compose-pgp-send-choice" role="dialog" aria-label="PGP send options">
-          <span>PGP keys are available for every recipient.</span>
-          <button className="secondary" type="button" onClick={() => choosePGPSend("plain")}>Send unencrypted</button>
-          <button className="secondary" type="button" onClick={() => choosePGPSend("signed")}>Sign only</button>
-          <button type="button" onClick={() => choosePGPSend("signed_encrypted")}>Sign & encrypt</button>
-        </div>
-      ) : null}
+      {composeSecurity.renderSendChoice(formRef)}
       <div className="compose-sendbar">
         <div className="compose-send-actions">
           <button className="send-button" disabled={sending || savingDraft || resizing}>
             <Icon name="send" />
-            {sendButtonLabel}
+            {composeSecurity.sendButtonLabel(sending)}
           </button>
           <button className="secondary save-draft-button" type="button" disabled={sending || savingDraft || resizing} onClick={() => void saveDraft()}>
             <Icon name="draft" />
             {savingDraft ? "Saving..." : "Save draft"}
           </button>
           <div className="compose-lower-tools" aria-label="Message tools">
-            <button className="ghost" type="button" title={pgpActive ? "Attach files inside the PGP/MIME message" : "Attach files"} onClick={() => attachmentInputRef.current?.click()}>
-              <Icon name="attach_file" />
-            </button>
-            <button className="ghost" type="button" title={pgpActive ? "Insert inline media inside the PGP/MIME message" : "Insert inline media"} onClick={() => inlineMediaInputRef.current?.click()}>
-              <Icon name="image" />
-            </button>
-            {pgpEnabled ? (
-              <div className={`compose-pgp-bar ${pgpSendSuggestionPulse ? "suggested" : ""}`} aria-label="PGP options" title="PGP protects the message body. Subject, recipients, dates, and other headers remain visible.">
-                <span className="compose-pgp-label">PGP:</span>
-                <button
-                  className={`ghost icon-toggle pgp-security-option ${pgpEncrypt ? "active" : ""}`}
-                  type="button"
-                  title={selectedIdentityCanEncrypt ? "Encrypt with recipient public keys and your own identity key" : "Add an active PGP encryption key to this identity before encrypting"}
-                  aria-label="Encrypt with PGP"
-                  aria-pressed={pgpEncrypt}
-                  disabled={!selectedIdentityCanEncrypt}
-                  onClick={() => setPGPEncrypt((value) => { const next = !value; if (next) setAttachPublicKey(false); return next; })}
-                >
-                  <Icon name="lock" weight={pgpEncrypt ? "bold" : "regular"} />
-                </button>
-                <button
-                  className={`ghost icon-toggle pgp-security-option ${pgpSign ? "active" : ""}`}
-                  type="button"
-                  title={selectedIdentity?.has_pgp_private_key ? "Sign with your unlocked private key" : "Add a PGP private key to this identity before signing"}
-                  aria-label="Sign with PGP"
-                  aria-pressed={pgpSign}
-                  disabled={!selectedIdentity?.has_pgp_private_key}
-                  onClick={() => setPGPSign((value) => { const next = !value; if (next) setAttachPublicKey(false); return next; })}
-                >
-                  <Icon name="signature" weight={pgpSign ? "bold" : "regular"} />
-                </button>
-                <button
-                  className={`ghost icon-toggle ${attachPublicKey ? "active" : ""}`}
-                  type="button"
-                  title={pgpActive ? "Attach your public key inside the PGP/MIME message" : selectedIdentity?.pgp_public_key_armored ? "Attach your public key" : "Add a PGP key to this identity before attaching a public key"}
-                  aria-label="Attach public key"
-                  aria-pressed={attachPublicKey}
-                  disabled={!selectedIdentity?.pgp_public_key_armored}
-                  onClick={() => setAttachPublicKey((value) => !value)}
-                >
-                  <Icon name="key" weight={attachPublicKey ? "bold" : "regular"} />
-                </button>
-                {pgpActive ? <span className="compose-pgp-scope">PGP/MIME</span> : null}
-              </div>
-            ) : null}
+            {composeSecurity.renderControls({ attachmentInputRef, inlineMediaInputRef })}
           </div>
         </div>
         <button className="ghost" type="button" title="Discard" onClick={onCancel}>

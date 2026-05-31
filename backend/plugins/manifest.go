@@ -25,6 +25,7 @@ type Manifest struct {
 	Version          string          `json:"version"`
 	EnabledByDefault bool            `json:"enabled_by_default"`
 	Heavy            bool            `json:"heavy"`
+	Experimental     bool            `json:"experimental"`
 	Backend          *BackendBundle  `json:"backend,omitempty"`
 	Frontend         *FrontendBundle `json:"frontend,omitempty"`
 	Themes           []ThemeBundle   `json:"themes,omitempty"`
@@ -107,6 +108,7 @@ func DefinitionsFromManifests(manifests []Manifest) []Definition {
 			Description:      strings.TrimSpace(manifest.Description),
 			EnabledByDefault: manifest.EnabledByDefault,
 			Heavy:            manifest.Heavy,
+			Experimental:     manifest.Experimental,
 		})
 	}
 	return out

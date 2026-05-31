@@ -123,7 +123,7 @@ type apiMessageOriginalSource struct {
 }
 
 // apiMessageOriginal returns raw RFC822 source for one user-owned message. The
-// browser requests this from the message action menu and PGP opener because raw
+// browser requests this from the message action menu and security opener because raw
 // messages can be large when they include attachments.
 func (s *Server) apiMessageOriginal(w http.ResponseWriter, r *http.Request, id int64) {
 	if r.Method != http.MethodGet {
@@ -1160,7 +1160,7 @@ func (s *Server) ensureMessageSecurityState(ctx context.Context, userID int64, m
 	if state.Encrypted == msg.IsEncrypted && state.Signed == msg.IsSigned {
 		return msg, nil
 	}
-	if err := s.store.UpdateMessagePGPState(ctx, userID, msg.ID, state.Encrypted, state.Signed); err != nil {
+	if err := s.store.UpdateMessageSecurityState(ctx, userID, msg.ID, state.Encrypted, state.Signed); err != nil {
 		return msg, err
 	}
 	msg.IsEncrypted = state.Encrypted

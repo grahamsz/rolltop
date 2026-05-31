@@ -24,6 +24,7 @@ type PluginSetting struct {
 	Enabled          bool
 	EnabledByDefault bool
 	Heavy            bool
+	Experimental     bool
 	CreatedAt        int64
 	UpdatedAt        int64
 }
@@ -105,6 +106,9 @@ func (s *Store) ListPluginSettings(ctx context.Context) ([]PluginSetting, error)
 		setting.Enabled = enabled != 0
 		setting.EnabledByDefault = enabledByDefault != 0
 		setting.Heavy = heavy != 0
+		if def, ok := s.pluginDefinitionByID(setting.ID); ok {
+			setting.Experimental = def.Experimental
+		}
 		out = append(out, setting)
 	}
 	return out, rows.Err()

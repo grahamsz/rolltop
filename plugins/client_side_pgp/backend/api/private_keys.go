@@ -27,7 +27,7 @@ func PrivateKeys(host plugins.APIHost, _ string, w http.ResponseWriter, r *http.
 	}
 	switch r.Method {
 	case http.MethodGet:
-		keys, err := storeFromHost(host).ListIdentityPGPPrivateKeysForUser(r.Context(), cu.UserID)
+		keys, err := keystore.ListIdentityPrivateKeysForUser(r.Context(), storeFromHost(host), cu.UserID)
 		if err != nil {
 			host.ServerError(w, err)
 			return
@@ -86,7 +86,7 @@ func savePrivateKey(host plugins.APIHost, userID int64, w http.ResponseWriter, r
 		host.ServerError(w, err)
 		return
 	}
-	saved, err := storeFromHost(host).UpsertIdentityPGPPrivateKey(r.Context(), key)
+	saved, err := keystore.UpsertIdentityPrivateKey(r.Context(), storeFromHost(host), key)
 	if store.IsNotFound(err) {
 		host.WriteAPIError(w, http.StatusNotFound, fmt.Sprintf("PGP identity key target was not found: user_id=%d identity_id=%d", key.UserID, key.IdentityID))
 		return
@@ -129,7 +129,7 @@ func privateKeyPath(host plugins.APIHost, w http.ResponseWriter, r *http.Request
 	if !host.VerifyCSRF(w, r) {
 		return
 	}
-	if err := storeFromHost(host).DeleteIdentityPGPPrivateKeyForUser(r.Context(), cu.UserID, id); err != nil {
+	if err := keystore.DeleteIdentityPrivateKeyForUser(r.Context(), storeFromHost(host), cu.UserID, id); err != nil {
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
 			return

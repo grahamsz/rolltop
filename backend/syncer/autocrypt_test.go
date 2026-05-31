@@ -11,6 +11,7 @@ import (
 
 	"rolltop/backend/plugins"
 	"rolltop/backend/store"
+	"rolltop/plugins/client_side_pgp/backend/keystore"
 )
 
 const autocryptTestRaw = "From: Alice <alice@example.test>\r\nAutocrypt: addr=alice@example.test; prefer-encrypt=mutual; keydata=AQIDBAUGBwg=\r\nSubject: hello\r\n\r\nbody"
@@ -30,7 +31,7 @@ func TestDiscoverAutocryptHeadersStoresSenderKey(t *testing.T) {
 	if err := svc.importIncomingMessageHooks(ctx, user.ID, []byte(autocryptTestRaw), "Alice <alice@example.test>"); err != nil {
 		t.Fatal(err)
 	}
-	keys, err := db.ListAllContactPGPPublicKeysForEmails(ctx, user.ID, []string{"alice@example.test"})
+	keys, err := keystore.ListAllPublicKeysForEmails(ctx, db, user.ID, []string{"alice@example.test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestDiscoverAutocryptHeadersRequiresPluginAndMatchingFrom(t *testing.T) {
 			if err := svc.importIncomingMessageHooks(ctx, user.ID, []byte(autocryptTestRaw), tc.parsedFrom); err != nil {
 				t.Fatal(err)
 			}
-			keys, err := db.ListAllContactPGPPublicKeysForEmails(ctx, user.ID, []string{"alice@example.test"})
+			keys, err := keystore.ListAllPublicKeysForEmails(ctx, db, user.ID, []string{"alice@example.test"})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -1,7 +1,7 @@
 // File overview: Browser PGP helpers. Heavy crypto/sanitizer libraries are
 // dynamically imported so they are emitted as lazy chunks when the plugin is used.
 
-import type { PGPUnlockState, UnlockedPGPKey } from "../../../../frontend/src/appTypes";
+import type { SecurityUnlockState, UnlockedSecurityKey } from "../../../../frontend/src/appTypes";
 import type { ContactPGPKey, IdentityPGPPrivateKey } from "../../../../frontend/src/types";
 
 type OpenPGPModule = typeof import("openpgp");
@@ -32,7 +32,7 @@ export type PGPMessageOpenResult = {
 
 type PublicKeyLike = Awaited<ReturnType<OpenPGPModule["readKey"]>>;
 
-export type SerializedUnlockedPGPKey = Omit<UnlockedPGPKey, "privateKey"> & {
+export type SerializedUnlockedPGPKey = Omit<UnlockedSecurityKey, "privateKey"> & {
   private_key_armored: string;
 };
 
@@ -64,7 +64,7 @@ export type DecryptedMIMEAttachment = {
   objectURL: string;
 };
 
-export async function unlockPrivateKey(key: IdentityPGPPrivateKey, passphrase: string): Promise<UnlockedPGPKey> {
+export async function unlockPrivateKey(key: IdentityPGPPrivateKey, passphrase: string): Promise<UnlockedSecurityKey> {
   const openpgp = await loadOpenPGP();
   const privateKey = await openpgp.readPrivateKey({ armoredKey: key.private_key_armored || "" });
   if (isPrivateKeyDecrypted(privateKey)) {
@@ -85,7 +85,7 @@ export async function unlockPrivateKey(key: IdentityPGPPrivateKey, passphrase: s
   };
 }
 
-export async function serializePGPUnlockState(state: PGPUnlockState): Promise<SerializedPGPUnlockState> {
+export async function serializePGPUnlockState(state: SecurityUnlockState): Promise<SerializedPGPUnlockState> {
   if (!state.unlockedUntil || state.unlockedUntil <= Date.now()) return { unlockedUntil: 0, keys: [] };
   const keys: SerializedUnlockedPGPKey[] = [];
   for (const key of state.keys) {
@@ -107,10 +107,10 @@ export async function serializePGPUnlockState(state: PGPUnlockState): Promise<Se
   return { unlockedUntil: keys.length > 0 ? state.unlockedUntil : 0, keys };
 }
 
-export async function restorePGPUnlockState(state: SerializedPGPUnlockState): Promise<PGPUnlockState> {
+export async function restorePGPUnlockState(state: SerializedPGPUnlockState): Promise<SecurityUnlockState> {
   if (!state.unlockedUntil || state.unlockedUntil <= Date.now()) return { unlockedUntil: 0, keys: [] };
   const openpgp = await loadOpenPGP();
-  const keys: UnlockedPGPKey[] = [];
+  const keys: UnlockedSecurityKey[] = [];
   for (const item of state.keys || []) {
     try {
       const privateKey = await openpgp.readPrivateKey({ armoredKey: item.private_key_armored || "" });
@@ -254,7 +254,7 @@ export async function autocryptKeyRecordFromMessageSource(source: string, sender
   return null;
 }
 
-export async function encryptMessageText(text: string, recipientKeys: ContactPGPKey[], signingKey?: UnlockedPGPKey): Promise<string> {
+export async function encryptMessageText(text: string, recipientKeys: ContactPGPKey[], signingKey?: UnlockedSecurityKey): Promise<string> {
   const openpgp = await loadOpenPGP();
   const encryptionKeys: PublicKeyLike[] = [];
   const unsuitable: string[] = [];
@@ -278,13 +278,13 @@ export async function encryptMessageText(text: string, recipientKeys: ContactPGP
   }) as Promise<string>;
 }
 
-export async function signMessageText(text: string, signingKey: UnlockedPGPKey): Promise<string> {
+export async function signMessageText(text: string, signingKey: UnlockedSecurityKey): Promise<string> {
   const openpgp = await loadOpenPGP();
   const message = await openpgp.createCleartextMessage({ text });
   return openpgp.sign({ message, signingKeys: signingKey.privateKey as never }) as Promise<string>;
 }
 
-export async function signPGPMIMEEntity(entity: string, signingKey: UnlockedPGPKey): Promise<string> {
+export async function signPGPMIMEEntity(entity: string, signingKey: UnlockedSecurityKey): Promise<string> {
   const openpgp = await loadOpenPGP();
   const message = await openpgp.createMessage({ binary: new TextEncoder().encode(ensureTrailingCRLF(normalizeCRLFText(entity))) });
   return openpgp.sign({
@@ -427,7 +427,7 @@ export async function encryptionKeyRecordsForRecipients(recipientEmails: string[
   return selected;
 }
 
-export async function decryptPGPSource(source: string, keys: UnlockedPGPKey[], verificationKeyArmors: string[] = []): Promise<PGPMessageOpenResult> {
+export async function decryptPGPSource(source: string, keys: UnlockedSecurityKey[], verificationKeyArmors: string[] = []): Promise<PGPMessageOpenResult> {
   const openpgp = await loadOpenPGP();
   const verificationKeys = await readVerificationKeys(openpgp, verificationKeyArmors);
   const pgpMimeSigned = extractPGPMIMESigned(source);
@@ -553,6 +553,11 @@ export async function decryptPGPSource(source: string, keys: UnlockedPGPKey[], v
     autocryptGossip: openedText.gossip,
     ...signature
   };
+}
+
+export async function openSecureMessageSource(source: string, keys: UnlockedSecurityKey[], verificationKeyArmors: string[] = []): Promise<PGPMessageOpenResult & { secureMime?: boolean }> {
+  const result = await decryptPGPSource(source, keys, verificationKeyArmors);
+  return { ...result, secureMime: result.pgpMime };
 }
 
 export async function decryptedHTMLDoc(content: string, attachments: DecryptedMIMEAttachment[] = []): Promise<string> {
@@ -1202,7 +1207,7 @@ function normalizedPGPKeyIDSet(values: string[]): Set<string> {
   return new Set(values.map((value) => value.replace(/\s+/g, "").toUpperCase()).filter((value) => value && !/^0+$/.test(value)));
 }
 
-async function unlockedPGPKeyIDs(keys: UnlockedPGPKey[]): Promise<string[]> {
+async function unlockedPGPKeyIDs(keys: UnlockedSecurityKey[]): Promise<string[]> {
   const out: string[] = [];
   for (const key of keys) {
     out.push(key.key_id || "", key.encryption_key_id || "", key.fingerprint?.slice(-16) || "");

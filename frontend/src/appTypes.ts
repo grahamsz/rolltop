@@ -3,7 +3,6 @@
 
 import type { ReactNode } from "react";
 import type { Bootstrap, Mailbox, User } from "./types";
-import type { ClientSidePGPPlugin } from "../../plugins/client_side_pgp/frontend/types";
 
 /** LocationState is the minimal browser URL state App passes through the manual router. */
 export type LocationState = {
@@ -26,7 +25,7 @@ export type MoveTarget = {
 
 export type MessageTransferAction = "move" | "copy";
 
-export type UnlockedPGPKey = {
+export type UnlockedSecurityKey = {
   id: number;
   identity_id: number;
   label: string;
@@ -38,10 +37,12 @@ export type UnlockedPGPKey = {
   privateKey: unknown;
 };
 
-export type PGPUnlockState = {
+export type SecurityUnlockState = {
   unlockedUntil: number;
-  keys: UnlockedPGPKey[];
+  keys: UnlockedSecurityKey[];
 };
+
+export type OpenSecurityUnlock = (identityID?: number, onUnlocked?: (state: SecurityUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
 
 /** DatePrefs is the subset of user preferences required by date-formatting helpers. */
 export type DatePrefs = Pick<User, "date_locale" | "date_format">;
@@ -76,10 +77,10 @@ export type AppShellProps = {
   refreshChrome: RefreshChrome;
   notificationsEnabled: boolean;
   toggleNotifications: () => Promise<void>;
-  pgpPlugin?: ClientSidePGPPlugin;
-  pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
-  lockPGP: () => void;
+  securityUnlockAvailable: boolean;
+  securityUnlock: SecurityUnlockState;
+  openSecurityUnlock: OpenSecurityUnlock;
+  lockSecurity: () => void;
   logout: () => Promise<void>;
   children: ReactNode;
 };

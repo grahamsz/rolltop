@@ -4,13 +4,12 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import type { DragEvent, FormEvent, MouseEvent, ReactNode } from "react";
 import { api } from "../../api";
-import type { AppShellProps, LocationState, MessageTransferAction, MoveTarget, PGPUnlockState } from "../../appTypes";
+import type { AppShellProps, LocationState, MessageTransferAction, MoveTarget, SecurityUnlockState } from "../../appTypes";
 import type { Bootstrap, Mailbox, SyncRun, User } from "../../types";
 import { Icon, LogoMark } from "../../components/Icon";
 import { folderTree, nodeContainsMailbox, type FolderNode } from "../../lib/folders";
 import { mailRoute, mailURL, searchRoute, searchURL, currentLocation } from "../../lib/routes";
-import type { ClientSidePGPPlugin } from "../../../../plugins/client_side_pgp/frontend/types";
-import { createPluginSet, pluginIDs } from "../../plugins/registry";
+import { createPluginSet } from "../../plugins/registry";
 import { SearchAutocomplete, useSearchAutocomplete } from "./SearchAutocomplete";
 
 /**
@@ -40,10 +39,10 @@ export function AppShell({
   refreshChrome,
   notificationsEnabled,
   toggleNotifications,
-  pgpPlugin,
-  pgpUnlock,
-  openPGPUnlock,
-  lockPGP,
+  securityUnlockAvailable,
+  securityUnlock,
+  openSecurityUnlock,
+  lockSecurity,
   logout,
   children
 }: AppShellProps) {
@@ -64,10 +63,10 @@ export function AppShell({
         navigate={navigate}
         notificationsEnabled={notificationsEnabled}
         toggleNotifications={toggleNotifications}
-        pgpPlugin={pgpPlugin}
-        pgpUnlock={pgpUnlock}
-        openPGPUnlock={openPGPUnlock}
-        lockPGP={lockPGP}
+        securityUnlockAvailable={securityUnlockAvailable}
+        securityUnlock={securityUnlock}
+        openSecurityUnlock={openSecurityUnlock}
+        lockSecurity={lockSecurity}
         logout={logout}
         onMenu={() => setMobileSidebarOpen(true)}
       />
@@ -167,10 +166,10 @@ function Topbar({
   navigate,
   notificationsEnabled,
   toggleNotifications,
-  pgpPlugin,
-  pgpUnlock,
-  openPGPUnlock,
-  lockPGP,
+  securityUnlockAvailable,
+  securityUnlock,
+  openSecurityUnlock,
+  lockSecurity,
   logout,
   onMenu
 }: {
@@ -181,10 +180,10 @@ function Topbar({
   navigate: (url: string) => void;
   notificationsEnabled: boolean;
   toggleNotifications: () => Promise<void>;
-  pgpPlugin?: ClientSidePGPPlugin;
-  pgpUnlock: PGPUnlockState;
-  openPGPUnlock: (identityID?: number, onUnlocked?: (state: PGPUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
-  lockPGP: () => void;
+  securityUnlockAvailable: boolean;
+  securityUnlock: SecurityUnlockState;
+  openSecurityUnlock: (identityID?: number, onUnlocked?: (state: SecurityUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
+  lockSecurity: () => void;
   logout: () => Promise<void>;
   onMenu: () => void;
 }) {
@@ -194,8 +193,7 @@ function Topbar({
   const accountMenuRef = useRef<HTMLDetailsElement>(null);
   const pluginKey = enabledPlugins.join("|");
   const pluginSet = useMemo(() => createPluginSet(enabledPlugins), [pluginKey]);
-  const pgpEnabled = pluginSet.has(pluginIDs.clientSidePGP) && Boolean(pgpPlugin);
-  const pgpUnlocked = pgpUnlock.keys.length > 0 && pgpUnlock.unlockedUntil > Date.now();
+  const securityUnlocked = securityUnlock.keys.length > 0 && securityUnlock.unlockedUntil > Date.now();
   const autocomplete = useSearchAutocomplete({
     query,
     focused,
@@ -272,14 +270,14 @@ function Topbar({
         {focused ? <SearchAutocomplete items={autocomplete.items} activeIndex={autocomplete.activeIndex} onChoose={autocomplete.choose} /> : null}
       </form>
       <nav className="top-actions" aria-label="Account">
-        {pgpEnabled ? (
+        {securityUnlockAvailable ? (
           <button
-            className={pgpUnlocked ? "ghost pgp-lock-toggle active" : "ghost pgp-lock-toggle"}
+            className={securityUnlocked ? "ghost security-lock-toggle active" : "ghost security-lock-toggle"}
             type="button"
-            title={pgpUnlocked ? "Lock PGP keys" : "Unlock PGP key"}
-            onClick={pgpUnlocked ? lockPGP : () => openPGPUnlock()}
+            title={securityUnlocked ? "Lock security keys" : "Unlock security key"}
+            onClick={securityUnlocked ? lockSecurity : () => openSecurityUnlock()}
           >
-            <Icon name={pgpUnlocked ? "lock_open" : "lock"} weight={pgpUnlocked ? "bold" : "regular"} />
+            <Icon name={securityUnlocked ? "lock_open" : "lock"} weight={securityUnlocked ? "bold" : "regular"} />
           </button>
         ) : null}
         <details className="account-menu" ref={accountMenuRef}>

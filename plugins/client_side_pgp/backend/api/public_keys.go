@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"rolltop/backend/plugins"
@@ -36,6 +37,35 @@ func PublicKeys(host plugins.APIHost, _ string, w http.ResponseWriter, r *http.R
 	host.WriteJSON(w, map[string]any{"keys": out})
 }
 
+func PublicKeyRoute(host plugins.APIHost, path string, w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(strings.Trim(path, "/"), Path+"/public-keys/")
+	cu, ok := host.RequireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(strings.Trim(rest, "/"), 10, 64)
+	if err != nil || id <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		methodNotAllowed(w)
+		return
+	}
+	if !host.VerifyCSRF(w, r) {
+		return
+	}
+	if err := keystore.DeleteContactPublicKeyForUser(r.Context(), storeFromHost(host), cu.UserID, id); err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
+		host.ServerError(w, err)
+		return
+	}
+	host.WriteJSON(w, map[string]any{"ok": true})
+}
+
 func savePublicKey(host plugins.APIHost, userID int64, w http.ResponseWriter, r *http.Request) {
 	if !host.VerifyCSRF(w, r) {
 		return
@@ -62,7 +92,7 @@ func contactPublicKeysForRequest(r *http.Request, db *store.Store, userID int64)
 		emails = append(emails, strings.Split(joined, ",")...)
 	}
 	if r.URL.Query().Get("all") == "1" {
-		return db.ListAllContactPGPPublicKeysForEmails(r.Context(), userID, emails)
+		return keystore.ListAllPublicKeysForEmails(r.Context(), db, userID, emails)
 	}
-	return db.ListContactPGPPublicKeysForEmails(r.Context(), userID, emails)
+	return keystore.ListPublicKeysForEmails(r.Context(), db, userID, emails)
 }

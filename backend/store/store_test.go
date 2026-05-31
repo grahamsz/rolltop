@@ -914,49 +914,6 @@ func TestCreateMailIdentityForUserCreatesMeIdentity(t *testing.T) {
 	}
 }
 
-func TestIdentityPGPPrivateKeyCanUseBrowserStorageMetadata(t *testing.T) {
-	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	user, err := db.CreateUser(ctx, "pgp-browser@example.test", "PGP Browser", "hash", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := db.CreateMailIdentityForUser(ctx, user.ID, MailIdentity{Email: user.Email, DisplayName: "PGP Browser"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	saved, err := db.UpsertIdentityPGPPrivateKey(ctx, IdentityPGPPrivateKey{
-		UserID:              user.ID,
-		IdentityID:          identity.ID,
-		Label:               user.Email,
-		Fingerprint:         "abc123",
-		KeyID:               "abc123",
-		UserIDs:             "PGP Browser <pgp-browser@example.test>",
-		PublicKeyArmored:    "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nx\n-----END PGP PUBLIC KEY BLOCK-----",
-		PrivateKeyStorage:   "browser",
-		IsActiveSigning:     true,
-		IsActiveEncryption:  true,
-		EncryptedPrivateKey: "",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if saved.PrivateKeyStorage != "browser" || saved.EncryptedPrivateKey != "" {
-		t.Fatalf("saved key storage = %#v", saved)
-	}
-	active, err := db.ActiveIdentityPGPPublicKeyForUser(ctx, user.ID, identity.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if active.PublicKeyArmored == "" || active.PrivateKeyStorage != "browser" {
-		t.Fatalf("active public key = %#v", active)
-	}
-}
-
 func TestUpdateMailIdentityValidatesIMAPAndMailboxScope(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))

@@ -434,9 +434,9 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 	if err != nil {
 		return store.MessageRecord{}, err
 	}
-	if form.PGPEncrypted || form.PGPSigned {
+	if form.SecurityEncrypted || form.SecuritySigned {
 		if len(attachments) > 0 || form.AttachPublicKey {
-			return store.MessageRecord{}, errors.New("PGP encrypt/sign does not support attachments yet")
+			return store.MessageRecord{}, errors.New("message security does not support attachments yet")
 		}
 	} else if form.AttachPublicKey {
 		attachment, err := s.composePublicKeyAttachment(ctx, cu.User.ID, identity)
@@ -446,7 +446,7 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 		attachments = append(attachments, attachment)
 	}
 	bodyHTML, bodyText := form.BodyHTML, form.Body
-	if !form.PGPEncrypted && !form.PGPSigned {
+	if !form.SecurityEncrypted && !form.SecuritySigned {
 		bodyHTML, bodyText = appendIdentitySignature(form.BodyHTML, form.Body, identity.Signature)
 	}
 	msg := smtpclient.Message{

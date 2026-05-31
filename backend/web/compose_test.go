@@ -133,14 +133,14 @@ func TestReplyComposeHydratesHTMLFromRawBlob(t *testing.T) {
 
 func TestReplyPGPDefaultsForEncryptedMessage(t *testing.T) {
 	identity := composeIdentity{
-		ID:                  9,
-		HasPGPPrivateKey:    true,
-		PGPPublicKeyArmored: "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+		ID:                     9,
+		HasSecurityPrivateKey:  true,
+		SecurityPublicMaterial: "-----BEGIN PGP PUBLIC KEY BLOCK-----",
 	}
-	if enc, sign := replyPGPDefaults(identity, store.MessageRecord{IsEncrypted: true}); !enc || !sign {
+	if enc, sign := replySecurityDefaults(identity, store.MessageRecord{IsEncrypted: true}); !enc || !sign {
 		t.Fatalf("encrypted reply defaults = %t/%t, want true/true", enc, sign)
 	}
-	if enc, sign := replyPGPDefaults(identity, store.MessageRecord{IsSigned: true}); enc || !sign {
+	if enc, sign := replySecurityDefaults(identity, store.MessageRecord{IsSigned: true}); enc || !sign {
 		t.Fatalf("signed reply defaults = %t/%t, want false/true", enc, sign)
 	}
 }
