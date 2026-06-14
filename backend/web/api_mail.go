@@ -3,6 +3,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -23,15 +24,9 @@ func (s *Server) apiMail(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	const pageSize = 50
 	timing := newSearchTiming()
 	page := pageFromRequest(r)
-	offset := (page - 1) * pageSize
-	fetchLimit := pageSize*3 + 1
 	var mailboxID int64
-	var messages []store.MessageRecord
-	var activeMailbox *apiMailbox
-	var err error
 	if raw := strings.TrimSpace(r.URL.Query().Get("mailbox")); raw != "" {
 		id, parseErr := strconv.ParseInt(raw, 10, 64)
 		if parseErr != nil || id <= 0 {
@@ -41,58 +36,73 @@ func (s *Server) apiMail(w http.ResponseWriter, r *http.Request) {
 		mailboxID = id
 	}
 	cacheKey := mailListCacheKey{UserID: cu.User.ID, MailboxID: mailboxID, Page: page}
+	if mailboxID == 0 && page == 1 && s.writeMailListPageIfFresh(w, r, cacheKey) {
+		return
+	}
 	if s.writeMailListNotModifiedIfFresh(w, r, cacheKey) {
 		return
 	}
 	generation := s.mailListGeneration(cu.User.ID)
-	if mailboxID != 0 {
-		mb, mbErr := s.store.GetMailboxForUser(r.Context(), cu.User.ID, mailboxID)
-		if store.IsNotFound(mbErr) {
+	response, err := s.mailPageResponse(r.Context(), cu.User, mailboxID, page, timing)
+	if err != nil {
+		if store.IsNotFound(err) {
 			http.NotFound(w, r)
 			return
 		}
+		s.serverError(w, err)
+		return
+	}
+	writeMailTimingHeaders(w, timing, page)
+	etag, ok := writeJSONCachedWithETag(w, r, response)
+	if ok {
+		s.rememberMailListETag(cacheKey, etag, generation)
+	}
+}
+
+func (s *Server) mailPageResponse(ctx context.Context, user store.User, mailboxID int64, page int, timing *searchTiming) (map[string]any, error) {
+	const pageSize = 50
+	offset := (page - 1) * pageSize
+	fetchLimit := pageSize*3 + 1
+	var activeMailbox *apiMailbox
+	var messages []store.MessageRecord
+	var err error
+	if mailboxID != 0 {
+		mb, mbErr := s.store.GetMailboxForUser(ctx, user.ID, mailboxID)
 		if mbErr != nil {
-			s.serverError(w, mbErr)
-			return
+			return nil, mbErr
 		}
 		active := apiMailboxFromStore(mb)
 		activeMailbox = &active
 		hydrateDone := timing.measure(&timing.hydrate)
-		messages, err = s.store.ListLatestThreadMessagesForMailbox(r.Context(), cu.User.ID, mb.ID, fetchLimit, offset)
+		messages, err = s.store.ListLatestThreadMessagesForMailbox(ctx, user.ID, mb.ID, fetchLimit, offset)
 		hydrateDone()
 	} else {
 		hydrateDone := timing.measure(&timing.hydrate)
-		messages, err = s.store.ListLatestThreadMessagesForUser(r.Context(), cu.User.ID, fetchLimit, offset)
+		messages, err = s.store.ListLatestThreadMessagesForUser(ctx, user.ID, fetchLimit, offset)
 		hydrateDone()
 	}
 	if err != nil {
-		s.serverError(w, err)
-		return
+		return nil, err
 	}
 	timing.seeds = len(messages)
-	own := s.ownAddresses(r.Context(), cu.User)
+	own := s.ownAddresses(ctx, user)
 	renderDone := timing.measure(&timing.render)
-	conversations, err := s.conversationViews(r.Context(), cu.User.ID, messages, own)
+	conversations, err := s.conversationViews(ctx, user.ID, messages, own)
 	renderDone()
 	if err != nil {
-		s.serverError(w, err)
-		return
+		return nil, err
 	}
 	hasNext := len(conversations) > pageSize
 	if hasNext {
 		conversations = conversations[:pageSize]
 	}
-	writeMailTimingHeaders(w, timing, page)
-	etag, ok := writeJSONCachedWithETag(w, r, map[string]any{
+	return map[string]any{
 		"conversations":  apiConversations(conversations),
 		"page":           page,
 		"has_prev":       page > 1,
 		"has_next":       hasNext,
 		"active_mailbox": activeMailbox,
-	})
-	if ok {
-		s.rememberMailListETag(cacheKey, etag, generation)
-	}
+	}, nil
 }
 
 // apiSearch combines URL query parsing, optional mailbox filtering, sender-history

@@ -74,6 +74,11 @@ func writeMailCacheTimingHeaders(w http.ResponseWriter) {
 	w.Header().Set("X-Rolltop-Mail-Stats", "cache=hit")
 }
 
+func writeMailMemoryTimingHeaders(w http.ResponseWriter) {
+	w.Header().Set("Server-Timing", `cache;desc="mail-list-memory";dur=0`)
+	w.Header().Set("X-Rolltop-Mail-Stats", "cache=memory")
+}
+
 func serverTimingMetric(name string, duration time.Duration) string {
 	return fmt.Sprintf("%s;dur=%.1f", name, float64(duration.Microseconds())/1000)
 }

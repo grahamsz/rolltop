@@ -3,8 +3,6 @@
 package web
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -131,13 +129,11 @@ func writeJSONCached(w http.ResponseWriter, r *http.Request, value any) {
 }
 
 func writeJSONCachedWithETag(w http.ResponseWriter, r *http.Request, value any) (string, bool) {
-	raw, err := json.Marshal(value)
+	body, etag, err := cachedJSONBody(value)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "failed to encode response")
 		return "", false
 	}
-	sum := sha256.Sum256(raw)
-	etag := `"` + hex.EncodeToString(sum[:]) + `"`
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 	w.Header().Set("ETag", etag)
@@ -145,7 +141,7 @@ func writeJSONCachedWithETag(w http.ResponseWriter, r *http.Request, value any) 
 		w.WriteHeader(http.StatusNotModified)
 		return etag, true
 	}
-	_, _ = w.Write(append(raw, '\n'))
+	_, _ = w.Write(body)
 	return etag, true
 }
 

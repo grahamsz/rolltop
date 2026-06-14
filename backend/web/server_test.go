@@ -124,6 +124,60 @@ func TestAPIMailCachedETagShortCircuitsBeforeStore(t *testing.T) {
 	}
 }
 
+func TestAPIMailFirstPageServesWarmMemoryCache(t *testing.T) {
+	user := store.User{ID: 42, Email: "cache@example.test", Name: "Cache"}
+	server := &Server{mailListCache: newMailListCache()}
+	body, etag, err := cachedJSONBody(map[string]any{
+		"conversations":  []apiConversation{},
+		"page":           1,
+		"has_prev":       false,
+		"has_next":       false,
+		"active_mailbox": nil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := mailListCacheKey{UserID: user.ID, Page: 1}
+	server.rememberMailListPage(key, etag, body, server.mailListGeneration(user.ID))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mail?page=1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: user}))
+	rec := httptest.NewRecorder()
+
+	server.apiMail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if got := rec.Header().Get("ETag"); got != etag {
+		t.Fatalf("etag = %q, want %q", got, etag)
+	}
+	if got := rec.Header().Get("X-Rolltop-Mail-Stats"); got != "cache=memory" {
+		t.Fatalf("mail stats = %q", got)
+	}
+	if rec.Body.String() != string(body) {
+		t.Fatalf("body = %q, want %q", rec.Body.String(), string(body))
+	}
+}
+
+func TestWarmMailFirstPageInvalidatesOnUserChange(t *testing.T) {
+	userID := int64(42)
+	server := &Server{mailListCache: newMailListCache()}
+	body, etag, err := cachedJSONBody(map[string]any{"page": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := mailListCacheKey{UserID: userID, Page: 1}
+	server.rememberMailListPage(key, etag, body, server.mailListGeneration(userID))
+	if _, ok := server.mailListCache.page(key); !ok {
+		t.Fatal("warm page was not cached")
+	}
+	server.noteMailListChanged(userID)
+	if _, ok := server.mailListCache.page(key); ok {
+		t.Fatal("warm page remained cached after user change")
+	}
+}
+
 func TestAPISearchCachedETagShortCircuitsBeforeSearch(t *testing.T) {
 	user := store.User{ID: 43, Email: "search-cache.test", Name: "Search Cache"}
 	server := &Server{mailListCache: newMailListCache()}

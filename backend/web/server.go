@@ -89,6 +89,8 @@ type Server struct {
 	deletingIMAPAccounts      map[int64]map[int64]bool
 	storageMu                 sync.Mutex
 	storageCached             map[int64]storageStatsCacheEntry
+	mailWarmMu                sync.Mutex
+	mailWarmRunning           map[int64]bool
 	mailListCache             *mailListCache
 	startedAt                 time.Time
 }
@@ -268,12 +270,14 @@ func New(opts Options) (*Server, error) {
 		statusRefreshBlockedUntil: map[int64]time.Time{},
 		deletingIMAPAccounts:      map[int64]map[int64]bool{},
 		mailListCache:             newMailListCache(),
+		mailWarmRunning:           map[int64]bool{},
 		startedAt:                 time.Now().UTC(),
 	}
 	if opts.Syncer != nil {
 		opts.Syncer.Notify = srv.notifyUserChanged
 	}
 	srv.startAutoStartBackendPlugins(context.Background())
+	srv.warmAllMailFirstPages(context.Background())
 	return srv, nil
 }
 
