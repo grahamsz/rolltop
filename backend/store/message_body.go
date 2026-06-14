@@ -29,6 +29,24 @@ func MessageBodyPreview(value string, limit int) string {
 	return strings.TrimSpace(preview[:cut]) + suffix
 }
 
+// UpdateMessageBodies stores display-ready bodies discovered from a cached raw
+// message while preserving the user/message ownership boundary.
+func (s *Store) UpdateMessageBodies(ctx context.Context, userID, messageID int64, bodyText, bodyHTML string) error {
+	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET body_text = ?, body_html = ?, updated_at = ?
+		WHERE user_id = ? AND id = ?`, bodyText, bodyHTML, nowUnix(), userID, messageID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // CompactMessageBodiesBefore replaces old full bodies with previews after raw blobs age out.
 func (s *Store) CompactMessageBodiesBefore(ctx context.Context, cutoff time.Time, previewLimit, limit int) (int, error) {
 	if previewLimit <= 0 {

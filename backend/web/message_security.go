@@ -10,6 +10,19 @@ import (
 	"rolltop/backend/plugins"
 )
 
+func (s *Server) hasMessageSecurityProvider(ctx context.Context) (bool, error) {
+	backendPlugins, err := s.enabledBackendPlugins(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, backendPlugin := range backendPlugins {
+		if _, ok := backendPlugin.(plugins.MessageSecurityProvider); ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *Server) detectMessageSecurity(ctx context.Context, userID int64, raw []byte, body plugins.MessageBody) (plugins.MessageSecurityState, bool, error) {
 	backendPlugins, err := s.enabledBackendPlugins(ctx)
 	if err != nil {

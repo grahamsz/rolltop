@@ -353,6 +353,55 @@ func TestReadSenderStatsAreUserScoped(t *testing.T) {
 	}
 }
 
+func TestUpdateMessageBodiesIsUserScoped(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, account, mailbox, blob := testMailbox(t, ctx, db)
+	other, err := db.CreateUser(ctx, "other@example.test", "Other", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := db.CreateMessage(ctx, CreateMessage{
+		UserID:    user.ID,
+		AccountID: account.ID,
+		MailboxID: mailbox.ID,
+		BlobID:    blob.ID,
+		Subject:   "body",
+		FromAddr:  "Alice <alice@example.test>",
+		Date:      time.Now(),
+		UID:       9,
+		BlobPath:  blob.Path,
+		IsRead:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMessageBodies(ctx, other.ID, msg.ID, "wrong", "<p>wrong</p>"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-user update err = %v, want ErrNotFound", err)
+	}
+	unchanged, err := db.GetMessageForUser(ctx, user.ID, msg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.BodyText != "" || unchanged.BodyHTML != "" {
+		t.Fatalf("cross-user update changed body: %+v", unchanged)
+	}
+	if err := db.UpdateMessageBodies(ctx, user.ID, msg.ID, "right", "<p>right</p>"); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := db.GetMessageForUser(ctx, user.ID, msg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.BodyText != "right" || updated.BodyHTML != "<p>right</p>" {
+		t.Fatalf("updated body = text %q html %q", updated.BodyText, updated.BodyHTML)
+	}
+}
+
 func TestSyncRunStoresLatestNewMessageDetails(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))

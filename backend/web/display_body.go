@@ -47,6 +47,9 @@ func (s *Server) displayBodiesForMessage(ctx context.Context, userID int64, msg 
 	if strings.TrimSpace(parsedText) != "" {
 		textBody = parsedText
 	}
+	if s.store != nil && msg.ID > 0 && (strings.TrimSpace(htmlBody) != "" || strings.TrimSpace(textBody) != "") {
+		_ = s.store.UpdateMessageBodies(ctx, userID, msg.ID, textBody, htmlBody)
+	}
 	return htmlBody, textBody, false
 }
 

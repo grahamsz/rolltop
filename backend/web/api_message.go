@@ -91,7 +91,10 @@ func (s *Server) apiMessage(w http.ResponseWriter, r *http.Request, id int64) {
 	if !ok {
 		return
 	}
+	timing := newSearchTiming()
+	stop := timing.measure(&timing.filter)
 	msg, err := s.store.GetMessageForUser(r.Context(), cu.User.ID, id)
+	stop()
 	if store.IsNotFound(err) {
 		http.NotFound(w, r)
 		return
@@ -100,14 +103,21 @@ func (s *Server) apiMessage(w http.ResponseWriter, r *http.Request, id int64) {
 		s.serverError(w, err)
 		return
 	}
+	stop = timing.measure(&timing.hydrate)
 	views, msg, err := s.threadViewsForMessage(r.Context(), cu, msg, r.URL.Query().Get("images") == "1", r.URL.Query().Get("q"))
+	stop()
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
+	stop = timing.measure(&timing.render)
+	thread := s.apiThreadMessages(r.Context(), cu.User.ID, views)
+	stop()
+	timing.seeds = len(views)
+	writeMessageTimingHeaders(w, timing)
 	writeJSONCached(w, r, map[string]any{
 		"message":         apiMessageFromRecord(msg, msg.BodyText),
-		"thread":          s.apiThreadMessages(r.Context(), cu.User.ID, views),
+		"thread":          thread,
 		"compose_from":    s.composeFromLabel(r.Context(), cu),
 		"from_identities": s.composeIdentities(r.Context(), cu),
 		"mailbox_id":      msg.MailboxID,
@@ -1144,6 +1154,13 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 }
 
 func (s *Server) ensureMessageSecurityState(ctx context.Context, userID int64, msg store.MessageRecord) (store.MessageRecord, error) {
+	hasSecurityProvider, err := s.hasMessageSecurityProvider(ctx)
+	if err != nil {
+		return msg, err
+	}
+	if !hasSecurityProvider {
+		return msg, nil
+	}
 	var raw []byte
 	if strings.TrimSpace(msg.BlobPath) != "" || strings.TrimSpace(msg.BodyText+msg.BodyHTML) == "" {
 		if data, err := s.rawMessageBytes(ctx, userID, msg); err == nil {
