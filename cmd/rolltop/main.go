@@ -308,7 +308,7 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 			continue
 		}
 		if _, _, err := backendPlugins.Plugin(manifest.ID); err != nil {
-			return nil, err
+			log.Printf("backend plugin %s disabled after load failure: %v", manifest.ID, err)
 		}
 	}
 	reporter := func(p store.MigrationProgress) {

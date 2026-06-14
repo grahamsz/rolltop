@@ -144,7 +144,8 @@ func (s *Service) enabledBackendPlugins(ctx context.Context) ([]plugins.BackendP
 		}
 		plugin, ok, err := s.backendPlugin(pluginID)
 		if err != nil {
-			return nil, err
+			log.Printf("backend plugin %s skipped during sync after load failure: %v", pluginID, err)
+			continue
 		}
 		if ok && plugin != nil {
 			out = append(out, plugin)

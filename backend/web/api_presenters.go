@@ -473,6 +473,14 @@ func apiPluginSettings(settings []store.PluginSetting) []apiPluginSetting {
 	return out
 }
 
+func (s *Server) apiAdminPluginSettings(settings []store.PluginSetting) []apiPluginSetting {
+	out := apiPluginSettings(settings)
+	for i := range out {
+		out[i].BackendError = s.backendPluginFailure(out[i].ID)
+	}
+	return out
+}
+
 func timeString(t time.Time) string {
 	if t.IsZero() {
 		return ""

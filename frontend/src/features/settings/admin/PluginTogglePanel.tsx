@@ -78,6 +78,12 @@ export function PluginTogglePanel({
               <strong>{plugin.name}</strong>
               <small>{plugin.description}</small>
               {plugin.experimental ? <strong className="plugin-experimental-badge">EXPERIMENTAL</strong> : null}
+              {plugin.backend_error ? (
+                <strong className="plugin-error-badge" title={plugin.backend_error}>
+                  Backend unavailable
+                </strong>
+              ) : null}
+              {plugin.backend_error ? <small className="plugin-error-message">{plugin.backend_error}</small> : null}
             </span>
           </label>
         ))}

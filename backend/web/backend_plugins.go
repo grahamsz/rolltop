@@ -173,6 +173,7 @@ func (s *Server) startBackendPlugin(ctx context.Context, pluginID string) (plugi
 	}
 	plugin, ok, err := s.backendPlugin(pluginID)
 	if err != nil {
+		s.recordBackendPluginFailure(pluginID, err)
 		return nil, false, err
 	}
 	if !ok || plugin == nil {
@@ -182,6 +183,7 @@ func (s *Server) startBackendPlugin(ctx context.Context, pluginID string) (plugi
 	if err := plugin.Start(s); err != nil {
 		_ = plugin.Stop(s)
 		unregistered := s.protectedAPIRouteRegistry().unregisterPlugin(pluginID)
+		s.recordBackendPluginFailure(pluginID, err)
 		log.Printf("debug backend plugin start failed plugin_id=%s routes_unregistered=%d error=%v", pluginID, unregistered, err)
 		return nil, true, err
 	}
@@ -253,13 +255,28 @@ func (s *Server) enabledBackendPlugins(ctx context.Context) ([]plugins.BackendPl
 		}
 		plugin, ok, err := s.startBackendPlugin(ctx, pluginID)
 		if err != nil {
-			return nil, err
+			log.Printf("backend plugin %s skipped after load/start failure: %v", pluginID, err)
+			continue
 		}
 		if ok && plugin != nil {
 			out = append(out, plugin)
 		}
 	}
 	return out, nil
+}
+
+func (s *Server) recordBackendPluginFailure(pluginID string, err error) {
+	if s == nil || s.backendPlugins == nil || err == nil {
+		return
+	}
+	s.backendPlugins.SetFailure(pluginID, err)
+}
+
+func (s *Server) backendPluginFailure(pluginID string) string {
+	if s == nil || s.backendPlugins == nil {
+		return ""
+	}
+	return s.backendPlugins.Failure(pluginID)
 }
 
 func (s *Server) startAutoStartBackendPlugins(ctx context.Context) {

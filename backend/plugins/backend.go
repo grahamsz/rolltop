@@ -277,8 +277,9 @@ type BackendManager struct {
 	root      string
 	manifests []Manifest
 
-	mu     sync.Mutex
-	loaded map[string]BackendPlugin
+	mu       sync.Mutex
+	loaded   map[string]BackendPlugin
+	failures map[string]string
 }
 
 // NewBackendManager creates a loader for runtime Go plugin binaries.
@@ -287,6 +288,7 @@ func NewBackendManager(root string, manifests []Manifest) *BackendManager {
 		root:      strings.TrimSpace(root),
 		manifests: manifests,
 		loaded:    map[string]BackendPlugin{},
+		failures:  map[string]string{},
 	}
 }
 
@@ -303,6 +305,9 @@ func (m *BackendManager) Plugin(id string) (BackendPlugin, bool, error) {
 		log.Printf("debug backend plugin module reused plugin_id=%s", id)
 		return plugin, true, nil
 	}
+	if failure := strings.TrimSpace(m.failures[id]); failure != "" {
+		return nil, true, fmt.Errorf("%s", failure)
+	}
 	manifest, ok := m.manifest(id)
 	if !ok || manifest.Backend == nil {
 		return nil, false, nil
@@ -317,22 +322,27 @@ func (m *BackendManager) Plugin(id string) (BackendPlugin, bool, error) {
 	log.Printf("debug backend plugin module loading plugin_id=%s binary=%s", id, binary)
 	opened, err := goplugin.Open(binary)
 	if err != nil {
+		m.failures[id] = err.Error()
 		return nil, true, err
 	}
 	symbol, err := opened.Lookup("RolltopPlugin")
 	if err != nil {
+		m.failures[id] = err.Error()
 		return nil, true, err
 	}
 	factory, ok := symbol.(func() BackendPlugin)
 	if !ok {
 		err := fmt.Errorf("backend plugin %s RolltopPlugin has incompatible type", id)
+		m.failures[id] = err.Error()
 		return nil, true, err
 	}
 	instance := factory()
 	if instance == nil || instance.ID() != id {
 		err := fmt.Errorf("backend plugin %s returned id %q", id, pluginID(instance))
+		m.failures[id] = err.Error()
 		return nil, true, err
 	}
+	delete(m.failures, id)
 	m.loaded[id] = instance
 	log.Printf("debug backend plugin module loaded plugin_id=%s hooks=%s", id, strings.Join(backendHookNames(instance), ","))
 	return instance, true, nil
@@ -353,6 +363,32 @@ func (m *BackendManager) PluginIDs() []string {
 		}
 	}
 	return out
+}
+
+// SetFailure records an operational plugin failure that should be shown to
+// admins and retried after process restart.
+func (m *BackendManager) SetFailure(id string, err error) {
+	id = strings.TrimSpace(id)
+	if m == nil || id == "" || err == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failures == nil {
+		m.failures = map[string]string{}
+	}
+	m.failures[id] = err.Error()
+}
+
+// Failure returns the last load/start failure recorded for one backend plugin.
+func (m *BackendManager) Failure(id string) string {
+	id = strings.TrimSpace(id)
+	if m == nil || id == "" {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return strings.TrimSpace(m.failures[id])
 }
 
 func (m *BackendManager) manifest(id string) (Manifest, bool) {

@@ -233,6 +233,15 @@ func New(opts Options) (*Server, error) {
 			return nil, err
 		}
 	}
+	backendPlugins := plugins.NewBackendManager(opts.PluginDir, pluginManifests)
+	for _, manifest := range pluginManifests {
+		if manifest.Backend == nil || manifest.Backend.Kind != "go-plugin" {
+			continue
+		}
+		if _, _, err := backendPlugins.Plugin(manifest.ID); err != nil {
+			log.Printf("backend plugin %s unavailable after load failure: %v", manifest.ID, err)
+		}
+	}
 	events := newEventHub()
 	srv := &Server{
 		store:                 opts.Store,
@@ -247,7 +256,7 @@ func New(opts Options) (*Server, error) {
 		indexPath:             opts.IndexPath,
 		pluginDir:             opts.PluginDir,
 		pluginManifests:       pluginManifests,
-		backendPlugins:        plugins.NewBackendManager(opts.PluginDir, pluginManifests),
+		backendPlugins:        backendPlugins,
 		protectedAPIRoutes:    newProtectedAPIRouteRegistry(),
 		startedBackendPlugins: map[string]plugins.BackendPlugin{},
 		sessionTTL:            opts.SessionTTL,

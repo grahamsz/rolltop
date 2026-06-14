@@ -337,6 +337,7 @@ export type PluginSetting = {
   enabled_by_default: boolean;
   heavy: boolean;
   experimental?: boolean;
+  backend_error?: string;
 };
 
 /** SyncRun is the API progress/status shape for sync and maintenance jobs. */

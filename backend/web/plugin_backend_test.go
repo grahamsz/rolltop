@@ -120,6 +120,65 @@ func TestBackendPluginRegistersAndUnregistersProtectedAPIRoutes(t *testing.T) {
 	}
 }
 
+func TestEnabledBackendPluginsSkipsLoadFailuresAndReportsAdminError(t *testing.T) {
+	ctx := context.Background()
+	pluginID := "missing_backend"
+	root := t.TempDir()
+	pluginDir := filepath.Join(root, pluginID)
+	if err := os.MkdirAll(filepath.Join(pluginDir, "backend"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{
+		"id": "missing_backend",
+		"name": "Missing Backend",
+		"description": "Plugin with a missing backend binary",
+		"backend": {"kind": "go-plugin", "binary": "backend/missing_backend.so"}
+	}`
+	if err := os.WriteFile(filepath.Join(pluginDir, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifests, err := plugins.LoadManifests(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.OpenServerWithPluginManifests(filepath.Join(t.TempDir(), "rolltop.db"), t.TempDir(), manifests, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetPluginEnabled(ctx, pluginID, true); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		store:              db,
+		pluginManifests:    manifests,
+		backendPlugins:     plugins.NewBackendManager(root, manifests),
+		protectedAPIRoutes: newProtectedAPIRouteRegistry(),
+	}
+	backendPlugins, err := server.enabledBackendPlugins(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backendPlugins) != 0 {
+		t.Fatalf("enabled backend plugins = %d, want 0", len(backendPlugins))
+	}
+	settings, err := db.ListPluginSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiSettings := server.apiAdminPluginSettings(settings)
+	var backendError string
+	for _, setting := range apiSettings {
+		if setting.ID == pluginID {
+			backendError = setting.BackendError
+			break
+		}
+	}
+	if backendError == "" {
+		t.Fatal("backend error was not reported")
+	}
+}
+
 type execBuildError struct {
 	err error
 	out string

@@ -302,6 +302,7 @@ type apiPluginSetting struct {
 	EnabledByDefault bool   `json:"enabled_by_default"`
 	Heavy            bool   `json:"heavy"`
 	Experimental     bool   `json:"experimental"`
+	BackendError     string `json:"backend_error,omitempty"`
 }
 
 type apiThemeDefinition struct {

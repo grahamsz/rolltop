@@ -198,7 +198,7 @@ func (s *Server) apiAdminPlugins(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
-	writeJSON(w, map[string]any{"plugins": apiPluginSettings(settings)})
+	writeJSON(w, map[string]any{"plugins": s.apiAdminPluginSettings(settings)})
 }
 
 func (s *Server) apiAdminPlugin(w http.ResponseWriter, r *http.Request, rest string) {
@@ -238,9 +238,7 @@ func (s *Server) apiAdminPlugin(w http.ResponseWriter, r *http.Request, rest str
 	log.Printf("debug plugin setting updated plugin_id=%s enabled=%t", pluginID, in.Enabled)
 	if in.Enabled {
 		if _, _, err := s.startBackendPlugin(r.Context(), pluginID); err != nil {
-			_ = s.store.SetPluginEnabled(r.Context(), pluginID, false)
-			s.serverError(w, err)
-			return
+			log.Printf("backend plugin %s enabled but unavailable: %v", pluginID, err)
 		}
 	} else if err := s.stopBackendPlugin(pluginID); err != nil {
 		s.serverError(w, err)
@@ -251,7 +249,7 @@ func (s *Server) apiAdminPlugin(w http.ResponseWriter, r *http.Request, rest str
 		s.serverError(w, err)
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "plugins": apiPluginSettings(settings)})
+	writeJSON(w, map[string]any{"ok": true, "plugins": s.apiAdminPluginSettings(settings)})
 }
 
 func (s *Server) apiAdminRemoteImageBlocklist(w http.ResponseWriter, r *http.Request) {

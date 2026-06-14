@@ -409,6 +409,26 @@
   letter-spacing: 0;
 }
 
+.plugin-error-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border: 1px solid rgba(204, 76, 76, .44);
+  border-radius: 999px;
+  background: rgba(204, 76, 76, .12);
+  color: #d86b6b;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.plugin-error-message {
+  overflow-wrap: anywhere;
+  color: #d86b6b;
+}
+
 .folder-settings-panel {
   display: grid;
   gap: 10px;
