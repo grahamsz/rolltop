@@ -29,6 +29,7 @@ func (s *Server) apiBootstrap(w http.ResponseWriter, r *http.Request) {
 		"public_site_url":       info.PublicSiteURL,
 		"available_themes":      s.availableThemes(r.Context()),
 		"frontend_plugins":      s.frontendPlugins(r.Context()),
+		"auth_providers":        s.authProviders(r.Context()),
 	}
 	if cu, ok := current(r); ok {
 		resp["user"] = safeUser(cu.User)

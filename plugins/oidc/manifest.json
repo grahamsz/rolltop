@@ -1,0 +1,12 @@
+{
+  "id": "oidc",
+  "name": "OIDC sign-in",
+  "description": "Adds OpenID Connect sign-in for existing Rolltop users.",
+  "version": "1.0.0",
+  "auto_start": true,
+  "experimental": true,
+  "backend": {
+    "kind": "go-plugin",
+    "binary": "backend/oidc.so"
+  }
+}

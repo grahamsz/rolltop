@@ -522,7 +522,7 @@ export default function App() {
         ) : location.path === "/reset-password" ? (
           <PasswordResetPage csrf={bootstrap.csrf} token={new URLSearchParams(location.search).get("token") || ""} onReady={refreshBootstrap} navigate={navigate} />
         ) : (
-          <LoginPage csrf={bootstrap.csrf} onReady={refreshBootstrap} navigate={navigate} />
+          <LoginPage csrf={bootstrap.csrf} authProviders={bootstrap.auth_providers || []} onReady={refreshBootstrap} navigate={navigate} />
         )}
         <ToastStack toasts={toasts} onDismiss={removeToast} />
       </>

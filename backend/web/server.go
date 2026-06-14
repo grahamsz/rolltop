@@ -76,6 +76,7 @@ type Server struct {
 	pluginManifests           []plugins.Manifest
 	backendPlugins            *plugins.BackendManager
 	protectedAPIRoutes        *protectedAPIRouteRegistry
+	publicAPIRoutes           *protectedAPIRouteRegistry
 	backendLifecycleMu        sync.Mutex
 	startedBackendPlugins     map[string]plugins.BackendPlugin
 	sessionTTL                time.Duration
@@ -260,6 +261,7 @@ func New(opts Options) (*Server, error) {
 		pluginManifests:       pluginManifests,
 		backendPlugins:        backendPlugins,
 		protectedAPIRoutes:    newProtectedAPIRouteRegistry(),
+		publicAPIRoutes:       newProtectedAPIRouteRegistry(),
 		startedBackendPlugins: map[string]plugins.BackendPlugin{},
 		sessionTTL:            opts.SessionTTL,
 		cookieSecure:          opts.CookieSecure,

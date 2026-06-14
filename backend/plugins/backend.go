@@ -71,6 +71,7 @@ type StoredMessageHost interface {
 type APIHost interface {
 	BackendHost
 	RequireAPIAuth(http.ResponseWriter, *http.Request) (CurrentUser, bool)
+	LoginUserID(http.ResponseWriter, *http.Request, int64) error
 	VerifyCSRF(http.ResponseWriter, *http.Request) bool
 	DecodeJSON(http.ResponseWriter, *http.Request, any) bool
 	WriteJSON(http.ResponseWriter, any)
@@ -91,6 +92,12 @@ type ProtectedAPIRoute struct {
 	Handle ProtectedAPIHandler
 }
 
+type PublicAPIRoute struct {
+	Path   string
+	Prefix bool
+	Handle ProtectedAPIHandler
+}
+
 // ProtectedAPIRouteHandle removes a route previously registered by a plugin.
 type ProtectedAPIRouteHandle interface {
 	Unregister()
@@ -101,6 +108,7 @@ type ProtectedAPIRouteHandle interface {
 type BackendStartHost interface {
 	BackendHost
 	RegisterProtectedAPI(string, ProtectedAPIRoute) (ProtectedAPIRouteHandle, error)
+	RegisterPublicAPI(string, PublicAPIRoute) (ProtectedAPIRouteHandle, error)
 }
 
 // BackendPlugin is the minimal ABI every Go backend plugin exports.
@@ -108,6 +116,17 @@ type BackendPlugin interface {
 	ID() string
 	Start(BackendStartHost) error
 	Stop(BackendStartHost) error
+}
+
+type AuthProvider struct {
+	ID       string
+	Name     string
+	LoginURL string
+}
+
+type AuthProviderPlugin interface {
+	BackendPlugin
+	AuthProviders(context.Context, BackendHost) []AuthProvider
 }
 
 // NoopBackendPlugin satisfies the backend ABI for plugins that only need to

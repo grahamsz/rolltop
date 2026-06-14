@@ -21,6 +21,12 @@ type apiUser struct {
 	SearchCompactSplitting bool   `json:"search_compact_splitting"`
 }
 
+type apiAuthProvider struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	LoginURL string `json:"login_url"`
+}
+
 type apiMailbox struct {
 	ID                 int64  `json:"id"`
 	AccountID          int64  `json:"account_id"`

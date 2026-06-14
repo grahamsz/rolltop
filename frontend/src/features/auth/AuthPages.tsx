@@ -4,7 +4,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../api";
-import type { Bootstrap } from "../../types";
+import type { AuthProvider, Bootstrap } from "../../types";
 import { messageFromError } from "../../lib/errors";
 import { LogoMark } from "../../components/Icon";
 
@@ -76,10 +76,12 @@ export function SetupPage({
 /** LoginPage signs an existing user in and then asks App to refresh bootstrap state. */
 export function LoginPage({
   csrf,
+  authProviders,
   onReady,
   navigate
 }: {
   csrf: string;
+  authProviders: AuthProvider[];
   onReady: () => Promise<Bootstrap | null>;
   navigate: (url: string) => void;
 }) {
@@ -121,6 +123,15 @@ export function LoginPage({
           <button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
           <button className="secondary" type="button" onClick={() => navigate("/reset-password")}>Forgot password?</button>
         </div>
+        {authProviders.length ? (
+          <div className="auth-providers">
+            {authProviders.map((provider) => (
+              <a className="button secondary" href={provider.login_url} key={provider.id}>
+                Sign in with {provider.name}
+              </a>
+            ))}
+          </div>
+        ) : null}
       </form>
     </main>
   );

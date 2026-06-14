@@ -385,6 +385,7 @@ export type Bootstrap = {
   account_needs_password?: boolean;
   account_notice?: string;
   enabled_plugins?: string[];
+  auth_providers?: AuthProvider[];
   available_themes?: ThemeDefinition[];
   frontend_plugins?: FrontendPluginDefinition[];
   server_started_at?: string;
@@ -393,6 +394,12 @@ export type Bootstrap = {
   build_date?: string;
   build_label?: string;
   public_site_url?: string;
+};
+
+export type AuthProvider = {
+  id: string;
+  name: string;
+  login_url: string;
 };
 
 /** ChromeEvent is the SSE payload used to refresh folders and sync status. */

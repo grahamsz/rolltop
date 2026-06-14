@@ -41,6 +41,10 @@ func (s *Server) RequireAPIAuth(w http.ResponseWriter, r *http.Request) (plugins
 	return plugins.CurrentUser{UserID: cu.User.ID}, true
 }
 
+func (s *Server) LoginUserID(w http.ResponseWriter, r *http.Request, userID int64) error {
+	return s.loginUser(w, r, userID)
+}
+
 func (s *Server) VerifyCSRF(w http.ResponseWriter, r *http.Request) bool {
 	return s.verifyCSRF(w, r)
 }
@@ -126,10 +130,16 @@ func (s *Server) RegisterProtectedAPI(pluginID string, route plugins.ProtectedAP
 	return handle, nil
 }
 
-func (s *Server) apiBackendPlugin(w http.ResponseWriter, r *http.Request, rest string) {
-	if _, ok := s.requireAPIAuth(w, r); !ok {
-		return
+func (s *Server) RegisterPublicAPI(pluginID string, route plugins.PublicAPIRoute) (plugins.ProtectedAPIRouteHandle, error) {
+	handle, err := s.publicAPIRouteRegistry().register(pluginID, plugins.ProtectedAPIRoute{Path: route.Path, Prefix: route.Prefix, Handle: route.Handle})
+	if err != nil {
+		return nil, err
 	}
+	log.Printf("debug plugin public api registered plugin_id=%s path=%s prefix=%t", strings.TrimSpace(pluginID), cleanAPIPath(route.Path), route.Prefix)
+	return handle, nil
+}
+
+func (s *Server) apiBackendPlugin(w http.ResponseWriter, r *http.Request, rest string) {
 	cleanRest := cleanAPIPath(rest)
 	pluginID, _, ok := strings.Cut(cleanRest, "/")
 	if !ok || strings.TrimSpace(pluginID) == "" {
@@ -146,6 +156,12 @@ func (s *Server) apiBackendPlugin(w http.ResponseWriter, r *http.Request, rest s
 		return
 	} else if !ok {
 		writeAPIError(w, http.StatusNotFound, "backend plugin is not available: "+pluginID)
+		return
+	}
+	if s.dispatchPublicAPIPath(w, r, "plugins/"+cleanRest) {
+		return
+	}
+	if _, ok := s.requireAPIAuth(w, r); !ok {
 		return
 	}
 	if s.dispatchProtectedAPIPath(w, r, "plugins/"+cleanRest) {
@@ -183,6 +199,7 @@ func (s *Server) startBackendPlugin(ctx context.Context, pluginID string) (plugi
 	if err := plugin.Start(s); err != nil {
 		_ = plugin.Stop(s)
 		unregistered := s.protectedAPIRouteRegistry().unregisterPlugin(pluginID)
+		unregistered += s.publicAPIRouteRegistry().unregisterPlugin(pluginID)
 		s.recordBackendPluginFailure(pluginID, err)
 		log.Printf("debug backend plugin start failed plugin_id=%s routes_unregistered=%d error=%v", pluginID, unregistered, err)
 		return nil, true, err
@@ -213,6 +230,7 @@ func (s *Server) stopBackendPlugin(pluginID string) error {
 		}
 	}
 	unregistered := s.protectedAPIRouteRegistry().unregisterPlugin(pluginID)
+	unregistered += s.publicAPIRouteRegistry().unregisterPlugin(pluginID)
 	if plugin != nil || unregistered > 0 {
 		log.Printf("debug backend plugin stopped plugin_id=%s routes_unregistered=%d", pluginID, unregistered)
 	}
@@ -230,6 +248,19 @@ func (s *Server) dispatchProtectedAPIPath(w http.ResponseWriter, r *http.Request
 	}
 	if _, ok := s.requireAPIAuth(w, r); !ok {
 		return true
+	}
+	route.handler(s, cleanAPIPath(apiPath), w, r)
+	return true
+}
+
+func (s *Server) dispatchPublicAPIPath(w http.ResponseWriter, r *http.Request, apiPath string) bool {
+	route, ok := s.publicAPIRouteRegistry().match(apiPath)
+	if !ok {
+		return false
+	}
+	if route.pluginID != "" && !s.pluginEnabled(r.Context(), route.pluginID) {
+		_ = s.stopBackendPlugin(route.pluginID)
+		return false
 	}
 	route.handler(s, cleanAPIPath(apiPath), w, r)
 	return true
@@ -263,6 +294,31 @@ func (s *Server) enabledBackendPlugins(ctx context.Context) ([]plugins.BackendPl
 		}
 	}
 	return out, nil
+}
+
+func (s *Server) authProviders(ctx context.Context) []apiAuthProvider {
+	backendPlugins, err := s.enabledBackendPlugins(ctx)
+	if err != nil {
+		log.Printf("auth providers: %v", err)
+		return nil
+	}
+	var out []apiAuthProvider
+	for _, backendPlugin := range backendPlugins {
+		provider, ok := backendPlugin.(plugins.AuthProviderPlugin)
+		if !ok {
+			continue
+		}
+		for _, item := range provider.AuthProviders(ctx, s) {
+			id := strings.TrimSpace(item.ID)
+			name := strings.TrimSpace(item.Name)
+			loginURL := strings.TrimSpace(item.LoginURL)
+			if id == "" || name == "" || loginURL == "" {
+				continue
+			}
+			out = append(out, apiAuthProvider{ID: id, Name: name, LoginURL: loginURL})
+		}
+	}
+	return out
 }
 
 func (s *Server) recordBackendPluginFailure(pluginID string, err error) {
@@ -328,6 +384,13 @@ func (s *Server) protectedAPIRouteRegistry() *protectedAPIRouteRegistry {
 		s.protectedAPIRoutes = newProtectedAPIRouteRegistry()
 	}
 	return s.protectedAPIRoutes
+}
+
+func (s *Server) publicAPIRouteRegistry() *protectedAPIRouteRegistry {
+	if s.publicAPIRoutes == nil {
+		s.publicAPIRoutes = newProtectedAPIRouteRegistry()
+	}
+	return s.publicAPIRoutes
 }
 
 func (r *protectedAPIRouteRegistry) register(pluginID string, route plugins.ProtectedAPIRoute) (plugins.ProtectedAPIRouteHandle, error) {
