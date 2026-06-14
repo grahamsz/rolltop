@@ -117,6 +117,7 @@ func (s *Server) writeMailListNotModifiedIfFresh(w http.ResponseWriter, r *http.
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 	w.Header().Set("ETag", etag)
+	writeMailCacheTimingHeaders(w)
 	w.WriteHeader(http.StatusNotModified)
 	return true
 }

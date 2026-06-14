@@ -139,20 +139,18 @@ func (s *Store) ListLatestThreadMessagesForUser(ctx context.Context, userID int6
 		limit = 50
 	}
 	rows, err := db.QueryContext(ctx, `WITH keyed AS (
-			SELECT m.id, COALESCE(NULLIF(m.thread_key, ''), 'id:' || m.id) AS thread_group, m.date_unix
+			SELECT COALESCE(NULLIF(m.thread_key, ''), 'id:' || m.id) AS thread_group,
+				MAX(printf('%020d:%020d', m.date_unix, m.id)) AS latest_key
 			FROM messages m
 			JOIN mailboxes mb ON mb.id = m.mailbox_id AND mb.user_id = m.user_id
 			WHERE m.user_id = ? AND mb.show_in_all_mail = 1
-		), ranked AS (
-			SELECT id, ROW_NUMBER() OVER (PARTITION BY thread_group ORDER BY date_unix DESC, id DESC) AS rn,
-				MAX(date_unix) OVER (PARTITION BY thread_group) AS latest_date
-			FROM keyed
+			GROUP BY thread_group
+			ORDER BY latest_key DESC LIMIT ? OFFSET ?
 		)
 		SELECT m.id, m.user_id, m.account_id, m.mailbox_id, m.blob_id, m.message_id_header, m.in_reply_to, m.references_header, m.thread_key, m.subject, m.language_code, m.from_addr, m.to_addr, m.cc_addr,
 			m.date_unix, m.internal_date_unix, m.uid, m.size, m.blob_path, m.body_text, m.body_html, m.is_read, m.read_sync_pending, m.is_starred, m.star_sync_pending, m.has_attachments, m.is_encrypted, m.is_signed, m.attachment_indexed_at, m.created_at, m.updated_at
-		FROM ranked r JOIN messages m ON m.id = r.id
-		WHERE r.rn = 1
-		ORDER BY r.latest_date DESC, m.id DESC LIMIT ? OFFSET ?`, userID, limit, offset)
+		FROM keyed k JOIN messages m ON m.id = CAST(substr(k.latest_key, 22) AS INTEGER)
+		ORDER BY k.latest_key DESC`, userID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -170,18 +168,16 @@ func (s *Store) ListLatestThreadMessagesForMailbox(ctx context.Context, userID, 
 		limit = 50
 	}
 	rows, err := db.QueryContext(ctx, `WITH keyed AS (
-			SELECT id, COALESCE(NULLIF(thread_key, ''), 'id:' || id) AS thread_group, date_unix
+			SELECT COALESCE(NULLIF(thread_key, ''), 'id:' || id) AS thread_group,
+				MAX(printf('%020d:%020d', date_unix, id)) AS latest_key
 			FROM messages WHERE user_id = ? AND mailbox_id = ?
-		), ranked AS (
-			SELECT id, ROW_NUMBER() OVER (PARTITION BY thread_group ORDER BY date_unix DESC, id DESC) AS rn,
-				MAX(date_unix) OVER (PARTITION BY thread_group) AS latest_date
-			FROM keyed
+			GROUP BY thread_group
+			ORDER BY latest_key DESC LIMIT ? OFFSET ?
 		)
 		SELECT m.id, m.user_id, m.account_id, m.mailbox_id, m.blob_id, m.message_id_header, m.in_reply_to, m.references_header, m.thread_key, m.subject, m.language_code, m.from_addr, m.to_addr, m.cc_addr,
 			m.date_unix, m.internal_date_unix, m.uid, m.size, m.blob_path, m.body_text, m.body_html, m.is_read, m.read_sync_pending, m.is_starred, m.star_sync_pending, m.has_attachments, m.is_encrypted, m.is_signed, m.attachment_indexed_at, m.created_at, m.updated_at
-		FROM ranked r JOIN messages m ON m.id = r.id
-		WHERE r.rn = 1
-		ORDER BY r.latest_date DESC, m.id DESC LIMIT ? OFFSET ?`, userID, mailboxID, limit, offset)
+		FROM keyed k JOIN messages m ON m.id = CAST(substr(k.latest_key, 22) AS INTEGER)
+		ORDER BY k.latest_key DESC`, userID, mailboxID, limit, offset)
 	if err != nil {
 		return nil, err
 	}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -141,6 +142,86 @@ func TestThreadMessagesForUserUsesReferencesAndSubjectFallback(t *testing.T) {
 	}
 	if len(thread) != 2 || thread[0].ID != first.ID || thread[1].ID != reply.ID {
 		t.Fatalf("thread = %+v", thread)
+	}
+}
+
+func TestListLatestThreadMessagesForUserUsesNewestMessagePerThread(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, account, mailbox, blob := testMailbox(t, ctx, db)
+	base := time.Unix(1700000000, 0)
+	oldThread, err := db.CreateMessage(ctx, CreateMessage{
+		UserID:          user.ID,
+		AccountID:       account.ID,
+		MailboxID:       mailbox.ID,
+		BlobID:          blob.ID,
+		MessageIDHeader: "<thread-old@example.test>",
+		Subject:         "Thread",
+		Date:            base,
+		UID:             1,
+		BlobPath:        blob.Path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newThread, err := db.CreateMessage(ctx, CreateMessage{
+		UserID:           user.ID,
+		AccountID:        account.ID,
+		MailboxID:        mailbox.ID,
+		BlobID:           blob.ID,
+		MessageIDHeader:  "<thread-new@example.test>",
+		ReferencesHeader: "<thread-old@example.test>",
+		Subject:          "Re: Thread",
+		Date:             base.Add(2 * time.Hour),
+		UID:              2,
+		BlobPath:         blob.Path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tieOlderID, err := db.CreateMessage(ctx, CreateMessage{
+		UserID:          user.ID,
+		AccountID:       account.ID,
+		MailboxID:       mailbox.ID,
+		BlobID:          blob.ID,
+		MessageIDHeader: "<tie-old@example.test>",
+		Subject:         "Tie",
+		Date:            base.Add(time.Hour),
+		UID:             3,
+		BlobPath:        blob.Path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tieNewerID, err := db.CreateMessage(ctx, CreateMessage{
+		UserID:          user.ID,
+		AccountID:       account.ID,
+		MailboxID:       mailbox.ID,
+		BlobID:          blob.ID,
+		MessageIDHeader: "<tie-new@example.test>",
+		Subject:         "Tie newer id",
+		Date:            base.Add(time.Hour),
+		UID:             4,
+		BlobPath:        blob.Path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := db.ListLatestThreadMessagesForUser(ctx, user.ID, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]int64, 0, len(messages))
+	for _, msg := range messages {
+		got = append(got, msg.ID)
+	}
+	want := []int64{newThread.ID, tieNewerID.ID, tieOlderID.ID}
+	if !slices.Equal(got, want) {
+		t.Fatalf("latest thread ids = %v, want %v; old thread message id was %d", got, want, oldThread.ID)
 	}
 }
 

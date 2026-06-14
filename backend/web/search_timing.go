@@ -56,6 +56,24 @@ func writeSearchTimingHeaders(w http.ResponseWriter, timing *searchTiming, page 
 	w.Header().Set("X-Rolltop-Search-Stats", stats)
 }
 
+func writeMailTimingHeaders(w http.ResponseWriter, timing *searchTiming, page int) {
+	if timing == nil {
+		return
+	}
+	total := time.Since(timing.started)
+	w.Header().Set("Server-Timing", strings.Join([]string{
+		serverTimingMetric("hydrate", timing.hydrate),
+		serverTimingMetric("render", timing.render),
+		serverTimingMetric("total", total),
+	}, ", "))
+	w.Header().Set("X-Rolltop-Mail-Stats", "cache=miss;page="+strconv.Itoa(page)+";seeds="+strconv.Itoa(timing.seeds))
+}
+
+func writeMailCacheTimingHeaders(w http.ResponseWriter) {
+	w.Header().Set("Server-Timing", `cache;desc="mail-list-etag";dur=0`)
+	w.Header().Set("X-Rolltop-Mail-Stats", "cache=hit")
+}
+
 func serverTimingMetric(name string, duration time.Duration) string {
 	return fmt.Sprintf("%s;dur=%.1f", name, float64(duration.Microseconds())/1000)
 }

@@ -24,6 +24,7 @@ func (s *Server) apiMail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	const pageSize = 50
+	timing := newSearchTiming()
 	page := pageFromRequest(r)
 	offset := (page - 1) * pageSize
 	fetchLimit := pageSize*3 + 1
@@ -56,16 +57,23 @@ func (s *Server) apiMail(w http.ResponseWriter, r *http.Request) {
 		}
 		active := apiMailboxFromStore(mb)
 		activeMailbox = &active
+		hydrateDone := timing.measure(&timing.hydrate)
 		messages, err = s.store.ListLatestThreadMessagesForMailbox(r.Context(), cu.User.ID, mb.ID, fetchLimit, offset)
+		hydrateDone()
 	} else {
+		hydrateDone := timing.measure(&timing.hydrate)
 		messages, err = s.store.ListLatestThreadMessagesForUser(r.Context(), cu.User.ID, fetchLimit, offset)
+		hydrateDone()
 	}
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
+	timing.seeds = len(messages)
 	own := s.ownAddresses(r.Context(), cu.User)
+	renderDone := timing.measure(&timing.render)
 	conversations, err := s.conversationViews(r.Context(), cu.User.ID, messages, own)
+	renderDone()
 	if err != nil {
 		s.serverError(w, err)
 		return
@@ -74,6 +82,7 @@ func (s *Server) apiMail(w http.ResponseWriter, r *http.Request) {
 	if hasNext {
 		conversations = conversations[:pageSize]
 	}
+	writeMailTimingHeaders(w, timing, page)
 	etag, ok := writeJSONCachedWithETag(w, r, map[string]any{
 		"conversations":  apiConversations(conversations),
 		"page":           page,
