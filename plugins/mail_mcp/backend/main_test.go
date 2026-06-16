@@ -10,7 +10,7 @@ import (
 	"rolltop/backend/store"
 )
 
-func TestGmailMessageGetRequiresUserOwnedMessage(t *testing.T) {
+func TestMailMessageGetRequiresUserOwnedMessage(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
@@ -21,10 +21,10 @@ func TestGmailMessageGetRequiresUserOwnedMessage(t *testing.T) {
 	first := createTestMessage(t, ctx, db, "first@example.test", "First message", 1)
 	second := createTestMessage(t, ctx, db, "second@example.test", "Second message", 2)
 
-	if _, err := gmailMessageGet(ctx, db, first.UserID, messageID(first.ID), "metadata"); err != nil {
+	if _, err := mailMessageGet(ctx, db, first.UserID, messageID(first.ID), "metadata"); err != nil {
 		t.Fatalf("own message lookup failed: %v", err)
 	}
-	if _, err := gmailMessageGet(ctx, db, first.UserID, messageID(second.ID), "metadata"); !store.IsNotFound(err) {
+	if _, err := mailMessageGet(ctx, db, first.UserID, messageID(second.ID), "metadata"); !store.IsNotFound(err) {
 		t.Fatalf("cross-user message lookup err = %v, want not found", err)
 	}
 }
@@ -40,27 +40,27 @@ func TestListMessagesRequiresUserOwnedMailbox(t *testing.T) {
 	first := createTestMessage(t, ctx, db, "first@example.test", "First message", 1)
 	second := createTestMessage(t, ctx, db, "second@example.test", "Second message", 2)
 
-	messages, _, err := listMessages(ctx, db, first.UserID, listArgs{LabelIDs: []string{gmailLabelID(first.MailboxID)}}, false)
+	messages, _, err := listMessages(ctx, db, first.UserID, listArgs{LabelIDs: []string{mailLabelID(first.MailboxID)}}, false)
 	if err != nil {
 		t.Fatalf("own mailbox list failed: %v", err)
 	}
 	if len(messages) != 1 || messages[0].ID != first.ID {
 		t.Fatalf("own mailbox messages = %+v, want only %d", messages, first.ID)
 	}
-	if _, _, err := listMessages(ctx, db, first.UserID, listArgs{LabelIDs: []string{gmailLabelID(second.MailboxID)}}, false); !store.IsNotFound(err) {
+	if _, _, err := listMessages(ctx, db, first.UserID, listArgs{LabelIDs: []string{mailLabelID(second.MailboxID)}}, false); !store.IsNotFound(err) {
 		t.Fatalf("cross-user mailbox list err = %v, want not found", err)
 	}
 }
 
 func TestBearerUserIDRequiresIssuedAccessToken(t *testing.T) {
-	p := &gmailMCPPlugin{access: map[string]oauthToken{}}
-	req := httptest.NewRequest("POST", "/api/plugins/gmail_mcp/mcp", nil)
+	p := &mailMCPPlugin{access: map[string]oauthToken{}}
+	req := httptest.NewRequest("POST", "/api/plugins/mail_mcp/mcp", nil)
 	req.Header.Set("Authorization", "Bearer missing")
 	if _, ok := p.bearerUserID(req); ok {
 		t.Fatal("missing token authenticated")
 	}
 
-	p.access[codeHash("valid-token")] = oauthToken{UserID: 42, ClientID: "test", Scope: "gmail.readonly", ExpiresAt: time.Now().Add(time.Minute)}
+	p.access[codeHash("valid-token")] = oauthToken{UserID: 42, ClientID: "test", Scope: "mail.readonly", ExpiresAt: time.Now().Add(time.Minute)}
 	req.Header.Set("Authorization", "Bearer valid-token")
 	userID, ok := p.bearerUserID(req)
 	if !ok || userID != 42 {
