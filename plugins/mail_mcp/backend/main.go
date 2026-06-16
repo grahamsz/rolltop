@@ -26,9 +26,8 @@ import (
 )
 
 const (
-	pluginID      = "mail_mcp"
-	apiPath       = "plugins/mail_mcp"
-	consentCookie = "rt_mail_mcp_consent"
+	pluginID = "mail_mcp"
+	apiPath  = "plugins/mail_mcp"
 )
 
 type mailMCPPlugin struct {
@@ -37,16 +36,19 @@ type mailMCPPlugin struct {
 	codes    map[string]oauthCode
 	access   map[string]oauthToken
 	refresh  map[string]oauthToken
+	consent  map[string]time.Time
 	issuedAt time.Time
 }
 
 type oauthCode struct {
-	UserID      int64
-	GrantID     int64
-	ClientID    string
-	RedirectURI string
-	Scope       string
-	ExpiresAt   time.Time
+	UserID              int64
+	GrantID             int64
+	ClientID            string
+	RedirectURI         string
+	Scope               string
+	CodeChallenge       string
+	CodeChallengeMethod string
+	ExpiresAt           time.Time
 }
 
 type oauthToken struct {
@@ -78,6 +80,7 @@ func (p *mailMCPPlugin) Start(host plugins.BackendStartHost) error {
 	p.codes = map[string]oauthCode{}
 	p.access = map[string]oauthToken{}
 	p.refresh = map[string]oauthToken{}
+	p.consent = map[string]time.Time{}
 	p.issuedAt = time.Now()
 	p.mu.Unlock()
 
@@ -90,16 +93,24 @@ func (p *mailMCPPlugin) Start(host plugins.BackendStartHost) error {
 		authorize.Unregister()
 		return err
 	}
+	register, err := host.RegisterPublicAPI(pluginID, plugins.PublicAPIRoute{Path: apiPath + "/oauth/register", Handle: p.registerClient})
+	if err != nil {
+		authorize.Unregister()
+		token.Unregister()
+		return err
+	}
 	authMetadata, err := host.RegisterPublicAPI(pluginID, plugins.PublicAPIRoute{Path: apiPath + "/.well-known/oauth-authorization-server", Handle: p.authorizationServerMetadata})
 	if err != nil {
 		authorize.Unregister()
 		token.Unregister()
+		register.Unregister()
 		return err
 	}
 	resourceMetadata, err := host.RegisterPublicAPI(pluginID, plugins.PublicAPIRoute{Path: apiPath + "/.well-known/oauth-protected-resource", Handle: p.protectedResourceMetadata})
 	if err != nil {
 		authorize.Unregister()
 		token.Unregister()
+		register.Unregister()
 		authMetadata.Unregister()
 		return err
 	}
@@ -107,6 +118,7 @@ func (p *mailMCPPlugin) Start(host plugins.BackendStartHost) error {
 	if err != nil {
 		authorize.Unregister()
 		token.Unregister()
+		register.Unregister()
 		authMetadata.Unregister()
 		resourceMetadata.Unregister()
 		return err
@@ -115,12 +127,13 @@ func (p *mailMCPPlugin) Start(host plugins.BackendStartHost) error {
 	if err != nil {
 		authorize.Unregister()
 		token.Unregister()
+		register.Unregister()
 		authMetadata.Unregister()
 		resourceMetadata.Unregister()
 		grants.Unregister()
 		return err
 	}
-	p.routes = []plugins.ProtectedAPIRouteHandle{authorize, token, authMetadata, resourceMetadata, grants, mcp}
+	p.routes = []plugins.ProtectedAPIRouteHandle{authorize, token, register, authMetadata, resourceMetadata, grants, mcp}
 	return nil
 }
 
@@ -131,6 +144,7 @@ func (p *mailMCPPlugin) Stop(plugins.BackendStartHost) error {
 	p.codes = nil
 	p.access = nil
 	p.refresh = nil
+	p.consent = nil
 	return nil
 }
 
@@ -166,15 +180,23 @@ func (p *mailMCPPlugin) authorize(host plugins.APIHost, _ string, w http.Respons
 	if scope == "" {
 		scope = "mail.readonly"
 	}
-	if r.Method != http.MethodPost || strings.TrimSpace(r.FormValue("approve")) != "1" {
-		writeConsentPage(w, r, clientID, redirectURI, scope)
+	codeChallenge := strings.TrimSpace(r.URL.Query().Get("code_challenge"))
+	codeChallengeMethod := strings.TrimSpace(r.URL.Query().Get("code_challenge_method"))
+	if codeChallengeMethod == "" && codeChallenge != "" {
+		codeChallengeMethod = "plain"
+	}
+	if codeChallenge != "" && codeChallengeMethod != "plain" && codeChallengeMethod != "S256" {
+		host.WriteAPIError(w, http.StatusBadRequest, "OAuth code_challenge_method is unsupported.")
 		return
 	}
-	if !validConsentToken(r) {
+	if r.Method != http.MethodPost || strings.TrimSpace(r.FormValue("approve")) != "1" {
+		p.writeConsentPage(w, r, clientID, redirectURI, scope)
+		return
+	}
+	if !p.validConsentToken(r) {
 		host.WriteAPIError(w, http.StatusBadRequest, "Mail MCP consent token is invalid.")
 		return
 	}
-	clearConsentCookie(w, r)
 	st, ok := host.Store().(*store.Store)
 	if !ok || st == nil {
 		host.ServerError(w, errors.New("store is not available"))
@@ -193,12 +215,14 @@ func (p *mailMCPPlugin) authorize(host plugins.APIHost, _ string, w http.Respons
 	p.mu.Lock()
 	p.pruneLocked(time.Now())
 	p.codes[codeHash(code)] = oauthCode{
-		UserID:      cu.UserID,
-		GrantID:     grant.ID,
-		ClientID:    clientID,
-		RedirectURI: redirectURI,
-		Scope:       scope,
-		ExpiresAt:   time.Now().Add(10 * time.Minute),
+		UserID:              cu.UserID,
+		GrantID:             grant.ID,
+		ClientID:            clientID,
+		RedirectURI:         redirectURI,
+		Scope:               scope,
+		CodeChallenge:       codeChallenge,
+		CodeChallengeMethod: codeChallengeMethod,
+		ExpiresAt:           time.Now().Add(10 * time.Minute),
 	}
 	p.mu.Unlock()
 
@@ -240,10 +264,67 @@ func (p *mailMCPPlugin) authorizationServerMetadata(host plugins.APIHost, _ stri
 		"issuer":                                base + "/api/" + apiPath,
 		"authorization_endpoint":                base + "/api/" + apiPath + "/oauth/authorize",
 		"token_endpoint":                        base + "/api/" + apiPath + "/oauth/token",
+		"registration_endpoint":                 base + "/api/" + apiPath + "/oauth/register",
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"},
+		"token_endpoint_auth_methods_supported": []string{"none"},
+		"code_challenge_methods_supported":      []string{"plain", "S256"},
 		"scopes_supported":                      []string{"mail.readonly"},
+	})
+}
+
+func (p *mailMCPPlugin) registerClient(host plugins.APIHost, _ string, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		ClientName              string   `json:"client_name"`
+		RedirectURIs            []string `json:"redirect_uris"`
+		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+		GrantTypes              []string `json:"grant_types"`
+		ResponseTypes           []string `json:"response_types"`
+		Scope                   string   `json:"scope"`
+	}
+	if r.Body != nil {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			host.WriteAPIError(w, http.StatusBadRequest, "client registration request is invalid.")
+			return
+		}
+	}
+	if len(in.RedirectURIs) == 0 {
+		host.WriteAPIError(w, http.StatusBadRequest, "client registration requires redirect_uris.")
+		return
+	}
+	redirectURIs := make([]string, 0, len(in.RedirectURIs))
+	for _, raw := range in.RedirectURIs {
+		raw = strings.TrimSpace(raw)
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			host.WriteAPIError(w, http.StatusBadRequest, "client registration includes an invalid redirect_uri.")
+			return
+		}
+		redirectURIs = append(redirectURIs, raw)
+	}
+	clientID, err := auth.NewOpaqueToken()
+	if err != nil {
+		host.ServerError(w, err)
+		return
+	}
+	scope := strings.TrimSpace(in.Scope)
+	if scope == "" {
+		scope = "mail.readonly"
+	}
+	host.WriteJSON(w, map[string]any{
+		"client_id":                  "mail-mcp-" + clientID,
+		"client_id_issued_at":        time.Now().Unix(),
+		"client_name":                firstNonEmpty(strings.TrimSpace(in.ClientName), "ChatGPT"),
+		"redirect_uris":              redirectURIs,
+		"token_endpoint_auth_method": "none",
+		"grant_types":                []string{"authorization_code", "refresh_token"},
+		"response_types":             []string{"code"},
+		"scope":                      scope,
 	})
 }
 
@@ -276,6 +357,10 @@ func (p *mailMCPPlugin) exchangeCode(host plugins.APIHost, w http.ResponseWriter
 	stored, ok := p.codes[key]
 	delete(p.codes, key)
 	if !ok || time.Now().After(stored.ExpiresAt) || stored.ClientID != clientID || stored.RedirectURI != redirectURI {
+		host.WriteAPIError(w, http.StatusUnauthorized, "invalid_grant")
+		return
+	}
+	if stored.CodeChallenge != "" && !validPKCEVerifier(r.Form.Get("code_verifier"), stored.CodeChallenge, stored.CodeChallengeMethod) {
 		host.WriteAPIError(w, http.StatusUnauthorized, "invalid_grant")
 		return
 	}
@@ -340,6 +425,24 @@ func (p *mailMCPPlugin) writeTokenResponseLocked(host plugins.APIHost, w http.Re
 		"expires_in":    3600,
 		"scope":         scope,
 	})
+}
+
+func validPKCEVerifier(verifier, challenge, method string) bool {
+	verifier = strings.TrimSpace(verifier)
+	challenge = strings.TrimSpace(challenge)
+	if verifier == "" || challenge == "" {
+		return false
+	}
+	switch method {
+	case "", "plain":
+		return subtle.ConstantTimeCompare([]byte(verifier), []byte(challenge)) == 1
+	case "S256":
+		sum := sha256.Sum256([]byte(verifier))
+		expected := base64.RawURLEncoding.EncodeToString(sum[:])
+		return subtle.ConstantTimeCompare([]byte(expected), []byte(challenge)) == 1
+	default:
+		return false
+	}
 }
 
 func (p *mailMCPPlugin) mcp(host plugins.APIHost, _ string, w http.ResponseWriter, r *http.Request) {
@@ -490,6 +593,11 @@ func (p *mailMCPPlugin) pruneLocked(now time.Time) {
 	for key, token := range p.refresh {
 		if now.After(token.ExpiresAt) {
 			delete(p.refresh, key)
+		}
+	}
+	for key, expires := range p.consent {
+		if now.After(expires) {
+			delete(p.consent, key)
 		}
 	}
 }
@@ -876,21 +984,20 @@ func writeRPC(w http.ResponseWriter, resp rpcResponse) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func writeConsentPage(w http.ResponseWriter, r *http.Request, clientID, redirectURI, scope string) {
+func (p *mailMCPPlugin) writeConsentPage(w http.ResponseWriter, r *http.Request, clientID, redirectURI, scope string) {
 	token, err := auth.NewOpaqueToken()
 	if err != nil {
 		http.Error(w, "could not create consent token", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     consentCookie,
-		Value:    token,
-		Path:     "/api/" + apiPath,
-		MaxAge:   600,
-		HttpOnly: true,
-		SameSite: consentCookieSameSite(r),
-		Secure:   requestIsHTTPS(r),
-	})
+	p.mu.Lock()
+	if p.consent == nil {
+		p.consent = map[string]time.Time{}
+	}
+	p.pruneLocked(time.Now())
+	p.consent[codeHash(token)] = time.Now().Add(10 * time.Minute)
+	p.mu.Unlock()
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	action := html.EscapeString(r.URL.RequestURI())
@@ -937,32 +1044,20 @@ func writeConsentPage(w http.ResponseWriter, r *http.Request, clientID, redirect
 </html>`, client, scope, redirect, action, token)
 }
 
-func validConsentToken(r *http.Request) bool {
-	cookie, err := r.Cookie(consentCookie)
-	if err != nil {
+func (p *mailMCPPlugin) validConsentToken(r *http.Request) bool {
+	formToken := strings.TrimSpace(r.FormValue("consent_token"))
+	if formToken == "" {
 		return false
 	}
-	formToken := strings.TrimSpace(r.FormValue("consent_token"))
-	return formToken != "" && subtle.ConstantTimeCompare([]byte(formToken), []byte(cookie.Value)) == 1
-}
-
-func clearConsentCookie(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     consentCookie,
-		Value:    "",
-		Path:     "/api/" + apiPath,
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: consentCookieSameSite(r),
-		Secure:   requestIsHTTPS(r),
-	})
-}
-
-func consentCookieSameSite(r *http.Request) http.SameSite {
-	if requestIsHTTPS(r) {
-		return http.SameSiteNoneMode
+	key := codeHash(formToken)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pruneLocked(time.Now())
+	expires, ok := p.consent[key]
+	if ok {
+		delete(p.consent, key)
 	}
-	return http.SameSiteLaxMode
+	return ok && time.Now().Before(expires)
 }
 
 func mailMCPAuthenticateHeader(r *http.Request, tokenError string) string {

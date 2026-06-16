@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -129,6 +131,50 @@ func TestAuthorizationServerMetadataUsesRequestBaseURL(t *testing.T) {
 	if body["authorization_endpoint"] != "https://rolltop.example.test/api/plugins/mail_mcp/oauth/authorize" {
 		t.Fatalf("authorization_endpoint = %v", body["authorization_endpoint"])
 	}
+	if body["registration_endpoint"] != "https://rolltop.example.test/api/plugins/mail_mcp/oauth/register" {
+		t.Fatalf("registration_endpoint = %v", body["registration_endpoint"])
+	}
+}
+
+func TestRegisterClientReturnsPublicClientID(t *testing.T) {
+	p := &mailMCPPlugin{}
+	req := httptest.NewRequest("POST", "/api/plugins/mail_mcp/oauth/register", strings.NewReader(`{
+		"client_name": "ChatGPT",
+		"redirect_uris": ["https://chat.openai.com/aip/oauth/callback"],
+		"token_endpoint_auth_method": "none"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.registerClient(testAPIHost{}, "", rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	clientID, _ := body["client_id"].(string)
+	if !strings.HasPrefix(clientID, "mail-mcp-") {
+		t.Fatalf("client_id = %q", clientID)
+	}
+	if body["token_endpoint_auth_method"] != "none" {
+		t.Fatalf("token_endpoint_auth_method = %v", body["token_endpoint_auth_method"])
+	}
+}
+
+func TestValidPKCEVerifierS256(t *testing.T) {
+	verifier := "pkce-verifier"
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+
+	if !validPKCEVerifier(verifier, challenge, "S256") {
+		t.Fatal("S256 verifier was rejected")
+	}
+	if validPKCEVerifier("wrong", challenge, "S256") {
+		t.Fatal("wrong verifier was accepted")
+	}
 }
 
 func TestMCPAuthenticateHeaderIncludesResourceMetadata(t *testing.T) {
@@ -146,25 +192,22 @@ func TestMCPAuthenticateHeaderIncludesResourceMetadata(t *testing.T) {
 	}
 }
 
-func TestConsentCookieUsesSameSiteNoneOnHTTPS(t *testing.T) {
-	req := httptest.NewRequest("GET", "/api/plugins/mail_mcp/oauth/authorize", nil)
-	req.Header.Set("X-Forwarded-Proto", "https")
-
-	if got := consentCookieSameSite(req); got != http.SameSiteNoneMode {
-		t.Fatalf("same site = %v, want SameSiteNoneMode", got)
-	}
-}
-
 func TestConsentTokenValidation(t *testing.T) {
+	p := &mailMCPPlugin{consent: map[string]time.Time{
+		codeHash("secret"): time.Now().Add(time.Minute),
+	}}
 	req := httptest.NewRequest("POST", "/api/plugins/mail_mcp/oauth/authorize", nil)
-	req.AddCookie(&http.Cookie{Name: consentCookie, Value: "secret"})
 	req.Form = map[string][]string{"consent_token": {"secret"}}
-	if !validConsentToken(req) {
+	if !p.validConsentToken(req) {
 		t.Fatal("matching consent token was rejected")
 	}
-	req.Form.Set("consent_token", "wrong")
-	if validConsentToken(req) {
-		t.Fatal("mismatched consent token was accepted")
+	if p.validConsentToken(req) {
+		t.Fatal("consent token was accepted twice")
+	}
+	p.consent[codeHash("expired")] = time.Now().Add(-time.Minute)
+	req.Form.Set("consent_token", "expired")
+	if p.validConsentToken(req) {
+		t.Fatal("expired consent token was accepted")
 	}
 }
 
