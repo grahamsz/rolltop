@@ -193,21 +193,24 @@ func TestMCPAuthenticateHeaderIncludesResourceMetadata(t *testing.T) {
 }
 
 func TestConsentTokenValidation(t *testing.T) {
-	p := &mailMCPPlugin{consent: map[string]time.Time{
-		codeHash("secret"): time.Now().Add(time.Minute),
-	}}
-	req := httptest.NewRequest("POST", "/api/plugins/mail_mcp/oauth/authorize", nil)
-	req.Form = map[string][]string{"consent_token": {"secret"}}
-	if !p.validConsentToken(req) {
+	rawURL := "/api/plugins/mail_mcp/oauth/authorize?response_type=code&client_id=mail-mcp-3_j23z1tMQTM_ixPjDSDJh6yje33nej-l-dTrD45s04&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fconnector%2Foauth%2Fr1-r3wGxJrBd&scope=mail.readonly&code_challenge=kb8ZNqBN70AFtilmuQTRg1XsBaqiybACBqNTRn-Y5uM&code_challenge_method=S256&resource=https%3A%2F%2Fmail.theparkerstewarts.com%2Fapi%2Fplugins%2Fmail_mcp%2Fmcp&state=oauth_s_6a31d2a5e2888191a48771d5522ead45&ui_locales=en-US"
+	host := testAPIHost{}
+	getReq := httptest.NewRequest("GET", rawURL, nil)
+	token, err := newConsentToken(host, getReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	postReq := httptest.NewRequest("POST", rawURL, nil)
+	postReq.Form = map[string][]string{"consent_token": {token}}
+	if !validConsentToken(host, postReq) {
 		t.Fatal("matching consent token was rejected")
 	}
-	if p.validConsentToken(req) {
-		t.Fatal("consent token was accepted twice")
-	}
-	p.consent[codeHash("expired")] = time.Now().Add(-time.Minute)
-	req.Form.Set("consent_token", "expired")
-	if p.validConsentToken(req) {
-		t.Fatal("expired consent token was accepted")
+
+	tamperedReq := httptest.NewRequest("POST", rawURL+"&scope=other", nil)
+	tamperedReq.Form = map[string][]string{"consent_token": {token}}
+	if validConsentToken(host, tamperedReq) {
+		t.Fatal("consent token was accepted for a different OAuth query")
 	}
 }
 
@@ -326,6 +329,10 @@ func createMailboxMessage(t *testing.T, ctx context.Context, db *store.Store, us
 
 type testAPIHost struct {
 	plugins.APIHost
+}
+
+func (testAPIHost) MasterKey() []byte {
+	return []byte("test master key")
 }
 
 func (testAPIHost) WriteJSON(w http.ResponseWriter, value any) {

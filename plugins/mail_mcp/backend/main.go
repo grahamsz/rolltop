@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
@@ -36,7 +37,6 @@ type mailMCPPlugin struct {
 	codes    map[string]oauthCode
 	access   map[string]oauthToken
 	refresh  map[string]oauthToken
-	consent  map[string]time.Time
 	issuedAt time.Time
 }
 
@@ -80,7 +80,6 @@ func (p *mailMCPPlugin) Start(host plugins.BackendStartHost) error {
 	p.codes = map[string]oauthCode{}
 	p.access = map[string]oauthToken{}
 	p.refresh = map[string]oauthToken{}
-	p.consent = map[string]time.Time{}
 	p.issuedAt = time.Now()
 	p.mu.Unlock()
 
@@ -144,7 +143,6 @@ func (p *mailMCPPlugin) Stop(plugins.BackendStartHost) error {
 	p.codes = nil
 	p.access = nil
 	p.refresh = nil
-	p.consent = nil
 	return nil
 }
 
@@ -190,10 +188,10 @@ func (p *mailMCPPlugin) authorize(host plugins.APIHost, _ string, w http.Respons
 		return
 	}
 	if r.Method != http.MethodPost || strings.TrimSpace(r.FormValue("approve")) != "1" {
-		p.writeConsentPage(w, r, clientID, redirectURI, scope)
+		writeConsentPage(host, w, r, clientID, redirectURI, scope)
 		return
 	}
-	if !p.validConsentToken(r) {
+	if !validConsentToken(host, r) {
 		host.WriteAPIError(w, http.StatusBadRequest, "Mail MCP consent token is invalid.")
 		return
 	}
@@ -595,11 +593,6 @@ func (p *mailMCPPlugin) pruneLocked(now time.Time) {
 			delete(p.refresh, key)
 		}
 	}
-	for key, expires := range p.consent {
-		if now.After(expires) {
-			delete(p.consent, key)
-		}
-	}
 }
 
 type rpcRequest struct {
@@ -984,20 +977,12 @@ func writeRPC(w http.ResponseWriter, resp rpcResponse) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (p *mailMCPPlugin) writeConsentPage(w http.ResponseWriter, r *http.Request, clientID, redirectURI, scope string) {
-	token, err := auth.NewOpaqueToken()
+func writeConsentPage(host plugins.APIHost, w http.ResponseWriter, r *http.Request, clientID, redirectURI, scope string) {
+	token, err := newConsentToken(host, r)
 	if err != nil {
 		http.Error(w, "could not create consent token", http.StatusInternalServerError)
 		return
 	}
-	p.mu.Lock()
-	if p.consent == nil {
-		p.consent = map[string]time.Time{}
-	}
-	p.pruneLocked(time.Now())
-	p.consent[codeHash(token)] = time.Now().Add(10 * time.Minute)
-	p.mu.Unlock()
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	action := html.EscapeString(r.URL.RequestURI())
@@ -1044,20 +1029,54 @@ func (p *mailMCPPlugin) writeConsentPage(w http.ResponseWriter, r *http.Request,
 </html>`, client, scope, redirect, action, token)
 }
 
-func (p *mailMCPPlugin) validConsentToken(r *http.Request) bool {
+func newConsentToken(host plugins.APIHost, r *http.Request) (string, error) {
+	nonce, err := auth.NewOpaqueToken()
+	if err != nil {
+		return "", err
+	}
+	expires := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
+	nonce = strings.TrimSpace(nonce)
+	payload := expires + "." + nonce
+	signature := signConsentPayload(host, r, payload)
+	return payload + "." + signature, nil
+}
+
+func validConsentToken(host plugins.APIHost, r *http.Request) bool {
 	formToken := strings.TrimSpace(r.FormValue("consent_token"))
 	if formToken == "" {
 		return false
 	}
-	key := codeHash(formToken)
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.pruneLocked(time.Now())
-	expires, ok := p.consent[key]
-	if ok {
-		delete(p.consent, key)
+	parts := strings.Split(formToken, ".")
+	if len(parts) != 3 {
+		return false
 	}
-	return ok && time.Now().Before(expires)
+	expiresUnix, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || time.Now().Unix() > expiresUnix {
+		return false
+	}
+	if strings.TrimSpace(parts[1]) == "" || strings.TrimSpace(parts[2]) == "" {
+		return false
+	}
+	payload := parts[0] + "." + parts[1]
+	expected := signConsentPayload(host, r, payload)
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(parts[2])) == 1
+}
+
+func signConsentPayload(host plugins.APIHost, r *http.Request, payload string) string {
+	mac := hmac.New(sha256.New, consentSigningKey(host))
+	mac.Write([]byte(payload))
+	mac.Write([]byte{'\n'})
+	mac.Write([]byte(r.URL.RawQuery))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func consentSigningKey(host plugins.APIHost) []byte {
+	if host != nil && len(host.MasterKey()) > 0 {
+		sum := sha256.Sum256(append([]byte("mail_mcp consent token\x00"), host.MasterKey()...))
+		return sum[:]
+	}
+	sum := sha256.Sum256([]byte("mail_mcp consent token fallback"))
+	return sum[:]
 }
 
 func mailMCPAuthenticateHeader(r *http.Request, tokenError string) string {
