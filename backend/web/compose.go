@@ -465,7 +465,11 @@ func referencesForReply(msg store.MessageRecord) string {
 }
 
 func (s *Server) composeFromLabel(ctx context.Context, cu currentUser) string {
-	if identity, err := s.selectedComposeIdentity(ctx, cu, 0); err == nil && strings.TrimSpace(identity.Header) != "" {
+	return s.composeFromLabelFromChoices(ctx, cu, s.composeIdentityChoices(ctx, cu))
+}
+
+func (s *Server) composeFromLabelFromChoices(ctx context.Context, cu currentUser, choices []composeIdentity) string {
+	if identity, err := selectedComposeIdentityFromChoices(choices, 0); err == nil && strings.TrimSpace(identity.Header) != "" {
 		return identity.Header
 	}
 	if account, err := s.store.GetMailAccount(ctx, cu.User.ID); err == nil && strings.TrimSpace(account.Email) != "" {
@@ -511,7 +515,10 @@ func pluginMailIdentityContext(identity composeIdentity) plugins.MailIdentityCon
 }
 
 func (s *Server) composeIdentities(ctx context.Context, cu currentUser) []apiComposeIdentity {
-	choices := s.composeIdentityChoices(ctx, cu)
+	return apiComposeIdentitiesFromChoices(s.composeIdentityChoices(ctx, cu))
+}
+
+func apiComposeIdentitiesFromChoices(choices []composeIdentity) []apiComposeIdentity {
 	out := make([]apiComposeIdentity, 0, len(choices))
 	for _, choice := range choices {
 		out = append(out, apiComposeIdentity{
@@ -627,7 +634,10 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 // otherwise first available identity. It rejects unknown IDs instead of accepting
 // arbitrary user input.
 func (s *Server) selectedComposeIdentity(ctx context.Context, cu currentUser, id int64) (composeIdentity, error) {
-	choices := s.composeIdentityChoices(ctx, cu)
+	return selectedComposeIdentityFromChoices(s.composeIdentityChoices(ctx, cu), id)
+}
+
+func selectedComposeIdentityFromChoices(choices []composeIdentity, id int64) (composeIdentity, error) {
 	if len(choices) == 0 {
 		return composeIdentity{}, store.ErrNotFound
 	}

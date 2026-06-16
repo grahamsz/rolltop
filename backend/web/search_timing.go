@@ -11,26 +11,29 @@ import (
 )
 
 type searchTiming struct {
-	started      time.Time
-	filter       time.Duration
-	sender       time.Duration
-	bleve        time.Duration
-	hydrate      time.Duration
-	render       time.Duration
-	thread       time.Duration
-	match        time.Duration
-	readState    time.Duration
-	security     time.Duration
-	attachments  time.Duration
-	body         time.Duration
-	unsubscribe  time.Duration
-	headers      time.Duration
-	compose      time.Duration
-	senderVisual time.Duration
-	bodyDoc      time.Duration
-	batches      int
-	rawHits      int
-	seeds        int
+	started           time.Time
+	filter            time.Duration
+	sender            time.Duration
+	bleve             time.Duration
+	hydrate           time.Duration
+	render            time.Duration
+	thread            time.Duration
+	match             time.Duration
+	readState         time.Duration
+	security          time.Duration
+	attachments       time.Duration
+	body              time.Duration
+	unsubscribe       time.Duration
+	headers           time.Duration
+	compose           time.Duration
+	composeChoices    time.Duration
+	composeFrom       time.Duration
+	composeIdentities time.Duration
+	senderVisual      time.Duration
+	bodyDoc           time.Duration
+	batches           int
+	rawHits           int
+	seeds             int
 }
 
 func newSearchTiming() *searchTiming {
@@ -110,6 +113,9 @@ func writeMessageTimingHeaders(w http.ResponseWriter, timing *searchTiming) {
 		serverTimingMetric("sender_visual", timing.senderVisual),
 		serverTimingMetric("body_doc", timing.bodyDoc),
 		serverTimingMetric("compose", timing.compose),
+		serverTimingMetric("compose_choices", timing.composeChoices),
+		serverTimingMetric("compose_from", timing.composeFrom),
+		serverTimingMetric("compose_identities", timing.composeIdentities),
 		serverTimingMetric("total", total),
 	}, ", "))
 	w.Header().Set("X-Rolltop-Message-Stats", "messages="+strconv.Itoa(timing.seeds))
