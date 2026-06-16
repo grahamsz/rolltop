@@ -5,9 +5,25 @@ package mailparse
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
+
+type limitErrReader struct {
+	data []byte
+	max  int
+	pos  int
+}
+
+func (r *limitErrReader) Read(p []byte) (int, error) {
+	if r.pos >= r.max {
+		return 0, errors.New("unexpected attachment payload read")
+	}
+	n := copy(p, r.data[r.pos:r.max])
+	r.pos += n
+	return n, nil
+}
 
 func TestParseToleratesUnexpectedEOFinMultipart(t *testing.T) {
 	raw := strings.Join([]string{
@@ -52,6 +68,40 @@ func TestParsePreservesPlainTextLineBreaks(t *testing.T) {
 	want := "First line.\n\nSecond paragraph.\n> quoted line"
 	if parsed.Text != want {
 		t.Fatalf("text = %q, want %q", parsed.Text, want)
+	}
+}
+
+func TestParseDisplayBodyStopsAfterMixedBody(t *testing.T) {
+	raw := strings.Join([]string{
+		"From: sender@example.test",
+		"To: archive@example.test",
+		"Subject: mixed display body",
+		"Content-Type: multipart/mixed; boundary=mix",
+		"",
+		"--mix",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"body before attachment",
+		"--mix",
+		"Content-Type: application/octet-stream",
+		"Content-Disposition: attachment; filename=\"large.bin\"",
+		"Content-Transfer-Encoding: base64",
+		"",
+	}, "\r\n")
+	reader := &limitErrReader{
+		data: []byte(raw + strings.Repeat("A", 1024*1024)),
+		max:  len(raw),
+	}
+
+	text, html, err := ParseDisplayBody(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if html != "" {
+		t.Fatalf("html = %q", html)
+	}
+	if text != "body before attachment" {
+		t.Fatalf("text = %q", text)
 	}
 }
 

@@ -71,6 +71,41 @@ func TestBearerUserIDRequiresIssuedAccessToken(t *testing.T) {
 	}
 }
 
+func TestGrantRevokeClearsActiveTokens(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createGrantTable(t, ctx, db)
+	user, err := db.CreateUser(ctx, "grant@example.test", "Grant", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := upsertMailMCPGrant(ctx, db, user.ID, "chatgpt", "mail.readonly", "https://chat.openai.com/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := mailMCPGrantActive(ctx, db, user.ID, grant.ID); err != nil || !ok {
+		t.Fatalf("active=%t err=%v, want active grant", ok, err)
+	}
+	p := &mailMCPPlugin{
+		access:  map[string]oauthToken{codeHash("access"): {UserID: user.ID, GrantID: grant.ID, ClientID: "chatgpt", Scope: "mail.readonly", ExpiresAt: time.Now().Add(time.Hour)}},
+		refresh: map[string]oauthToken{codeHash("refresh"): {UserID: user.ID, GrantID: grant.ID, ClientID: "chatgpt", Scope: "mail.readonly", ExpiresAt: time.Now().Add(time.Hour)}},
+	}
+	if err := revokeMailMCPGrant(ctx, db, user.ID, grant.ID); err != nil {
+		t.Fatal(err)
+	}
+	p.revokeTokens(user.ID, grant.ID)
+	if ok, err := mailMCPGrantActive(ctx, db, user.ID, grant.ID); err != nil || ok {
+		t.Fatalf("active=%t err=%v, want revoked grant", ok, err)
+	}
+	if len(p.access) != 0 || len(p.refresh) != 0 {
+		t.Fatalf("tokens after revoke access=%d refresh=%d, want none", len(p.access), len(p.refresh))
+	}
+}
+
 func TestAuthorizationServerMetadataUsesRequestBaseURL(t *testing.T) {
 	p := &mailMCPPlugin{}
 	req := httptest.NewRequest("GET", "/api/plugins/mail_mcp/.well-known/oauth-authorization-server", nil)
@@ -92,6 +127,19 @@ func TestAuthorizationServerMetadataUsesRequestBaseURL(t *testing.T) {
 	}
 	if body["authorization_endpoint"] != "https://rolltop.example.test/api/plugins/mail_mcp/oauth/authorize" {
 		t.Fatalf("authorization_endpoint = %v", body["authorization_endpoint"])
+	}
+}
+
+func TestConsentTokenValidation(t *testing.T) {
+	req := httptest.NewRequest("POST", "/api/plugins/mail_mcp/oauth/authorize", nil)
+	req.AddCookie(&http.Cookie{Name: consentCookie, Value: "secret"})
+	req.Form = map[string][]string{"consent_token": {"secret"}}
+	if !validConsentToken(req) {
+		t.Fatal("matching consent token was rejected")
+	}
+	req.Form.Set("consent_token", "wrong")
+	if validConsentToken(req) {
+		t.Fatal("mismatched consent token was accepted")
 	}
 }
 
@@ -161,6 +209,27 @@ func createTestMailbox(t *testing.T, ctx context.Context, db *store.Store, email
 		t.Fatal(err)
 	}
 	return user, account, mailbox, blob
+}
+
+func createGrantTable(t *testing.T, ctx context.Context, db *store.Store) {
+	t.Helper()
+	_, err := db.DB().ExecContext(ctx, `CREATE TABLE IF NOT EXISTS plugin_mail_mcp_grants (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		client_id TEXT NOT NULL DEFAULT '',
+		scope TEXT NOT NULL DEFAULT '',
+		redirect_uri TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		last_used_at INTEGER NOT NULL DEFAULT 0,
+		revoked_at INTEGER NOT NULL DEFAULT 0
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.DB().ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_mail_mcp_grants_user_client_scope ON plugin_mail_mcp_grants(user_id, client_id, scope)`)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func createMailboxMessage(t *testing.T, ctx context.Context, db *store.Store, userID, accountID, mailboxID, blobID int64, subject string, uid uint32, date time.Time) store.MessageRecord {

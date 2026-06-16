@@ -141,6 +141,21 @@ func (s *Server) performOneClickUnsubscribe(ctx context.Context, target *url.URL
 }
 
 func (s *Server) rawMessageHeader(ctx context.Context, userID int64, msg store.MessageRecord) mail.Header {
+	if s.blobs != nil && strings.TrimSpace(msg.BlobPath) != "" {
+		select {
+		case <-ctx.Done():
+			return mail.Header{}
+		default:
+		}
+		f, err := s.blobs.OpenUserBlob(userID, msg.BlobPath)
+		if err == nil {
+			defer f.Close()
+			parsed, err := mail.ReadMessage(f)
+			if err == nil {
+				return parsed.Header
+			}
+		}
+	}
 	raw, err := s.rawMessageBytes(ctx, userID, msg)
 	if err != nil {
 		return mail.Header{}

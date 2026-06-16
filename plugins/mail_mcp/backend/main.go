@@ -6,10 +6,13 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -23,8 +26,9 @@ import (
 )
 
 const (
-	pluginID = "mail_mcp"
-	apiPath  = "plugins/mail_mcp"
+	pluginID      = "mail_mcp"
+	apiPath       = "plugins/mail_mcp"
+	consentCookie = "rt_mail_mcp_consent"
 )
 
 type mailMCPPlugin struct {
@@ -38,6 +42,7 @@ type mailMCPPlugin struct {
 
 type oauthCode struct {
 	UserID      int64
+	GrantID     int64
 	ClientID    string
 	RedirectURI string
 	Scope       string
@@ -46,9 +51,19 @@ type oauthCode struct {
 
 type oauthToken struct {
 	UserID    int64
+	GrantID   int64
 	ClientID  string
 	Scope     string
 	ExpiresAt time.Time
+}
+
+type mailMCPGrant struct {
+	ID          int64  `json:"id"`
+	ClientID    string `json:"client_id"`
+	Scope       string `json:"scope"`
+	RedirectURI string `json:"redirect_uri"`
+	CreatedAt   int64  `json:"created_at"`
+	LastUsedAt  int64  `json:"last_used_at"`
 }
 
 func RolltopPlugin() plugins.BackendPlugin {
@@ -88,7 +103,7 @@ func (p *mailMCPPlugin) Start(host plugins.BackendStartHost) error {
 		authMetadata.Unregister()
 		return err
 	}
-	mcp, err := host.RegisterPublicAPI(pluginID, plugins.PublicAPIRoute{Path: apiPath + "/mcp", Handle: p.mcp})
+	grants, err := host.RegisterProtectedAPI(pluginID, plugins.ProtectedAPIRoute{Path: apiPath + "/grants", Prefix: true, Handle: p.grants})
 	if err != nil {
 		authorize.Unregister()
 		token.Unregister()
@@ -96,7 +111,16 @@ func (p *mailMCPPlugin) Start(host plugins.BackendStartHost) error {
 		resourceMetadata.Unregister()
 		return err
 	}
-	p.routes = []plugins.ProtectedAPIRouteHandle{authorize, token, authMetadata, resourceMetadata, mcp}
+	mcp, err := host.RegisterPublicAPI(pluginID, plugins.PublicAPIRoute{Path: apiPath + "/mcp", Handle: p.mcp})
+	if err != nil {
+		authorize.Unregister()
+		token.Unregister()
+		authMetadata.Unregister()
+		resourceMetadata.Unregister()
+		grants.Unregister()
+		return err
+	}
+	p.routes = []plugins.ProtectedAPIRouteHandle{authorize, token, authMetadata, resourceMetadata, grants, mcp}
 	return nil
 }
 
@@ -118,7 +142,7 @@ func (p *mailMCPPlugin) unregister() {
 }
 
 func (p *mailMCPPlugin) authorize(host plugins.APIHost, _ string, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -138,19 +162,39 @@ func (p *mailMCPPlugin) authorize(host plugins.APIHost, _ string, w http.Respons
 		host.WriteAPIError(w, http.StatusBadRequest, "OAuth redirect_uri is invalid.")
 		return
 	}
+	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+	if scope == "" {
+		scope = "mail.readonly"
+	}
+	if r.Method != http.MethodPost || strings.TrimSpace(r.FormValue("approve")) != "1" {
+		writeConsentPage(w, r, clientID, redirectURI, scope)
+		return
+	}
+	if !validConsentToken(r) {
+		host.WriteAPIError(w, http.StatusBadRequest, "Mail MCP consent token is invalid.")
+		return
+	}
+	clearConsentCookie(w, r)
+	st, ok := host.Store().(*store.Store)
+	if !ok || st == nil {
+		host.ServerError(w, errors.New("store is not available"))
+		return
+	}
+	grant, err := upsertMailMCPGrant(r.Context(), st, cu.UserID, clientID, scope, redirectURI)
+	if err != nil {
+		host.ServerError(w, err)
+		return
+	}
 	code, err := auth.NewOpaqueToken()
 	if err != nil {
 		host.ServerError(w, err)
 		return
 	}
-	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
-	if scope == "" {
-		scope = "mail.readonly"
-	}
 	p.mu.Lock()
 	p.pruneLocked(time.Now())
 	p.codes[codeHash(code)] = oauthCode{
 		UserID:      cu.UserID,
+		GrantID:     grant.ID,
 		ClientID:    clientID,
 		RedirectURI: redirectURI,
 		Scope:       scope,
@@ -235,7 +279,19 @@ func (p *mailMCPPlugin) exchangeCode(host plugins.APIHost, w http.ResponseWriter
 		host.WriteAPIError(w, http.StatusUnauthorized, "invalid_grant")
 		return
 	}
-	p.writeTokenResponseLocked(host, w, stored.UserID, stored.ClientID, stored.Scope)
+	st, ok := host.Store().(*store.Store)
+	if !ok || st == nil {
+		host.ServerError(w, errors.New("store is not available"))
+		return
+	}
+	if ok, err := mailMCPGrantActive(r.Context(), st, stored.UserID, stored.GrantID); err != nil {
+		host.ServerError(w, err)
+		return
+	} else if !ok {
+		host.WriteAPIError(w, http.StatusUnauthorized, "invalid_grant")
+		return
+	}
+	p.writeTokenResponseLocked(host, w, stored.UserID, stored.GrantID, stored.ClientID, stored.Scope)
 }
 
 func (p *mailMCPPlugin) exchangeRefresh(host plugins.APIHost, w http.ResponseWriter, r *http.Request) {
@@ -253,18 +309,30 @@ func (p *mailMCPPlugin) exchangeRefresh(host plugins.APIHost, w http.ResponseWri
 		host.WriteAPIError(w, http.StatusUnauthorized, "invalid_grant")
 		return
 	}
-	p.writeTokenResponseLocked(host, w, stored.UserID, stored.ClientID, stored.Scope)
+	st, ok := host.Store().(*store.Store)
+	if !ok || st == nil {
+		host.ServerError(w, errors.New("store is not available"))
+		return
+	}
+	if ok, err := mailMCPGrantActive(r.Context(), st, stored.UserID, stored.GrantID); err != nil {
+		host.ServerError(w, err)
+		return
+	} else if !ok {
+		host.WriteAPIError(w, http.StatusUnauthorized, "invalid_grant")
+		return
+	}
+	p.writeTokenResponseLocked(host, w, stored.UserID, stored.GrantID, stored.ClientID, stored.Scope)
 }
 
-func (p *mailMCPPlugin) writeTokenResponseLocked(host plugins.APIHost, w http.ResponseWriter, userID int64, clientID, scope string) {
+func (p *mailMCPPlugin) writeTokenResponseLocked(host plugins.APIHost, w http.ResponseWriter, userID, grantID int64, clientID, scope string) {
 	access, accessErr := auth.NewOpaqueToken()
 	refresh, refreshErr := auth.NewOpaqueToken()
 	if accessErr != nil || refreshErr != nil {
 		host.ServerError(w, firstErr(accessErr, refreshErr))
 		return
 	}
-	p.access[codeHash(access)] = oauthToken{UserID: userID, ClientID: clientID, Scope: scope, ExpiresAt: time.Now().Add(time.Hour)}
-	p.refresh[codeHash(refresh)] = oauthToken{UserID: userID, ClientID: clientID, Scope: scope, ExpiresAt: time.Now().Add(30 * 24 * time.Hour)}
+	p.access[codeHash(access)] = oauthToken{UserID: userID, GrantID: grantID, ClientID: clientID, Scope: scope, ExpiresAt: time.Now().Add(time.Hour)}
+	p.refresh[codeHash(refresh)] = oauthToken{UserID: userID, GrantID: grantID, ClientID: clientID, Scope: scope, ExpiresAt: time.Now().Add(30 * 24 * time.Hour)}
 	host.WriteJSON(w, map[string]any{
 		"access_token":  access,
 		"refresh_token": refresh,
@@ -284,17 +352,26 @@ func (p *mailMCPPlugin) mcp(host plugins.APIHost, _ string, w http.ResponseWrite
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	userID, ok := p.bearerUserID(r)
-	if !ok {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="Rolltop Mail MCP"`)
-		host.WriteAPIError(w, http.StatusUnauthorized, "MCP requests require a Mail MCP bearer token.")
-		return
-	}
 	st, ok := host.Store().(*store.Store)
 	if !ok || st == nil {
 		host.ServerError(w, errors.New("store is not available"))
 		return
 	}
+	userID, grantID, ok := p.bearerToken(r)
+	if !ok {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="Rolltop Mail MCP"`)
+		host.WriteAPIError(w, http.StatusUnauthorized, "MCP requests require a Mail MCP bearer token.")
+		return
+	}
+	if ok, err := mailMCPGrantActive(r.Context(), st, userID, grantID); err != nil {
+		host.ServerError(w, err)
+		return
+	} else if !ok {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="Rolltop Mail MCP", error="invalid_token"`)
+		host.WriteAPIError(w, http.StatusUnauthorized, "Mail MCP access has been revoked.")
+		return
+	}
+	_ = touchMailMCPGrant(r.Context(), st, userID, grantID)
 	var req rpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeRPC(w, rpcResponse{JSONRPC: "2.0", ID: nil, Error: &rpcError{Code: -32700, Message: "parse error"}})
@@ -317,23 +394,86 @@ func (p *mailMCPPlugin) mcp(host plugins.APIHost, _ string, w http.ResponseWrite
 	writeRPC(w, resp)
 }
 
+func (p *mailMCPPlugin) grants(host plugins.APIHost, path string, w http.ResponseWriter, r *http.Request) {
+	cu, ok := host.RequireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	st, ok := host.Store().(*store.Store)
+	if !ok || st == nil {
+		host.ServerError(w, errors.New("store is not available"))
+		return
+	}
+	rest := strings.TrimPrefix(strings.Trim(path, "/"), apiPath+"/grants")
+	switch {
+	case r.Method == http.MethodGet && strings.Trim(rest, "/") == "":
+		grants, err := listMailMCPGrants(r.Context(), st, cu.UserID)
+		if err != nil {
+			host.ServerError(w, err)
+			return
+		}
+		host.WriteJSON(w, map[string]any{"grants": grants})
+	case r.Method == http.MethodDelete:
+		if !host.VerifyCSRF(w, r) {
+			return
+		}
+		id, err := strconv.ParseInt(strings.Trim(rest, "/"), 10, 64)
+		if err != nil || id <= 0 {
+			host.WriteAPIError(w, http.StatusBadRequest, "grant id is invalid")
+			return
+		}
+		if err := revokeMailMCPGrant(r.Context(), st, cu.UserID, id); err != nil {
+			if store.IsNotFound(err) {
+				http.NotFound(w, r)
+				return
+			}
+			host.ServerError(w, err)
+			return
+		}
+		p.revokeTokens(cu.UserID, id)
+		host.WriteJSON(w, map[string]any{"ok": true})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
 func (p *mailMCPPlugin) bearerUserID(r *http.Request) (int64, bool) {
+	userID, _, ok := p.bearerToken(r)
+	return userID, ok
+}
+
+func (p *mailMCPPlugin) bearerToken(r *http.Request) (int64, int64, bool) {
 	authz := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authz, "Bearer ") {
-		return 0, false
+		return 0, 0, false
 	}
 	token := strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
 	if token == "" {
-		return 0, false
+		return 0, 0, false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.pruneLocked(time.Now())
 	stored, ok := p.access[codeHash(token)]
 	if !ok || time.Now().After(stored.ExpiresAt) {
-		return 0, false
+		return 0, 0, false
 	}
-	return stored.UserID, true
+	return stored.UserID, stored.GrantID, true
+}
+
+func (p *mailMCPPlugin) revokeTokens(userID, grantID int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key, token := range p.access {
+		if token.UserID == userID && token.GrantID == grantID {
+			delete(p.access, key)
+		}
+	}
+	for key, token := range p.refresh {
+		if token.UserID == userID && token.GrantID == grantID {
+			delete(p.refresh, key)
+		}
+	}
 }
 
 func (p *mailMCPPlugin) pruneLocked(now time.Time) {
@@ -736,6 +876,184 @@ func writeRPC(w http.ResponseWriter, resp rpcResponse) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+func writeConsentPage(w http.ResponseWriter, r *http.Request, clientID, redirectURI, scope string) {
+	token, err := auth.NewOpaqueToken()
+	if err != nil {
+		http.Error(w, "could not create consent token", http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     consentCookie,
+		Value:    token,
+		Path:     "/api/" + apiPath,
+		MaxAge:   600,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+	})
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	action := html.EscapeString(r.URL.RequestURI())
+	client := html.EscapeString(firstNonEmpty(clientID, "Unknown client"))
+	redirect := html.EscapeString(redirectURI)
+	scope = html.EscapeString(scope)
+	token = html.EscapeString(token)
+	_, _ = fmt.Fprintf(w, `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Allow Mail MCP access</title>
+  <style>
+    body { color: #171717; background: #f6f4ef; font: 16px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; }
+    main { max-width: 640px; margin: 10vh auto; padding: 32px; background: #fff; border: 1px solid #ddd7ca; border-radius: 8px; }
+    h1 { font-size: 1.6rem; margin: 0 0 16px; }
+    .warning { background: #fff4d8; border: 1px solid #e2b84d; padding: 14px 16px; border-radius: 6px; }
+    dl { display: grid; grid-template-columns: 120px 1fr; gap: 8px 14px; margin: 20px 0; }
+    dt { color: #666; }
+    dd { margin: 0; word-break: break-word; }
+    .actions { display: flex; gap: 12px; margin-top: 24px; }
+    button, a { border-radius: 6px; padding: 10px 14px; font: inherit; text-decoration: none; }
+    button { border: 0; background: #1f5f46; color: white; cursor: pointer; }
+    a { color: #333; border: 1px solid #ccc; background: #fafafa; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Allow Mail MCP access?</h1>
+    <p class="warning"><strong>%s</strong> will be permitted to read all mail mirrored in this Rolltop account through the Mail MCP server.</p>
+    <dl>
+      <dt>Scope</dt><dd>%s</dd>
+      <dt>Return URL</dt><dd>%s</dd>
+    </dl>
+    <p>You can revoke this later from Settings.</p>
+    <form method="post" action="%s" class="actions">
+      <input type="hidden" name="consent_token" value="%s">
+      <button type="submit" name="approve" value="1">Allow read access</button>
+      <a href="/settings/account">Cancel</a>
+    </form>
+  </main>
+</body>
+</html>`, client, scope, redirect, action, token)
+}
+
+func validConsentToken(r *http.Request) bool {
+	cookie, err := r.Cookie(consentCookie)
+	if err != nil {
+		return false
+	}
+	formToken := strings.TrimSpace(r.FormValue("consent_token"))
+	return formToken != "" && subtle.ConstantTimeCompare([]byte(formToken), []byte(cookie.Value)) == 1
+}
+
+func clearConsentCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     consentCookie,
+		Value:    "",
+		Path:     "/api/" + apiPath,
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+	})
+}
+
+func upsertMailMCPGrant(ctx context.Context, st *store.Store, userID int64, clientID, scope, redirectURI string) (mailMCPGrant, error) {
+	db, err := st.UserDB(ctx, userID)
+	if err != nil {
+		return mailMCPGrant{}, err
+	}
+	now := time.Now().Unix()
+	_, err = db.ExecContext(ctx, `INSERT INTO plugin_mail_mcp_grants
+			(user_id, client_id, scope, redirect_uri, created_at, last_used_at, revoked_at)
+		VALUES (?, ?, ?, ?, ?, 0, 0)
+		ON CONFLICT(user_id, client_id, scope) DO UPDATE SET
+			redirect_uri = excluded.redirect_uri,
+			revoked_at = 0`, userID, strings.TrimSpace(clientID), strings.TrimSpace(scope), strings.TrimSpace(redirectURI), now)
+	if err != nil {
+		return mailMCPGrant{}, err
+	}
+	return getMailMCPGrant(ctx, st, userID, strings.TrimSpace(clientID), strings.TrimSpace(scope))
+}
+
+func getMailMCPGrant(ctx context.Context, st *store.Store, userID int64, clientID, scope string) (mailMCPGrant, error) {
+	db, err := st.UserDB(ctx, userID)
+	if err != nil {
+		return mailMCPGrant{}, err
+	}
+	var grant mailMCPGrant
+	err = db.QueryRowContext(ctx, `SELECT id, client_id, scope, redirect_uri, created_at, last_used_at
+		FROM plugin_mail_mcp_grants
+		WHERE user_id = ? AND client_id = ? AND scope = ? AND revoked_at = 0`, userID, clientID, scope).
+		Scan(&grant.ID, &grant.ClientID, &grant.Scope, &grant.RedirectURI, &grant.CreatedAt, &grant.LastUsedAt)
+	return grant, err
+}
+
+func listMailMCPGrants(ctx context.Context, st *store.Store, userID int64) ([]mailMCPGrant, error) {
+	db, err := st.UserDB(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, client_id, scope, redirect_uri, created_at, last_used_at
+		FROM plugin_mail_mcp_grants
+		WHERE user_id = ? AND revoked_at = 0
+		ORDER BY created_at DESC, id DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []mailMCPGrant
+	for rows.Next() {
+		var grant mailMCPGrant
+		if err := rows.Scan(&grant.ID, &grant.ClientID, &grant.Scope, &grant.RedirectURI, &grant.CreatedAt, &grant.LastUsedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, grant)
+	}
+	return out, rows.Err()
+}
+
+func mailMCPGrantActive(ctx context.Context, st *store.Store, userID, grantID int64) (bool, error) {
+	db, err := st.UserDB(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	var id int64
+	err = db.QueryRowContext(ctx, `SELECT id FROM plugin_mail_mcp_grants WHERE user_id = ? AND id = ? AND revoked_at = 0`, userID, grantID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func touchMailMCPGrant(ctx context.Context, st *store.Store, userID, grantID int64) error {
+	db, err := st.UserDB(ctx, userID)
+	if err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, `UPDATE plugin_mail_mcp_grants SET last_used_at = ? WHERE user_id = ? AND id = ? AND revoked_at = 0`, time.Now().Unix(), userID, grantID)
+	return err
+}
+
+func revokeMailMCPGrant(ctx context.Context, st *store.Store, userID, grantID int64) error {
+	db, err := st.UserDB(ctx, userID)
+	if err != nil {
+		return err
+	}
+	res, err := db.ExecContext(ctx, `UPDATE plugin_mail_mcp_grants SET revoked_at = ? WHERE user_id = ? AND id = ? AND revoked_at = 0`, time.Now().Unix(), userID, grantID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 type mailQuery struct {
 	terms     []string
 	after     time.Time
@@ -827,13 +1145,17 @@ func oauthClientID(r *http.Request) string {
 
 func requestBaseURL(r *http.Request) string {
 	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+	if requestIsHTTPS(r) {
 		scheme = "https"
 	}
 	if forwardedHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
 		return scheme + "://" + forwardedHost
 	}
 	return scheme + "://" + r.Host
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func codeHash(value string) string {

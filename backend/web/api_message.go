@@ -104,22 +104,26 @@ func (s *Server) apiMessage(w http.ResponseWriter, r *http.Request, id int64) {
 		return
 	}
 	stop = timing.measure(&timing.hydrate)
-	views, msg, err := s.threadViewsForMessage(r.Context(), cu, msg, r.URL.Query().Get("images") == "1", r.URL.Query().Get("q"))
+	views, msg, err := s.threadViewsForMessageTimed(r.Context(), cu, msg, r.URL.Query().Get("images") == "1", r.URL.Query().Get("q"), timing)
 	stop()
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
 	stop = timing.measure(&timing.render)
-	thread := s.apiThreadMessages(r.Context(), cu.User.ID, views)
+	thread := s.apiThreadMessagesTimed(r.Context(), cu.User.ID, views, timing)
 	stop()
 	timing.seeds = len(views)
+	stop = timing.measure(&timing.compose)
+	composeFrom := s.composeFromLabel(r.Context(), cu)
+	fromIdentities := s.composeIdentities(r.Context(), cu)
+	stop()
 	writeMessageTimingHeaders(w, timing)
 	writeJSONCached(w, r, map[string]any{
 		"message":         apiMessageFromRecord(msg, msg.BodyText),
 		"thread":          thread,
-		"compose_from":    s.composeFromLabel(r.Context(), cu),
-		"from_identities": s.composeIdentities(r.Context(), cu),
+		"compose_from":    composeFrom,
+		"from_identities": fromIdentities,
 		"mailbox_id":      msg.MailboxID,
 		"raw_blob_url":    fmt.Sprintf("/blobs/%d", msg.BlobID),
 		"conversation":    len(views),
@@ -1040,7 +1044,16 @@ func (s *Server) apiTrustImages(w http.ResponseWriter, r *http.Request, id int64
 	writeJSON(w, map[string]any{"ok": true})
 }
 func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg store.MessageRecord, showImages bool, query string) ([]threadMessageView, store.MessageRecord, error) {
+	return s.threadViewsForMessageTimed(ctx, cu, msg, showImages, query, nil)
+}
+
+func (s *Server) threadViewsForMessageTimed(ctx context.Context, cu currentUser, msg store.MessageRecord, showImages bool, query string, timing *searchTiming) ([]threadMessageView, store.MessageRecord, error) {
+	stop := func() {}
+	if timing != nil {
+		stop = timing.measure(&timing.thread)
+	}
 	threadMessages, err := s.store.ListThreadMessagesForUser(ctx, cu.User.ID, msg)
+	stop()
 	if err != nil {
 		return nil, msg, err
 	}
@@ -1062,7 +1075,11 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 			}
 		}
 	}
+	if timing != nil {
+		stop = timing.measure(&timing.match)
+	}
 	matchDetails := s.threadSearchMatchDetails(ctx, cu.User, threadMessages, query)
+	stop()
 	markedRead := false
 	defer func() {
 		if markedRead {
@@ -1070,6 +1087,9 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 		}
 	}()
 	for idx, threadMsg := range threadMessages {
+		if timing != nil {
+			stop = timing.measure(&timing.readState)
+		}
 		if !threadMsg.IsRead {
 			if err := s.store.MarkMessageReadForUser(ctx, cu.User.ID, threadMsg.ID, true, true); err == nil {
 				markedRead = true
@@ -1082,20 +1102,34 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 				}
 			}
 		}
+		stop()
+		if timing != nil {
+			stop = timing.measure(&timing.security)
+		}
 		threadMsg, err = s.ensureMessageSecurityState(ctx, cu.User.ID, threadMsg)
+		stop()
 		if err != nil {
 			return nil, msg, err
+		}
+		if timing != nil {
+			stop = timing.measure(&timing.attachments)
 		}
 		allAttachments, err := s.store.ListAttachmentsForMessage(ctx, cu.User.ID, threadMsg.ID)
 		if err != nil {
+			stop()
 			return nil, msg, err
 		}
 		allAttachments, err = s.ensureMessageAttachments(ctx, cu.User.ID, threadMsg, allAttachments)
+		stop()
 		if err != nil {
 			return nil, msg, err
 		}
 		attachments := visibleAttachments(allAttachments)
+		if timing != nil {
+			stop = timing.measure(&timing.body)
+		}
 		sourceHTML, sourceText, previewOnly := s.displayBodiesForMessage(ctx, cu.User.ID, threadMsg)
+		stop()
 		displayMsg := threadMsg
 		displayMsg.BodyHTML = sourceHTML
 		displayMsg.BodyText = sourceText
@@ -1110,6 +1144,9 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 				}
 			}
 		}
+		if timing != nil {
+			stop = timing.measure(&timing.unsubscribe)
+		}
 		oneClickTarget, oneClickUnsub := s.oneClickUnsubscribeTarget(ctx, cu.User.ID, threadMsg)
 		if !s.pluginEnabled(ctx, plugins.OneClickUnsubscribe) {
 			oneClickUnsub = false
@@ -1118,12 +1155,18 @@ func (s *Server) threadViewsForMessage(ctx context.Context, cu currentUser, msg 
 		if oneClickUnsub {
 			oneClickSentAt = s.recentOneClickUnsubscribeSentAt(ctx, cu.User.ID, threadMsg, oneClickTarget.String())
 		}
+		stop()
 		attachmentMatches, attachmentContentMatched, attachmentMatchTerms := attachmentSearchMatches(attachments, matchDetails[threadMsg.ID], query)
+		if timing != nil {
+			stop = timing.measure(&timing.headers)
+		}
+		headerDetails := s.messageHeaderDetails(ctx, cu.User.ID, threadMsg)
+		stop()
 		threadViews = append(threadViews, threadMessageView{
 			Message:                  displayMsg,
 			Attachments:              attachments,
 			InlineAttachments:        allAttachments,
-			HeaderDetails:            s.messageHeaderDetails(ctx, cu.User.ID, threadMsg),
+			HeaderDetails:            headerDetails,
 			OneClickUnsub:            oneClickUnsub,
 			OneClickSentAt:           oneClickSentAt,
 			AttachmentMatches:        attachmentMatches,

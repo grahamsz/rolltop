@@ -157,11 +157,7 @@ func Parse(raw []byte) (ParsedMessage, error) {
 // ParseDisplayBody is the lighter display path used when a raw message is loaded
 // on demand. It skips attachment bodies and returns body text/html only.
 func ParseDisplayBody(r io.Reader) (string, string, error) {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return "", "", err
-	}
-	msg, err := mail.ReadMessage(bytes.NewReader(raw))
+	msg, err := mail.ReadMessage(r)
 	if err != nil {
 		return "", "", err
 	}
@@ -270,7 +266,8 @@ func parseDisplayPart(header textproto.MIMEHeader, body io.Reader, parsed *Parse
 	if err != nil || mediaType == "" {
 		mediaType = "text/plain"
 	}
-	if strings.HasPrefix(strings.ToLower(mediaType), "multipart/") {
+	lowerMediaType := strings.ToLower(mediaType)
+	if strings.HasPrefix(lowerMediaType, "multipart/") {
 		mr := multipart.NewReader(body, params["boundary"])
 		for {
 			part, err := mr.NextPart()
@@ -288,6 +285,9 @@ func parseDisplayPart(header textproto.MIMEHeader, body io.Reader, parsed *Parse
 					return nil
 				}
 				return err
+			}
+			if lowerMediaType != "multipart/alternative" && parsedDisplayBodyFound(parsed) {
+				return nil
 			}
 		}
 	}
@@ -313,7 +313,7 @@ func parseDisplayPart(header textproto.MIMEHeader, body io.Reader, parsed *Parse
 			return err
 		}
 	}
-	switch strings.ToLower(mediaType) {
+	switch lowerMediaType {
 	case "text/plain":
 		parsed.Text += "\n" + decodeTextBytes(decoded, params["charset"])
 	case "text/html":
@@ -326,6 +326,10 @@ func parseDisplayPart(header textproto.MIMEHeader, body io.Reader, parsed *Parse
 		}
 	}
 	return nil
+}
+
+func parsedDisplayBodyFound(parsed *ParsedMessage) bool {
+	return strings.TrimSpace(parsed.HTML) != "" || strings.TrimSpace(parsed.Text) != ""
 }
 
 func isTolerableEOF(err error) bool {

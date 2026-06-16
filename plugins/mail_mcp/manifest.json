@@ -8,5 +8,8 @@
   "backend": {
     "kind": "go-plugin",
     "binary": "backend/mail_mcp.so"
+  },
+  "frontend": {
+    "module": "frontend_dist/index.js"
   }
 }

@@ -11,15 +11,26 @@ import (
 )
 
 type searchTiming struct {
-	started time.Time
-	filter  time.Duration
-	sender  time.Duration
-	bleve   time.Duration
-	hydrate time.Duration
-	render  time.Duration
-	batches int
-	rawHits int
-	seeds   int
+	started      time.Time
+	filter       time.Duration
+	sender       time.Duration
+	bleve        time.Duration
+	hydrate      time.Duration
+	render       time.Duration
+	thread       time.Duration
+	match        time.Duration
+	readState    time.Duration
+	security     time.Duration
+	attachments  time.Duration
+	body         time.Duration
+	unsubscribe  time.Duration
+	headers      time.Duration
+	compose      time.Duration
+	senderVisual time.Duration
+	bodyDoc      time.Duration
+	batches      int
+	rawHits      int
+	seeds        int
 }
 
 func newSearchTiming() *searchTiming {
@@ -87,7 +98,18 @@ func writeMessageTimingHeaders(w http.ResponseWriter, timing *searchTiming) {
 	w.Header().Set("Server-Timing", strings.Join([]string{
 		serverTimingMetric("lookup", timing.filter),
 		serverTimingMetric("hydrate", timing.hydrate),
+		serverTimingMetric("thread", timing.thread),
+		serverTimingMetric("match", timing.match),
+		serverTimingMetric("read_state", timing.readState),
+		serverTimingMetric("security", timing.security),
+		serverTimingMetric("attachments", timing.attachments),
+		serverTimingMetric("body", timing.body),
+		serverTimingMetric("unsubscribe", timing.unsubscribe),
+		serverTimingMetric("headers", timing.headers),
 		serverTimingMetric("render", timing.render),
+		serverTimingMetric("sender_visual", timing.senderVisual),
+		serverTimingMetric("body_doc", timing.bodyDoc),
+		serverTimingMetric("compose", timing.compose),
 		serverTimingMetric("total", total),
 	}, ", "))
 	w.Header().Set("X-Rolltop-Message-Stats", "messages="+strconv.Itoa(timing.seeds))

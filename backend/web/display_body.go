@@ -24,6 +24,15 @@ func (s *Server) displayBodiesForMessage(ctx context.Context, userID int64, msg 
 		return htmlBody, textBody, fallbackIsPreviewOnly(textBody)
 	default:
 	}
+	if !msg.IsEncrypted && !msg.IsSigned {
+		hasSecurityProvider, err := s.hasMessageSecurityProvider(ctx)
+		if err == nil && !hasSecurityProvider {
+			if parsedText, parsedHTML, ok := s.displayBodyFromBlob(ctx, userID, msg); ok {
+				htmlBody, textBody = s.persistDisplayBodies(ctx, userID, msg, htmlBody, textBody, parsedHTML, parsedText)
+				return htmlBody, textBody, false
+			}
+		}
+	}
 	raw, err := s.rawMessageBytes(ctx, userID, msg)
 	if err != nil {
 		return htmlBody, textBody, fallbackIsPreviewOnly(textBody)
@@ -41,6 +50,32 @@ func (s *Server) displayBodiesForMessage(ctx context.Context, userID int64, msg 
 		parsedText = transform.Body.Text
 		parsedHTML = transform.Body.HTML
 	}
+	htmlBody, textBody = s.persistDisplayBodies(ctx, userID, msg, htmlBody, textBody, parsedHTML, parsedText)
+	return htmlBody, textBody, false
+}
+
+func (s *Server) displayBodyFromBlob(ctx context.Context, userID int64, msg store.MessageRecord) (string, string, bool) {
+	if s.blobs == nil || strings.TrimSpace(msg.BlobPath) == "" {
+		return "", "", false
+	}
+	select {
+	case <-ctx.Done():
+		return "", "", false
+	default:
+	}
+	f, err := s.blobs.OpenUserBlob(userID, msg.BlobPath)
+	if err != nil {
+		return "", "", false
+	}
+	defer f.Close()
+	parsedText, parsedHTML, err := mailparse.ParseDisplayBody(f)
+	if err != nil {
+		return "", "", false
+	}
+	return parsedText, parsedHTML, true
+}
+
+func (s *Server) persistDisplayBodies(ctx context.Context, userID int64, msg store.MessageRecord, htmlBody, textBody, parsedHTML, parsedText string) (string, string) {
 	if strings.TrimSpace(parsedHTML) != "" {
 		htmlBody = parsedHTML
 	}
@@ -50,7 +85,7 @@ func (s *Server) displayBodiesForMessage(ctx context.Context, userID int64, msg 
 	if s.store != nil && msg.ID > 0 && (strings.TrimSpace(htmlBody) != "" || strings.TrimSpace(textBody) != "") {
 		_ = s.store.UpdateMessageBodies(ctx, userID, msg.ID, textBody, htmlBody)
 	}
-	return htmlBody, textBody, false
+	return htmlBody, textBody
 }
 
 func fallbackIsPreviewOnly(textBody string) bool {

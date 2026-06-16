@@ -242,6 +242,10 @@ func apiConversations(conversations []conversationView) []apiConversation {
 }
 
 func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []threadMessageView) []apiThreadMessage {
+	return s.apiThreadMessagesTimed(ctx, userID, views, nil)
+}
+
+func (s *Server) apiThreadMessagesTimed(ctx context.Context, userID int64, views []threadMessageView, timing *searchTiming) []apiThreadMessage {
 	out := make([]apiThreadMessage, 0, len(views))
 	attachmentPreviewEnabled := s.pluginEnabled(ctx, plugins.AttachmentPreview)
 	backendPlugins, _ := s.enabledBackendPlugins(ctx)
@@ -275,14 +279,24 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 			})
 		}
 		var senderVisual *apiSenderVisual
+		stop := func() {}
+		if timing != nil {
+			stop = timing.measure(&timing.senderVisual)
+		}
 		if visual, ok := s.senderVisual(ctx, userID, view.SenderEmail); ok {
 			v := visual
 			senderVisual = &v
 		}
+		stop()
 		fullDoc := ""
+		if timing != nil {
+			stop = timing.measure(&timing.bodyDoc)
+		}
 		if view.HasHiddenQuoted {
 			fullDoc = emailDocumentWithInlineAttachments(view.Message.BodyHTML, view.Message.BodyText, view.ImagesAllowed, view.ImageBlockRules, view.InlineAttachments)
 		}
+		bodyDoc := emailDocumentWithInlineAttachments(view.DisplayBodyHTML, view.DisplayBodyText, view.ImagesAllowed, view.ImageBlockRules, view.InlineAttachments)
+		stop()
 		out = append(out, apiThreadMessage{
 			Message:         apiMessageFromRecord(view.Message, view.Snippet),
 			Attachments:     atts,
@@ -295,7 +309,7 @@ func (s *Server) apiThreadMessages(ctx context.Context, userID int64, views []th
 			SenderVisual:    senderVisual,
 			RecipientLine:   view.RecipientLine,
 			Snippet:         view.Snippet,
-			BodyDoc:         emailDocumentWithInlineAttachments(view.DisplayBodyHTML, view.DisplayBodyText, view.ImagesAllowed, view.ImageBlockRules, view.InlineAttachments),
+			BodyDoc:         bodyDoc,
 			FullBodyDoc:     fullDoc,
 			HasHiddenQuoted: view.HasHiddenQuoted,
 			HasDisplayBody:  view.HasDisplayBody,

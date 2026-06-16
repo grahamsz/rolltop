@@ -47,6 +47,10 @@ const pluginConfig: Record<string, { entry: string; outDir: string }> = {
   mail_filters: {
     entry: "plugins/mail_filters/frontend/index.tsx",
     outDir: "plugins/mail_filters/frontend_dist"
+  },
+  mail_mcp: {
+    entry: "plugins/mail_mcp/frontend/index.tsx",
+    outDir: "plugins/mail_mcp/frontend_dist"
   }
 };
 
