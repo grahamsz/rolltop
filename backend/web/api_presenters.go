@@ -249,6 +249,12 @@ func (s *Server) apiThreadMessagesTimed(ctx context.Context, userID int64, views
 	out := make([]apiThreadMessage, 0, len(views))
 	attachmentPreviewEnabled := s.pluginEnabled(ctx, plugins.AttachmentPreview)
 	backendPlugins, _ := s.enabledBackendPlugins(ctx)
+	userDB, _ := s.store.UserDB(ctx, userID)
+	senderVisualOpts := senderVisualOptions{
+		userDB:          userDB,
+		bimiEnabled:     s.pluginEnabled(ctx, plugins.BIMIBrandIcons),
+		gravatarEnabled: s.pluginEnabled(ctx, plugins.GravatarSenderIcons),
+	}
 	for _, view := range views {
 		atts := make([]apiAttachment, 0, len(view.Attachments))
 		for _, att := range view.Attachments {
@@ -283,7 +289,7 @@ func (s *Server) apiThreadMessagesTimed(ctx context.Context, userID int64, views
 		if timing != nil {
 			stop = timing.measure(&timing.senderVisual)
 		}
-		if visual, ok := s.senderVisual(ctx, userID, view.SenderEmail); ok {
+		if visual, ok := s.senderVisualWithOptions(ctx, userID, view.SenderEmail, senderVisualOpts); ok {
 			v := visual
 			senderVisual = &v
 		}

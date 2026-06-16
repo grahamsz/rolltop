@@ -123,6 +123,21 @@ func (s *Server) pluginManifest(id string) (plugins.Manifest, bool) {
 }
 
 func (s *Server) senderVisual(ctx context.Context, userID int64, sender string) (apiSenderVisual, bool) {
+	userDB, _ := s.store.UserDB(ctx, userID)
+	return s.senderVisualWithOptions(ctx, userID, sender, senderVisualOptions{
+		userDB:          userDB,
+		bimiEnabled:     s.pluginEnabled(ctx, plugins.BIMIBrandIcons),
+		gravatarEnabled: s.pluginEnabled(ctx, plugins.GravatarSenderIcons),
+	})
+}
+
+type senderVisualOptions struct {
+	userDB          *sql.DB
+	bimiEnabled     bool
+	gravatarEnabled bool
+}
+
+func (s *Server) senderVisualWithOptions(ctx context.Context, userID int64, sender string, opts senderVisualOptions) (apiSenderVisual, bool) {
 	email := senderEmail(sender)
 	if email != "" {
 		if icon, err := s.store.GetContactIconByEmailForUser(ctx, userID, email); err == nil && strings.TrimSpace(icon.BlobPath) != "" {
@@ -134,10 +149,9 @@ func (s *Server) senderVisual(ctx context.Context, userID int64, sender string) 
 		}
 	}
 	domain := senderDomain(sender)
-	userDB, dbErr := s.store.UserDB(ctx, userID)
-	if domain != "" && dbErr == nil && s.pluginEnabled(ctx, plugins.BIMIBrandIcons) {
+	if domain != "" && opts.userDB != nil && opts.bimiEnabled {
 		if hook, ok := bimiBrandIconsHook(); ok {
-			if icon, err := hook.GetIcon(ctx, userDB, userID, domain); err == nil && icon.Status == "ok" && strings.TrimSpace(icon.SVG) != "" {
+			if icon, err := hook.GetIcon(ctx, opts.userDB, userID, domain); err == nil && icon.Status == "ok" && strings.TrimSpace(icon.SVG) != "" {
 				return apiSenderVisual{
 					PluginID: plugins.BIMIBrandIcons,
 					Kind:     "brand",
@@ -146,10 +160,10 @@ func (s *Server) senderVisual(ctx context.Context, userID int64, sender string) 
 			}
 		}
 	}
-	if email != "" && dbErr == nil && s.pluginEnabled(ctx, plugins.GravatarSenderIcons) {
+	if email != "" && opts.userDB != nil && opts.gravatarEnabled {
 		if hook, ok := gravatarSenderIconsHook(); ok {
 			hash := hook.Hash(email)
-			image, err := hook.GetImage(ctx, userDB, userID, hash)
+			image, err := hook.GetImage(ctx, opts.userDB, userID, hash)
 			if err == nil && image.Status == "ok" && len(image.Image) > 0 {
 				return apiSenderVisual{
 					PluginID: plugins.GravatarSenderIcons,

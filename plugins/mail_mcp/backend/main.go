@@ -359,7 +359,7 @@ func (p *mailMCPPlugin) mcp(host plugins.APIHost, _ string, w http.ResponseWrite
 	}
 	userID, grantID, ok := p.bearerToken(r)
 	if !ok {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="Rolltop Mail MCP"`)
+		w.Header().Set("WWW-Authenticate", mailMCPAuthenticateHeader(r, ""))
 		host.WriteAPIError(w, http.StatusUnauthorized, "MCP requests require a Mail MCP bearer token.")
 		return
 	}
@@ -367,7 +367,7 @@ func (p *mailMCPPlugin) mcp(host plugins.APIHost, _ string, w http.ResponseWrite
 		host.ServerError(w, err)
 		return
 	} else if !ok {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="Rolltop Mail MCP", error="invalid_token"`)
+		w.Header().Set("WWW-Authenticate", mailMCPAuthenticateHeader(r, "invalid_token"))
 		host.WriteAPIError(w, http.StatusUnauthorized, "Mail MCP access has been revoked.")
 		return
 	}
@@ -888,7 +888,7 @@ func writeConsentPage(w http.ResponseWriter, r *http.Request, clientID, redirect
 		Path:     "/api/" + apiPath,
 		MaxAge:   600,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: consentCookieSameSite(r),
 		Secure:   requestIsHTTPS(r),
 	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -953,9 +953,25 @@ func clearConsentCookie(w http.ResponseWriter, r *http.Request) {
 		Path:     "/api/" + apiPath,
 		MaxAge:   -1,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: consentCookieSameSite(r),
 		Secure:   requestIsHTTPS(r),
 	})
+}
+
+func consentCookieSameSite(r *http.Request) http.SameSite {
+	if requestIsHTTPS(r) {
+		return http.SameSiteNoneMode
+	}
+	return http.SameSiteLaxMode
+}
+
+func mailMCPAuthenticateHeader(r *http.Request, tokenError string) string {
+	metadata := requestBaseURL(r) + "/api/" + apiPath + "/.well-known/oauth-protected-resource"
+	parts := []string{`Bearer realm="Rolltop Mail MCP"`, `resource_metadata="` + metadata + `"`}
+	if tokenError != "" {
+		parts = append(parts, `error="`+tokenError+`"`)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func upsertMailMCPGrant(ctx context.Context, st *store.Store, userID int64, clientID, scope, redirectURI string) (mailMCPGrant, error) {

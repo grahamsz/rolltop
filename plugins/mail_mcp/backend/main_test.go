@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,6 +128,30 @@ func TestAuthorizationServerMetadataUsesRequestBaseURL(t *testing.T) {
 	}
 	if body["authorization_endpoint"] != "https://rolltop.example.test/api/plugins/mail_mcp/oauth/authorize" {
 		t.Fatalf("authorization_endpoint = %v", body["authorization_endpoint"])
+	}
+}
+
+func TestMCPAuthenticateHeaderIncludesResourceMetadata(t *testing.T) {
+	req := httptest.NewRequest("POST", "/api/plugins/mail_mcp/mcp", nil)
+	req.Host = "rolltop.example.test"
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	header := mailMCPAuthenticateHeader(req, "invalid_token")
+
+	if !strings.Contains(header, `resource_metadata="https://rolltop.example.test/api/plugins/mail_mcp/.well-known/oauth-protected-resource"`) {
+		t.Fatalf("WWW-Authenticate header missing resource metadata: %s", header)
+	}
+	if !strings.Contains(header, `error="invalid_token"`) {
+		t.Fatalf("WWW-Authenticate header missing error: %s", header)
+	}
+}
+
+func TestConsentCookieUsesSameSiteNoneOnHTTPS(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/plugins/mail_mcp/oauth/authorize", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	if got := consentCookieSameSite(req); got != http.SameSiteNoneMode {
+		t.Fatalf("same site = %v, want SameSiteNoneMode", got)
 	}
 }
 
