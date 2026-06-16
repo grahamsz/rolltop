@@ -116,7 +116,7 @@ func (s *Server) apiMessage(w http.ResponseWriter, r *http.Request, id int64) {
 	timing.seeds = len(views)
 	stop = timing.measure(&timing.compose)
 	choicesDone := timing.measure(&timing.composeChoices)
-	composeChoices := s.composeIdentityChoices(r.Context(), cu)
+	composeChoices := s.composeIdentityChoicesLite(r.Context(), cu)
 	choicesDone()
 	fromDone := timing.measure(&timing.composeFrom)
 	composeFrom := s.composeFromLabelFromChoices(r.Context(), cu, composeChoices)

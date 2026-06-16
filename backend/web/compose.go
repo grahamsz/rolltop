@@ -545,6 +545,14 @@ func apiComposeIdentitiesFromChoices(choices []composeIdentity) []apiComposeIden
 // fallback keeps compose readable but send will still require SMTP and Sent-folder
 // configuration before it leaves the machine.
 func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []composeIdentity {
+	return s.composeIdentityChoicesWithSecurity(ctx, cu, true)
+}
+
+func (s *Server) composeIdentityChoicesLite(ctx context.Context, cu currentUser) []composeIdentity {
+	return s.composeIdentityChoicesWithSecurity(ctx, cu, false)
+}
+
+func (s *Server) composeIdentityChoicesWithSecurity(ctx context.Context, cu currentUser, includeSecurity bool) []composeIdentity {
 	icons := map[int64]string{}
 	if contacts, err := s.store.ListMeContactsForUser(ctx, cu.User.ID); err == nil {
 		for _, contact := range contacts {
@@ -556,7 +564,10 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 	identities, err := s.store.ListMailIdentitiesForUser(ctx, cu.User.ID)
 	if err == nil {
 		out := make([]composeIdentity, 0, len(identities))
-		backendPlugins, _ := s.enabledBackendPlugins(ctx)
+		var backendPlugins []plugins.BackendPlugin
+		if includeSecurity {
+			backendPlugins, _ = s.enabledBackendPlugins(ctx)
+		}
 		for _, identity := range identities {
 			email := strings.TrimSpace(identity.Email)
 			if email == "" {
@@ -573,16 +584,18 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 					"autocrypt_enabled": fmt.Sprintf("%t", identity.AutocryptEnabled),
 				},
 			}
-			for _, backendPlugin := range backendPlugins {
-				provider, ok := backendPlugin.(plugins.IdentitySecurityProvider)
-				if !ok {
-					continue
-				}
-				info, securityErr := provider.ComposeIdentitySecurity(ctx, s, cu.User.ID, identityCtx)
-				if securityErr == nil {
-					securityPublic = info.PublicMaterial
-					hasSecurity = info.HasSecret
-					break
+			if includeSecurity {
+				for _, backendPlugin := range backendPlugins {
+					provider, ok := backendPlugin.(plugins.IdentitySecurityProvider)
+					if !ok {
+						continue
+					}
+					info, securityErr := provider.ComposeIdentitySecurity(ctx, s, cu.User.ID, identityCtx)
+					if securityErr == nil {
+						securityPublic = info.PublicMaterial
+						hasSecurity = info.HasSecret
+						break
+					}
 				}
 			}
 			out = append(out, composeIdentity{
