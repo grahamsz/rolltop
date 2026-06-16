@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"rolltop/backend/plugins"
 	"rolltop/backend/store"
 )
 
@@ -68,7 +71,63 @@ func TestBearerUserIDRequiresIssuedAccessToken(t *testing.T) {
 	}
 }
 
+func TestAuthorizationServerMetadataUsesRequestBaseURL(t *testing.T) {
+	p := &mailMCPPlugin{}
+	req := httptest.NewRequest("GET", "/api/plugins/mail_mcp/.well-known/oauth-authorization-server", nil)
+	req.Host = "rolltop.example.test"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+
+	p.authorizationServerMetadata(testAPIHost{}, "", rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["issuer"] != "https://rolltop.example.test/api/plugins/mail_mcp" {
+		t.Fatalf("issuer = %v", body["issuer"])
+	}
+	if body["authorization_endpoint"] != "https://rolltop.example.test/api/plugins/mail_mcp/oauth/authorize" {
+		t.Fatalf("authorization_endpoint = %v", body["authorization_endpoint"])
+	}
+}
+
+func TestListMessagesSupportsDateQuery(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	user, account, mailbox, blob := createTestMailbox(t, ctx, db, "range@example.test")
+	_ = createMailboxMessage(t, ctx, db, user.ID, account.ID, mailbox.ID, blob.ID, "Old message", 1, time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+	inRange := createMailboxMessage(t, ctx, db, user.ID, account.ID, mailbox.ID, blob.ID, "Range message", 2, time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC))
+	_ = createMailboxMessage(t, ctx, db, user.ID, account.ID, mailbox.ID, blob.ID, "New message", 3, time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC))
+
+	messages, _, err := listMessages(ctx, db, user.ID, listArgs{Q: "after:2026/6/16 before:2026/6/17", MaxResults: 20}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].ID != inRange.ID {
+		t.Fatalf("messages = %+v, want only %d", messages, inRange.ID)
+	}
+}
+
 func createTestMessage(t *testing.T, ctx context.Context, db *store.Store, email, subject string, uid uint32) store.MessageRecord {
+	return createTestMessageAt(t, ctx, db, email, subject, uid, time.Now())
+}
+
+func createTestMessageAt(t *testing.T, ctx context.Context, db *store.Store, email, subject string, uid uint32, date time.Time) store.MessageRecord {
+	t.Helper()
+	user, account, mailbox, blob := createTestMailbox(t, ctx, db, email)
+	return createMailboxMessage(t, ctx, db, user.ID, account.ID, mailbox.ID, blob.ID, subject, uid, date)
+}
+
+func createTestMailbox(t *testing.T, ctx context.Context, db *store.Store, email string) (store.User, store.MailAccount, store.Mailbox, store.BlobRecord) {
 	t.Helper()
 	user, err := db.CreateUser(ctx, email, email, "hash", false)
 	if err != nil {
@@ -94,31 +153,45 @@ func createTestMessage(t *testing.T, ctx context.Context, db *store.Store, email
 	blob, err := db.CreateBlob(ctx, store.BlobRecord{
 		UserID: user.ID,
 		Kind:   "message",
-		Path:   filepath.Join("accounts", "1", "mailboxes", "INBOX", subject+".eml"),
-		SHA256: subject,
+		Path:   filepath.Join("accounts", "1", "mailboxes", "INBOX", email+".eml"),
+		SHA256: email,
 		Size:   64,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return user, account, mailbox, blob
+}
+
+func createMailboxMessage(t *testing.T, ctx context.Context, db *store.Store, userID, accountID, mailboxID, blobID int64, subject string, uid uint32, date time.Time) store.MessageRecord {
+	t.Helper()
 	msg, err := db.CreateMessage(ctx, store.CreateMessage{
-		UserID:          user.ID,
-		AccountID:       account.ID,
-		MailboxID:       mailbox.ID,
-		BlobID:          blob.ID,
+		UserID:          userID,
+		AccountID:       accountID,
+		MailboxID:       mailboxID,
+		BlobID:          blobID,
 		MessageIDHeader: "<" + subject + "@example.test>",
 		Subject:         subject,
-		FromAddr:        email,
+		FromAddr:        "sender@example.test",
 		ToAddr:          "recipient@example.test",
-		Date:            time.Now(),
-		InternalDate:    time.Now(),
+		Date:            date,
+		InternalDate:    date,
 		UID:             uid,
 		Size:            64,
-		BlobPath:        blob.Path,
+		BlobPath:        filepath.Join("accounts", "1", "mailboxes", "INBOX", subject+".eml"),
 		BodyText:        "body for " + subject,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return msg
+}
+
+type testAPIHost struct {
+	plugins.APIHost
+}
+
+func (testAPIHost) WriteJSON(w http.ResponseWriter, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(value)
 }

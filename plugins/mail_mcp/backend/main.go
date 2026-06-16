@@ -75,13 +75,28 @@ func (p *mailMCPPlugin) Start(host plugins.BackendStartHost) error {
 		authorize.Unregister()
 		return err
 	}
-	mcp, err := host.RegisterPublicAPI(pluginID, plugins.PublicAPIRoute{Path: apiPath + "/mcp", Handle: p.mcp})
+	authMetadata, err := host.RegisterPublicAPI(pluginID, plugins.PublicAPIRoute{Path: apiPath + "/.well-known/oauth-authorization-server", Handle: p.authorizationServerMetadata})
 	if err != nil {
 		authorize.Unregister()
 		token.Unregister()
 		return err
 	}
-	p.routes = []plugins.ProtectedAPIRouteHandle{authorize, token, mcp}
+	resourceMetadata, err := host.RegisterPublicAPI(pluginID, plugins.PublicAPIRoute{Path: apiPath + "/.well-known/oauth-protected-resource", Handle: p.protectedResourceMetadata})
+	if err != nil {
+		authorize.Unregister()
+		token.Unregister()
+		authMetadata.Unregister()
+		return err
+	}
+	mcp, err := host.RegisterPublicAPI(pluginID, plugins.PublicAPIRoute{Path: apiPath + "/mcp", Handle: p.mcp})
+	if err != nil {
+		authorize.Unregister()
+		token.Unregister()
+		authMetadata.Unregister()
+		resourceMetadata.Unregister()
+		return err
+	}
+	p.routes = []plugins.ProtectedAPIRouteHandle{authorize, token, authMetadata, resourceMetadata, mcp}
 	return nil
 }
 
@@ -171,9 +186,40 @@ func (p *mailMCPPlugin) token(host plugins.APIHost, _ string, w http.ResponseWri
 	}
 }
 
+func (p *mailMCPPlugin) authorizationServerMetadata(host plugins.APIHost, _ string, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	base := requestBaseURL(r)
+	host.WriteJSON(w, map[string]any{
+		"issuer":                                base + "/api/" + apiPath,
+		"authorization_endpoint":                base + "/api/" + apiPath + "/oauth/authorize",
+		"token_endpoint":                        base + "/api/" + apiPath + "/oauth/token",
+		"response_types_supported":              []string{"code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"},
+		"scopes_supported":                      []string{"mail.readonly"},
+	})
+}
+
+func (p *mailMCPPlugin) protectedResourceMetadata(host plugins.APIHost, _ string, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	base := requestBaseURL(r)
+	host.WriteJSON(w, map[string]any{
+		"resource":                 base + "/api/" + apiPath + "/mcp",
+		"authorization_servers":    []string{base + "/api/" + apiPath},
+		"bearer_methods_supported": []string{"header"},
+		"scopes_supported":         []string{"mail.readonly"},
+	})
+}
+
 func (p *mailMCPPlugin) exchangeCode(host plugins.APIHost, w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(r.Form.Get("code"))
-	clientID := strings.TrimSpace(r.Form.Get("client_id"))
+	clientID := oauthClientID(r)
 	redirectURI := strings.TrimSpace(r.Form.Get("redirect_uri"))
 	if code == "" || clientID == "" || redirectURI == "" {
 		host.WriteAPIError(w, http.StatusBadRequest, "authorization_code grant requires code, client_id, and redirect_uri.")
@@ -194,7 +240,7 @@ func (p *mailMCPPlugin) exchangeCode(host plugins.APIHost, w http.ResponseWriter
 
 func (p *mailMCPPlugin) exchangeRefresh(host plugins.APIHost, w http.ResponseWriter, r *http.Request) {
 	refresh := strings.TrimSpace(r.Form.Get("refresh_token"))
-	clientID := strings.TrimSpace(r.Form.Get("client_id"))
+	clientID := oauthClientID(r)
 	if refresh == "" || clientID == "" {
 		host.WriteAPIError(w, http.StatusBadRequest, "refresh_token grant requires refresh_token and client_id.")
 		return
@@ -591,11 +637,14 @@ func listMessages(ctx context.Context, st *store.Store, userID int64, args listA
 	if err != nil {
 		return nil, "", err
 	}
-	if query := strings.ToLower(strings.TrimSpace(args.Q)); query != "" {
+	query, err := parseMailQuery(args.Q)
+	if err != nil {
+		return nil, "", err
+	}
+	if query.active() {
 		filtered := messages[:0]
 		for _, msg := range messages {
-			haystack := strings.ToLower(strings.Join([]string{msg.Subject, msg.FromAddr, msg.ToAddr, msg.CCAddr, msg.BodyText}, " "))
-			if strings.Contains(haystack, query) {
+			if query.matches(msg) {
 				filtered = append(filtered, msg)
 			}
 		}
@@ -685,6 +734,106 @@ func writeRPC(w http.ResponseWriter, resp rpcResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+type mailQuery struct {
+	terms     []string
+	after     time.Time
+	before    time.Time
+	hasAfter  bool
+	hasBefore bool
+}
+
+func parseMailQuery(raw string) (mailQuery, error) {
+	var out mailQuery
+	for _, token := range strings.Fields(strings.TrimSpace(raw)) {
+		key, value, ok := strings.Cut(token, ":")
+		if !ok {
+			out.terms = append(out.terms, strings.ToLower(token))
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "after", "newer":
+			date, err := parseQueryDate(value)
+			if err != nil {
+				return mailQuery{}, err
+			}
+			out.after = date
+			out.hasAfter = true
+		case "before", "older":
+			date, err := parseQueryDate(value)
+			if err != nil {
+				return mailQuery{}, err
+			}
+			out.before = date
+			out.hasBefore = true
+		default:
+			out.terms = append(out.terms, strings.ToLower(token))
+		}
+	}
+	return out, nil
+}
+
+func (q mailQuery) active() bool {
+	return q.hasAfter || q.hasBefore || len(q.terms) > 0
+}
+
+func (q mailQuery) matches(msg store.MessageRecord) bool {
+	date := msg.Date
+	if date.IsZero() {
+		date = msg.InternalDate
+	}
+	if q.hasAfter && date.Before(q.after) {
+		return false
+	}
+	if q.hasBefore && !date.Before(q.before) {
+		return false
+	}
+	if len(q.terms) == 0 {
+		return true
+	}
+	haystack := strings.ToLower(strings.Join([]string{msg.Subject, msg.FromAddr, msg.ToAddr, msg.CCAddr, msg.BodyText}, " "))
+	for _, term := range q.terms {
+		if !strings.Contains(haystack, term) {
+			return false
+		}
+	}
+	return true
+}
+
+func parseQueryDate(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	for _, layout := range []string{"2006/1/2", "2006/01/02", "2006-1-2", "2006-01-02"} {
+		if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+			return parsed, nil
+		}
+	}
+	if unix, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return time.Unix(unix, 0), nil
+	}
+	return time.Time{}, fmt.Errorf("invalid query date %q", value)
+}
+
+func oauthClientID(r *http.Request) string {
+	if id := strings.TrimSpace(r.Form.Get("client_id")); id != "" {
+		return id
+	}
+	id, _, ok := r.BasicAuth()
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(id)
+}
+
+func requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	if forwardedHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+		return scheme + "://" + forwardedHost
+	}
+	return scheme + "://" + r.Host
 }
 
 func codeHash(value string) string {
