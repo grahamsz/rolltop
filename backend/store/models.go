@@ -240,6 +240,24 @@ type BlobRecord struct {
 	CreatedAt time.Time
 }
 
+// RemoteImageCache stores user-scoped metadata for warmed remote email images.
+type RemoteImageCache struct {
+	ID          int64
+	UserID      int64
+	URLHash     string
+	URL         string
+	BlobID      int64
+	BlobPath    string
+	ContentType string
+	Size        int64
+	Status      string
+	Error       string
+	FetchedAt   time.Time
+	ExpiresAt   time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 // Contact is a user-owned address-book entry with nested email/phone/address/URL details.
 type Contact struct {
 	ID             int64

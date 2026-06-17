@@ -10,6 +10,7 @@ import (
 
 	mmcrypto "rolltop/backend/crypto"
 	"rolltop/backend/plugins"
+	"rolltop/backend/remoteimages"
 	"rolltop/backend/store"
 )
 
@@ -299,9 +300,17 @@ func (s *Server) apiThreadMessagesTimed(ctx context.Context, userID int64, views
 			stop = timing.measure(&timing.bodyDoc)
 		}
 		if view.HasHiddenQuoted {
-			fullDoc = emailDocumentWithInlineAttachments(view.Message.BodyHTML, view.Message.BodyText, view.ImagesAllowed, view.ImageBlockRules, view.InlineAttachments)
+			fullHTML := view.Message.BodyHTML
+			if view.ImagesAllowed {
+				fullHTML = remoteimages.ReplaceCached(fullHTML, s.cachedRemoteImageURLs(ctx, userID, view.Message, fullHTML))
+			}
+			fullDoc = emailDocumentWithInlineAttachments(fullHTML, view.Message.BodyText, view.ImagesAllowed, view.ImageBlockRules, view.InlineAttachments)
 		}
-		bodyDoc := emailDocumentWithInlineAttachments(view.DisplayBodyHTML, view.DisplayBodyText, view.ImagesAllowed, view.ImageBlockRules, view.InlineAttachments)
+		bodyHTML := view.DisplayBodyHTML
+		if view.ImagesAllowed {
+			bodyHTML = remoteimages.ReplaceCached(bodyHTML, s.cachedRemoteImageURLs(ctx, userID, view.Message, bodyHTML))
+		}
+		bodyDoc := emailDocumentWithInlineAttachments(bodyHTML, view.DisplayBodyText, view.ImagesAllowed, view.ImageBlockRules, view.InlineAttachments)
 		stop()
 		out = append(out, apiThreadMessage{
 			Message:         apiMessageFromRecord(view.Message, view.Snippet),

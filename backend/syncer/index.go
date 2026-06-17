@@ -12,7 +12,7 @@ import (
 	"rolltop/backend/store"
 )
 
-func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox, item FetchedMessage) (store.MessageRecord, *pendingFetchedSearchIndex, error) {
+func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox, item FetchedMessage) (store.MessageRecord, mailparse.ParsedMessage, *pendingFetchedSearchIndex, error) {
 	parsed, err := mailparse.Parse(item.Raw)
 	if err != nil {
 		parsed = mailparse.ParsedMessage{
@@ -22,13 +22,13 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 	}
 	securityState, securityHandled, err := s.detectMessageSecurity(ctx, userID, item.Raw, plugins.MessageBody{Purpose: "storage", Text: parsed.Text, HTML: parsed.HTML})
 	if err != nil {
-		return store.MessageRecord{}, nil, err
+		return store.MessageRecord{}, parsed, nil, err
 	}
 	if securityHandled {
 		parsed.IsEncrypted = securityState.Encrypted
 		parsed.IsSigned = securityState.Signed
 		if transform, err := s.transformMessageSecurityBody(ctx, userID, item.Raw, securityState, plugins.MessageBody{Purpose: "storage", Text: parsed.Text, HTML: parsed.HTML}); err != nil {
-			return store.MessageRecord{}, nil, err
+			return store.MessageRecord{}, parsed, nil, err
 		} else if transform.Applied {
 			parsed.Text = transform.Body.Text
 			parsed.HTML = transform.Body.HTML
@@ -53,7 +53,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 	if s.shouldRetainBlob(date) {
 		saved, err := s.Blobs.SaveRawMessage(userID, account.ID, item.Mailbox, item.UID, item.Raw)
 		if err != nil {
-			return store.MessageRecord{}, nil, err
+			return store.MessageRecord{}, parsed, nil, err
 		}
 		blobPath = saved.Path
 		blobRecordPath = saved.Path
@@ -69,7 +69,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 		Size:   blobSize,
 	})
 	if err != nil {
-		return store.MessageRecord{}, nil, err
+		return store.MessageRecord{}, parsed, nil, err
 	}
 
 	languageCode := ""
@@ -103,25 +103,25 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 		IsSigned:         parsed.IsSigned,
 	})
 	if err != nil {
-		return store.MessageRecord{}, nil, err
+		return store.MessageRecord{}, parsed, nil, err
 	}
 	if msg.LanguageCode != languageCode {
 		msg.LanguageCode = languageCode
 		if err := s.Store.UpdateMessageLanguage(ctx, userID, msg.ID, languageCode); err != nil {
-			return store.MessageRecord{}, nil, err
+			return store.MessageRecord{}, parsed, nil, err
 		}
 	}
 	if err := s.Store.CreateLocation(ctx, userID, msg.ID, mailbox.ID, item.UID); err != nil {
-		return store.MessageRecord{}, nil, err
+		return store.MessageRecord{}, parsed, nil, err
 	}
 	if err := s.importIncomingMessageHooks(ctx, userID, item.Raw, parsed.From); err != nil {
-		return store.MessageRecord{}, nil, err
+		return store.MessageRecord{}, parsed, nil, err
 	}
 	attachmentDocs := make([]search.AttachmentDoc, 0, len(parsed.Files))
 	visibleAttachmentCount := 0
 	if len(parsed.Files) > 0 {
 		if err := s.Store.DeleteAttachmentsForMessage(ctx, userID, msg.ID); err != nil {
-			return store.MessageRecord{}, nil, err
+			return store.MessageRecord{}, parsed, nil, err
 		}
 	}
 	for _, file := range parsed.Files {
@@ -136,7 +136,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 			Size:        int64(len(file.Data)),
 			BlobPath:    "",
 		}); err != nil {
-			return store.MessageRecord{}, nil, err
+			return store.MessageRecord{}, parsed, nil, err
 		}
 		if !file.IsInline {
 			visibleAttachmentCount++
@@ -152,7 +152,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 		indexMsg := msg
 		indexMsg.BodyText = parsed.Text
 		indexMsg.BodyHTML = ""
-		return msg, &pendingFetchedSearchIndex{
+		return msg, parsed, &pendingFetchedSearchIndex{
 			Document: search.MessageIndexDocument{
 				Message:     indexMsg,
 				Attachments: attachmentDocs,
@@ -161,9 +161,9 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 		}, nil
 	}
 	if err := s.Store.MarkMessageAttachmentIndexed(ctx, userID, msg.ID, visibleAttachmentCount > 0); err != nil {
-		return store.MessageRecord{}, nil, err
+		return store.MessageRecord{}, parsed, nil, err
 	}
-	return msg, nil, nil
+	return msg, parsed, nil, nil
 }
 
 // IndexPendingAttachmentsForUser indexes attachment text from raw message bodies for pending messages.

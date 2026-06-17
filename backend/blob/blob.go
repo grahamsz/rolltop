@@ -76,6 +76,20 @@ func (s *Store) SaveContactIcon(userID, contactID int64, filename string, data [
 	return s.save(parts, data, hash)
 }
 
+// SaveRemoteImage stores a warmed remote email image in the owning user's blob cache.
+func (s *Store) SaveRemoteImage(userID int64, urlHash string, data []byte) (Saved, error) {
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])
+	urlHash = safeSegment(urlHash)
+	name := fmt.Sprintf("%s-%s", urlHash, hash[:16])
+	parts := []string{
+		"users", strconv.FormatInt(userID, 10), "blobs",
+		"remote-images", urlHash[:2],
+		name,
+	}
+	return s.save(parts, data, hash)
+}
+
 func (s *Store) save(parts []string, data []byte, hash string) (Saved, error) {
 	rel := filepath.Join(parts...)
 	if filepath.IsAbs(rel) || strings.Contains(rel, "..") {

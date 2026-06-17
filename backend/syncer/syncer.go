@@ -400,7 +400,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				}
 				return s.updateSyncProgress(ctx, userID, run.ID, progress)
 			}
-			msg, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item)
+			msg, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item)
 			if err != nil {
 				return err
 			}
@@ -417,6 +417,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 					return err
 				}
 			}
+			s.warmRemoteImagesForStoredMessage(msg, mailbox, parsed.HTML)
 			progress.MessagesStored++
 			if shouldNotifyNewMail(mailbox, mailboxLastUIDAtStart, item) {
 				progress.NewMessages++
@@ -550,7 +551,7 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 			}
 			return nil
 		}
-		msg, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item)
+		msg, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item)
 		if err != nil {
 			return err
 		}
@@ -567,6 +568,7 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 				return err
 			}
 		}
+		s.warmRemoteImagesForStoredMessage(msg, mailbox, parsed.HTML)
 		if progress != nil {
 			progress.MessagesStored++
 			if shouldNotifyNewMail(mailbox, plan.LastUID, item) {

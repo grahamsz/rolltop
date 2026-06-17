@@ -109,11 +109,26 @@ type RemoteImageRule struct {
 	Enabled bool
 }
 
+type RemoteImageFetchRequest struct {
+	UserID    int64
+	MessageID string
+	Mailbox   string
+	Sender    string
+	URL       string
+	Source    string
+}
+
+type RemoteImageFetchDecision struct {
+	Allow  bool
+	Reason string
+}
+
 type RemoteImageBlocklistHook interface {
 	SeedRemoteImageRules(context.Context, *sql.DB) error
 	ListRemoteImageRules(context.Context, *sql.DB) ([]RemoteImageRule, error)
 	ListRemoteImagePatterns(context.Context, *sql.DB) ([]string, error)
 	ReplaceRemoteImageRules(context.Context, *sql.DB, []string) error
+	AllowRemoteImageFetch(context.Context, *sql.DB, RemoteImageFetchRequest) (RemoteImageFetchDecision, error)
 }
 
 type OneClickUnsubscribeSend struct {

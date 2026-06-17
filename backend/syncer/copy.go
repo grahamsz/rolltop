@@ -157,7 +157,7 @@ func (s *Service) CopyMessage(ctx context.Context, userID, messageID, destMailbo
 	if err := s.applyCopiedMessageFlags(ctx, destAccount, dest, fetched.UID, msg, &fetched); err != nil {
 		return err
 	}
-	copied, pendingIndex, err := s.storeFetchedMessage(ctx, userID, destAccount, dest, fetched)
+	copied, _, pendingIndex, err := s.storeFetchedMessage(ctx, userID, destAccount, dest, fetched)
 	if err != nil {
 		return err
 	}

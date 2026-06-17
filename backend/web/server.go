@@ -308,6 +308,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/messages/", s.handleApp)
 	mux.HandleFunc("/attachments/", s.handleAttachment)
 	mux.HandleFunc("/blobs/", s.handleBlob)
+	mux.HandleFunc("/remote-images/", s.handleRemoteImage)
 	mux.HandleFunc("/brand-icons/", s.handleBrandIcon)
 	mux.HandleFunc("/plugins/", s.handlePluginRoute)
 	mux.HandleFunc("/sync-runs/", s.handleApp)

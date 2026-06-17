@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"regexp"
 
 	"rolltop/backend/plugins"
 	"rolltop/plugins/remote_image_blocklist/rules"
@@ -33,4 +34,21 @@ func (remoteImageBlocklistHook) ListRemoteImagePatterns(ctx context.Context, db 
 
 func (remoteImageBlocklistHook) ReplaceRemoteImageRules(ctx context.Context, db *sql.DB, patterns []string) error {
 	return rules.ReplaceRules(ctx, db, patterns)
+}
+
+func (remoteImageBlocklistHook) AllowRemoteImageFetch(ctx context.Context, db *sql.DB, req plugins.RemoteImageFetchRequest) (plugins.RemoteImageFetchDecision, error) {
+	patterns, err := rules.ListPatterns(ctx, db)
+	if err != nil {
+		return plugins.RemoteImageFetchDecision{}, err
+	}
+	for _, pattern := range patterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			continue
+		}
+		if re.MatchString(req.URL) {
+			return plugins.RemoteImageFetchDecision{Allow: false, Reason: "remote image blocklist"}, nil
+		}
+	}
+	return plugins.RemoteImageFetchDecision{Allow: true}, nil
 }
