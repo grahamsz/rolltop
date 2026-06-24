@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: Check Out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set Build Metadata
         id: build-meta
@@ -60,13 +60,13 @@ jobs:
           cache: true
 
       - name: Set Up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
 
       - name: Set Up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -75,7 +75,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Set Up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: 8.10.2
 
@@ -124,7 +124,7 @@ jobs:
           exit "$plugin_status"
 
       - name: Upload Frontend Build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: frontend-dist-${{ steps.build-meta.outputs.version }}
           path: frontend/dist
@@ -137,7 +137,7 @@ jobs:
           cp android/app/build/outputs/apk/debug/app-debug.apk "build-artifacts/android/rolltop-android-${ROLLTOP_VERSION}-debug.apk"
 
       - name: Upload Android App
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: rolltop-android-${{ steps.build-meta.outputs.version }}
           path: build-artifacts/android/*.apk
@@ -153,7 +153,7 @@ jobs:
           done
 
       - name: Upload Plugin Backends
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: plugin-backends-${{ steps.build-meta.outputs.version }}
           path: build-artifacts/plugins
@@ -221,7 +221,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Go Documentation
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: godoc-${{ steps.build-meta.outputs.version }}
           path: godoc
@@ -237,7 +237,7 @@ jobs:
 
       - name: Upload Test Results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: test-results-${{ steps.build-meta.outputs.version }}
           path: test-results
@@ -249,7 +249,7 @@ jobs:
           CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w -X rolltop/backend/buildinfo.Version=${ROLLTOP_VERSION} -X rolltop/backend/buildinfo.BuildDate=${ROLLTOP_BUILD_DATE} -X rolltop/backend/buildinfo.Commit=${GITHUB_SHA}" -o "build-artifacts/${ROLLTOP_BINARY}" ./cmd/rolltop
 
       - name: Upload Backend Binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.build-meta.outputs.binary }}
           path: build-artifacts/${{ steps.build-meta.outputs.binary }}
