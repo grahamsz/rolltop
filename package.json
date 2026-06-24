@@ -12,7 +12,7 @@
     "build:mail-filters-css": "mkdir -p plugins/mail_filters/frontend_dist && sass plugins/mail_filters/frontend/styles.css plugins/mail_filters/frontend_dist/styles.css --style=compressed",
     "build:vite": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "android:build": "gradle -p android :app:assembleDebug"
+    "android:build": "./android/gradlew -p android :app:assembleDebug"
   },
   "dependencies": {
     "@embedpdf/pdfium": "^2.14.3",

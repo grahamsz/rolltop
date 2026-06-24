@@ -5,7 +5,7 @@ This is a native Android wrapper for a Rolltop server. It gives Rolltop an insta
 ## Build
 
 ```sh
-gradle -p android :app:assembleDebug
+./android/gradlew -p android :app:assembleDebug
 ```
 
 CI builds the debug APK and uploads it as `rolltop-android-<version>`.

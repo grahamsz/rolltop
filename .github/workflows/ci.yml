@@ -128,7 +128,7 @@ jobs:
       - name: Build Android App
         run: |
           mkdir -p build-artifacts/android
-          gradle -p android :app:assembleDebug
+          ./android/gradlew -p android :app:assembleDebug
           cp android/app/build/outputs/apk/debug/app-debug.apk "build-artifacts/android/rolltop-android-${ROLLTOP_VERSION}-debug.apk"
 
       - name: Upload Android App
