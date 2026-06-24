@@ -48,6 +48,9 @@ jobs:
             echo "docker_tags=${image}:${version}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare Artifact Directories
+        run: mkdir -p test-results build-artifacts
+
       - name: Set Up Go
         uses: actions/setup-go@v6.4.0
         with:
@@ -57,7 +60,7 @@ jobs:
       - name: Set Up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Set Up Java
