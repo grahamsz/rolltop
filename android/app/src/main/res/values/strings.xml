@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Rolltop</string>
+    <string name="notification_channel_mail">Mail</string>
+    <string name="notification_channel_updates">Updates</string>
+</resources>

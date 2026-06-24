@@ -12,6 +12,9 @@ frontend/dist/
 plugins/*/frontend/dist/
 plugins/*/frontend_dist/
 plugins/*/backend/*.so
+android/.gradle/
+android/build/
+android/app/build/
 *.db
 *.db-*
 coverage.out

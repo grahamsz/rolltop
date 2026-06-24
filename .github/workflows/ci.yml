@@ -60,6 +60,20 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Set Up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set Up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set Up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
       - name: Install Frontend Dependencies
         run: npm ci
 
@@ -109,6 +123,19 @@ jobs:
         with:
           name: frontend-dist-${{ steps.build-meta.outputs.version }}
           path: frontend/dist
+          if-no-files-found: error
+
+      - name: Build Android App
+        run: |
+          mkdir -p build-artifacts/android
+          gradle -p android :app:assembleDebug
+          cp android/app/build/outputs/apk/debug/app-debug.apk "build-artifacts/android/rolltop-android-${ROLLTOP_VERSION}-debug.apk"
+
+      - name: Upload Android App
+        uses: actions/upload-artifact@v4
+        with:
+          name: rolltop-android-${{ steps.build-meta.outputs.version }}
+          path: build-artifacts/android/*.apk
           if-no-files-found: error
 
       - name: Build Plugin Backends

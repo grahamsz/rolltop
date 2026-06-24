@@ -11,7 +11,8 @@
     "build:pgp-css": "mkdir -p plugins/client_side_pgp/frontend_dist/styles && sass plugins/client_side_pgp/frontend/styles/pgp.scss plugins/client_side_pgp/frontend_dist/styles/pgp.css --style=compressed",
     "build:mail-filters-css": "mkdir -p plugins/mail_filters/frontend_dist && sass plugins/mail_filters/frontend/styles.css plugins/mail_filters/frontend_dist/styles.css --style=compressed",
     "build:vite": "vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "android:build": "gradle -p android :app:assembleDebug"
   },
   "dependencies": {
     "@embedpdf/pdfium": "^2.14.3",
