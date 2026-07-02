@@ -3,6 +3,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +12,13 @@ import (
 
 const frontendDistDir = "frontend/dist"
 const immutableFrontendAssetCacheControl = "public, max-age=31536000, immutable"
+
+type androidLatestMetadata struct {
+	VersionCode int    `json:"versionCode"`
+	VersionName string `json:"versionName"`
+	APKURL      string `json:"apkUrl"`
+	SHA256      string `json:"sha256,omitempty"`
+}
 
 func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -48,6 +56,41 @@ func (s *Server) handleFrontendAsset(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", immutableFrontendAssetCacheControl)
 	}
 	http.ServeFile(w, r, full)
+}
+
+func (s *Server) handleAndroidLatest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	full := filepath.Join(frontendDistDir, "android", "latest.json")
+	data, err := os.ReadFile(full)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	var metadata androidLatestMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		http.Error(w, "invalid android update metadata", http.StatusInternalServerError)
+		return
+	}
+	metadata.APKURL = publicRequestBaseURL(r) + "/android/rolltop.apk"
+	writeJSON(w, metadata)
+}
+
+func publicRequestBaseURL(r *http.Request) string {
+	scheme := r.Header.Get("X-Forwarded-Proto")
+	if scheme == "" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+		return scheme + "://" + forwardedHost
+	}
+	return scheme + "://" + r.Host
 }
 
 func isImmutableFrontendAsset(cleanPath string) bool {

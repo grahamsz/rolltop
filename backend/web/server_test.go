@@ -99,6 +99,59 @@ func TestHandleAppServesContactsRoute(t *testing.T) {
 	}
 }
 
+func TestAndroidLatestMetadataUsesRequestHost(t *testing.T) {
+	dir := t.TempDir()
+	androidDir := filepath.Join(dir, frontendDistDir, "android")
+	if err := os.MkdirAll(androidDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(androidDir, "latest.json"), []byte(`{"versionCode":2,"versionName":"0.2.0","apkUrl":"/android/rolltop.apk","sha256":"abc123"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(androidDir, "rolltop.apk"), []byte("apk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+
+	server := &Server{}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/android/latest.json", nil)
+	req.Host = "mail.example.test"
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	server.handleAndroidLatest(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var got androidLatestMetadata
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.APKURL != "https://mail.example.test/android/rolltop.apk" {
+		t.Fatalf("apkUrl = %q", got.APKURL)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/android/rolltop.apk", nil)
+	server.handleFrontendAsset(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apk status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "apk" {
+		t.Fatalf("apk body = %q", rec.Body.String())
+	}
+}
+
 func TestAPIMailCachedETagShortCircuitsBeforeStore(t *testing.T) {
 	user := store.User{ID: 42, Email: "cache@example.test", Name: "Cache"}
 	server := &Server{mailListCache: newMailListCache()}

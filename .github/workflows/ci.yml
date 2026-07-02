@@ -135,6 +135,19 @@ jobs:
           mkdir -p build-artifacts/android
           ./android/gradlew -p android :app:assembleDebug
           cp android/app/build/outputs/apk/debug/app-debug.apk "build-artifacts/android/rolltop-android-${ROLLTOP_VERSION}-debug.apk"
+          mkdir -p frontend/public/android
+          cp android/app/build/outputs/apk/debug/app-debug.apk frontend/public/android/rolltop.apk
+          apk_sha256="$(sha256sum frontend/public/android/rolltop.apk | awk '{print $1}')"
+          version_code="$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' android/app/build.gradle.kts | head -n 1)"
+          version_name="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' android/app/build.gradle.kts | head -n 1)"
+          cat > frontend/public/android/latest.json <<EOF
+          {
+            "versionCode": ${version_code:-1},
+            "versionName": "${version_name:-${ROLLTOP_VERSION}}",
+            "apkUrl": "/android/rolltop.apk",
+            "sha256": "${apk_sha256}"
+          }
+          EOF
 
       - name: Upload Android App
         uses: actions/upload-artifact@v5
