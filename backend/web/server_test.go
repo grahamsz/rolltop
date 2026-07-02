@@ -143,9 +143,15 @@ func TestAndroidLatestMetadataUsesRequestHost(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/android/rolltop.apk", nil)
-	server.handleFrontendAsset(rec, req)
+	server.handleAndroidAPK(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("apk status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/vnd.android.package-archive" {
+		t.Fatalf("apk content-type = %q", got)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="rolltop.apk"` {
+		t.Fatalf("apk content-disposition = %q", got)
 	}
 	if rec.Body.String() != "apk" {
 		t.Fatalf("apk body = %q", rec.Body.String())

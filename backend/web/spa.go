@@ -78,6 +78,22 @@ func (s *Server) handleAndroidLatest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, metadata)
 }
 
+func (s *Server) handleAndroidAPK(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	full := filepath.Join(frontendDistDir, "android", "rolltop.apk")
+	if _, err := os.Stat(full); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+	w.Header().Set("Content-Disposition", `attachment; filename="rolltop.apk"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeFile(w, r, full)
+}
+
 func publicRequestBaseURL(r *http.Request) string {
 	scheme := r.Header.Get("X-Forwarded-Proto")
 	if scheme == "" {

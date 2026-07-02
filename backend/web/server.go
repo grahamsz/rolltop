@@ -295,6 +295,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/sw.js", s.handleFrontendAsset)
 	mux.HandleFunc("/icon.svg", s.handleFrontendAsset)
 	mux.HandleFunc("/android/latest.json", s.handleAndroidLatest)
+	mux.HandleFunc("/android/rolltop.apk", s.handleAndroidAPK)
 	mux.HandleFunc("/android/", s.handleFrontendAsset)
 	mux.HandleFunc("/setup", s.handleApp)
 	mux.HandleFunc("/login", s.handleApp)
