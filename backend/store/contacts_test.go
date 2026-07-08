@@ -93,4 +93,18 @@ func TestContactIconsAreScopedByUser(t *testing.T) {
 	if _, err := db.GetContactIconByEmailForUser(ctx, other.ID, "icon@example.test"); !IsNotFound(err) {
 		t.Fatalf("other user email icon err = %v", err)
 	}
+	icons, err := db.ListContactIconsByEmailsForUser(ctx, user.ID, []string{"Icon <icon@example.test>", "missing@example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(icons) != 1 || icons["icon@example.test"].ContactID != contact.ID {
+		t.Fatalf("owner batch icons = %+v", icons)
+	}
+	otherIcons, err := db.ListContactIconsByEmailsForUser(ctx, other.ID, []string{"icon@example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(otherIcons) != 0 {
+		t.Fatalf("other user batch icons = %+v", otherIcons)
+	}
 }

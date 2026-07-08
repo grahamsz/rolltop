@@ -30,6 +30,9 @@ type searchTiming struct {
 	composeFrom       time.Duration
 	composeIdentities time.Duration
 	senderVisual      time.Duration
+	senderContact     time.Duration
+	senderBIMI        time.Duration
+	senderGravatar    time.Duration
 	bodyDoc           time.Duration
 	batches           int
 	rawHits           int
@@ -111,6 +114,9 @@ func writeMessageTimingHeaders(w http.ResponseWriter, timing *searchTiming) {
 		serverTimingMetric("headers", timing.headers),
 		serverTimingMetric("render", timing.render),
 		serverTimingMetric("sender_visual", timing.senderVisual),
+		serverTimingMetric("sender_contact", timing.senderContact),
+		serverTimingMetric("sender_bimi", timing.senderBIMI),
+		serverTimingMetric("sender_gravatar", timing.senderGravatar),
 		serverTimingMetric("body_doc", timing.bodyDoc),
 		serverTimingMetric("compose", timing.compose),
 		serverTimingMetric("compose_choices", timing.composeChoices),

@@ -419,6 +419,70 @@ func (s *Store) GetContactIconByEmailForUser(ctx context.Context, userID int64, 
 	return s.GetContactIconForUser(ctx, userID, contactID)
 }
 
+// ListContactIconsByEmailsForUser loads contact icon metadata for a batch of normalized emails.
+func (s *Store) ListContactIconsByEmailsForUser(ctx context.Context, userID int64, emails []string) (map[string]ContactIcon, error) {
+	normalized := make([]string, 0, len(emails))
+	seen := map[string]bool{}
+	for _, email := range emails {
+		key := NormalizeContactEmail(email)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		normalized = append(normalized, key)
+	}
+	out := map[string]ContactIcon{}
+	if userID <= 0 || len(normalized) == 0 {
+		return out, nil
+	}
+	var hasIcon int
+	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT 1 FROM contact_icons WHERE user_id = ? LIMIT 1`, userID).Scan(&hasIcon)
+	if IsNotFound(err) {
+		return out, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for start := 0; start < len(normalized); start += 500 {
+		end := start + 500
+		if end > len(normalized) {
+			end = len(normalized)
+		}
+		chunk := normalized[start:end]
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, userID)
+		for _, email := range chunk {
+			args = append(args, email)
+		}
+		rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT e.normalized_email, ci.id, ci.user_id, ci.contact_id, ci.blob_id, ci.content_type, ci.filename, ci.size, b.path, ci.created_at, ci.updated_at
+			FROM contact_emails e
+			JOIN contact_icons ci ON ci.user_id = e.user_id AND ci.contact_id = e.contact_id
+			JOIN blobs b ON b.user_id = ci.user_id AND b.id = ci.blob_id
+			WHERE e.user_id = ? AND e.normalized_email IN (`+sqlPlaceholders(len(chunk))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var key string
+			var icon ContactIcon
+			var created, updated int64
+			if err := rows.Scan(&key, &icon.ID, &icon.UserID, &icon.ContactID, &icon.BlobID, &icon.ContentType, &icon.Filename, &icon.Size, &icon.BlobPath, &created, &updated); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			icon.CreatedAt = unixTime(created)
+			icon.UpdatedAt = unixTime(updated)
+			if _, exists := out[key]; !exists {
+				out[key] = icon
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // DeleteContactIconForUser removes icon metadata from a user-owned contact.
 func (s *Store) DeleteContactIconForUser(ctx context.Context, userID, contactID int64) error {
 	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `DELETE FROM contact_icons WHERE user_id = ? AND contact_id = ?`, userID, contactID)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"rolltop/backend/plugins"
+	"rolltop/backend/store"
 )
 
 func (s *Server) pluginEnabled(ctx context.Context, pluginID string) bool {
@@ -136,6 +137,9 @@ type senderVisualOptions struct {
 	bimiEnabled     bool
 	gravatarEnabled bool
 	cache           map[string]senderVisualCacheEntry
+	contactCache    map[string]senderVisualCacheEntry
+	bimiCache       map[string]senderVisualCacheEntry
+	gravatarCache   map[string]senderVisualCacheEntry
 }
 
 type senderVisualCacheEntry struct {
@@ -143,9 +147,112 @@ type senderVisualCacheEntry struct {
 	ok     bool
 }
 
+func (s *Server) preloadSenderVisualOptions(ctx context.Context, userID int64, views []threadMessageView, opts *senderVisualOptions, timing *searchTiming) {
+	if opts == nil {
+		return
+	}
+	emails := make([]string, 0, len(views))
+	domains := make([]string, 0, len(views))
+	seenEmails := map[string]bool{}
+	seenDomains := map[string]bool{}
+	for _, view := range views {
+		email := senderEmail(view.SenderEmail)
+		if normalized := store.NormalizeContactEmail(email); normalized != "" && !seenEmails[normalized] {
+			seenEmails[normalized] = true
+			emails = append(emails, email)
+		}
+		domain := strings.ToLower(senderDomainFromEmail(email))
+		if domain != "" && !seenDomains[domain] {
+			seenDomains[domain] = true
+			domains = append(domains, domain)
+		}
+	}
+	if len(emails) > 0 {
+		stop := func() {}
+		if timing != nil {
+			stop = timing.measure(&timing.senderContact)
+		}
+		opts.contactCache = map[string]senderVisualCacheEntry{}
+		for normalized := range seenEmails {
+			opts.contactCache[normalized] = senderVisualCacheEntry{}
+		}
+		if icons, err := s.store.ListContactIconsByEmailsForUser(ctx, userID, emails); err == nil {
+			for normalized, icon := range icons {
+				if strings.TrimSpace(icon.BlobPath) == "" {
+					continue
+				}
+				opts.contactCache[normalized] = senderVisualCacheEntry{
+					visual: contactIconSenderVisual(icon),
+					ok:     true,
+				}
+			}
+		}
+		stop()
+	}
+	if opts.bimiEnabled && opts.userDB != nil && len(domains) > 0 {
+		stop := func() {}
+		if timing != nil {
+			stop = timing.measure(&timing.senderBIMI)
+		}
+		opts.bimiCache = map[string]senderVisualCacheEntry{}
+		hook, hookOK := bimiBrandIconsHook()
+		for _, domain := range domains {
+			entry := senderVisualCacheEntry{}
+			if hookOK {
+				if icon, err := senderBIMIIconMeta(ctx, hook, opts.userDB, userID, domain); err == nil && icon.Status == "ok" && icon.HasSVG {
+					entry = senderVisualCacheEntry{
+						visual: apiSenderVisual{
+							PluginID: plugins.BIMIBrandIcons,
+							Kind:     "brand",
+							URL:      hook.AssetURL(domain),
+						},
+						ok: true,
+					}
+				}
+			}
+			opts.bimiCache[domain] = entry
+		}
+		stop()
+	}
+	if opts.gravatarEnabled && opts.userDB != nil && len(emails) > 0 {
+		stop := func() {}
+		if timing != nil {
+			stop = timing.measure(&timing.senderGravatar)
+		}
+		opts.gravatarCache = map[string]senderVisualCacheEntry{}
+		if hook, ok := gravatarSenderIconsHook(); ok {
+			now := time.Now()
+			for _, email := range emails {
+				key := strings.ToLower(email)
+				hash := hook.Hash(email)
+				image, err := senderGravatarImageMeta(ctx, hook, opts.userDB, userID, hash)
+				if err == nil && image.Status == "ok" && image.HasImage {
+					opts.gravatarCache[key] = senderVisualCacheEntry{
+						visual: apiSenderVisual{
+							PluginID: plugins.GravatarSenderIcons,
+							Kind:     "avatar",
+							URL:      hook.AssetURL(hash),
+						},
+						ok: true,
+					}
+					continue
+				}
+				opts.gravatarCache[key] = senderVisualCacheEntry{}
+				if err == nil && image.ExpiresAt.After(now) {
+					continue
+				}
+				if err == nil || err == sql.ErrNoRows {
+					go s.refreshGravatarImage(userID, hash)
+				}
+			}
+		}
+		stop()
+	}
+}
+
 func (s *Server) senderVisualWithOptions(ctx context.Context, userID int64, sender string, opts senderVisualOptions) (apiSenderVisual, bool) {
 	email := senderEmail(sender)
-	domain := senderDomain(sender)
+	domain := senderDomainFromEmail(email)
 	cacheKey := ""
 	if opts.cache != nil {
 		cacheKey = strings.ToLower(email) + "|" + strings.ToLower(domain)
@@ -160,16 +267,25 @@ func (s *Server) senderVisualWithOptions(ctx context.Context, userID int64, send
 		return visual, ok
 	}
 	if email != "" {
-		if icon, err := s.store.GetContactIconByEmailForUser(ctx, userID, email); err == nil && strings.TrimSpace(icon.BlobPath) != "" {
-			return cacheResult(apiSenderVisual{
-				PluginID: "contacts",
-				Kind:     "contact",
-				URL:      "/contacts/" + strconv.FormatInt(icon.ContactID, 10) + "/icon",
-			}, true)
+		contactKey := store.NormalizeContactEmail(email)
+		if opts.contactCache != nil {
+			if entry, ok := opts.contactCache[contactKey]; ok {
+				if entry.ok {
+					return cacheResult(entry.visual, true)
+				}
+			}
+		} else if icon, err := s.store.GetContactIconByEmailForUser(ctx, userID, email); err == nil && strings.TrimSpace(icon.BlobPath) != "" {
+			return cacheResult(contactIconSenderVisual(icon), true)
 		}
 	}
 	if domain != "" && opts.userDB != nil && opts.bimiEnabled {
-		if hook, ok := bimiBrandIconsHook(); ok {
+		if opts.bimiCache != nil {
+			if entry, ok := opts.bimiCache[strings.ToLower(domain)]; ok {
+				if entry.ok {
+					return cacheResult(entry.visual, true)
+				}
+			}
+		} else if hook, ok := bimiBrandIconsHook(); ok {
 			if icon, err := senderBIMIIconMeta(ctx, hook, opts.userDB, userID, domain); err == nil && icon.Status == "ok" && icon.HasSVG {
 				return cacheResult(apiSenderVisual{
 					PluginID: plugins.BIMIBrandIcons,
@@ -180,7 +296,15 @@ func (s *Server) senderVisualWithOptions(ctx context.Context, userID int64, send
 		}
 	}
 	if email != "" && opts.userDB != nil && opts.gravatarEnabled {
-		if hook, ok := gravatarSenderIconsHook(); ok {
+		gravatarKey := strings.ToLower(email)
+		if opts.gravatarCache != nil {
+			if entry, ok := opts.gravatarCache[gravatarKey]; ok {
+				if entry.ok {
+					return cacheResult(entry.visual, true)
+				}
+				return cacheResult(apiSenderVisual{}, false)
+			}
+		} else if hook, ok := gravatarSenderIconsHook(); ok {
 			hash := hook.Hash(email)
 			image, err := senderGravatarImageMeta(ctx, hook, opts.userDB, userID, hash)
 			if err == nil && image.Status == "ok" && image.HasImage {
@@ -199,6 +323,14 @@ func (s *Server) senderVisualWithOptions(ctx context.Context, userID int64, send
 		}
 	}
 	return cacheResult(apiSenderVisual{}, false)
+}
+
+func contactIconSenderVisual(icon store.ContactIcon) apiSenderVisual {
+	return apiSenderVisual{
+		PluginID: "contacts",
+		Kind:     "contact",
+		URL:      "/contacts/" + strconv.FormatInt(icon.ContactID, 10) + "/icon",
+	}
 }
 
 func senderBIMIIconMeta(ctx context.Context, hook plugins.BIMIHook, db *sql.DB, userID int64, domain string) (plugins.BIMIIconMeta, error) {
@@ -252,7 +384,10 @@ func (s *Server) refreshGravatarImage(userID int64, hash string) {
 }
 
 func senderDomain(value string) string {
-	email := senderEmail(value)
+	return senderDomainFromEmail(senderEmail(value))
+}
+
+func senderDomainFromEmail(email string) string {
 	if email == "" {
 		return ""
 	}
