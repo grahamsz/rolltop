@@ -404,3 +404,16 @@ type SyncRun struct {
 	CurrentUID       uint32
 	Error            string
 }
+
+// WebPushSubscription stores one browser Push API endpoint for a user.
+type WebPushSubscription struct {
+	ID         int64
+	UserID     int64
+	Endpoint   string
+	P256DH     string
+	Auth       string
+	UserAgent  string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	LastSeenAt time.Time
+}

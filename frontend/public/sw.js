@@ -1,4 +1,4 @@
-const STATIC_CACHE = "rolltop-static-v4";
+const STATIC_CACHE = "rolltop-static-v5";
 const STATIC_ASSETS = ["/", "/mail", "/manifest.webmanifest", "/icon.svg", "/icon.svg?v=transparent-logo-v2"];
 let securityUnlockUserID = 0;
 let securityUnlockState = { unlockedUntil: 0, keys: [] };
@@ -34,6 +34,45 @@ self.addEventListener("fetch", (event) => {
         return res;
       })
       .catch(() => caches.match(req).then((cached) => cached || caches.match("/mail")))
+  );
+});
+
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = {};
+  }
+  const title = typeof data.title === "string" && data.title ? data.title : "rolltop";
+  const icon = typeof data.icon === "string" && data.icon ? data.icon : "/icon.svg?v=transparent-logo-v2";
+  const options = {
+    body: typeof data.body === "string" ? data.body : "New mail synced.",
+    tag: typeof data.tag === "string" && data.tag ? data.tag : "rolltop-new-mail",
+    icon,
+    badge: typeof data.badge === "string" && data.badge ? data.badge : icon,
+    data: {
+      url: typeof data.url === "string" && data.url ? data.url : "/mail"
+    }
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetURL = new URL(event.notification.data?.url || "/mail", self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
+      for (const client of clients) {
+        if (!client.url.startsWith(self.location.origin)) continue;
+        if ("navigate" in client && client.url !== targetURL) {
+          const navigated = await client.navigate(targetURL);
+          return navigated?.focus();
+        }
+        return client.focus();
+      }
+      return self.clients.openWindow(targetURL);
+    })
   );
 });
 

@@ -382,6 +382,7 @@ export type Bootstrap = {
   latest_sync_run?: SyncRun | null;
   active_sync_runs?: SyncRun[];
   sync_running?: boolean;
+  mail_generation?: number;
   account_needs_password?: boolean;
   account_notice?: string;
   enabled_plugins?: string[];
@@ -408,6 +409,7 @@ export type ChromeEvent = {
   latest_sync_run: SyncRun | null;
   active_sync_runs: SyncRun[];
   sync_running: boolean;
+  mail_generation: number;
   server_started_at?: string;
   server_uptime_seconds?: number;
   build_version?: string;

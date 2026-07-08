@@ -255,6 +255,7 @@ func (s *Server) apiThreadMessagesTimed(ctx context.Context, userID int64, views
 		userDB:          userDB,
 		bimiEnabled:     s.pluginEnabled(ctx, plugins.BIMIBrandIcons),
 		gravatarEnabled: s.pluginEnabled(ctx, plugins.GravatarSenderIcons),
+		cache:           map[string]senderVisualCacheEntry{},
 	}
 	for _, view := range views {
 		atts := make([]apiAttachment, 0, len(view.Attachments))

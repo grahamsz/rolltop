@@ -29,6 +29,20 @@ type Image struct {
 	UpdatedAt   time.Time
 }
 
+// ImageMeta is the cached Gravatar row without the image payload.
+type ImageMeta struct {
+	ID          int64
+	UserID      int64
+	EmailHash   string
+	ContentType string
+	Status      string
+	Error       string
+	HasImage    bool
+	FetchedAt   time.Time
+	ExpiresAt   time.Time
+	UpdatedAt   time.Time
+}
+
 // Migrations returns schema changes for the Gravatar sender-icon cache.
 func Migrations() []plugins.Migration {
 	return []plugins.Migration{{
@@ -125,6 +139,26 @@ func GetImage(ctx context.Context, db *sql.DB, userID int64, emailHash string) (
 	if err != nil {
 		return Image{}, err
 	}
+	image.FetchedAt = unixTime(fetchedAt)
+	image.ExpiresAt = unixTime(expiresAt)
+	image.UpdatedAt = unixTime(updatedAt)
+	return image, nil
+}
+
+// GetImageMeta loads cached Gravatar metadata without reading the image blob.
+func GetImageMeta(ctx context.Context, db *sql.DB, userID int64, emailHash string) (ImageMeta, error) {
+	var image ImageMeta
+	var fetchedAt, expiresAt, updatedAt int64
+	var hasImage int
+	err := db.QueryRowContext(ctx, `SELECT id, user_id, email_hash, content_type, status, error,
+			CASE WHEN image IS NOT NULL AND length(image) > 0 THEN 1 ELSE 0 END,
+			fetched_at, expires_at, updated_at
+		FROM plugin_gravatar_cache WHERE user_id = ? AND email_hash = ?`, userID, NormalizeHash(emailHash)).
+		Scan(&image.ID, &image.UserID, &image.EmailHash, &image.ContentType, &image.Status, &image.Error, &hasImage, &fetchedAt, &expiresAt, &updatedAt)
+	if err != nil {
+		return ImageMeta{}, err
+	}
+	image.HasImage = hasImage != 0
 	image.FetchedAt = unixTime(fetchedAt)
 	image.ExpiresAt = unixTime(expiresAt)
 	image.UpdatedAt = unixTime(updatedAt)

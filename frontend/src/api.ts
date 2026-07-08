@@ -146,6 +146,21 @@ export async function deleteJSON<T>(url: string, csrf: string): Promise<T> {
   );
 }
 
+/** DELETE JSON with a request body for endpoints keyed by payload rather than path. */
+export async function deleteJSONBody<T>(url: string, csrf: string, body: unknown = {}): Promise<T> {
+  return parse<T>(
+    await fetch(url, {
+      method: "DELETE",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrf
+      },
+      body: JSON.stringify(body)
+    })
+  );
+}
+
 /** POST multipart form data without forcing a Content-Type boundary. */
 export async function postForm<T>(url: string, csrf: string, body: FormData): Promise<T> {
   return parse<T>(
@@ -195,6 +210,11 @@ export const api = {
     postJSON<{ ok: boolean }>("/api/setup", csrf, body),
   login: (csrf: string, body: { email: string; password: string }) => postJSON<{ ok: boolean }>("/api/login", csrf, body),
   logout: (csrf: string) => postJSON<{ ok: boolean }>("/api/logout", csrf),
+  pushVAPIDPublicKey: () => getJSON<{ public_key: string }>("/api/push/vapid-public-key"),
+  savePushSubscription: (csrf: string, subscription: unknown) =>
+    postJSON<{ ok: boolean; subscription_id: number }>("/api/push/subscription", csrf, subscription),
+  deletePushSubscription: (csrf: string, endpoint: string) =>
+    deleteJSONBody<{ ok: boolean }>("/api/push/subscription", csrf, { endpoint }),
   mail: (mailboxID: string | null, page: number) =>
     getJSON<MailListResponse>(mailListURL(mailboxID, page)),
   cachedMail: (mailboxID: string | null, page: number) =>

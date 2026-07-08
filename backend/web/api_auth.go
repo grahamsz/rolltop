@@ -39,6 +39,7 @@ func (s *Server) apiBootstrap(w http.ResponseWriter, r *http.Request) {
 		resp["latest_sync_run"] = apiSyncRunPtr(chrome.LatestSyncRun)
 		resp["active_sync_runs"] = apiSyncRuns(chrome.ActiveSyncRuns)
 		resp["sync_running"] = chrome.SyncRunning
+		resp["mail_generation"] = s.mailListGeneration(cu.User.ID)
 		needsPassword, notice := s.accountCredentialNotice(r.Context(), cu.User.ID)
 		resp["account_needs_password"] = needsPassword
 		resp["account_notice"] = notice

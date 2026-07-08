@@ -487,28 +487,14 @@ func inboxPoll(ctx context.Context, db *store.Store, runner *syncer.Runner, inte
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			userIDs, err := db.ListUserIDsWithAccounts(ctx)
+			targets, err := inboxAutoTargets(ctx, db)
 			if err != nil {
 				log.Printf("inbox poll list accounts: %v", err)
 				continue
 			}
-			for _, userID := range userIDs {
-				account, err := db.GetMailAccount(ctx, userID)
-				if err != nil {
-					log.Printf("inbox poll account user_id=%d: %v", userID, err)
-					continue
-				}
-				mb, err := inboxMailbox(ctx, db, userID, account)
-				if err != nil {
-					log.Printf("inbox poll mailbox user_id=%d: %v", userID, err)
-					continue
-				}
-				mode, err := db.EffectiveMailboxSyncMode(ctx, userID, account.ID, mb)
-				if err != nil || mode != "auto" {
-					continue
-				}
-				if !runner.StartPriorityMailboxes(userID, []string{mb.Name}) {
-					log.Printf("inbox poll user_id=%d queued: inbox already running", userID)
+			for _, target := range targets {
+				if !runner.StartAccountMailboxes(target.UserID, target.Account.ID, []string{target.Mailbox.Name}) {
+					log.Printf("inbox poll user_id=%d account_id=%d queued: inbox already running", target.UserID, target.Account.ID)
 				}
 			}
 		}
@@ -522,58 +508,48 @@ func inboxIdle(ctx context.Context, db *store.Store, runner *syncer.Runner, watc
 	if retryEvery <= 0 {
 		retryEvery = time.Minute
 	}
-	active := map[int64]context.CancelFunc{}
+	active := map[string]context.CancelFunc{}
 	var mu sync.Mutex
 	startMissing := func() {
-		userIDs, err := db.ListUserIDsWithAccounts(ctx)
+		targets, err := inboxAutoTargets(ctx, db)
 		if err != nil {
 			log.Printf("inbox idle list accounts: %v", err)
 			return
 		}
-		for _, userID := range userIDs {
+		wanted := map[string]bool{}
+		for _, target := range targets {
+			key := inboxIdleTargetKey(target.UserID, target.Account.ID, target.Mailbox.Name)
+			wanted[key] = true
 			mu.Lock()
-			if _, ok := active[userID]; ok {
+			if _, ok := active[key]; ok {
 				mu.Unlock()
 				continue
 			}
 			mu.Unlock()
-			account, err := db.GetMailAccount(ctx, userID)
-			if err != nil {
-				log.Printf("inbox idle account user_id=%d: %v", userID, err)
-				continue
-			}
-			mb, err := inboxMailbox(ctx, db, userID, account)
-			if err != nil {
-				log.Printf("inbox idle mailbox user_id=%d: %v", userID, err)
-				continue
-			}
-			mode, err := db.EffectiveMailboxSyncMode(ctx, userID, account.ID, mb)
-			if err != nil || mode != "auto" {
-				continue
-			}
 			watchCtx, cancel := context.WithCancel(ctx)
 			mu.Lock()
-			active[userID] = cancel
+			active[key] = cancel
 			mu.Unlock()
-			go func(account store.MailAccount, userID int64, mailboxName string) {
+			go func(target inboxAutoTarget, key string) {
 				defer func() {
 					cancel()
 					mu.Lock()
-					delete(active, userID)
+					delete(active, key)
 					mu.Unlock()
 				}()
+				log.Printf("inbox idle user_id=%d account_id=%d mailbox=%s: subscribing", target.UserID, target.Account.ID, target.Mailbox.Name)
 				for watchCtx.Err() == nil {
-					err := watcher.WatchMailbox(watchCtx, account, mailboxName, func() {
-						log.Printf("inbox idle user_id=%d event: queue priority inbox sync", userID)
-						if !runner.StartPriorityMailboxes(userID, []string{mailboxName}) {
-							log.Printf("inbox idle user_id=%d queued: inbox already running", userID)
+					err := watcher.WatchMailbox(watchCtx, target.Account, target.Mailbox.Name, func() {
+						log.Printf("inbox idle user_id=%d account_id=%d event: queue inbox sync", target.UserID, target.Account.ID)
+						if !runner.StartAccountMailboxes(target.UserID, target.Account.ID, []string{target.Mailbox.Name}) {
+							log.Printf("inbox idle user_id=%d account_id=%d queued: inbox already running", target.UserID, target.Account.ID)
 						}
 					})
 					if watchCtx.Err() != nil {
 						return
 					}
 					if err != nil {
-						log.Printf("inbox idle user_id=%d: %v", userID, err)
+						log.Printf("inbox idle user_id=%d account_id=%d mailbox=%s: %v", target.UserID, target.Account.ID, target.Mailbox.Name, err)
 					}
 					timer := time.NewTimer(retryEvery)
 					select {
@@ -583,8 +559,17 @@ func inboxIdle(ctx context.Context, db *store.Store, runner *syncer.Runner, watc
 					case <-timer.C:
 					}
 				}
-			}(account, userID, mb.Name)
+			}(target, key)
 		}
+		mu.Lock()
+		for key, cancel := range active {
+			if wanted[key] {
+				continue
+			}
+			cancel()
+			delete(active, key)
+		}
+		mu.Unlock()
 	}
 	startMissing()
 	ticker := time.NewTicker(5 * time.Minute)
@@ -602,6 +587,48 @@ func inboxIdle(ctx context.Context, db *store.Store, runner *syncer.Runner, watc
 			startMissing()
 		}
 	}
+}
+
+type inboxAutoTarget struct {
+	UserID  int64
+	Account store.MailAccount
+	Mailbox store.Mailbox
+}
+
+func inboxAutoTargets(ctx context.Context, db *store.Store) ([]inboxAutoTarget, error) {
+	userIDs, err := db.ListUserIDsWithAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var targets []inboxAutoTarget
+	for _, userID := range userIDs {
+		accounts, err := db.ListMailAccountsForUser(ctx, userID)
+		if err != nil {
+			log.Printf("inbox account list user_id=%d: %v", userID, err)
+			continue
+		}
+		for _, account := range accounts {
+			mb, err := inboxMailbox(ctx, db, userID, account)
+			if err != nil {
+				log.Printf("inbox mailbox user_id=%d account_id=%d: %v", userID, account.ID, err)
+				continue
+			}
+			mode, err := db.EffectiveMailboxSyncMode(ctx, userID, account.ID, mb)
+			if err != nil {
+				log.Printf("inbox mailbox mode user_id=%d account_id=%d mailbox=%s: %v", userID, account.ID, mb.Name, err)
+				continue
+			}
+			if mode != "auto" {
+				continue
+			}
+			targets = append(targets, inboxAutoTarget{UserID: userID, Account: account, Mailbox: mb})
+		}
+	}
+	return targets, nil
+}
+
+func inboxIdleTargetKey(userID, accountID int64, mailboxName string) string {
+	return fmt.Sprintf("%d:%d:%s", userID, accountID, strings.ToLower(strings.TrimSpace(mailboxName)))
 }
 
 func inboxMailbox(ctx context.Context, db *store.Store, userID int64, account store.MailAccount) (store.Mailbox, error) {

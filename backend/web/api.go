@@ -39,6 +39,10 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiEvents(w, r)
 	case path == "storage":
 		s.apiStorage(w, r)
+	case path == "push/vapid-public-key":
+		s.apiPushVAPIDPublicKey(w, r)
+	case path == "push/subscription":
+		s.apiPushSubscription(w, r)
 	case path == "plugins":
 		s.apiPlugins(w, r)
 	case strings.HasPrefix(path, "plugins/"):

@@ -135,51 +135,114 @@ type senderVisualOptions struct {
 	userDB          *sql.DB
 	bimiEnabled     bool
 	gravatarEnabled bool
+	cache           map[string]senderVisualCacheEntry
+}
+
+type senderVisualCacheEntry struct {
+	visual apiSenderVisual
+	ok     bool
 }
 
 func (s *Server) senderVisualWithOptions(ctx context.Context, userID int64, sender string, opts senderVisualOptions) (apiSenderVisual, bool) {
 	email := senderEmail(sender)
+	domain := senderDomain(sender)
+	cacheKey := ""
+	if opts.cache != nil {
+		cacheKey = strings.ToLower(email) + "|" + strings.ToLower(domain)
+		if entry, ok := opts.cache[cacheKey]; ok {
+			return entry.visual, entry.ok
+		}
+	}
+	cacheResult := func(visual apiSenderVisual, ok bool) (apiSenderVisual, bool) {
+		if opts.cache != nil {
+			opts.cache[cacheKey] = senderVisualCacheEntry{visual: visual, ok: ok}
+		}
+		return visual, ok
+	}
 	if email != "" {
 		if icon, err := s.store.GetContactIconByEmailForUser(ctx, userID, email); err == nil && strings.TrimSpace(icon.BlobPath) != "" {
-			return apiSenderVisual{
+			return cacheResult(apiSenderVisual{
 				PluginID: "contacts",
 				Kind:     "contact",
 				URL:      "/contacts/" + strconv.FormatInt(icon.ContactID, 10) + "/icon",
-			}, true
+			}, true)
 		}
 	}
-	domain := senderDomain(sender)
 	if domain != "" && opts.userDB != nil && opts.bimiEnabled {
 		if hook, ok := bimiBrandIconsHook(); ok {
-			if icon, err := hook.GetIcon(ctx, opts.userDB, userID, domain); err == nil && icon.Status == "ok" && strings.TrimSpace(icon.SVG) != "" {
-				return apiSenderVisual{
+			if icon, err := senderBIMIIconMeta(ctx, hook, opts.userDB, userID, domain); err == nil && icon.Status == "ok" && icon.HasSVG {
+				return cacheResult(apiSenderVisual{
 					PluginID: plugins.BIMIBrandIcons,
 					Kind:     "brand",
 					URL:      hook.AssetURL(domain),
-				}, true
+				}, true)
 			}
 		}
 	}
 	if email != "" && opts.userDB != nil && opts.gravatarEnabled {
 		if hook, ok := gravatarSenderIconsHook(); ok {
 			hash := hook.Hash(email)
-			image, err := hook.GetImage(ctx, opts.userDB, userID, hash)
-			if err == nil && image.Status == "ok" && len(image.Image) > 0 {
-				return apiSenderVisual{
+			image, err := senderGravatarImageMeta(ctx, hook, opts.userDB, userID, hash)
+			if err == nil && image.Status == "ok" && image.HasImage {
+				return cacheResult(apiSenderVisual{
 					PluginID: plugins.GravatarSenderIcons,
 					Kind:     "avatar",
 					URL:      hook.AssetURL(hash),
-				}, true
+				}, true)
 			}
 			if err == nil && image.ExpiresAt.After(time.Now()) {
-				return apiSenderVisual{}, false
+				return cacheResult(apiSenderVisual{}, false)
 			}
 			if err == nil || err == sql.ErrNoRows {
 				go s.refreshGravatarImage(userID, hash)
 			}
 		}
 	}
-	return apiSenderVisual{}, false
+	return cacheResult(apiSenderVisual{}, false)
+}
+
+func senderBIMIIconMeta(ctx context.Context, hook plugins.BIMIHook, db *sql.DB, userID int64, domain string) (plugins.BIMIIconMeta, error) {
+	if metaHook, ok := hook.(plugins.BIMIIconMetaHook); ok {
+		return metaHook.GetIconMeta(ctx, db, userID, domain)
+	}
+	icon, err := hook.GetIcon(ctx, db, userID, domain)
+	if err != nil {
+		return plugins.BIMIIconMeta{}, err
+	}
+	return plugins.BIMIIconMeta{
+		ID:        icon.ID,
+		UserID:    icon.UserID,
+		Domain:    icon.Domain,
+		LogoURL:   icon.LogoURL,
+		Status:    icon.Status,
+		Error:     icon.Error,
+		HasSVG:    strings.TrimSpace(icon.SVG) != "",
+		FetchedAt: icon.FetchedAt,
+		ExpiresAt: icon.ExpiresAt,
+		UpdatedAt: icon.UpdatedAt,
+	}, nil
+}
+
+func senderGravatarImageMeta(ctx context.Context, hook plugins.GravatarHook, db *sql.DB, userID int64, hash string) (plugins.GravatarImageMeta, error) {
+	if metaHook, ok := hook.(plugins.GravatarImageMetaHook); ok {
+		return metaHook.GetImageMeta(ctx, db, userID, hash)
+	}
+	image, err := hook.GetImage(ctx, db, userID, hash)
+	if err != nil {
+		return plugins.GravatarImageMeta{}, err
+	}
+	return plugins.GravatarImageMeta{
+		ID:          image.ID,
+		UserID:      image.UserID,
+		EmailHash:   image.EmailHash,
+		ContentType: image.ContentType,
+		Status:      image.Status,
+		Error:       image.Error,
+		HasImage:    len(image.Image) > 0,
+		FetchedAt:   image.FetchedAt,
+		ExpiresAt:   image.ExpiresAt,
+		UpdatedAt:   image.UpdatedAt,
+	}, nil
 }
 
 func (s *Server) refreshGravatarImage(userID int64, hash string) {

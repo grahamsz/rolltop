@@ -42,6 +42,25 @@ func (bimiBrandIconsHook) GetIcon(ctx context.Context, db *sql.DB, userID int64,
 	}, nil
 }
 
+func (bimiBrandIconsHook) GetIconMeta(ctx context.Context, db *sql.DB, userID int64, domain string) (plugins.BIMIIconMeta, error) {
+	icon, err := bimi.GetIconMeta(ctx, db, userID, domain)
+	if err != nil {
+		return plugins.BIMIIconMeta{}, err
+	}
+	return plugins.BIMIIconMeta{
+		ID:        icon.ID,
+		UserID:    icon.UserID,
+		Domain:    icon.Domain,
+		LogoURL:   icon.LogoURL,
+		Status:    icon.Status,
+		Error:     icon.Error,
+		HasSVG:    icon.HasSVG,
+		FetchedAt: icon.FetchedAt,
+		ExpiresAt: icon.ExpiresAt,
+		UpdatedAt: icon.UpdatedAt,
+	}, nil
+}
+
 func (bimiBrandIconsHook) UpsertIcon(ctx context.Context, db *sql.DB, icon plugins.BIMIIcon) error {
 	return bimi.UpsertIcon(ctx, db, bimi.Icon{
 		ID:        icon.ID,

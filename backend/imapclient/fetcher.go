@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"sort"
 	"strings"
@@ -563,6 +564,7 @@ func (f *Fetcher) WatchMailbox(ctx context.Context, account store.MailAccount, m
 	if _, err := c.Select(mailbox, true); err != nil {
 		return fmt.Errorf("select mailbox %q read-only for IDLE: %w", mailbox, err)
 	}
+	log.Printf("imap idle account_id=%d mailbox=%s: selected read-only", account.ID, mailbox)
 	updates := make(chan client.Update, 10)
 	c.Updates = updates
 	for {

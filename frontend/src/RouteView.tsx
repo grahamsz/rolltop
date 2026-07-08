@@ -53,6 +53,7 @@ export function RouteView({
   mailboxes,
   latestSyncRun,
   activeSyncRuns,
+  mailGeneration,
   enabledPlugins,
   availableThemes,
   location,
@@ -70,6 +71,7 @@ export function RouteView({
   mailboxes: Mailbox[];
   latestSyncRun: SyncRun | null;
   activeSyncRuns: SyncRun[];
+  mailGeneration: number;
   enabledPlugins: string[];
   availableThemes: ThemeDefinition[];
   location: LocationState;
@@ -133,6 +135,7 @@ export function RouteView({
       mailboxes={mailboxes}
       latestSyncRun={latestSyncRun}
       activeSyncRuns={activeSyncRuns}
+      mailGeneration={mailGeneration}
       refreshChrome={refreshChrome}
       addToast={addToast}
       messageSecurityPlugins={runtimePlugins.all}

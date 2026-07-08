@@ -98,6 +98,77 @@ func TestCreateBlobIsIdempotentForUserPath(t *testing.T) {
 	}
 }
 
+func TestWebPushSubscriptionsAreUserScoped(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "push@example.test", "Push", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateUser(ctx, "other-push@example.test", "Other Push", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := db.SaveWebPushSubscription(ctx, user.ID, WebPushSubscription{
+		Endpoint:  "https://push.example.test/send/one",
+		P256DH:    "receiver-key",
+		Auth:      "auth-secret",
+		UserAgent: "test browser",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.UserID != user.ID || saved.ID == 0 {
+		t.Fatalf("saved subscription = %+v", saved)
+	}
+	if _, err := db.SaveWebPushSubscription(ctx, user.ID, WebPushSubscription{
+		Endpoint: "https://push.example.test/send/one",
+		P256DH:   "receiver-key-updated",
+		Auth:     "auth-secret-updated",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	subs, err := db.ListWebPushSubscriptions(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 1 || subs[0].P256DH != "receiver-key-updated" {
+		t.Fatalf("owner subscriptions = %+v", subs)
+	}
+	otherSubs, err := db.ListWebPushSubscriptions(ctx, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(otherSubs) != 0 {
+		t.Fatalf("other user can see subscriptions: %+v", otherSubs)
+	}
+	if err := db.DeleteWebPushSubscription(ctx, other.ID, saved.Endpoint); err != nil {
+		t.Fatal(err)
+	}
+	subs, err = db.ListWebPushSubscriptions(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("cross-user delete removed owner subscription: %+v", subs)
+	}
+	if err := db.DeleteWebPushSubscription(ctx, user.ID, saved.Endpoint); err != nil {
+		t.Fatal(err)
+	}
+	subs, err = db.ListWebPushSubscriptions(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 0 {
+		t.Fatalf("subscription was not deleted: %+v", subs)
+	}
+}
+
 func TestThreadMessagesForUserUsesReferencesAndSubjectFallback(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))

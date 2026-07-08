@@ -100,6 +100,7 @@ func (s *Server) syncEventPayload(ctx context.Context, userID int64) (map[string
 		"latest_sync_run":       apiSyncRunPtr(data.LatestSyncRun),
 		"active_sync_runs":      apiSyncRuns(data.ActiveSyncRuns),
 		"sync_running":          data.SyncRunning,
+		"mail_generation":       s.mailListGeneration(userID),
 		"server_started_at":     timeString(s.startedAt),
 		"server_uptime_seconds": int(time.Since(s.startedAt).Seconds()),
 		"build_version":         info.Version,

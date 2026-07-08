@@ -69,12 +69,29 @@ type BIMIIcon struct {
 	UpdatedAt time.Time
 }
 
+type BIMIIconMeta struct {
+	ID        int64
+	UserID    int64
+	Domain    string
+	LogoURL   string
+	Status    string
+	Error     string
+	HasSVG    bool
+	FetchedAt time.Time
+	ExpiresAt time.Time
+	UpdatedAt time.Time
+}
+
 type BIMIHook interface {
 	NormalizeDomain(string) string
 	AssetURL(string) string
 	GetIcon(context.Context, *sql.DB, int64, string) (BIMIIcon, error)
 	UpsertIcon(context.Context, *sql.DB, BIMIIcon) error
 	Fetch(context.Context, string) (BIMIResult, error)
+}
+
+type BIMIIconMetaHook interface {
+	GetIconMeta(context.Context, *sql.DB, int64, string) (BIMIIconMeta, error)
 }
 
 type GravatarImage struct {
@@ -85,6 +102,19 @@ type GravatarImage struct {
 	Image       []byte
 	Status      string
 	Error       string
+	FetchedAt   time.Time
+	ExpiresAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type GravatarImageMeta struct {
+	ID          int64
+	UserID      int64
+	EmailHash   string
+	ContentType string
+	Status      string
+	Error       string
+	HasImage    bool
 	FetchedAt   time.Time
 	ExpiresAt   time.Time
 	UpdatedAt   time.Time
@@ -102,6 +132,10 @@ type GravatarHook interface {
 	PositiveTTL(time.Time) time.Time
 	MaxImageBytes() int64
 	ReadLimited(io.Reader, int64) ([]byte, error)
+}
+
+type GravatarImageMetaHook interface {
+	GetImageMeta(context.Context, *sql.DB, int64, string) (GravatarImageMeta, error)
 }
 
 type RemoteImageRule struct {

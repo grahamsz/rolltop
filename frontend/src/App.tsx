@@ -116,6 +116,51 @@ function initialNotificationsEnabled() {
   return notificationPreference() !== "off";
 }
 
+function webPushSupported() {
+  return "Notification" in window && "serviceWorker" in navigator && "PushManager" in window && window.isSecureContext;
+}
+
+function urlBase64ToUint8Array(value: string) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = window.atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function pushServiceWorkerRegistration() {
+  if (!("serviceWorker" in navigator)) throw new Error("Service workers are not supported.");
+  const existing = await navigator.serviceWorker.getRegistration("/");
+  const registration = existing || (await navigator.serviceWorker.register("/sw.js"));
+  void registration.update().catch(() => undefined);
+  return navigator.serviceWorker.ready;
+}
+
+async function subscribeWebPush(csrf: string) {
+  const [{ public_key: publicKey }, registration] = await Promise.all([
+    api.pushVAPIDPublicKey(),
+    pushServiceWorkerRegistration()
+  ]);
+  let subscription = await registration.pushManager.getSubscription();
+  if (!subscription) {
+    subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey)
+    });
+  }
+  await api.savePushSubscription(csrf, subscription.toJSON());
+}
+
+async function unsubscribeWebPush(csrf: string) {
+  if (!("serviceWorker" in navigator)) return;
+  const registration = await navigator.serviceWorker.getRegistration("/");
+  const subscription = await registration?.pushManager.getSubscription();
+  if (!subscription) return;
+  await api.deletePushSubscription(csrf, subscription.endpoint).catch(() => undefined);
+  await subscription.unsubscribe();
+}
+
 /**
  * App owns process-wide browser state: bootstrap/session data, current URL,
  * top-level toasts, SSE chrome refreshes, optimistic message hiding, and the
@@ -350,6 +395,7 @@ export default function App() {
       return;
     }
     if (notificationsEnabled) {
+      if (bootstrap?.csrf && webPushSupported()) await unsubscribeWebPush(bootstrap.csrf);
       setNotificationPreference("off");
       setNotificationsEnabled(false);
       addToast("New-mail notifications paused.");
@@ -357,18 +403,47 @@ export default function App() {
     }
     const result = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
     if (result === "granted") {
+      if (webPushSupported()) {
+        if (!bootstrap?.csrf) {
+          addToast("Sign in before enabling notifications.", "error");
+          return;
+        }
+        try {
+          await subscribeWebPush(bootstrap.csrf);
+        } catch (err) {
+          setNotificationPreference("off");
+          setNotificationsEnabled(false);
+          addToast(messageFromError(err), "error");
+          return;
+        }
+      }
       setNotificationPreference("on");
       setNotificationsEnabled(true);
-      addToast("New-mail notifications enabled.");
+      addToast(webPushSupported() ? "New-mail push notifications enabled." : "New-mail notifications enabled for this tab.");
       return;
     }
     setNotificationPreference("off");
     setNotificationsEnabled(false);
     addToast("Notifications were not enabled.", "error");
-  }, [addToast, notificationsEnabled]);
+  }, [addToast, bootstrap?.csrf, notificationsEnabled]);
+
+  useEffect(() => {
+    if (!notificationsEnabled || !bootstrap?.user || !bootstrap.csrf || !webPushSupported()) return;
+    let cancelled = false;
+    void subscribeWebPush(bootstrap.csrf).catch((err) => {
+      if (cancelled) return;
+      setNotificationPreference("off");
+      setNotificationsEnabled(false);
+      addToast(messageFromError(err), "error");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [addToast, bootstrap?.csrf, bootstrap?.user, notificationsEnabled]);
 
   const notifyNewMail = useCallback((count: number, run: SyncRun | null) => {
     if (!notificationsEnabled || !("Notification" in window) || Notification.permission !== "granted" || count <= 0) return;
+    if (webPushSupported()) return;
     const sender = displayNotificationSender(run?.latest_new_from || "");
     const subject = truncateNotificationText(run?.latest_new_subject || "", 110);
     const title = sender ? `rolltop - ${sender}` : "rolltop";
@@ -419,13 +494,16 @@ export default function App() {
           build_version: chrome.build_version || current.build_version,
           build_date: chrome.build_date || current.build_date,
           build_label: chrome.build_label || current.build_label,
-          public_site_url: chrome.public_site_url || current.public_site_url
+          public_site_url: chrome.public_site_url || current.public_site_url,
+          mail_generation: chrome.mail_generation ?? current.mail_generation
         } : current);
         if (chrome.latest_sync_run) {
           const previous = lastNotify.current;
           const newMessages = chrome.latest_sync_run.new_messages || 0;
           if (previous && previous.id === chrome.latest_sync_run.id && newMessages > previous.stored) {
             notifyNewMail(newMessages - previous.stored, chrome.latest_sync_run);
+          } else if (previous && previous.id !== chrome.latest_sync_run.id && newMessages > 0) {
+            notifyNewMail(newMessages, chrome.latest_sync_run);
           }
           lastNotify.current = { id: chrome.latest_sync_run.id, stored: newMessages };
         }
@@ -565,6 +643,7 @@ export default function App() {
           mailboxes={bootstrap.mailboxes || []}
           latestSyncRun={bootstrap.latest_sync_run || null}
           activeSyncRuns={bootstrap.active_sync_runs || []}
+          mailGeneration={bootstrap.mail_generation || 0}
           enabledPlugins={bootstrap.enabled_plugins || []}
           availableThemes={bootstrap.available_themes || []}
           location={location}

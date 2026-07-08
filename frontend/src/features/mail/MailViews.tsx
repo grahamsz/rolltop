@@ -46,6 +46,7 @@ export function MailView({
   mailboxes,
   latestSyncRun,
   activeSyncRuns,
+  mailGeneration,
   refreshChrome,
   messageSecurityPlugins = [],
   addToast
@@ -58,6 +59,7 @@ export function MailView({
   mailboxes: Mailbox[];
   latestSyncRun: SyncRun | null;
   activeSyncRuns: SyncRun[];
+  mailGeneration: number;
   refreshChrome: () => Promise<Bootstrap | null>;
   messageSecurityPlugins?: RuntimePlugin[];
   addToast: (message: string, kind?: Toast["kind"]) => number;
@@ -78,7 +80,7 @@ export function MailView({
   const page = route.page;
   const mailbox = mailboxes.find((item) => String(item.id) === mailboxID);
   const totalCount = mailbox ? mailbox.message_count : mailboxes.filter((item) => item.show_in_all_mail !== false).reduce((sum, item) => sum + item.message_count, 0);
-  const refreshKey = mailboxRefreshKey(latestSyncRun, mailbox);
+  const refreshKey = `${mailGeneration}:${mailboxRefreshKey(latestSyncRun, mailbox)}`;
   const listScopeKey = mailboxID || "all";
   const listKey = listScopeKey + ":" + page;
   const slideDirection = useListSlideDirection(listScopeKey, page);

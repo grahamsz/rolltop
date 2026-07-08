@@ -46,6 +46,25 @@ func (gravatarSenderIconsHook) GetImage(ctx context.Context, db *sql.DB, userID 
 	}, nil
 }
 
+func (gravatarSenderIconsHook) GetImageMeta(ctx context.Context, db *sql.DB, userID int64, emailHash string) (plugins.GravatarImageMeta, error) {
+	image, err := gravatar.GetImageMeta(ctx, db, userID, emailHash)
+	if err != nil {
+		return plugins.GravatarImageMeta{}, err
+	}
+	return plugins.GravatarImageMeta{
+		ID:          image.ID,
+		UserID:      image.UserID,
+		EmailHash:   image.EmailHash,
+		ContentType: image.ContentType,
+		Status:      image.Status,
+		Error:       image.Error,
+		HasImage:    image.HasImage,
+		FetchedAt:   image.FetchedAt,
+		ExpiresAt:   image.ExpiresAt,
+		UpdatedAt:   image.UpdatedAt,
+	}, nil
+}
+
 func (gravatarSenderIconsHook) UpsertImage(ctx context.Context, db *sql.DB, image plugins.GravatarImage) error {
 	return gravatar.UpsertImage(ctx, db, gravatar.Image{
 		ID:          image.ID,

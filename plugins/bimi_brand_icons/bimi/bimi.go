@@ -47,6 +47,20 @@ type Icon struct {
 	UpdatedAt time.Time
 }
 
+// IconMeta is the cached BIMI row without the SVG payload.
+type IconMeta struct {
+	ID        int64
+	UserID    int64
+	Domain    string
+	LogoURL   string
+	Status    string
+	Error     string
+	HasSVG    bool
+	FetchedAt time.Time
+	ExpiresAt time.Time
+	UpdatedAt time.Time
+}
+
 // GetIcon loads one cached BIMI icon row for a user/domain pair.
 func GetIcon(ctx context.Context, db *sql.DB, userID int64, domain string) (Icon, error) {
 	var icon Icon
@@ -57,6 +71,26 @@ func GetIcon(ctx context.Context, db *sql.DB, userID int64, domain string) (Icon
 	if err != nil {
 		return Icon{}, err
 	}
+	icon.FetchedAt = unixTime(fetchedAt)
+	icon.ExpiresAt = unixTime(expiresAt)
+	icon.UpdatedAt = unixTime(updatedAt)
+	return icon, nil
+}
+
+// GetIconMeta loads cached BIMI metadata without reading the SVG text payload.
+func GetIconMeta(ctx context.Context, db *sql.DB, userID int64, domain string) (IconMeta, error) {
+	var icon IconMeta
+	var fetchedAt, expiresAt, updatedAt int64
+	var hasSVG int
+	err := db.QueryRowContext(ctx, `SELECT id, user_id, domain, logo_url, status, error,
+			CASE WHEN length(svg) > 0 THEN 1 ELSE 0 END,
+			fetched_at, expires_at, updated_at
+		FROM plugin_bimi_brand_icons WHERE user_id = ? AND domain = ?`, userID, NormalizeDomain(domain)).
+		Scan(&icon.ID, &icon.UserID, &icon.Domain, &icon.LogoURL, &icon.Status, &icon.Error, &hasSVG, &fetchedAt, &expiresAt, &updatedAt)
+	if err != nil {
+		return IconMeta{}, err
+	}
+	icon.HasSVG = hasSVG != 0
 	icon.FetchedAt = unixTime(fetchedAt)
 	icon.ExpiresAt = unixTime(expiresAt)
 	icon.UpdatedAt = unixTime(updatedAt)
