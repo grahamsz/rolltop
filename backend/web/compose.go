@@ -549,7 +549,19 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 }
 
 func (s *Server) composeIdentityChoicesLite(ctx context.Context, cu currentUser) []composeIdentity {
-	return s.composeIdentityChoicesWithSecurity(ctx, cu, false)
+	identities, err := s.store.ListCachedMailIdentitiesForUser(ctx, cu.User.ID)
+	if err == nil {
+		out := make([]composeIdentity, 0, len(identities))
+		for _, identity := range identities {
+			if choice, ok := composeIdentityFromStore(identity, "", "", false); ok {
+				out = append(out, choice)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return s.fallbackComposeIdentity(ctx, cu)
 }
 
 func (s *Server) composeIdentityChoicesWithSecurity(ctx context.Context, cu currentUser, includeSecurity bool) []composeIdentity {
@@ -598,28 +610,43 @@ func (s *Server) composeIdentityChoicesWithSecurity(ctx context.Context, cu curr
 					}
 				}
 			}
-			out = append(out, composeIdentity{
-				ID:                     identity.ContactEmailID,
-				SecurityIdentityID:     identity.ID,
-				SecurityPublicMaterial: securityPublic,
-				HasSecurityPrivateKey:  hasSecurity,
-				SMTPAccountID:          identity.SMTPAccountID,
-				IMAPAccountID:          identity.IMAPAccountID,
-				SentMailboxID:          identity.SentMailboxID,
-				DraftsMailboxID:        identity.DraftsMailboxID,
-				Signature:              identity.Signature,
-				Label:                  label,
-				Email:                  email,
-				Header:                 contactAddressHeader(label, email),
-				IconURL:                icons[identity.ContactID],
-				IsPrimary:              identity.IsPrimary,
-				AutocryptEnabled:       identity.AutocryptEnabled,
-			})
+			if choice, ok := composeIdentityFromStore(identity, icons[identity.ContactID], securityPublic, hasSecurity); ok {
+				out = append(out, choice)
+			}
 		}
 		if len(out) > 0 {
 			return out
 		}
 	}
+	return s.fallbackComposeIdentity(ctx, cu)
+}
+
+func composeIdentityFromStore(identity store.MailIdentity, iconURL string, securityPublic string, hasSecurity bool) (composeIdentity, bool) {
+	email := strings.TrimSpace(identity.Email)
+	if email == "" {
+		return composeIdentity{}, false
+	}
+	label := firstNonEmpty(identity.DisplayName, email)
+	return composeIdentity{
+		ID:                     identity.ContactEmailID,
+		SecurityIdentityID:     identity.ID,
+		SecurityPublicMaterial: securityPublic,
+		HasSecurityPrivateKey:  hasSecurity,
+		SMTPAccountID:          identity.SMTPAccountID,
+		IMAPAccountID:          identity.IMAPAccountID,
+		SentMailboxID:          identity.SentMailboxID,
+		DraftsMailboxID:        identity.DraftsMailboxID,
+		Signature:              identity.Signature,
+		Label:                  label,
+		Email:                  email,
+		Header:                 contactAddressHeader(label, email),
+		IconURL:                iconURL,
+		IsPrimary:              identity.IsPrimary,
+		AutocryptEnabled:       identity.AutocryptEnabled,
+	}, true
+}
+
+func (s *Server) fallbackComposeIdentity(ctx context.Context, cu currentUser) []composeIdentity {
 	email := ""
 	var imapAccountID int64
 	if account, err := s.store.GetMailAccount(ctx, cu.User.ID); err == nil && strings.TrimSpace(account.Email) != "" {

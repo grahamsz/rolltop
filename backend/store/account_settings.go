@@ -214,6 +214,13 @@ func (s *Store) ListMailIdentitiesForUser(ctx context.Context, userID int64) ([]
 	return out, rows.Err()
 }
 
+// ListCachedMailIdentitiesForUser returns already-synced identity rows without
+// running contact/mailbox reconciliation. Hot read paths use this to avoid
+// doing settings maintenance while opening a message.
+func (s *Store) ListCachedMailIdentitiesForUser(ctx context.Context, userID int64) ([]MailIdentity, error) {
+	return s.listMailIdentitiesForUserNoSync(ctx, userID)
+}
+
 // CreateMailIdentityForUser creates or promotes a Me-contact email, then applies
 // identity-level server, folder, primary, and signature settings to the synced row.
 func (s *Store) CreateMailIdentityForUser(ctx context.Context, userID int64, in MailIdentity) (MailIdentity, error) {

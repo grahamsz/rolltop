@@ -952,6 +952,48 @@ func TestEnsureMeContactForEmailSeedsIdentityAndDefaultSMTP(t *testing.T) {
 	}
 }
 
+func TestCachedMailIdentitiesDoNotSyncMeContacts(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "cached-ident@example.test", "Cached Ident", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateContact(ctx, user.ID, Contact{
+		DisplayName: "Cached Ident",
+		IsMe:        true,
+		IsPrimary:   true,
+		Emails:      []ContactEmail{{Email: user.Email, IsPrimary: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := db.ListCachedMailIdentitiesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cached) != 0 {
+		t.Fatalf("cached identities before sync = %+v, want none", cached)
+	}
+	synced, err := db.ListMailIdentitiesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(synced) != 1 || synced[0].Email != user.Email {
+		t.Fatalf("synced identities = %+v", synced)
+	}
+	cached, err = db.ListCachedMailIdentitiesForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cached) != 1 || cached[0].Email != user.Email {
+		t.Fatalf("cached identities after sync = %+v", cached)
+	}
+}
+
 func TestMailAccountsAndIdentitiesStayScopedByUser(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
