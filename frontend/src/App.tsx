@@ -12,7 +12,7 @@ import { AppShell } from "./features/layout/AppShell";
 import { ComposeOverlay } from "./features/compose/ComposeViews";
 import { RouteView } from "./RouteView";
 import { messageFromError } from "./lib/errors";
-import { currentLocation } from "./lib/routes";
+import { currentLocation, messageURL } from "./lib/routes";
 import { emptyRuntimePlugins, loadRuntimePlugins, type RuntimePlugins } from "./plugins/runtime";
 import { emptySecurityUnlockState, securityUnlockPlugin } from "./plugins/securityUnlock";
 
@@ -444,6 +444,8 @@ export default function App() {
   const notifyNewMail = useCallback((count: number, run: SyncRun | null) => {
     if (!notificationsEnabled || !("Notification" in window) || Notification.permission !== "granted" || count <= 0) return;
     if (webPushSupported()) return;
+    const messageID = run?.latest_new_message_id || 0;
+    const targetURL = messageID > 0 ? messageURL(messageID, "", [], "/mail") : "/mail";
     const sender = displayNotificationSender(run?.latest_new_from || "");
     const subject = truncateNotificationText(run?.latest_new_subject || "", 110);
     const title = sender ? `rolltop - ${sender}` : "rolltop";
@@ -451,13 +453,21 @@ export default function App() {
     const body = subject
       ? count === 1 ? subject : `${count} new messages synced. Latest: ${subject}`
       : fallback;
-    new Notification(title, {
+    const notification = new Notification(title, {
       body,
       tag: "rolltop-new-mail",
       icon: notificationIconURL,
-      badge: notificationIconURL
+      badge: notificationIconURL,
+      data: { url: targetURL, messageID }
     });
-  }, [notificationsEnabled]);
+    notification.onclick = () => {
+      notification.close();
+      window.focus();
+      if (messageID > 0) api.prefetchMessage(messageID);
+      navigate(targetURL);
+    };
+    if (messageID > 0) api.prefetchMessage(messageID);
+  }, [navigate, notificationsEnabled]);
 
   // When someone returns to an idle tab, warm All Mail before they click it.
   useEffect(() => {

@@ -273,24 +273,25 @@ type apiHeaderItem struct {
 }
 
 type apiSyncRun struct {
-	ID               int64  `json:"id"`
-	AccountID        int64  `json:"account_id"`
-	Status           string `json:"status"`
-	StartedAt        string `json:"started_at"`
-	FinishedAt       string `json:"finished_at"`
-	UpdatedAt        string `json:"updated_at"`
-	MessagesSeen     int    `json:"messages_seen"`
-	MessagesStored   int    `json:"messages_stored"`
-	MessagesSkipped  int    `json:"messages_skipped"`
-	NewMessages      int    `json:"new_messages"`
-	LatestNewFrom    string `json:"latest_new_from"`
-	LatestNewSubject string `json:"latest_new_subject"`
-	MessagesTotal    int    `json:"messages_total"`
-	MailboxesDone    int    `json:"mailboxes_done"`
-	MailboxesTotal   int    `json:"mailboxes_total"`
-	CurrentMailbox   string `json:"current_mailbox"`
-	CurrentUID       uint32 `json:"current_uid"`
-	Error            string `json:"error"`
+	ID                 int64  `json:"id"`
+	AccountID          int64  `json:"account_id"`
+	Status             string `json:"status"`
+	StartedAt          string `json:"started_at"`
+	FinishedAt         string `json:"finished_at"`
+	UpdatedAt          string `json:"updated_at"`
+	MessagesSeen       int    `json:"messages_seen"`
+	MessagesStored     int    `json:"messages_stored"`
+	MessagesSkipped    int    `json:"messages_skipped"`
+	NewMessages        int    `json:"new_messages"`
+	LatestNewFrom      string `json:"latest_new_from"`
+	LatestNewSubject   string `json:"latest_new_subject"`
+	LatestNewMessageID int64  `json:"latest_new_message_id"`
+	MessagesTotal      int    `json:"messages_total"`
+	MailboxesDone      int    `json:"mailboxes_done"`
+	MailboxesTotal     int    `json:"mailboxes_total"`
+	CurrentMailbox     string `json:"current_mailbox"`
+	CurrentUID         uint32 `json:"current_uid"`
+	Error              string `json:"error"`
 }
 
 type apiSyncFolder struct {

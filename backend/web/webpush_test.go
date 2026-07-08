@@ -105,8 +105,9 @@ func TestEncryptWebPushPayloadBuildsAES128GCMRecord(t *testing.T) {
 
 func TestNewMailWebPushNotificationBody(t *testing.T) {
 	note := newMailWebPushNotification(3, store.SyncRun{
-		LatestNewFrom:    "Alice Example <alice@example.test>",
-		LatestNewSubject: "Quarterly update",
+		LatestNewFrom:      "Alice Example <alice@example.test>",
+		LatestNewSubject:   "Quarterly update",
+		LatestNewMessageID: 42,
 	})
 	if note.Title != "rolltop - Alice Example" {
 		t.Fatalf("title = %q", note.Title)
@@ -114,7 +115,7 @@ func TestNewMailWebPushNotificationBody(t *testing.T) {
 	if note.Body != "3 new messages synced. Latest: Quarterly update" {
 		t.Fatalf("body = %q", note.Body)
 	}
-	if note.URL != "/mail" || note.Tag == "" {
+	if note.URL != "/messages/42?back=%2Fmail" || note.APIURL != "/api/messages/42" || note.MessageID != 42 || note.Tag == "" {
 		t.Fatalf("notification = %+v", note)
 	}
 }

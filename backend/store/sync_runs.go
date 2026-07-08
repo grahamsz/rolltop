@@ -55,25 +55,26 @@ func (s *Store) MarkRunningSyncRunsInterrupted(ctx context.Context) (int64, erro
 
 // SyncProgress is the mutable progress snapshot copied into sync_runs during long operations.
 type SyncProgress struct {
-	MessagesSeen     int
-	MessagesStored   int
-	MessagesSkipped  int
-	NewMessages      int
-	LatestNewFrom    string
-	LatestNewSubject string
-	MessagesTotal    int
-	MailboxesDone    int
-	MailboxesTotal   int
-	CurrentMailbox   string
-	CurrentUID       uint32
+	MessagesSeen       int
+	MessagesStored     int
+	MessagesSkipped    int
+	NewMessages        int
+	LatestNewFrom      string
+	LatestNewSubject   string
+	LatestNewMessageID int64
+	MessagesTotal      int
+	MailboxesDone      int
+	MailboxesTotal     int
+	CurrentMailbox     string
+	CurrentUID         uint32
 }
 
 // UpdateSyncRunProgress stores the latest mailbox/message progress snapshot for a sync run.
 func (s *Store) UpdateSyncRunProgress(ctx context.Context, userID, id int64, p SyncProgress) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE sync_runs
-		SET updated_at = ?, messages_seen = ?, messages_stored = ?, messages_skipped = ?, new_messages = ?, latest_new_from = ?, latest_new_subject = ?, messages_total = ?, mailboxes_done = ?, mailboxes_total = ?, current_mailbox = ?, current_uid = ?
+		SET updated_at = ?, messages_seen = ?, messages_stored = ?, messages_skipped = ?, new_messages = ?, latest_new_from = ?, latest_new_subject = ?, latest_new_message_id = ?, messages_total = ?, mailboxes_done = ?, mailboxes_total = ?, current_mailbox = ?, current_uid = ?
 		WHERE user_id = ? AND id = ?`,
-		nowUnix(), p.MessagesSeen, p.MessagesStored, p.MessagesSkipped, p.NewMessages, p.LatestNewFrom, p.LatestNewSubject, p.MessagesTotal, p.MailboxesDone, p.MailboxesTotal, p.CurrentMailbox, p.CurrentUID, userID, id)
+		nowUnix(), p.MessagesSeen, p.MessagesStored, p.MessagesSkipped, p.NewMessages, p.LatestNewFrom, p.LatestNewSubject, p.LatestNewMessageID, p.MessagesTotal, p.MailboxesDone, p.MailboxesTotal, p.CurrentMailbox, p.CurrentUID, userID, id)
 	return err
 }
 
@@ -84,10 +85,10 @@ func (s *Store) FinishSyncRun(ctx context.Context, userID, id int64, status stri
 	}
 	now := nowUnix()
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE sync_runs
-		SET status = ?, finished_at = ?, updated_at = ?, messages_seen = ?, messages_stored = ?, messages_skipped = ?, new_messages = ?, latest_new_from = ?, latest_new_subject = ?, messages_total = ?,
+		SET status = ?, finished_at = ?, updated_at = ?, messages_seen = ?, messages_stored = ?, messages_skipped = ?, new_messages = ?, latest_new_from = ?, latest_new_subject = ?, latest_new_message_id = ?, messages_total = ?,
 			mailboxes_done = ?, mailboxes_total = ?, current_mailbox = ?, current_uid = ?, error = ?
 		WHERE user_id = ? AND id = ? AND NOT (status = 'interrupted' AND finished_at != 0)`,
-		status, now, now, p.MessagesSeen, p.MessagesStored, p.MessagesSkipped, p.NewMessages, p.LatestNewFrom, p.LatestNewSubject, p.MessagesTotal, p.MailboxesDone, p.MailboxesTotal,
+		status, now, now, p.MessagesSeen, p.MessagesStored, p.MessagesSkipped, p.NewMessages, p.LatestNewFrom, p.LatestNewSubject, p.LatestNewMessageID, p.MessagesTotal, p.MailboxesDone, p.MailboxesTotal,
 		p.CurrentMailbox, p.CurrentUID, errText, userID, id)
 	return err
 }
@@ -97,10 +98,10 @@ func (s *Store) GetSyncRunForUser(ctx context.Context, userID, id int64) (SyncRu
 	var r SyncRun
 	var started, finished, updated int64
 	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT id, user_id, account_id, status, started_at, finished_at, updated_at,
-			messages_seen, messages_stored, messages_skipped, new_messages, latest_new_from, latest_new_subject, messages_total, mailboxes_done, mailboxes_total, current_mailbox, current_uid, error
+			messages_seen, messages_stored, messages_skipped, new_messages, latest_new_from, latest_new_subject, latest_new_message_id, messages_total, mailboxes_done, mailboxes_total, current_mailbox, current_uid, error
 		FROM sync_runs WHERE user_id = ? AND id = ?`, userID, id).
 		Scan(&r.ID, &r.UserID, &r.AccountID, &r.Status, &started, &finished, &updated,
-			&r.MessagesSeen, &r.MessagesStored, &r.MessagesSkipped, &r.NewMessages, &r.LatestNewFrom, &r.LatestNewSubject, &r.MessagesTotal, &r.MailboxesDone, &r.MailboxesTotal, &r.CurrentMailbox, &r.CurrentUID, &r.Error)
+			&r.MessagesSeen, &r.MessagesStored, &r.MessagesSkipped, &r.NewMessages, &r.LatestNewFrom, &r.LatestNewSubject, &r.LatestNewMessageID, &r.MessagesTotal, &r.MailboxesDone, &r.MailboxesTotal, &r.CurrentMailbox, &r.CurrentUID, &r.Error)
 	r.StartedAt = unixTime(started)
 	r.FinishedAt = unixTime(finished)
 	r.UpdatedAt = unixTime(updated)
@@ -120,7 +121,7 @@ func (s *Store) ListSyncRunsForUser(ctx context.Context, userID int64, limit int
 		scanLimit = 1000
 	}
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, account_id, status, started_at, finished_at, updated_at,
-			messages_seen, messages_stored, messages_skipped, new_messages, latest_new_from, latest_new_subject, messages_total, mailboxes_done, mailboxes_total, current_mailbox, current_uid, error
+			messages_seen, messages_stored, messages_skipped, new_messages, latest_new_from, latest_new_subject, latest_new_message_id, messages_total, mailboxes_done, mailboxes_total, current_mailbox, current_uid, error
 		FROM sync_runs WHERE user_id = ? ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, updated_at DESC, id DESC LIMIT ?`, userID, scanLimit)
 	if err != nil {
 		return nil, err
@@ -132,7 +133,7 @@ func (s *Store) ListSyncRunsForUser(ctx context.Context, userID int64, limit int
 		var r SyncRun
 		var started, finished, updated int64
 		if err := rows.Scan(&r.ID, &r.UserID, &r.AccountID, &r.Status, &started, &finished, &updated,
-			&r.MessagesSeen, &r.MessagesStored, &r.MessagesSkipped, &r.NewMessages, &r.LatestNewFrom, &r.LatestNewSubject, &r.MessagesTotal, &r.MailboxesDone, &r.MailboxesTotal, &r.CurrentMailbox, &r.CurrentUID, &r.Error); err != nil {
+			&r.MessagesSeen, &r.MessagesStored, &r.MessagesSkipped, &r.NewMessages, &r.LatestNewFrom, &r.LatestNewSubject, &r.LatestNewMessageID, &r.MessagesTotal, &r.MailboxesDone, &r.MailboxesTotal, &r.CurrentMailbox, &r.CurrentUID, &r.Error); err != nil {
 			return nil, err
 		}
 		r.StartedAt = unixTime(started)

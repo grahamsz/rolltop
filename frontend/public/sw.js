@@ -1,4 +1,6 @@
-const STATIC_CACHE = "rolltop-static-v5";
+const STATIC_CACHE = "rolltop-static-v6";
+const MESSAGE_CACHE = "rolltop-notification-messages-v1";
+const MESSAGE_CACHE_TTL_MS = 2 * 60 * 1000;
 const STATIC_ASSETS = ["/", "/mail", "/manifest.webmanifest", "/icon.svg", "/icon.svg?v=transparent-logo-v2"];
 let securityUnlockUserID = 0;
 let securityUnlockState = { unlockedUntil: 0, keys: [] };
@@ -11,9 +13,9 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((key) => key !== STATIC_CACHE).map((key) => caches.delete(key)))
-    )
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((key) => key !== STATIC_CACHE && key !== MESSAGE_CACHE).map((key) => caches.delete(key))))
+      .then(() => pruneNotificationMessageCache())
   );
   self.clients.claim();
 });
@@ -24,6 +26,11 @@ self.addEventListener("fetch", (event) => {
   if (req.method !== "GET" || url.origin !== self.location.origin) return;
 
   if (url.pathname.startsWith("/brand-icons/") || url.pathname.startsWith("/plugins/")) return;
+
+  if (isNotificationMessageRequest(req, url)) {
+    event.respondWith(notificationMessageResponse(req));
+    return;
+  }
 
   if (url.pathname.startsWith("/api/")) return;
 
@@ -52,29 +59,117 @@ self.addEventListener("push", (event) => {
     icon,
     badge: typeof data.badge === "string" && data.badge ? data.badge : icon,
     data: {
-      url: typeof data.url === "string" && data.url ? data.url : "/mail"
+      url: sameOriginPath(data.url, "/mail"),
+      apiURL: sameOriginPath(data.api_url, ""),
+      messageID: Number(data.message_id || 0)
     }
   };
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil(Promise.all([
+    warmNotificationMessage(options.data),
+    self.registration.showNotification(title, options)
+  ]));
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const targetURL = new URL(event.notification.data?.url || "/mail", self.location.origin).href;
+  const data = event.notification.data || {};
+  const targetURL = new URL(sameOriginPath(data.url, "/mail"), self.location.origin).href;
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
-      for (const client of clients) {
-        if (!client.url.startsWith(self.location.origin)) continue;
-        if ("navigate" in client && client.url !== targetURL) {
-          const navigated = await client.navigate(targetURL);
-          return navigated?.focus();
+    Promise.all([
+      warmNotificationMessage(data),
+      self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
+        for (const client of clients) {
+          if (!client.url.startsWith(self.location.origin)) continue;
+          if ("navigate" in client && client.url !== targetURL) {
+            const navigated = await client.navigate(targetURL);
+            return navigated?.focus();
+          }
+          return client.focus();
         }
-        return client.focus();
-      }
-      return self.clients.openWindow(targetURL);
-    })
+        return self.clients.openWindow(targetURL);
+      })
+    ])
   );
 });
+
+function sameOriginPath(value, fallback) {
+  if (typeof value !== "string" || !value) return fallback;
+  try {
+    const url = new URL(value, self.location.origin);
+    if (url.origin !== self.location.origin) return fallback;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return fallback;
+  }
+}
+
+async function warmNotificationMessage(data) {
+  const apiURL = sameOriginPath(data?.apiURL, "");
+  if (!apiURL || !apiURL.startsWith("/api/messages/")) return;
+  const url = new URL(apiURL, self.location.origin);
+  if (!isNotificationMessageAPIURL(url)) return;
+  try {
+    const response = await fetch(apiURL, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      credentials: "include",
+      cache: "reload"
+    });
+    if (!response.ok) return;
+    await rememberNotificationMessage(apiURL, response);
+    await pruneNotificationMessageCache();
+  } catch {
+    // Navigation should still work if the background warm-up misses.
+  }
+}
+
+function isNotificationMessageRequest(req, url) {
+  return req.method === "GET" && url.origin === self.location.origin && isNotificationMessageAPIURL(url);
+}
+
+function isNotificationMessageAPIURL(url) {
+  return /^\/api\/messages\/\d+$/.test(url.pathname) && !url.search;
+}
+
+async function rememberNotificationMessage(apiURL, response) {
+  const body = await response.clone().arrayBuffer();
+  const headers = new Headers(response.headers);
+  headers.set("X-Rolltop-Cached-At", String(Date.now()));
+  headers.set("Cache-Control", "private, max-age=120");
+  const cached = new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+  const cache = await caches.open(MESSAGE_CACHE);
+  await cache.put(new Request(apiURL, { credentials: "include" }), cached);
+}
+
+async function notificationMessageResponse(req) {
+  const cache = await caches.open(MESSAGE_CACHE);
+  const cached = await cache.match(req);
+  if (cached) {
+    const cachedAt = Number(cached.headers.get("X-Rolltop-Cached-At") || 0);
+    if (cachedAt && Date.now() - cachedAt <= MESSAGE_CACHE_TTL_MS) {
+      await cache.delete(req);
+      return cached;
+    }
+    await cache.delete(req);
+  }
+  return fetch(req);
+}
+
+async function pruneNotificationMessageCache() {
+  const cache = await caches.open(MESSAGE_CACHE);
+  const requests = await cache.keys();
+  await Promise.all(requests.map(async (request) => {
+    const cached = await cache.match(request);
+    const cachedAt = Number(cached?.headers.get("X-Rolltop-Cached-At") || 0);
+    if (!cachedAt || Date.now() - cachedAt > MESSAGE_CACHE_TTL_MS) {
+      await cache.delete(request);
+    }
+  }));
+}
 
 self.addEventListener("message", (event) => {
   const data = event.data || {};

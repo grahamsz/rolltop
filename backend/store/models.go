@@ -384,25 +384,26 @@ type ContactAutocomplete struct {
 
 // SyncRun is the persisted progress/status row for a sync or maintenance operation.
 type SyncRun struct {
-	ID               int64
-	UserID           int64
-	AccountID        int64
-	Status           string
-	StartedAt        time.Time
-	FinishedAt       time.Time
-	UpdatedAt        time.Time
-	MessagesSeen     int
-	MessagesStored   int
-	MessagesSkipped  int
-	NewMessages      int
-	LatestNewFrom    string
-	LatestNewSubject string
-	MessagesTotal    int
-	MailboxesDone    int
-	MailboxesTotal   int
-	CurrentMailbox   string
-	CurrentUID       uint32
-	Error            string
+	ID                 int64
+	UserID             int64
+	AccountID          int64
+	Status             string
+	StartedAt          time.Time
+	FinishedAt         time.Time
+	UpdatedAt          time.Time
+	MessagesSeen       int
+	MessagesStored     int
+	MessagesSkipped    int
+	NewMessages        int
+	LatestNewFrom      string
+	LatestNewSubject   string
+	LatestNewMessageID int64
+	MessagesTotal      int
+	MailboxesDone      int
+	MailboxesTotal     int
+	CurrentMailbox     string
+	CurrentUID         uint32
+	Error              string
 }
 
 // WebPushSubscription stores one browser Push API endpoint for a user.

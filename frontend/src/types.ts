@@ -354,6 +354,7 @@ export type SyncRun = {
   new_messages: number;
   latest_new_from: string;
   latest_new_subject: string;
+  latest_new_message_id: number;
   messages_total: number;
   mailboxes_done: number;
   mailboxes_total: number;

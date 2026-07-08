@@ -191,6 +191,14 @@ function searchListURL(query: string, page: number) {
   return `/api/search?${q}`;
 }
 
+function messageURL(id: string | number, showImages: boolean, highlightQuery = "") {
+  const params = new URLSearchParams();
+  if (showImages) params.set("images", "1");
+  if (highlightQuery.trim()) params.set("q", highlightQuery.trim());
+  const q = params.toString() ? `?${params}` : "";
+  return `/api/messages/${id}${q}`;
+}
+
 function prefetchJSON<T>(url: string) {
   void getJSON<T>(url).catch(() => undefined);
 }
@@ -230,20 +238,17 @@ export const api = {
     domains.slice(0, 40).forEach((domain) => q.append("domain", domain));
     return getJSON<{ icons: Record<string, string> }>(`/api/brand-icons?${q}`);
   },
-  message: (id: string, showImages: boolean, highlightQuery = "") => {
-    const params = new URLSearchParams();
-    if (showImages) params.set("images", "1");
-    if (highlightQuery.trim()) params.set("q", highlightQuery.trim());
-    const q = params.toString() ? `?${params}` : "";
-    return getJSON<{
+  message: (id: string, showImages: boolean, highlightQuery = "") =>
+    getJSON<{
       message: { id: number; account_id: number; subject: string; mailbox_id: number };
       thread: ThreadMessage[];
       compose_from: string;
       from_identities: ComposeIdentity[];
       mailbox_id: number;
       conversation: number;
-    }>(`/api/messages/${id}${q}`);
-  },
+    }>(messageURL(id, showImages, highlightQuery)),
+  prefetchMessage: (id: string | number, showImages = false, highlightQuery = "") =>
+    prefetchJSON(messageURL(id, showImages, highlightQuery)),
   messageLoadStatus: (id: string) =>
     getJSON<{
       conversation: number;

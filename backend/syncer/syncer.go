@@ -423,6 +423,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				progress.NewMessages++
 				progress.LatestNewFrom = msg.FromAddr
 				progress.LatestNewSubject = msg.Subject
+				progress.LatestNewMessageID = msg.ID
 			}
 			if item.UID > lastUIDs[mailboxName] {
 				lastUIDs[mailboxName] = item.UID
@@ -575,6 +576,7 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 				progress.NewMessages++
 				progress.LatestNewFrom = msg.FromAddr
 				progress.LatestNewSubject = msg.Subject
+				progress.LatestNewMessageID = msg.ID
 			}
 			if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
 				return err

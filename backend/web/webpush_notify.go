@@ -21,12 +21,14 @@ type webPushProgress struct {
 }
 
 type webPushNotification struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
-	Tag   string `json:"tag"`
-	Icon  string `json:"icon"`
-	Badge string `json:"badge"`
-	URL   string `json:"url"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	Tag       string `json:"tag"`
+	Icon      string `json:"icon"`
+	Badge     string `json:"badge"`
+	URL       string `json:"url"`
+	APIURL    string `json:"api_url,omitempty"`
+	MessageID int64  `json:"message_id,omitempty"`
 }
 
 const webPushFreshRunWindow = 2 * time.Minute
@@ -158,14 +160,31 @@ func newMailWebPushNotification(count int, run store.SyncRun) webPushNotificatio
 			body = formatWebPushCount(count) + " new messages synced. Latest: " + subject
 		}
 	}
-	return webPushNotification{
-		Title: title,
-		Body:  body,
-		Tag:   "rolltop-new-mail",
-		Icon:  "/icon.svg?v=transparent-logo-v2",
-		Badge: "/icon.svg?v=transparent-logo-v2",
-		URL:   "/mail",
+	messageURL := "/mail"
+	apiURL := ""
+	if run.LatestNewMessageID > 0 {
+		messageURL = webPushMessageURL(run.LatestNewMessageID)
+		apiURL = "/api/messages/" + strconv.FormatInt(run.LatestNewMessageID, 10)
 	}
+	return webPushNotification{
+		Title:     title,
+		Body:      body,
+		Tag:       "rolltop-new-mail",
+		Icon:      "/icon.svg?v=transparent-logo-v2",
+		Badge:     "/icon.svg?v=transparent-logo-v2",
+		URL:       messageURL,
+		APIURL:    apiURL,
+		MessageID: run.LatestNewMessageID,
+	}
+}
+
+func webPushMessageURL(messageID int64) string {
+	if messageID <= 0 {
+		return "/mail"
+	}
+	params := url.Values{}
+	params.Set("back", "/mail")
+	return "/messages/" + strconv.FormatInt(messageID, 10) + "?" + params.Encode()
 }
 
 func displayWebPushSender(raw string) string {

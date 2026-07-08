@@ -487,16 +487,17 @@ func TestSyncRunStoresLatestNewMessageDetails(t *testing.T) {
 		t.Fatal(err)
 	}
 	progress := SyncProgress{
-		MessagesSeen:     1,
-		MessagesStored:   1,
-		NewMessages:      1,
-		LatestNewFrom:    "Alice Example <alice@example.test>",
-		LatestNewSubject: "Quarterly update",
-		MessagesTotal:    1,
-		MailboxesDone:    1,
-		MailboxesTotal:   1,
-		CurrentMailbox:   "INBOX",
-		CurrentUID:       42,
+		MessagesSeen:       1,
+		MessagesStored:     1,
+		NewMessages:        1,
+		LatestNewFrom:      "Alice Example <alice@example.test>",
+		LatestNewSubject:   "Quarterly update",
+		LatestNewMessageID: 42,
+		MessagesTotal:      1,
+		MailboxesDone:      1,
+		MailboxesTotal:     1,
+		CurrentMailbox:     "INBOX",
+		CurrentUID:         42,
 	}
 	if err := db.UpdateSyncRunProgress(ctx, user.ID, run.ID, progress); err != nil {
 		t.Fatal(err)
@@ -505,8 +506,8 @@ func TestSyncRunStoresLatestNewMessageDetails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.LatestNewFrom != progress.LatestNewFrom || stored.LatestNewSubject != progress.LatestNewSubject {
-		t.Fatalf("latest notification details = %q/%q", stored.LatestNewFrom, stored.LatestNewSubject)
+	if stored.LatestNewFrom != progress.LatestNewFrom || stored.LatestNewSubject != progress.LatestNewSubject || stored.LatestNewMessageID != progress.LatestNewMessageID {
+		t.Fatalf("latest notification details = %q/%q/%d", stored.LatestNewFrom, stored.LatestNewSubject, stored.LatestNewMessageID)
 	}
 
 	if err := db.FinishSyncRun(ctx, user.ID, run.ID, "ok", progress, ""); err != nil {
@@ -516,8 +517,8 @@ func TestSyncRunStoresLatestNewMessageDetails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if finished.LatestNewFrom != progress.LatestNewFrom || finished.LatestNewSubject != progress.LatestNewSubject {
-		t.Fatalf("finished notification details = %q/%q", finished.LatestNewFrom, finished.LatestNewSubject)
+	if finished.LatestNewFrom != progress.LatestNewFrom || finished.LatestNewSubject != progress.LatestNewSubject || finished.LatestNewMessageID != progress.LatestNewMessageID {
+		t.Fatalf("finished notification details = %q/%q/%d", finished.LatestNewFrom, finished.LatestNewSubject, finished.LatestNewMessageID)
 	}
 }
 
