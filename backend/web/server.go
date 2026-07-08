@@ -97,6 +97,8 @@ type Server struct {
 	attachmentRepairRunning   map[int64]map[int64]bool
 	senderContactIconMu       sync.Mutex
 	senderContactIconCache    map[int64]map[string]senderContactIconCacheEntry
+	composeIdentityMu         sync.Mutex
+	composeIdentityCache      map[int64]composeIdentityCacheEntry
 	webPushMu                 sync.Mutex
 	webPushSent               map[int64]webPushProgress
 	startedAt                 time.Time
@@ -281,6 +283,7 @@ func New(opts Options) (*Server, error) {
 		mailWarmRunning:           map[int64]bool{},
 		attachmentRepairRunning:   map[int64]map[int64]bool{},
 		senderContactIconCache:    map[int64]map[string]senderContactIconCacheEntry{},
+		composeIdentityCache:      map[int64]composeIdentityCacheEntry{},
 		webPushSent:               map[int64]webPushProgress{},
 		startedAt:                 time.Now().UTC(),
 	}

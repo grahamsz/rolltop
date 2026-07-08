@@ -124,6 +124,7 @@ func (s *Server) apiIMAPAccount(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
+	s.clearComposeIdentityCache(cu.User.ID)
 	writeJSON(w, map[string]any{"ok": true, "account": apiAccountFromStore(account)})
 }
 
@@ -331,6 +332,7 @@ func (s *Server) apiDeleteIMAPAccount(w http.ResponseWriter, r *http.Request, ac
 		if err := s.store.DeleteMailAccountForUser(ctx, cu.User.ID, accountID); err != nil {
 			return err
 		}
+		s.clearComposeIdentityCache(cu.User.ID)
 		s.notifyUserChanged(cu.User.ID)
 		return nil
 	})
@@ -538,6 +540,7 @@ func (s *Server) apiDeleteSMTPAccount(w http.ResponseWriter, r *http.Request, ac
 		s.serverError(w, err)
 		return
 	}
+	s.clearComposeIdentityCache(cu.User.ID)
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -606,6 +609,7 @@ func (s *Server) apiSMTPAccount(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "Could not save SMTP account.")
 		return
 	}
+	s.clearComposeIdentityCache(cu.User.ID)
 	writeJSON(w, map[string]any{"ok": true, "smtp_account": apiSMTPAccountFromStore(account)})
 }
 
@@ -654,6 +658,7 @@ func (s *Server) apiMailIdentity(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "Could not save identity.")
 		return
 	}
+	s.clearComposeIdentityCache(cu.User.ID)
 	identities, err := s.store.ListMailIdentitiesForUser(r.Context(), cu.User.ID)
 	if err != nil {
 		s.serverError(w, err)

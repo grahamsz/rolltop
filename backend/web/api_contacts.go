@@ -54,6 +54,7 @@ func (s *Server) apiContacts(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "could not save contact")
 			return
 		}
+		s.clearComposeIdentityCache(cu.User.ID)
 		writeJSON(w, map[string]any{"contact": apiContactFromStore(contact)})
 	default:
 		methodNotAllowed(w)
@@ -124,6 +125,7 @@ func (s *Server) apiContact(w http.ResponseWriter, r *http.Request, cu currentUs
 			writeAPIError(w, http.StatusBadRequest, "could not save contact")
 			return
 		}
+		s.clearComposeIdentityCache(cu.User.ID)
 		writeJSON(w, map[string]any{"contact": apiContactFromStore(contact)})
 	case http.MethodDelete:
 		if !s.verifyCSRF(w, r) {
@@ -137,6 +139,7 @@ func (s *Server) apiContact(w http.ResponseWriter, r *http.Request, cu currentUs
 			s.serverError(w, err)
 			return
 		}
+		s.clearComposeIdentityCache(cu.User.ID)
 		writeJSON(w, map[string]any{"ok": true})
 	default:
 		methodNotAllowed(w)
@@ -222,6 +225,7 @@ func (s *Server) apiContactIcon(w http.ResponseWriter, r *http.Request, cu curre
 			return
 		}
 		s.clearSenderContactIconCache(cu.User.ID)
+		s.clearComposeIdentityCache(cu.User.ID)
 		contact, err := s.store.GetContactForUser(r.Context(), cu.User.ID, contactID)
 		if err != nil {
 			s.serverError(w, err)
@@ -241,6 +245,7 @@ func (s *Server) apiContactIcon(w http.ResponseWriter, r *http.Request, cu curre
 			return
 		}
 		s.clearSenderContactIconCache(cu.User.ID)
+		s.clearComposeIdentityCache(cu.User.ID)
 		contact, err := s.store.GetContactForUser(r.Context(), cu.User.ID, contactID)
 		if err != nil {
 			s.serverError(w, err)
@@ -318,6 +323,7 @@ func (s *Server) apiAddSenderContact(w http.ResponseWriter, r *http.Request, mes
 		writeAPIError(w, http.StatusBadRequest, "could not add sender")
 		return
 	}
+	s.clearComposeIdentityCache(cu.User.ID)
 	writeJSON(w, map[string]any{"contact": apiContactFromStore(contact), "created": created})
 }
 
@@ -399,6 +405,9 @@ func (s *Server) apiImportContacts(w http.ResponseWriter, r *http.Request, cu cu
 			return
 		}
 		imported++
+	}
+	if imported > 0 || updated > 0 {
+		s.clearComposeIdentityCache(cu.User.ID)
 	}
 	writeJSON(w, map[string]any{"ok": true, "imported": imported, "updated": updated})
 }

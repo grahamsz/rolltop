@@ -121,6 +121,29 @@ func (s *Store) GetMessageForUser(ctx context.Context, userID, id int64) (Messag
 	return m, err
 }
 
+// GetMessageEnvelopeForUser loads one message without body_text/body_html. Hot
+// message-open paths use this so large cached display bodies are timed under body
+// hydration instead of the initial ID lookup.
+func (s *Store) GetMessageEnvelopeForUser(ctx context.Context, userID, id int64) (MessageRecord, error) {
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return MessageRecord{}, err
+	}
+	var m MessageRecord
+	var dateUnix, internalUnix, indexedAt, created, updated int64
+	err = db.QueryRowContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
+			date_unix, internal_date_unix, uid, size, blob_path, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
+		FROM messages WHERE user_id = ? AND id = ?`, userID, id).
+		Scan(&m.ID, &m.UserID, &m.AccountID, &m.MailboxID, &m.BlobID, &m.MessageIDHeader, &m.InReplyTo, &m.ReferencesHeader, &m.ThreadKey, &m.Subject, &m.LanguageCode, &m.FromAddr, &m.ToAddr, &m.CCAddr,
+			&dateUnix, &internalUnix, &m.UID, &m.Size, &m.BlobPath, &m.IsRead, &m.ReadSyncPending, &m.IsStarred, &m.StarSyncPending, &m.HasAttachments, &m.IsEncrypted, &m.IsSigned, &indexedAt, &created, &updated)
+	m.Date = unixTime(dateUnix)
+	m.InternalDate = unixTime(internalUnix)
+	m.AttachmentIndexedAt = unixTime(indexedAt)
+	m.CreatedAt = unixTime(created)
+	m.UpdatedAt = unixTime(updated)
+	return m, err
+}
+
 // GetMessageByBlobIDForUser finds the message that owns a blob record for one user.
 func (s *Store) GetMessageByBlobIDForUser(ctx context.Context, userID, blobID int64) (MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)

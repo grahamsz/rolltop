@@ -33,6 +33,9 @@ func (s *Server) displayBodiesForMessage(ctx context.Context, userID int64, msg 
 			}
 		}
 	}
+	if storedText, storedHTML, ok := s.storedDisplayBodies(ctx, userID, msg); ok {
+		return storedHTML, storedText, false
+	}
 	raw, err := s.rawMessageBytes(ctx, userID, msg)
 	if err != nil {
 		return htmlBody, textBody, fallbackIsPreviewOnly(textBody)
@@ -52,6 +55,17 @@ func (s *Server) displayBodiesForMessage(ctx context.Context, userID int64, msg 
 	}
 	htmlBody, textBody = s.persistDisplayBodies(ctx, userID, msg, htmlBody, textBody, parsedHTML, parsedText)
 	return htmlBody, textBody, false
+}
+
+func (s *Server) storedDisplayBodies(ctx context.Context, userID int64, msg store.MessageRecord) (string, string, bool) {
+	if s == nil || s.store == nil || msg.ID <= 0 {
+		return "", "", false
+	}
+	text, htmlBody, err := s.store.GetMessageBodiesForUser(ctx, userID, msg.ID)
+	if err != nil {
+		return "", "", false
+	}
+	return text, htmlBody, strings.TrimSpace(text) != "" || strings.TrimSpace(htmlBody) != ""
 }
 
 func (s *Server) displayBodyFromBlob(ctx context.Context, userID int64, msg store.MessageRecord) (string, string, bool) {

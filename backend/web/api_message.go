@@ -95,7 +95,7 @@ func (s *Server) apiMessage(w http.ResponseWriter, r *http.Request, id int64) {
 	}
 	timing := newSearchTiming()
 	stop := timing.measure(&timing.filter)
-	msg, err := s.store.GetMessageForUser(r.Context(), cu.User.ID, id)
+	msg, err := s.store.GetMessageEnvelopeForUser(r.Context(), cu.User.ID, id)
 	stop()
 	if store.IsNotFound(err) {
 		http.NotFound(w, r)

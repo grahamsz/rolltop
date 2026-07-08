@@ -217,6 +217,16 @@ func (s *Store) ListThreadMessagesForUser(ctx context.Context, userID int64, msg
 	if key == "" {
 		return []MessageRecord{msg}, nil
 	}
+	ids, err := s.threadMessageIDProbe(ctx, db, userID, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return []MessageRecord{msg}, nil
+	}
+	if len(ids) == 1 && ids[0] == msg.ID {
+		return []MessageRecord{msg}, nil
+	}
 	rows, err := db.QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
 			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
 		FROM messages WHERE user_id = ? AND thread_key = ? ORDER BY date_unix ASC, id ASC`, userID, key)
@@ -225,6 +235,23 @@ func (s *Store) ListThreadMessagesForUser(ctx context.Context, userID int64, msg
 	}
 	defer rows.Close()
 	return scanMessages(rows)
+}
+
+func (s *Store) threadMessageIDProbe(ctx context.Context, db *sql.DB, userID int64, key string) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id FROM messages WHERE user_id = ? AND thread_key = ? ORDER BY date_unix ASC, id ASC LIMIT 2`, userID, key)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, 2)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // ListThreadMessagesByKeysForUser groups messages by thread keys for conversation hydration.

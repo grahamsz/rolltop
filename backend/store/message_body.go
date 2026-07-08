@@ -47,6 +47,13 @@ func (s *Store) UpdateMessageBodies(ctx context.Context, userID, messageID int64
 	return nil
 }
 
+// GetMessageBodiesForUser loads stored display bodies for one user-owned message.
+func (s *Store) GetMessageBodiesForUser(ctx context.Context, userID, messageID int64) (string, string, error) {
+	var bodyText, bodyHTML string
+	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT body_text, body_html FROM messages WHERE user_id = ? AND id = ?`, userID, messageID).Scan(&bodyText, &bodyHTML)
+	return bodyText, bodyHTML, err
+}
+
 // CompactMessageBodiesBefore replaces old full bodies with previews after raw blobs age out.
 func (s *Store) CompactMessageBodiesBefore(ctx context.Context, cutoff time.Time, previewLimit, limit int) (int, error) {
 	if previewLimit <= 0 {

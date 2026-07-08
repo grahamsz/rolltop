@@ -499,6 +499,13 @@ type composeIdentity struct {
 	AutocryptEnabled       bool
 }
 
+const composeIdentityCacheTTL = 5 * time.Minute
+
+type composeIdentityCacheEntry struct {
+	choices   []composeIdentity
+	expiresAt time.Time
+}
+
 func pluginMailIdentityContext(identity composeIdentity) plugins.MailIdentityContext {
 	preferences := map[string]string{
 		"autocrypt_enabled": "false",
@@ -549,6 +556,17 @@ func (s *Server) composeIdentityChoices(ctx context.Context, cu currentUser) []c
 }
 
 func (s *Server) composeIdentityChoicesLite(ctx context.Context, cu currentUser) []composeIdentity {
+	if cached, ok := s.cachedComposeIdentityChoices(cu.User.ID); ok {
+		return cached
+	}
+	choices := s.loadComposeIdentityChoicesLite(ctx, cu)
+	if len(choices) > 0 {
+		s.rememberComposeIdentityChoices(cu.User.ID, choices)
+	}
+	return choices
+}
+
+func (s *Server) loadComposeIdentityChoicesLite(ctx context.Context, cu currentUser) []composeIdentity {
 	identities, err := s.store.ListCachedMailIdentitiesForUser(ctx, cu.User.ID)
 	if err == nil {
 		out := make([]composeIdentity, 0, len(identities))
@@ -562,6 +580,53 @@ func (s *Server) composeIdentityChoicesLite(ctx context.Context, cu currentUser)
 		}
 	}
 	return s.fallbackComposeIdentity(ctx, cu)
+}
+
+func (s *Server) cachedComposeIdentityChoices(userID int64) ([]composeIdentity, bool) {
+	if s == nil || userID <= 0 {
+		return nil, false
+	}
+	now := time.Now()
+	s.composeIdentityMu.Lock()
+	entry, ok := s.composeIdentityCache[userID]
+	s.composeIdentityMu.Unlock()
+	if !ok || now.After(entry.expiresAt) || len(entry.choices) == 0 {
+		return nil, false
+	}
+	return cloneComposeIdentities(entry.choices), true
+}
+
+func (s *Server) rememberComposeIdentityChoices(userID int64, choices []composeIdentity) {
+	if s == nil || userID <= 0 || len(choices) == 0 {
+		return
+	}
+	s.composeIdentityMu.Lock()
+	if s.composeIdentityCache == nil {
+		s.composeIdentityCache = map[int64]composeIdentityCacheEntry{}
+	}
+	s.composeIdentityCache[userID] = composeIdentityCacheEntry{
+		choices:   cloneComposeIdentities(choices),
+		expiresAt: time.Now().Add(composeIdentityCacheTTL),
+	}
+	s.composeIdentityMu.Unlock()
+}
+
+func (s *Server) clearComposeIdentityCache(userID int64) {
+	if s == nil || userID <= 0 {
+		return
+	}
+	s.composeIdentityMu.Lock()
+	delete(s.composeIdentityCache, userID)
+	s.composeIdentityMu.Unlock()
+}
+
+func cloneComposeIdentities(choices []composeIdentity) []composeIdentity {
+	if len(choices) == 0 {
+		return nil
+	}
+	out := make([]composeIdentity, len(choices))
+	copy(out, choices)
+	return out
 }
 
 func (s *Server) composeIdentityChoicesWithSecurity(ctx context.Context, cu currentUser, includeSecurity bool) []composeIdentity {
