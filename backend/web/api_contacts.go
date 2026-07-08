@@ -221,6 +221,7 @@ func (s *Server) apiContactIcon(w http.ResponseWriter, r *http.Request, cu curre
 			s.serverError(w, err)
 			return
 		}
+		s.clearSenderContactIconCache(cu.User.ID)
 		contact, err := s.store.GetContactForUser(r.Context(), cu.User.ID, contactID)
 		if err != nil {
 			s.serverError(w, err)
@@ -239,6 +240,7 @@ func (s *Server) apiContactIcon(w http.ResponseWriter, r *http.Request, cu curre
 			s.serverError(w, err)
 			return
 		}
+		s.clearSenderContactIconCache(cu.User.ID)
 		contact, err := s.store.GetContactForUser(r.Context(), cu.User.ID, contactID)
 		if err != nil {
 			s.serverError(w, err)

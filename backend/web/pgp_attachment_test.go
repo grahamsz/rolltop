@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +148,104 @@ func TestThreadMessageHydratesMissingAttachmentMetadataFromRawBlob(t *testing.T)
 	if len(after) != 1 || after[0].Filename != "alice.asc" {
 		t.Fatalf("stored attachments = %#v", after)
 	}
+}
+
+func TestThreadMessageRepairsLargeMissingAttachmentMetadataAsync(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "me@example.test", "Me", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, store.MailAccount{UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993, Username: user.Email, EncryptedPassword: "secret", UseTLS: true, Mailbox: "INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := "From: Alice <alice@example.test>\r\n" +
+		"To: Me <me@example.test>\r\n" +
+		"Subject: Large attachment repair\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/mixed; boundary=\"rolltop-large\"\r\n" +
+		"\r\n" +
+		"--rolltop-large\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		strings.Repeat("body\n", int(maxSyncAttachmentRepairBytes/5)+1) +
+		"\r\n--rolltop-large\r\n" +
+		"Content-Type: text/plain; name=\"large-note.txt\"\r\n" +
+		"Content-Disposition: attachment; filename=\"large-note.txt\"\r\n" +
+		"\r\n" +
+		"attachment body\r\n" +
+		"--rolltop-large--\r\n"
+	blobStore := blob.New(dir)
+	saved, err := blobStore.SaveRawMessage(user.ID, account.ID, mailbox.Name, 44, []byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Size <= maxSyncAttachmentRepairBytes {
+		t.Fatalf("test raw size %d did not exceed sync repair limit", saved.Size)
+	}
+	blobRec, err := db.CreateBlob(ctx, store.BlobRecord{UserID: user.ID, Kind: "message", Path: saved.Path, SHA256: saved.SHA256, Size: saved.Size})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := db.CreateMessage(ctx, store.CreateMessage{
+		UserID:         user.ID,
+		AccountID:      account.ID,
+		MailboxID:      mailbox.ID,
+		BlobID:         blobRec.ID,
+		ThreadKey:      "large-key-thread",
+		Subject:        "Large attachment repair",
+		FromAddr:       "Alice <alice@example.test>",
+		ToAddr:         "Me <me@example.test>",
+		Date:           time.Now(),
+		InternalDate:   time.Now(),
+		UID:            44,
+		Size:           saved.Size,
+		BlobPath:       saved.Path,
+		BodyText:       "stored preview",
+		IsRead:         true,
+		HasAttachments: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: db, blobs: blobStore}
+	views, _, err := server.threadViewsForMessage(ctx, currentUser{User: user}, msg, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("thread views = %#v", views)
+	}
+	if len(views[0].Attachments) != 0 {
+		t.Fatalf("large attachment repair blocked render: %#v", views[0].Attachments)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		after, err := db.ListAttachmentsForMessage(ctx, user.ID, msg.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(after) == 1 && after[0].Filename == "large-note.txt" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	after, err := db.ListAttachmentsForMessage(ctx, user.ID, msg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("async attachment repair did not finish: %#v", after)
 }
 
 func TestThreadMessageRepairsInlinePGPSignedStateFromRawBlob(t *testing.T) {

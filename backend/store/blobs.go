@@ -143,3 +143,53 @@ func (s *Store) ListAttachmentsForMessage(ctx context.Context, userID, messageID
 	}
 	return out, rows.Err()
 }
+
+// ListAttachmentsForMessages returns attachment metadata grouped by message ID.
+func (s *Store) ListAttachmentsForMessages(ctx context.Context, userID int64, messageIDs []int64) (map[int64][]Attachment, error) {
+	ids := make([]int64, 0, len(messageIDs))
+	seen := map[int64]bool{}
+	for _, id := range messageIDs {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	out := map[int64][]Attachment{}
+	if userID <= 0 || len(ids) == 0 {
+		return out, nil
+	}
+	for start := 0; start < len(ids); start += 500 {
+		end := start + 500
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, userID)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, message_id, blob_id, filename, content_type, content_id, is_inline, size, blob_path, created_at
+			FROM attachments WHERE user_id = ? AND message_id IN (`+sqlPlaceholders(len(chunk))+`) ORDER BY message_id, id`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var a Attachment
+			var created int64
+			var isInline int
+			if err := rows.Scan(&a.ID, &a.UserID, &a.MessageID, &a.BlobID, &a.Filename, &a.ContentType, &a.ContentID, &isInline, &a.Size, &a.BlobPath, &created); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			a.IsInline = isInline != 0
+			a.CreatedAt = unixTime(created)
+			out[a.MessageID] = append(out[a.MessageID], a)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}

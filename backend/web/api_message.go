@@ -4,10 +4,12 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -1066,50 +1068,96 @@ func (s *Server) threadViewsForMessageTimed(ctx context.Context, cu currentUser,
 	}
 	threadViews := make([]threadMessageView, 0, len(threadMessages))
 	previousBodies := make([]string, 0, len(threadMessages))
+	if timing != nil {
+		stop = timing.measure(&timing.hydrateSetup)
+	}
 	own := s.ownAddresses(ctx, cu.User)
 	remoteImageBlockingEnabled := s.pluginEnabled(ctx, plugins.RemoteImageBlocklist)
 	trustedImageSourcesEnabled := s.pluginEnabled(ctx, plugins.TrustedImageSources)
-	trustedDB, trustedDBErr := s.store.UserDB(ctx, cu.User.ID)
-	if trustedImageSourcesEnabled && trustedDBErr != nil {
-		return nil, msg, trustedDBErr
+	oneClickUnsubscribeEnabled := s.pluginEnabled(ctx, plugins.OneClickUnsubscribe)
+	var trustedDB *sql.DB
+	if trustedImageSourcesEnabled {
+		var trustedDBErr error
+		trustedDB, trustedDBErr = s.store.UserDB(ctx, cu.User.ID)
+		if trustedDBErr != nil {
+			stop()
+			return nil, msg, trustedDBErr
+		}
 	}
 	var imageBlockRules []string
 	if remoteImageBlockingEnabled {
 		if hook, ok := remoteImageBlocklistHook(); ok {
 			imageBlockRules, err = hook.ListRemoteImagePatterns(ctx, s.store.DB())
 			if err != nil {
+				stop()
 				return nil, msg, err
 			}
 		}
 	}
+	stop()
 	if timing != nil {
 		stop = timing.measure(&timing.match)
 	}
 	matchDetails := s.threadSearchMatchDetails(ctx, cu.User, threadMessages, query)
 	stop()
+	unreadIDs := make([]int64, 0, len(threadMessages))
+	for _, threadMsg := range threadMessages {
+		if !threadMsg.IsRead {
+			unreadIDs = append(unreadIDs, threadMsg.ID)
+		}
+	}
 	markedRead := false
 	defer func() {
 		if markedRead {
 			s.notifyUserChanged(cu.User.ID)
 		}
 	}()
-	for idx, threadMsg := range threadMessages {
+	if len(unreadIDs) > 0 {
 		if timing != nil {
 			stop = timing.measure(&timing.readState)
 		}
-		if !threadMsg.IsRead {
-			if err := s.store.MarkMessageReadForUser(ctx, cu.User.ID, threadMsg.ID, true, true); err == nil {
-				markedRead = true
-				threadMsg.IsRead = true
-				threadMsg.ReadSyncPending = true
-				if s.syncer != nil {
+		if err := s.store.MarkMessagesReadForUser(ctx, cu.User.ID, unreadIDs, true, true); err == nil {
+			markedRead = true
+			if s.syncer != nil {
+				for _, messageID := range unreadIDs {
 					go func(userID, messageID int64) {
 						_ = s.syncer.SyncReadStateForMessage(context.Background(), userID, messageID)
-					}(cu.User.ID, threadMsg.ID)
+					}(cu.User.ID, messageID)
 				}
 			}
 		}
 		stop()
+	}
+	messageIDs := make([]int64, 0, len(threadMessages))
+	for _, threadMsg := range threadMessages {
+		messageIDs = append(messageIDs, threadMsg.ID)
+	}
+	attachmentsByMessage := map[int64][]store.Attachment{}
+	if len(messageIDs) > 0 {
+		if timing != nil {
+			stop = timing.measure(&timing.attachments)
+		}
+		var err error
+		attachmentsByMessage, err = s.store.ListAttachmentsForMessages(ctx, cu.User.ID, messageIDs)
+		stop()
+		if err != nil {
+			return nil, msg, err
+		}
+	}
+	headerCache := map[int64]mail.Header{}
+	headerFor := func(threadMsg store.MessageRecord) mail.Header {
+		if header, ok := headerCache[threadMsg.ID]; ok {
+			return header
+		}
+		header := s.rawMessageHeader(ctx, cu.User.ID, threadMsg)
+		headerCache[threadMsg.ID] = header
+		return header
+	}
+	for idx, threadMsg := range threadMessages {
+		if !threadMsg.IsRead {
+			threadMsg.IsRead = true
+			threadMsg.ReadSyncPending = true
+		}
 		if timing != nil {
 			stop = timing.measure(&timing.security)
 		}
@@ -1121,12 +1169,9 @@ func (s *Server) threadViewsForMessageTimed(ctx context.Context, cu currentUser,
 		if timing != nil {
 			stop = timing.measure(&timing.attachments)
 		}
-		allAttachments, err := s.store.ListAttachmentsForMessage(ctx, cu.User.ID, threadMsg.ID)
-		if err != nil {
-			stop()
-			return nil, msg, err
-		}
-		allAttachments, err = s.ensureMessageAttachments(ctx, cu.User.ID, threadMsg, allAttachments)
+		allAttachments := attachmentsByMessage[threadMsg.ID]
+		expanded := idx == len(threadMessages)-1 || threadMsg.ID == msg.ID || len(threadMessages) == 1
+		allAttachments, err = s.ensureMessageAttachments(ctx, cu.User.ID, threadMsg, allAttachments, expanded)
 		stop()
 		if err != nil {
 			return nil, msg, err
@@ -1154,20 +1199,21 @@ func (s *Server) threadViewsForMessageTimed(ctx context.Context, cu currentUser,
 		if timing != nil {
 			stop = timing.measure(&timing.unsubscribe)
 		}
-		oneClickTarget, oneClickUnsub := s.oneClickUnsubscribeTarget(ctx, cu.User.ID, threadMsg)
-		if !s.pluginEnabled(ctx, plugins.OneClickUnsubscribe) {
-			oneClickUnsub = false
-		}
+		var oneClickUnsub bool
 		oneClickSentAt := time.Time{}
-		if oneClickUnsub {
-			oneClickSentAt = s.recentOneClickUnsubscribeSentAt(ctx, cu.User.ID, threadMsg, oneClickTarget.String())
+		if oneClickUnsubscribeEnabled {
+			oneClickTarget, ok := oneClickUnsubscribeTargetFromHeader(headerFor(threadMsg))
+			oneClickUnsub = ok
+			if oneClickUnsub {
+				oneClickSentAt = s.recentOneClickUnsubscribeSentAt(ctx, cu.User.ID, threadMsg, oneClickTarget.String())
+			}
 		}
 		stop()
 		attachmentMatches, attachmentContentMatched, attachmentMatchTerms := attachmentSearchMatches(attachments, matchDetails[threadMsg.ID], query)
 		if timing != nil {
 			stop = timing.measure(&timing.headers)
 		}
-		headerDetails := s.messageHeaderDetails(ctx, cu.User.ID, threadMsg)
+		headerDetails := messageHeaderDetailsFromHeader(headerFor(threadMsg), threadMsg)
 		stop()
 		threadViews = append(threadViews, threadMessageView{
 			Message:                  displayMsg,
@@ -1192,7 +1238,7 @@ func (s *Server) threadViewsForMessageTimed(ctx context.Context, cu currentUser,
 			HasRemoteImages:          remoteImages,
 			ImagesAllowed:            imagesAllowed,
 			ImageBlockRules:          imageBlockRules,
-			Expanded:                 idx == len(threadMessages)-1 || threadMsg.ID == msg.ID || len(threadMessages) == 1,
+			Expanded:                 expanded,
 			CanReplyAll:              canReplyAll(threadMsg, threadMessages, own),
 		})
 		previousBodies = append(previousBodies, sourceText)
@@ -1235,17 +1281,34 @@ func (s *Server) ensureMessageSecurityState(ctx context.Context, userID int64, m
 	return msg, nil
 }
 
-func (s *Server) ensureMessageAttachments(ctx context.Context, userID int64, msg store.MessageRecord, current []store.Attachment) ([]store.Attachment, error) {
+const maxSyncAttachmentRepairBytes int64 = 256 * 1024
+
+func (s *Server) ensureMessageAttachments(ctx context.Context, userID int64, msg store.MessageRecord, current []store.Attachment, allowSyncRepair bool) ([]store.Attachment, error) {
 	if len(current) > 0 || !msg.HasAttachments {
 		return current, nil
 	}
+	if !allowSyncRepair || msg.Size <= 0 || msg.Size > maxSyncAttachmentRepairBytes {
+		s.repairMessageAttachmentsAsync(userID, msg)
+		return current, nil
+	}
+	repaired, err := s.repairMessageAttachments(ctx, userID, msg)
+	if err != nil {
+		return nil, err
+	}
+	if len(repaired) == 0 {
+		return current, nil
+	}
+	return repaired, nil
+}
+
+func (s *Server) repairMessageAttachments(ctx context.Context, userID int64, msg store.MessageRecord) ([]store.Attachment, error) {
 	raw, err := s.rawMessageBytes(ctx, userID, msg)
 	if err != nil {
-		return current, nil
+		return nil, nil
 	}
 	parsed, err := mailparse.Parse(raw)
 	if err != nil || len(parsed.Files) == 0 {
-		return current, nil
+		return nil, nil
 	}
 	if err := s.store.DeleteAttachmentsForMessage(ctx, userID, msg.ID); err != nil {
 		return nil, err
@@ -1266,6 +1329,50 @@ func (s *Server) ensureMessageAttachments(ctx context.Context, userID int64, msg
 		}
 	}
 	return s.store.ListAttachmentsForMessage(ctx, userID, msg.ID)
+}
+
+func (s *Server) repairMessageAttachmentsAsync(userID int64, msg store.MessageRecord) {
+	if s == nil || s.store == nil || userID <= 0 || msg.ID <= 0 || !msg.HasAttachments {
+		return
+	}
+	s.attachmentRepairMu.Lock()
+	if s.attachmentRepairRunning == nil {
+		s.attachmentRepairRunning = map[int64]map[int64]bool{}
+	}
+	runningByUser := s.attachmentRepairRunning[userID]
+	if runningByUser == nil {
+		runningByUser = map[int64]bool{}
+		s.attachmentRepairRunning[userID] = runningByUser
+	}
+	if runningByUser[msg.ID] {
+		s.attachmentRepairMu.Unlock()
+		return
+	}
+	runningByUser[msg.ID] = true
+	s.attachmentRepairMu.Unlock()
+
+	go func() {
+		defer func() {
+			s.attachmentRepairMu.Lock()
+			if runningByUser := s.attachmentRepairRunning[userID]; runningByUser != nil {
+				delete(runningByUser, msg.ID)
+				if len(runningByUser) == 0 {
+					delete(s.attachmentRepairRunning, userID)
+				}
+			}
+			s.attachmentRepairMu.Unlock()
+		}()
+		repairCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		attachments, err := s.repairMessageAttachments(repairCtx, userID, msg)
+		if err != nil {
+			log.Printf("repair attachments user_id=%d message_id=%d: %v", userID, msg.ID, err)
+			return
+		}
+		if len(attachments) > 0 {
+			s.notifyUserChanged(userID)
+		}
+	}()
 }
 
 type threadSearchMatch struct {

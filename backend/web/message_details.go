@@ -22,6 +22,7 @@ import (
 var errOneClickUnavailable = errors.New("one-click unsubscribe unavailable")
 
 const oneClickUnsubscribeRecentWindow = 7 * 24 * time.Hour
+const maxRawHeaderBytes = 256 * 1024
 
 type messageHeaderDetail struct {
 	Label string
@@ -32,7 +33,10 @@ type messageHeaderDetail struct {
 // used first, while raw headers fill in reply-to, DKIM, return-path, and date
 // details when the original message is available.
 func (s *Server) messageHeaderDetails(ctx context.Context, userID int64, msg store.MessageRecord) []messageHeaderDetail {
-	header := s.rawMessageHeader(ctx, userID, msg)
+	return messageHeaderDetailsFromHeader(s.rawMessageHeader(ctx, userID, msg), msg)
+}
+
+func messageHeaderDetailsFromHeader(header mail.Header, msg store.MessageRecord) []messageHeaderDetail {
 	var details []messageHeaderDetail
 	add := func(label, value string) {
 		value = strings.TrimSpace(value)
@@ -69,11 +73,15 @@ func (s *Server) hasOneClickUnsubscribe(ctx context.Context, userID int64, msg s
 // oneClickUnsubscribeTarget accepts only RFC8058-style messages: the header must
 // opt into one-click POST and provide an HTTPS List-Unsubscribe URL.
 func (s *Server) oneClickUnsubscribeTarget(ctx context.Context, userID int64, msg store.MessageRecord) (*url.URL, bool) {
-	target, ok := oneClickUnsubscribeURL(s.rawMessageHeader(ctx, userID, msg))
+	target, ok := oneClickUnsubscribeTargetFromHeader(s.rawMessageHeader(ctx, userID, msg))
 	if !ok {
 		return nil, false
 	}
 	return target, true
+}
+
+func oneClickUnsubscribeTargetFromHeader(header mail.Header) (*url.URL, bool) {
+	return oneClickUnsubscribeURL(header)
 }
 
 func (s *Server) recentOneClickUnsubscribeSentAt(ctx context.Context, userID int64, msg store.MessageRecord, target string) time.Time {
@@ -150,17 +158,18 @@ func (s *Server) rawMessageHeader(ctx context.Context, userID int64, msg store.M
 		f, err := s.blobs.OpenUserBlob(userID, msg.BlobPath)
 		if err == nil {
 			defer f.Close()
-			parsed, err := mail.ReadMessage(f)
-			if err == nil {
-				return parsed.Header
-			}
+			return readRawMessageHeader(f)
 		}
 	}
 	raw, err := s.rawMessageBytes(ctx, userID, msg)
 	if err != nil {
 		return mail.Header{}
 	}
-	parsed, err := mail.ReadMessage(bytes.NewReader(raw))
+	return readRawMessageHeader(bytes.NewReader(raw))
+}
+
+func readRawMessageHeader(r io.Reader) mail.Header {
+	parsed, err := mail.ReadMessage(io.LimitReader(r, maxRawHeaderBytes))
 	if err != nil {
 		return mail.Header{}
 	}

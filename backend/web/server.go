@@ -93,6 +93,10 @@ type Server struct {
 	mailWarmMu                sync.Mutex
 	mailWarmRunning           map[int64]bool
 	mailListCache             *mailListCache
+	attachmentRepairMu        sync.Mutex
+	attachmentRepairRunning   map[int64]map[int64]bool
+	senderContactIconMu       sync.Mutex
+	senderContactIconCache    map[int64]map[string]senderContactIconCacheEntry
 	webPushMu                 sync.Mutex
 	webPushSent               map[int64]webPushProgress
 	startedAt                 time.Time
@@ -275,6 +279,8 @@ func New(opts Options) (*Server, error) {
 		deletingIMAPAccounts:      map[int64]map[int64]bool{},
 		mailListCache:             newMailListCache(),
 		mailWarmRunning:           map[int64]bool{},
+		attachmentRepairRunning:   map[int64]map[int64]bool{},
+		senderContactIconCache:    map[int64]map[string]senderContactIconCacheEntry{},
 		webPushSent:               map[int64]webPushProgress{},
 		startedAt:                 time.Now().UTC(),
 	}

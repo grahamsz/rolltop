@@ -147,6 +147,14 @@ type senderVisualCacheEntry struct {
 	ok     bool
 }
 
+const senderContactIconCacheTTL = 10 * time.Minute
+
+type senderContactIconCacheEntry struct {
+	visual    apiSenderVisual
+	ok        bool
+	expiresAt time.Time
+}
+
 func (s *Server) preloadSenderVisualOptions(ctx context.Context, userID int64, views []threadMessageView, opts *senderVisualOptions, timing *searchTiming) {
 	if opts == nil {
 		return
@@ -173,18 +181,60 @@ func (s *Server) preloadSenderVisualOptions(ctx context.Context, userID int64, v
 			stop = timing.measure(&timing.senderContact)
 		}
 		opts.contactCache = map[string]senderVisualCacheEntry{}
+		missing := make([]string, 0, len(seenEmails))
+		now := time.Now()
+		s.senderContactIconMu.Lock()
+		if s.senderContactIconCache == nil {
+			s.senderContactIconCache = map[int64]map[string]senderContactIconCacheEntry{}
+		}
+		userCache := s.senderContactIconCache[userID]
 		for normalized := range seenEmails {
 			opts.contactCache[normalized] = senderVisualCacheEntry{}
+			if userCache == nil {
+				missing = append(missing, normalized)
+				continue
+			}
+			if cached, ok := userCache[normalized]; ok && now.Before(cached.expiresAt) {
+				opts.contactCache[normalized] = senderVisualCacheEntry{visual: cached.visual, ok: cached.ok}
+				continue
+			}
+			missing = append(missing, normalized)
 		}
-		if icons, err := s.store.ListContactIconsByEmailsForUser(ctx, userID, emails); err == nil {
-			for normalized, icon := range icons {
-				if strings.TrimSpace(icon.BlobPath) == "" {
-					continue
+		s.senderContactIconMu.Unlock()
+		if len(missing) > 0 {
+			fetched := make(map[string]senderVisualCacheEntry, len(missing))
+			for _, normalized := range missing {
+				fetched[normalized] = senderVisualCacheEntry{}
+			}
+			if icons, err := s.store.ListContactIconsByEmailsForUser(ctx, userID, missing); err == nil {
+				for normalized, icon := range icons {
+					if strings.TrimSpace(icon.BlobPath) == "" {
+						continue
+					}
+					fetched[normalized] = senderVisualCacheEntry{
+						visual: contactIconSenderVisual(icon),
+						ok:     true,
+					}
 				}
-				opts.contactCache[normalized] = senderVisualCacheEntry{
-					visual: contactIconSenderVisual(icon),
-					ok:     true,
+				expiresAt := time.Now().Add(senderContactIconCacheTTL)
+				s.senderContactIconMu.Lock()
+				if s.senderContactIconCache == nil {
+					s.senderContactIconCache = map[int64]map[string]senderContactIconCacheEntry{}
 				}
+				userCache := s.senderContactIconCache[userID]
+				if userCache == nil {
+					userCache = map[string]senderContactIconCacheEntry{}
+					s.senderContactIconCache[userID] = userCache
+				}
+				for normalized, entry := range fetched {
+					opts.contactCache[normalized] = entry
+					userCache[normalized] = senderContactIconCacheEntry{
+						visual:    entry.visual,
+						ok:        entry.ok,
+						expiresAt: expiresAt,
+					}
+				}
+				s.senderContactIconMu.Unlock()
 			}
 		}
 		stop()
@@ -331,6 +381,15 @@ func contactIconSenderVisual(icon store.ContactIcon) apiSenderVisual {
 		Kind:     "contact",
 		URL:      "/contacts/" + strconv.FormatInt(icon.ContactID, 10) + "/icon",
 	}
+}
+
+func (s *Server) clearSenderContactIconCache(userID int64) {
+	if s == nil || userID <= 0 {
+		return
+	}
+	s.senderContactIconMu.Lock()
+	delete(s.senderContactIconCache, userID)
+	s.senderContactIconMu.Unlock()
 }
 
 func senderBIMIIconMeta(ctx context.Context, hook plugins.BIMIHook, db *sql.DB, userID int64, domain string) (plugins.BIMIIconMeta, error) {

@@ -19,6 +19,40 @@ func (s *Store) MarkMessageReadForUser(ctx context.Context, userID, messageID in
 	return err
 }
 
+// MarkMessagesReadForUser changes local read state for a batch of user-owned messages.
+func (s *Store) MarkMessagesReadForUser(ctx context.Context, userID int64, messageIDs []int64, isRead bool, pending bool) error {
+	ids := make([]int64, 0, len(messageIDs))
+	seen := map[int64]bool{}
+	for _, id := range messageIDs {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if userID <= 0 || len(ids) == 0 {
+		return nil
+	}
+	now := nowUnix()
+	for start := 0; start < len(ids); start += 500 {
+		end := start + 500
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		args := make([]any, 0, len(chunk)+4)
+		args = append(args, boolInt(isRead), boolInt(pending), now, userID)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		if _, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET is_read = ?, read_sync_pending = ?, updated_at = ?
+			WHERE user_id = ? AND id IN (`+sqlPlaceholders(len(chunk))+`)`, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ClearReadSyncPending clears the pending read-state push flag after IMAP accepts it.
 func (s *Store) ClearReadSyncPending(ctx context.Context, userID, messageID int64) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET read_sync_pending = 0, updated_at = ? WHERE user_id = ? AND id = ?`,

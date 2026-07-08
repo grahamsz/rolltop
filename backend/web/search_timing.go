@@ -16,6 +16,7 @@ type searchTiming struct {
 	sender            time.Duration
 	bleve             time.Duration
 	hydrate           time.Duration
+	hydrateSetup      time.Duration
 	render            time.Duration
 	thread            time.Duration
 	match             time.Duration
@@ -104,6 +105,7 @@ func writeMessageTimingHeaders(w http.ResponseWriter, timing *searchTiming) {
 	w.Header().Set("Server-Timing", strings.Join([]string{
 		serverTimingMetric("lookup", timing.filter),
 		serverTimingMetric("hydrate", timing.hydrate),
+		serverTimingMetric("setup", timing.hydrateSetup),
 		serverTimingMetric("thread", timing.thread),
 		serverTimingMetric("match", timing.match),
 		serverTimingMetric("read_state", timing.readState),
