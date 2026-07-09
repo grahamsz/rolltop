@@ -33,11 +33,15 @@ func (s *Server) displayBodiesForMessage(ctx context.Context, userID int64, msg 
 			}
 		}
 	}
-	if storedText, storedHTML, ok := s.storedDisplayBodies(ctx, userID, msg); ok {
+	storedText, storedHTML, storedOK := s.storedDisplayBodies(ctx, userID, msg)
+	if strings.TrimSpace(storedHTML) != "" {
 		return storedHTML, storedText, false
 	}
 	raw, err := s.rawMessageBytes(ctx, userID, msg)
 	if err != nil {
+		if storedOK {
+			return storedHTML, storedText, fallbackIsPreviewOnly(storedText)
+		}
 		return htmlBody, textBody, fallbackIsPreviewOnly(textBody)
 	}
 	parsedText, parsedHTML, err := mailparse.ParseDisplayBody(bytes.NewReader(raw))

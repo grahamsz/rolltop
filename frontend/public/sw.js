@@ -1,6 +1,4 @@
 const STATIC_CACHE = "rolltop-static-v6";
-const MESSAGE_CACHE = "rolltop-notification-messages-v1";
-const MESSAGE_CACHE_TTL_MS = 2 * 60 * 1000;
 const STATIC_ASSETS = ["/", "/mail", "/manifest.webmanifest", "/icon.svg", "/icon.svg?v=transparent-logo-v2"];
 let securityUnlockUserID = 0;
 let securityUnlockState = { unlockedUntil: 0, keys: [] };
@@ -13,9 +11,9 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== STATIC_CACHE && key !== MESSAGE_CACHE).map((key) => caches.delete(key))))
-      .then(() => pruneNotificationMessageCache())
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((key) => key !== STATIC_CACHE).map((key) => caches.delete(key)))
+    )
   );
   self.clients.claim();
 });
@@ -26,11 +24,6 @@ self.addEventListener("fetch", (event) => {
   if (req.method !== "GET" || url.origin !== self.location.origin) return;
 
   if (url.pathname.startsWith("/brand-icons/") || url.pathname.startsWith("/plugins/")) return;
-
-  if (isNotificationMessageRequest(req, url)) {
-    event.respondWith(notificationMessageResponse(req));
-    return;
-  }
 
   if (url.pathname.startsWith("/api/")) return;
 
@@ -109,66 +102,19 @@ async function warmNotificationMessage(data) {
   const url = new URL(apiURL, self.location.origin);
   if (!isNotificationMessageAPIURL(url)) return;
   try {
-    const response = await fetch(apiURL, {
+    await fetch(apiURL, {
       method: "GET",
       headers: { Accept: "application/json" },
       credentials: "include",
       cache: "reload"
     });
-    if (!response.ok) return;
-    await rememberNotificationMessage(apiURL, response);
-    await pruneNotificationMessageCache();
   } catch {
     // Navigation should still work if the background warm-up misses.
   }
 }
 
-function isNotificationMessageRequest(req, url) {
-  return req.method === "GET" && url.origin === self.location.origin && isNotificationMessageAPIURL(url);
-}
-
 function isNotificationMessageAPIURL(url) {
   return /^\/api\/messages\/\d+$/.test(url.pathname) && !url.search;
-}
-
-async function rememberNotificationMessage(apiURL, response) {
-  const body = await response.clone().arrayBuffer();
-  const headers = new Headers(response.headers);
-  headers.set("X-Rolltop-Cached-At", String(Date.now()));
-  headers.set("Cache-Control", "private, max-age=120");
-  const cached = new Response(body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers
-  });
-  const cache = await caches.open(MESSAGE_CACHE);
-  await cache.put(new Request(apiURL, { credentials: "include" }), cached);
-}
-
-async function notificationMessageResponse(req) {
-  const cache = await caches.open(MESSAGE_CACHE);
-  const cached = await cache.match(req);
-  if (cached) {
-    const cachedAt = Number(cached.headers.get("X-Rolltop-Cached-At") || 0);
-    if (cachedAt && Date.now() - cachedAt <= MESSAGE_CACHE_TTL_MS) {
-      await cache.delete(req);
-      return cached;
-    }
-    await cache.delete(req);
-  }
-  return fetch(req);
-}
-
-async function pruneNotificationMessageCache() {
-  const cache = await caches.open(MESSAGE_CACHE);
-  const requests = await cache.keys();
-  await Promise.all(requests.map(async (request) => {
-    const cached = await cache.match(request);
-    const cachedAt = Number(cached?.headers.get("X-Rolltop-Cached-At") || 0);
-    if (!cachedAt || Date.now() - cachedAt > MESSAGE_CACHE_TTL_MS) {
-      await cache.delete(request);
-    }
-  }));
 }
 
 self.addEventListener("message", (event) => {
