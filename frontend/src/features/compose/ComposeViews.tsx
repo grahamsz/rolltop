@@ -9,7 +9,14 @@ import type { ContactAutocomplete, ComposeAttachmentUpload, ComposeExistingAttac
 import { Icon, LogoMark } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { textToHTML } from "../../lib/html";
-import { androidNativeAvailable, loadAndroidSharedFiles, pickAndroidContactEmail } from "../../lib/androidNative";
+import {
+  androidContactSuggestions,
+  androidNativeAvailable,
+  loadAndroidSharedFiles,
+  pickAndroidContactEmail,
+  requestAndroidContactAccess
+} from "../../lib/androidNative";
+import type { AndroidContactAccess, NativeContactEmail } from "../../lib/androidNative";
 import type { RuntimePlugin } from "../../plugins/runtime";
 import { useComposeSecurity } from "../../plugins/composeSecurity";
 import type { ComposeSecurityUnlockState, OpenComposeSecurityUnlock } from "../../plugins/composeSecurity";
@@ -271,14 +278,18 @@ export function ComposeBox({
   useEffect(() => () => revokeAttachmentObjectURLs(attachmentsRef.current), []);
 
   // Android WebView can report the keyboard through VisualViewport before dvh
-  // catches up. Size the full composer from that live viewport so its action
-  // bar stays above the IME while the message content becomes scrollable.
+  // catches up. Size the composer within its container so the persistent mobile
+  // app bar remains visible and the action bar stays above the IME.
   useEffect(() => {
     if (inline) return;
     const viewport = window.visualViewport;
     const updateViewport = () => {
-      const height = Math.max(1, Math.round(viewport?.height || window.innerHeight));
-      const top = Math.max(0, Math.round(viewport?.offsetTop || 0));
+      const viewportTop = viewport?.offsetTop || 0;
+      const viewportBottom = viewportTop + (viewport?.height || window.innerHeight);
+      const containerTop = formRef.current?.parentElement?.getBoundingClientRect().top || 0;
+      const visibleTop = Math.max(viewportTop, containerTop);
+      const height = Math.max(1, Math.round(viewportBottom - visibleTop));
+      const top = Math.max(0, Math.round(visibleTop - containerTop));
       formRef.current?.style.setProperty("--compose-viewport-height", `${height}px`);
       formRef.current?.style.setProperty("--compose-viewport-top", `${top}px`);
     };
@@ -929,6 +940,14 @@ function recipientEmailAddresses(values: string[]): string[] {
   return out;
 }
 
+type RecipientSuggestion = {
+  key: string;
+  name: string;
+  email: string;
+  iconURL: string;
+  source: "rolltop" | "android";
+};
+
 function RecipientInput({
   value,
   required = false,
@@ -938,31 +957,73 @@ function RecipientInput({
   required?: boolean;
   onChange: (value: string) => void;
 }) {
-  const [suggestions, setSuggestions] = useState<ContactAutocomplete[]>([]);
+  const [rolltopSuggestions, setRolltopSuggestions] = useState<ContactAutocomplete[]>([]);
+  const [nativeSuggestions, setNativeSuggestions] = useState<NativeContactEmail[]>([]);
+  const [nativeAccess, setNativeAccess] = useState<AndroidContactAccess | "unknown">("unknown");
   const [focused, setFocused] = useState(false);
   const [pickingAndroidContact, setPickingAndroidContact] = useState(false);
+  const [requestingNativeAccess, setRequestingNativeAccess] = useState(false);
   const query = lastRecipientToken(value);
+  const nativeAvailable = androidNativeAvailable();
+  const suggestions = useMemo(
+    () => mergeRecipientSuggestions(rolltopSuggestions, nativeSuggestions),
+    [rolltopSuggestions, nativeSuggestions]
+  );
 
   useEffect(() => {
     let cancelled = false;
     if (!focused || query.length < 2) {
-      setSuggestions([]);
+      setRolltopSuggestions([]);
+      setNativeSuggestions([]);
       return;
     }
     api.contactAutocomplete(query).then((data) => {
-      if (!cancelled) setSuggestions(data.contacts || []);
+      if (!cancelled) setRolltopSuggestions(data.contacts || []);
     }).catch(() => {
-      if (!cancelled) setSuggestions([]);
+      if (!cancelled) setRolltopSuggestions([]);
     });
+    if (nativeAvailable && nativeAccess !== "denied") {
+      androidContactSuggestions(query).then((data) => {
+        if (cancelled) return;
+        setNativeAccess(data.access);
+        setNativeSuggestions(data.contacts);
+      }).catch(() => {
+        if (!cancelled) setNativeSuggestions([]);
+      });
+    } else {
+      setNativeSuggestions([]);
+    }
     return () => {
       cancelled = true;
     };
-  }, [focused, query]);
+  }, [focused, nativeAccess, nativeAvailable, query]);
 
-  function choose(contact: ContactAutocomplete) {
-    onChange(replaceLastRecipient(value, formatRecipient(contact)));
-    setSuggestions([]);
+  function choose(contact: RecipientSuggestion) {
+    onChange(replaceLastRecipient(value, formatNativeRecipient(contact.name, contact.email)));
+    setRolltopSuggestions([]);
+    setNativeSuggestions([]);
     setFocused(false);
+  }
+
+  async function enableAndroidContactSuggestions() {
+    if (requestingNativeAccess) return;
+    setRequestingNativeAccess(true);
+    try {
+      const access = await requestAndroidContactAccess();
+      setNativeAccess(access);
+      if (access !== "granted") {
+        setNativeSuggestions([]);
+        return;
+      }
+      const data = await androidContactSuggestions(query);
+      setNativeAccess(data.access);
+      setNativeSuggestions(data.contacts);
+    } catch {
+      setNativeAccess("permission_required");
+      setNativeSuggestions([]);
+    } finally {
+      setRequestingNativeAccess(false);
+    }
   }
 
   async function chooseAndroidContact() {
@@ -972,7 +1033,8 @@ function RecipientInput({
       const contact = await pickAndroidContactEmail();
       if (!contact) return;
       onChange(replaceLastRecipient(value, formatNativeRecipient(contact.name, contact.email)));
-      setSuggestions([]);
+      setRolltopSuggestions([]);
+      setNativeSuggestions([]);
     } catch {
       // The system picker may be unavailable or dismissed while the WebView is changing pages.
     } finally {
@@ -990,7 +1052,7 @@ function RecipientInput({
           onBlur={() => window.setTimeout(() => setFocused(false), 120)}
           onChange={(event) => onChange(event.target.value)}
         />
-        {androidNativeAvailable() ? (
+        {nativeAvailable ? (
           <button
             className="ghost native-contact-picker"
             type="button"
@@ -1002,15 +1064,35 @@ function RecipientInput({
           </button>
         ) : null}
       </div>
-      {focused && suggestions.length > 0 ? (
+      {focused && (suggestions.length > 0 || (nativeAvailable && nativeAccess === "permission_required")) ? (
         <div className="recipient-suggest">
           {suggestions.map((contact) => (
-            <button type="button" key={`${contact.contact_id}:${contact.email}`} onMouseDown={() => choose(contact)}>
-              {contact.icon_url ? <img src={contact.icon_url} alt="" /> : <span>{(contact.name || contact.email).slice(0, 1).toUpperCase()}</span>}
+            <button
+              type="button"
+              key={contact.key}
+              title={contact.source === "android" ? "Android contact" : undefined}
+              onMouseDown={() => choose(contact)}
+            >
+              {contact.iconURL ? <img src={contact.iconURL} alt="" /> : <span>{(contact.name || contact.email).slice(0, 1).toUpperCase()}</span>}
               <strong>{contact.name || contact.email}</strong>
               <small>{contact.email}</small>
             </button>
           ))}
+          {nativeAvailable && nativeAccess === "permission_required" ? (
+            <button
+              type="button"
+              className="native-contact-enable"
+              disabled={requestingNativeAccess}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                void enableAndroidContactSuggestions();
+              }}
+            >
+              <span><Icon name="group" /></span>
+              <strong>{requestingNativeAccess ? "Requesting access..." : "Enable Android contacts"}</strong>
+              <small>Device suggestions</small>
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -1028,11 +1110,37 @@ function replaceLastRecipient(value: string, next: string): string {
   return `${value.slice(0, match.index + 1)} ${next}, `;
 }
 
-function formatRecipient(contact: ContactAutocomplete): string {
-  const name = (contact.name || "").trim();
-  if (!name || name.toLowerCase() === contact.email.toLowerCase()) return contact.email;
-  const escaped = name.replaceAll('"', "'");
-  return `"${escaped}" <${contact.email}>`;
+function mergeRecipientSuggestions(
+  rolltop: ContactAutocomplete[],
+  android: NativeContactEmail[]
+): RecipientSuggestion[] {
+  const serverRows = rolltop.map((contact) => ({
+    key: `rolltop:${contact.contact_id}:${contact.email.toLowerCase()}`,
+    name: contact.name,
+    email: contact.email,
+    iconURL: contact.icon_url,
+    source: "rolltop" as const
+  }));
+  const nativeRows = android.map((contact) => ({
+    key: `android:${contact.email.toLowerCase()}`,
+    name: contact.name,
+    email: contact.email,
+    iconURL: "",
+    source: "android" as const
+  }));
+  const seen = new Set<string>();
+  const merged: RecipientSuggestion[] = [];
+  for (let index = 0; index < Math.max(serverRows.length, nativeRows.length); index++) {
+    for (const row of [serverRows[index], nativeRows[index]]) {
+      if (!row) continue;
+      const key = row.email.trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      merged.push(row);
+      if (merged.length === 8) return merged;
+    }
+  }
+  return merged;
 }
 
 function formatNativeRecipient(name: string, email: string): string {

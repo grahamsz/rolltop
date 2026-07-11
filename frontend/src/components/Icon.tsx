@@ -2,6 +2,7 @@
 // maps them to concrete icon components, aliases, and default weights.
 
 import {
+  AndroidLogo,
   Archive,
   ArrowBendUpLeft,
   ArrowBendUpRight,
@@ -22,6 +23,7 @@ import {
   Clock,
   CreditCard,
   DotsThreeVertical,
+  DownloadSimple,
   EnvelopeSimple,
   FileText,
   Flame,
@@ -67,6 +69,7 @@ import type { Icon as PhosphorIcon, IconWeight } from "@phosphor-icons/react";
 // Material-ish names, while this adapter decides which Phosphor glyph to render.
 const iconMap: Record<string, PhosphorIcon> = {
   add: Plus,
+  android: AndroidLogo,
   archive: Archive,
   bank: Bank,
   bookmark: BookmarkSimple,
@@ -84,6 +87,7 @@ const iconMap: Record<string, PhosphorIcon> = {
   credit_card: CreditCard,
   delete: Trash,
   draft: NotePencil,
+  download: DownloadSimple,
   edit: PencilSimple,
   expand_more: CaretDown,
   file_text: FileText,

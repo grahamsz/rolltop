@@ -8,6 +8,7 @@ import type { AppShellProps, LocationState, MessageTransferAction, MoveTarget, S
 import type { Bootstrap, Mailbox, SyncRun, User } from "../../types";
 import { Icon, LogoMark } from "../../components/Icon";
 import { folderTree, nodeContainsMailbox, type FolderNode } from "../../lib/folders";
+import { shouldAdvertiseAndroidApp } from "../../lib/androidNative";
 import { mailRoute, mailURL, searchRoute, searchURL, currentLocation } from "../../lib/routes";
 import { createPluginSet } from "../../plugins/registry";
 import { SearchAutocomplete, useSearchAutocomplete } from "./SearchAutocomplete";
@@ -369,6 +370,7 @@ function Sidebar({
   const activeMailbox = mailRoute(currentPath).mailboxID;
   const allMailActive = (currentPath === "/mail" || currentPath.startsWith("/mail/")) && !activeMailbox;
   const accountGroups = useMemo(() => sidebarAccountGroups(mailboxes), [mailboxes]);
+  const advertiseAndroidApp = shouldAdvertiseAndroidApp();
 
   function open(event: MouseEvent, url: string) {
     event.preventDefault();
@@ -540,6 +542,15 @@ function Sidebar({
         >
           <span className="folder-name"><Icon name="group" weight={currentPath === "/contacts" ? "bold" : undefined} />Contacts</span>
         </a>
+        {advertiseAndroidApp ? (
+          <>
+            <div className="side-section">Android app</div>
+            <a href="/android/rolltop.apk" className="folder android-app-download" download="rolltop.apk">
+              <span className="folder-name"><Icon name="android" weight="fill" />Get Rolltop for Android</span>
+              <Icon name="download" />
+            </a>
+          </>
+        ) : null}
       </div>
       <SidebarSync csrf={csrf} latest={latestSyncRun} activeRuns={activeSyncRuns} running={syncRunning} refreshChrome={refreshChrome} />
       {uptimeParts.length > 0 ? (

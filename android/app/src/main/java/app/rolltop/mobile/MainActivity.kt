@@ -28,6 +28,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -43,6 +44,9 @@ class MainActivity : ComponentActivity() {
     private var rolltopWebChromeClient: RolltopWebChromeClient? = null
     private val nativeShareStore by lazy { NativeShareStore(applicationContext) }
     private var updatePromptPolicy = UpdatePromptPolicy()
+    private val contactPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        androidWebBridge?.handleContactPermissionResult(granted)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -100,6 +104,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        androidWebBridge?.close()
         androidWebBridge = null
         rolltopWebChromeClient?.cancelPendingRequest()
         rolltopWebChromeClient = null
@@ -186,6 +191,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showWeb(sourceIntent: Intent?, restoredState: Bundle? = null) {
+        androidWebBridge?.close()
+        androidWebBridge = null
         val view = WebView(this)
         webView = view
         val serverOrigin = RolltopPrefs.serverUrl(this)
@@ -264,7 +271,9 @@ class MainActivity : ComponentActivity() {
             }
         }
         rolltopWebChromeClient = RolltopWebChromeClient(this).also { view.webChromeClient = it }
-        androidWebBridge = AndroidWebBridge(this, view, serverOrigin, nativeShareStore).also { it.attach() }
+        androidWebBridge = AndroidWebBridge(this, view, serverOrigin, nativeShareStore) {
+            contactPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+        }.also { it.attach() }
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.WHITE)
             addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -303,6 +312,8 @@ class MainActivity : ComponentActivity() {
 
     private fun showConnectionFailure(failedView: WebView, message: String) {
         if (webView !== failedView || isFinishing || isDestroyed) return
+        androidWebBridge?.close()
+        androidWebBridge = null
         webView = null
         failedView.stopLoading()
         showSetup(RolltopPrefs.serverUrl(this), message)

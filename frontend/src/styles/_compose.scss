@@ -347,6 +347,17 @@
   small {
     color: var(--muted);
   }
+
+  .native-contact-enable {
+    margin-top: 3px;
+    border-top: 1px solid var(--border);
+    border-radius: 0 0 5px 5px;
+
+    span svg {
+      width: 17px;
+      height: 17px;
+    }
+  }
 }
 
 .text-link {

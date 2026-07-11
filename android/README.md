@@ -30,7 +30,9 @@ The ordinary compose attachment and inline-photo buttons use Android's system fi
 
 ## Android Contacts
 
-Recipient fields show a contact-picker button in the Android app. It opens the system email contact picker and returns only the address the user selected. Rolltop intentionally does not request `READ_CONTACTS` or silently upload the device address book.
+Recipient fields always show a contact-picker button in the Android app. It opens the system email contact picker and returns only the address the user selected, without requiring broad contacts access.
+
+Typed recipient suggestions initially come from Rolltop's server-side contacts. The compose suggestion panel also offers an explicit **Enable Android contacts** action. Only that user action requests Android's runtime `READ_CONTACTS` permission. Once granted, each typed query uses Android's email contact filter locally, caps the result set, and merges it with Rolltop suggestions by email address. Device contacts are not imported, persisted, or uploaded to the server. If access is denied, server suggestions and the single-address system picker continue to work.
 
 ## Notifications
 

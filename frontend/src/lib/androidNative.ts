@@ -10,9 +10,16 @@ type NativeResponse = {
   error?: string;
 };
 
-type NativeContactEmail = {
+export type NativeContactEmail = {
   name: string;
   email: string;
+};
+
+export type AndroidContactAccess = "granted" | "permission_required" | "denied";
+
+export type AndroidContactSuggestionResult = {
+  access: AndroidContactAccess;
+  contacts: NativeContactEmail[];
 };
 
 type NativeSharedFile = {
@@ -37,11 +44,18 @@ const pendingRequests = new Map<string, { resolve: (value: unknown) => void; rej
 const shareLoads = new Map<string, Promise<File[]>>();
 const MAX_SHARED_FILE_COUNT = 32;
 const MAX_SHARED_UPLOAD_BYTES = 80 * 1024 * 1024;
+const MAX_NATIVE_CONTACT_RESULTS = 8;
+const MAX_NATIVE_CONTACT_QUERY_CHARS = 100;
 let attachedPort: AndroidMessagePort | null = null;
 let requestSequence = 1;
 
 export function androidNativeAvailable(): boolean {
   return Boolean(window.RolltopAndroid);
+}
+
+/** Show the APK offer only in an Android browser, never inside Rolltop's native WebView. */
+export function shouldAdvertiseAndroidApp(userAgent = window.navigator.userAgent): boolean {
+  return /\bAndroid\b/i.test(userAgent) && !androidNativeAvailable();
 }
 
 export async function pickAndroidContactEmail(): Promise<NativeContactEmail | null> {
@@ -53,6 +67,18 @@ export async function pickAndroidContactEmail(): Promise<NativeContactEmail | nu
     name: typeof contact.name === "string" ? contact.name.trim() : "",
     email: contact.email.trim()
   };
+}
+
+/** Query consented device contacts locally; this never sends contact rows to Rolltop. */
+export async function androidContactSuggestions(query: string): Promise<AndroidContactSuggestionResult> {
+  const normalized = query.trim().slice(0, MAX_NATIVE_CONTACT_QUERY_CHARS);
+  if (normalized.length < 2) return { access: "permission_required", contacts: [] };
+  return parseContactSuggestionResult(await nativeRequest("contactSuggestions", { query: normalized }));
+}
+
+/** Request contact access only in response to the labeled compose affordance. */
+export async function requestAndroidContactAccess(): Promise<AndroidContactAccess> {
+  return parseContactSuggestionResult(await nativeRequest("requestContactAccess", {})).access;
 }
 
 export function loadAndroidSharedFiles(shareId: string): Promise<File[]> {
@@ -137,6 +163,33 @@ function attachResponseListener(port: AndroidMessagePort) {
     if (response.ok) pending.resolve(response.result);
     else pending.reject(new Error(response.error || "Android could not complete the request."));
   });
+}
+
+function parseContactSuggestionResult(result: unknown): AndroidContactSuggestionResult {
+  if (!result || typeof result !== "object") throw new Error("Android returned an invalid contacts response.");
+  const value = result as { access?: unknown; contacts?: unknown };
+  const access = value.access;
+  if (access !== "granted" && access !== "permission_required" && access !== "denied") {
+    throw new Error("Android returned an invalid contacts permission state.");
+  }
+  const contacts: NativeContactEmail[] = [];
+  const seen = new Set<string>();
+  if (Array.isArray(value.contacts)) {
+    for (const row of value.contacts) {
+      if (!row || typeof row !== "object") continue;
+      const contact = row as Partial<NativeContactEmail>;
+      const email = typeof contact.email === "string" ? contact.email.trim() : "";
+      const key = email.toLowerCase();
+      if (!email.includes("@") || email.length > 320 || seen.has(key)) continue;
+      seen.add(key);
+      contacts.push({
+        name: typeof contact.name === "string" ? contact.name.trim().slice(0, 200) : "",
+        email
+      });
+      if (contacts.length === MAX_NATIVE_CONTACT_RESULTS) break;
+    }
+  }
+  return { access, contacts };
 }
 
 async function readBoundedBlob(response: Response, maxBytes: number, name: string): Promise<Blob> {

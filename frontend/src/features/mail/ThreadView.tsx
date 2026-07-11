@@ -8,6 +8,7 @@ import { api } from "../../api";
 import type { DatePrefs, LocationState, SecurityUnlockState, Toast } from "../../appTypes";
 import type { Attachment, Bootstrap, ComposeForm, ComposeIdentity, ContactPGPKey, HeaderDetail, Mailbox, MessageOriginalSource, SearchExplanation, ThreadMessage } from "../../types";
 import { Icon } from "../../components/Icon";
+import { androidNativeAvailable } from "../../lib/androidNative";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
 import { HighlightedText, highlightEmailDocument } from "../../lib/searchHighlight";
@@ -1398,9 +1399,11 @@ export function ThreadView({
     <>
       <div className="content-head">
         <div>
-          <button className="ghost" type="button" onClick={() => navigate(backURL)} title="Back to results">
-            <Icon name="arrow_back" />
-          </button>
+          {!androidNativeAvailable() ? (
+            <button className="ghost" type="button" onClick={() => navigate(backURL)} title="Back to results">
+              <Icon name="arrow_back" />
+            </button>
+          ) : null}
           <h1 className="thread-title">
             <HighlightedText text={displaySubject} query={highlightQuery} terms={highlightTerms} />
           </h1>

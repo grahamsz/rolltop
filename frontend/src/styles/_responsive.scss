@@ -6,6 +6,7 @@
     align-items: center;
     gap: 8px;
     padding: 8px 10px;
+    z-index: 125;
   }
 
   .mobile-menu-button {
@@ -67,7 +68,7 @@
     display: block;
     position: fixed;
     inset: 64px 0 0;
-    z-index: 28;
+    z-index: 128;
     border: 0;
     background: rgba(18, 24, 22, .34);
     padding: 0;
@@ -78,7 +79,7 @@
     top: 64px;
     left: 0;
     bottom: 0;
-    z-index: 29;
+    z-index: 129;
     width: min(84vw, 316px);
     height: auto;
     border-right: 1px solid var(--border);
@@ -354,7 +355,7 @@
   }
 
   .compose-popover {
-    inset: 0;
+    inset: 64px 0 0;
     width: auto;
     max-height: none;
     z-index: 120;
@@ -362,7 +363,7 @@
 
   .compose-page {
     position: fixed;
-    inset: 0;
+    inset: 64px 0 0;
     z-index: 120;
     min-height: 0;
     display: block;
@@ -373,9 +374,9 @@
     position: relative;
     top: var(--compose-viewport-top, 0px);
     width: 100%;
-    height: var(--compose-viewport-height, 100dvh);
+    height: var(--compose-viewport-height, calc(100dvh - 64px));
     min-height: 0;
-    max-height: var(--compose-viewport-height, 100dvh);
+    max-height: var(--compose-viewport-height, calc(100dvh - 64px));
     border: 0;
     border-radius: 0;
   }
@@ -406,13 +407,13 @@
   }
 
   .compose-window > .compose-scroll-region > .compose-body {
-    flex: 1 0 auto;
+    flex: 1 1 180px;
     min-height: 180px;
     overflow: visible;
   }
 
   .compose-window .compose-editor {
-    min-height: 180px;
+    min-height: 100%;
   }
 
   .compose-format {
