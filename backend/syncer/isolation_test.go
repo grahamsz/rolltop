@@ -30,6 +30,150 @@ type cancelingFetcher struct {
 	cancel context.CancelFunc
 }
 
+func TestNewMailEventsExcludeInitialInboxImport(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchSvc, err := search.Open(filepath.Join(dir, "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchSvc.Close()
+	user, err := db.CreateUser(ctx, "notification-events@example.test", "Notifications", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := []byte("12345678901234567890123456789012")
+	encrypted, err := mmcrypto.EncryptString(key, "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertMailAccount(ctx, account(user.ID, encrypted)); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	fetcher := &fakeFetcher{messages: map[int64][]syncer.FetchedMessage{
+		user.ID: {{Mailbox: "INBOX", UID: 1, InternalDate: now, Raw: []byte(rawMessage("first@example.test", "Initial import", "first", false))}},
+	}}
+	service := &syncer.Service{Store: db, Blobs: blob.New(dir), Search: searchSvc, Fetcher: fetcher}
+	if _, err := service.SyncUser(ctx, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	initial, count, cursor, err := db.NewMailEventsAfter(ctx, user.ID, 0, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 || cursor != 0 || len(initial) != 0 {
+		t.Fatalf("initial import events = %+v count=%d cursor=%d", initial, count, cursor)
+	}
+
+	fetcher.messages[user.ID] = append(fetcher.messages[user.ID], syncer.FetchedMessage{
+		Mailbox: "INBOX", UID: 2, InternalDate: now.Add(time.Minute),
+		Raw: []byte(rawMessage("second@example.test", "Incremental arrival", "second", false)),
+	})
+	run, err := service.SyncUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = db.GetSyncRunForUser(ctx, user.ID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, count, cursor, err := db.NewMailEventsAfter(ctx, user.ID, 0, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.NewMessages != 1 || count != 1 || cursor == 0 || len(events) != 1 || events[0].Subject != "Incremental arrival" {
+		t.Fatalf("incremental run=%+v events=%+v count=%d cursor=%d", run, events, count, cursor)
+	}
+
+	boxes, err := db.ListMailboxesForUser(ctx, user.ID)
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("mailboxes = %+v err=%v", boxes, err)
+	}
+	userDB, err := db.UserDB(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := userDB.ExecContext(ctx, `DELETE FROM new_mail_events WHERE user_id = ?`, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := userDB.ExecContext(ctx, `UPDATE mailboxes SET last_uid = 1 WHERE user_id = ? AND id = ?`, user.ID, boxes[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	recoveredRun, err := service.SyncUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredRun, err = db.GetSyncRunForUser(ctx, user.ID, recoveredRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, recoveredCount, _, err := db.NewMailEventsAfter(ctx, user.ID, 0, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredRun.NewMessages != 1 || recoveredRun.MessagesSkipped != 1 || recoveredCount != 1 || len(recovered) != 1 || recovered[0].Subject != "Incremental arrival" {
+		t.Fatalf("recovery run=%+v events=%+v count=%d", recoveredRun, recovered, recoveredCount)
+	}
+}
+
+func TestNewMailEventsIncludeFirstArrivalAfterEmptyInboxSync(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchSvc, err := search.Open(filepath.Join(dir, "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchSvc.Close()
+	user, err := db.CreateUser(ctx, "empty-inbox@example.test", "Empty Inbox", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := []byte("12345678901234567890123456789012")
+	encrypted, err := mmcrypto.EncryptString(key, "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertMailAccount(ctx, account(user.ID, encrypted)); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &fakeFetcher{messages: map[int64][]syncer.FetchedMessage{user.ID: {}}}
+	service := &syncer.Service{Store: db, Blobs: blob.New(dir), Search: searchSvc, Fetcher: fetcher}
+	if _, err := service.SyncUser(ctx, user.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	fetcher.messages[user.ID] = []syncer.FetchedMessage{{
+		Mailbox: "INBOX", UID: 1, InternalDate: time.Now().UTC(),
+		Raw: []byte(rawMessage("first@example.test", "First after empty", "first", false)),
+	}}
+	run, err := service.SyncUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = db.GetSyncRunForUser(ctx, user.ID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, count, cursor, err := db.NewMailEventsAfter(ctx, user.ID, 0, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.NewMessages != 1 || count != 1 || cursor == 0 || len(events) != 1 || events[0].Subject != "First after empty" {
+		t.Fatalf("first arrival run=%+v events=%+v count=%d cursor=%d", run, events, count, cursor)
+	}
+}
+
 func (f *cancelingFetcher) FetchMailbox(ctx context.Context, account store.MailAccount, mailbox string, afterUID uint32, handle func(syncer.FetchedMessage) error) error {
 	f.cancel()
 	return ctx.Err()

@@ -38,6 +38,10 @@ func (s *Server) apiMessagePath(w http.ResponseWriter, r *http.Request, rest str
 		s.apiMessage(w, r, id)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "prefetch" {
+		s.apiMessagePrefetch(w, r, id)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "load-status" {
 		s.apiMessageLoadStatus(w, r, id)
 		return
@@ -79,6 +83,38 @@ func (s *Server) apiMessagePath(w http.ResponseWriter, r *http.Request, rest str
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// apiMessagePrefetch hydrates locally cached display bodies without opening the
+// conversation. Unlike apiMessage, it must never mutate read state or queue IMAP flags.
+func (s *Server) apiMessagePrefetch(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	msg, err := s.store.GetMessageEnvelopeForUser(r.Context(), cu.User.ID, id)
+	if store.IsNotFound(err) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	thread, err := s.store.ListThreadMessagesForUser(r.Context(), cu.User.ID, msg)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	for _, threadMsg := range thread {
+		s.displayBodiesForMessage(r.Context(), cu.User.ID, threadMsg)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, map[string]any{"ok": true, "message_id": id, "thread_messages": len(thread)})
 }
 
 // apiMessage returns the full thread around one message. threadViewsForMessage may

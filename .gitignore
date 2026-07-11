@@ -13,6 +13,7 @@ plugins/*/frontend/dist/
 plugins/*/frontend_dist/
 plugins/*/backend/*.so
 android/.gradle/
+android/.kotlin/
 android/build/
 android/app/build/
 *.db

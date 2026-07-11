@@ -189,7 +189,7 @@ func (f *Fetcher) fetchUIDs(ctx context.Context, c *client.Client, mailbox strin
 	if batchSize == 0 {
 		batchSize = 10
 	}
-	section := &imap.BodySectionName{}
+	section := rawBodySection()
 	items := []imap.FetchItem{imap.FetchUid, imap.FetchInternalDate, imap.FetchRFC822Size, imap.FetchFlags, section.FetchItem()}
 	for i := 0; i < len(uids); i += int(batchSize) {
 		select {
@@ -281,7 +281,7 @@ func (f *Fetcher) FetchMessage(ctx context.Context, account store.MailAccount, m
 	if _, err := c.Select(mailbox, true); err != nil {
 		return syncer.FetchedMessage{}, fmt.Errorf("select mailbox %q read-only: %w", mailbox, err)
 	}
-	section := &imap.BodySectionName{}
+	section := rawBodySection()
 	items := []imap.FetchItem{imap.FetchUid, imap.FetchInternalDate, imap.FetchRFC822Size, imap.FetchFlags, section.FetchItem()}
 	seqset := new(imap.SeqSet)
 	seqset.AddNum(uid)
@@ -326,6 +326,13 @@ func (f *Fetcher) FetchMessage(ctx context.Context, account store.MailAccount, m
 		return syncer.FetchedMessage{}, fmt.Errorf("message not found mailbox %q UID %d", mailbox, uid)
 	}
 	return out, nil
+}
+
+// rawBodySection fetches message data without implicitly setting the IMAP
+// \Seen flag. Rolltop changes remote read state only through its explicit
+// read-state synchronization path.
+func rawBodySection() *imap.BodySectionName {
+	return &imap.BodySectionName{Peek: true}
 }
 
 // AppendMessage copies an already-sent RFC822 message into a remote mailbox and

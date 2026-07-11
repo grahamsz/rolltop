@@ -9,6 +9,7 @@ import type { ContactAutocomplete, ComposeAttachmentUpload, ComposeExistingAttac
 import { Icon, LogoMark } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { textToHTML } from "../../lib/html";
+import { androidNativeAvailable, loadAndroidSharedFiles, pickAndroidContactEmail } from "../../lib/androidNative";
 import type { RuntimePlugin } from "../../plugins/runtime";
 import { useComposeSecurity } from "../../plugins/composeSecurity";
 import type { ComposeSecurityUnlockState, OpenComposeSecurityUnlock } from "../../plugins/composeSecurity";
@@ -212,6 +213,7 @@ export function ComposeBox({
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const inlineMediaInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsRef = useRef<ComposeAttachment[]>([]);
+  const nativeShareID = !inline ? new URLSearchParams(window.location.search).get("android_share") || "" : "";
   const primaryIdentity = useMemo(() => identities.find((identity) => identity.is_primary) || identities[0] || null, [identities]);
   const availableExistingAttachments = form.available_attachments || [];
   const includedExistingAttachmentIDs = form.include_attachment_ids || [];
@@ -267,6 +269,21 @@ export function ComposeBox({
   }, [attachments]);
 
   useEffect(() => () => revokeAttachmentObjectURLs(attachmentsRef.current), []);
+
+  useEffect(() => {
+    if (!nativeShareID) return;
+    let cancelled = false;
+    void loadAndroidSharedFiles(nativeShareID)
+      .then((files) => {
+        if (!cancelled && files.length > 0) addFiles(files, false);
+      })
+      .catch((err) => {
+        if (!cancelled) addToast(err instanceof Error ? err.message : "Could not load Android shared files.", "error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [nativeShareID]);
 
   function setField<K extends keyof ComposeForm>(field: K, value: ComposeForm[K]) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -898,6 +915,7 @@ function RecipientInput({
 }) {
   const [suggestions, setSuggestions] = useState<ContactAutocomplete[]>([]);
   const [focused, setFocused] = useState(false);
+  const [pickingAndroidContact, setPickingAndroidContact] = useState(false);
   const query = lastRecipientToken(value);
 
   useEffect(() => {
@@ -922,15 +940,43 @@ function RecipientInput({
     setFocused(false);
   }
 
+  async function chooseAndroidContact() {
+    if (pickingAndroidContact) return;
+    setPickingAndroidContact(true);
+    try {
+      const contact = await pickAndroidContactEmail();
+      if (!contact) return;
+      onChange(replaceLastRecipient(value, formatNativeRecipient(contact.name, contact.email)));
+      setSuggestions([]);
+    } catch {
+      // The system picker may be unavailable or dismissed while the WebView is changing pages.
+    } finally {
+      setPickingAndroidContact(false);
+    }
+  }
+
   return (
     <div className="recipient-input">
-      <input
-        value={value}
-        required={required}
-        onFocus={() => setFocused(true)}
-        onBlur={() => window.setTimeout(() => setFocused(false), 120)}
-        onChange={(event) => onChange(event.target.value)}
-      />
+      <div className="recipient-input-control">
+        <input
+          value={value}
+          required={required}
+          onFocus={() => setFocused(true)}
+          onBlur={() => window.setTimeout(() => setFocused(false), 120)}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        {androidNativeAvailable() ? (
+          <button
+            className="ghost native-contact-picker"
+            type="button"
+            title="Choose Android contact"
+            disabled={pickingAndroidContact}
+            onClick={() => void chooseAndroidContact()}
+          >
+            <Icon name="group" />
+          </button>
+        ) : null}
+      </div>
       {focused && suggestions.length > 0 ? (
         <div className="recipient-suggest">
           {suggestions.map((contact) => (
@@ -962,6 +1008,12 @@ function formatRecipient(contact: ContactAutocomplete): string {
   if (!name || name.toLowerCase() === contact.email.toLowerCase()) return contact.email;
   const escaped = name.replaceAll('"', "'");
   return `"${escaped}" <${contact.email}>`;
+}
+
+function formatNativeRecipient(name: string, email: string): string {
+  const trimmedName = name.trim();
+  if (!trimmedName || trimmedName.toLowerCase() === email.toLowerCase()) return email;
+  return `"${trimmedName.replaceAll('"', "'")}" <${email}>`;
 }
 
 function delay(ms: number): Promise<void> {

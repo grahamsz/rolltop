@@ -445,7 +445,8 @@ export default function App() {
     if (!notificationsEnabled || !("Notification" in window) || Notification.permission !== "granted" || count <= 0) return;
     if (webPushSupported()) return;
     const messageID = run?.latest_new_message_id || 0;
-    const targetURL = messageID > 0 ? messageURL(messageID, "", [], "/mail") : "/mail";
+    const single = count === 1 && messageID > 0;
+    const targetURL = single ? messageURL(messageID, "", [], "/mail") : "/mail";
     const sender = displayNotificationSender(run?.latest_new_from || "");
     const subject = truncateNotificationText(run?.latest_new_subject || "", 110);
     const title = sender ? `rolltop - ${sender}` : "rolltop";
@@ -458,15 +459,17 @@ export default function App() {
       tag: "rolltop-new-mail",
       icon: notificationIconURL,
       badge: notificationIconURL,
-      data: { url: targetURL, messageID }
+      data: { url: targetURL, messageID: single ? messageID : 0 }
     });
     notification.onclick = () => {
       notification.close();
       window.focus();
-      if (messageID > 0) api.prefetchMessage(messageID);
+      if (single) api.prewarmMessage(messageID);
+      else api.prefetchMail(null, 1);
       navigate(targetURL);
     };
-    if (messageID > 0) api.prefetchMessage(messageID);
+    if (single) api.prewarmMessage(messageID);
+    else api.prefetchMail(null, 1);
   }, [navigate, notificationsEnabled]);
 
   // When someone returns to an idle tab, warm All Mail before they click it.

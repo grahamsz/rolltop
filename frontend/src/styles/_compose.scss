@@ -266,8 +266,23 @@
   flex: 1;
   min-width: 0;
 
+  .recipient-input-control {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+
   input {
+    flex: 1;
+    min-width: 0;
     width: 100%;
+  }
+
+  .native-contact-picker {
+    flex: 0 0 36px;
+    width: 36px;
+    height: 36px;
+    padding: 0;
   }
 }
 

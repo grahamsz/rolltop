@@ -43,6 +43,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiPushVAPIDPublicKey(w, r)
 	case path == "push/subscription":
 		s.apiPushSubscription(w, r)
+	case path == "notifications/new-mail":
+		s.apiNewMailNotifications(w, r)
 	case path == "plugins":
 		s.apiPlugins(w, r)
 	case strings.HasPrefix(path, "plugins/"):

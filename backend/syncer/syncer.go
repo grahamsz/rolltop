@@ -391,6 +391,15 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				return err
 			}
 			if exists {
+				if shouldNotifyNewMail(mailbox, mailboxLastUIDAtStart, item) {
+					msg, err := s.Store.GetMessageByUID(ctx, userID, account.ID, mailbox.ID, item.UID)
+					if err != nil {
+						return err
+					}
+					if err := s.recordNewMailEvent(ctx, userID, msg, &progress); err != nil {
+						return err
+					}
+				}
 				progress.MessagesSkipped++
 				if item.UID > lastUIDs[mailboxName] {
 					lastUIDs[mailboxName] = item.UID
@@ -420,10 +429,9 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			s.warmRemoteImagesForStoredMessage(msg, mailbox, parsed.HTML)
 			progress.MessagesStored++
 			if shouldNotifyNewMail(mailbox, mailboxLastUIDAtStart, item) {
-				progress.NewMessages++
-				progress.LatestNewFrom = msg.FromAddr
-				progress.LatestNewSubject = msg.Subject
-				progress.LatestNewMessageID = msg.ID
+				if err := s.recordNewMailEvent(ctx, userID, msg, &progress); err != nil {
+					return err
+				}
 			}
 			if item.UID > lastUIDs[mailboxName] {
 				lastUIDs[mailboxName] = item.UID
@@ -547,6 +555,15 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 		}
 		if exists {
 			if progress != nil {
+				if shouldNotifyNewMail(mailbox, plan.LastUID, item) {
+					msg, err := s.Store.GetMessageByUID(ctx, userID, account.ID, mailbox.ID, item.UID)
+					if err != nil {
+						return err
+					}
+					if err := s.recordNewMailEvent(ctx, userID, msg, progress); err != nil {
+						return err
+					}
+				}
 				progress.MessagesSkipped++
 				return s.updateSyncProgress(ctx, userID, runID, *progress)
 			}
@@ -573,10 +590,9 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 		if progress != nil {
 			progress.MessagesStored++
 			if shouldNotifyNewMail(mailbox, plan.LastUID, item) {
-				progress.NewMessages++
-				progress.LatestNewFrom = msg.FromAddr
-				progress.LatestNewSubject = msg.Subject
-				progress.LatestNewMessageID = msg.ID
+				if err := s.recordNewMailEvent(ctx, userID, msg, progress); err != nil {
+					return err
+				}
 			}
 			if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
 				return err
@@ -671,6 +687,18 @@ func (s *Service) updateSyncProgress(ctx context.Context, userID, runID int64, p
 		return err
 	}
 	s.notify(userID)
+	return nil
+}
+
+func (s *Service) recordNewMailEvent(ctx context.Context, userID int64, msg store.MessageRecord, progress *store.SyncProgress) error {
+	_, created, err := s.Store.RecordNewMailEvent(ctx, userID, msg)
+	if err != nil || !created {
+		return err
+	}
+	progress.NewMessages++
+	progress.LatestNewFrom = msg.FromAddr
+	progress.LatestNewSubject = msg.Subject
+	progress.LatestNewMessageID = msg.ID
 	return nil
 }
 

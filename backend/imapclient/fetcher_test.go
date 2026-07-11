@@ -4,7 +4,19 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/emersion/go-imap"
 )
+
+func TestRawBodySectionUsesPeek(t *testing.T) {
+	section := rawBodySection()
+	if !section.Peek {
+		t.Fatal("raw body section does not use PEEK")
+	}
+	if got, want := section.FetchItem(), imap.FetchItem("BODY.PEEK[]"); got != want {
+		t.Fatalf("raw body fetch item = %q, want %q", got, want)
+	}
+}
 
 func TestStopIdleSessionStopsCleanly(t *testing.T) {
 	stop := make(chan struct{})

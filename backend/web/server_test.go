@@ -140,6 +140,9 @@ func TestAndroidLatestMetadataUsesRequestHost(t *testing.T) {
 	if got.APKURL != "https://mail.example.test/android/rolltop.apk" {
 		t.Fatalf("apkUrl = %q", got.APKURL)
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("metadata cache-control = %q", got)
+	}
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/android/rolltop.apk", nil)
@@ -152,6 +155,9 @@ func TestAndroidLatestMetadataUsesRequestHost(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="rolltop.apk"` {
 		t.Fatalf("apk content-disposition = %q", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("apk cache-control = %q", got)
 	}
 	if rec.Body.String() != "apk" {
 		t.Fatalf("apk body = %q", rec.Body.String())

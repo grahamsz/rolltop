@@ -411,7 +411,13 @@ func (s *Server) composeFormForRequest(r *http.Request) (composeForm, error) {
 		}
 		return s.forwardAsAttachmentComposeForm(msg), nil
 	}
-	return composeForm{}, nil
+	return composeForm{
+		To:      strings.TrimSpace(r.URL.Query().Get("to")),
+		Cc:      strings.TrimSpace(r.URL.Query().Get("cc")),
+		Bcc:     strings.TrimSpace(r.URL.Query().Get("bcc")),
+		Subject: strings.TrimSpace(r.URL.Query().Get("subject")),
+		Body:    r.URL.Query().Get("body"),
+	}, nil
 }
 
 func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeForm) (store.MessageRecord, error) {

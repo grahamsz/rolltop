@@ -75,6 +75,7 @@ func (s *Server) handleAndroidLatest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metadata.APKURL = publicRequestBaseURL(r) + "/android/rolltop.apk"
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, metadata)
 }
 
@@ -90,6 +91,7 @@ func (s *Server) handleAndroidAPK(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
 	w.Header().Set("Content-Disposition", `attachment; filename="rolltop.apk"`)
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, full)
 }

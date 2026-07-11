@@ -4,6 +4,8 @@ package web
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,17 @@ import (
 	"rolltop/backend/blob"
 	"rolltop/backend/store"
 )
+
+func TestComposeFormUsesDirectLinkDefaults(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/compose?to=Alice+%3Calice%40example.test%3E&subject=Shared+photo&body=From+Android", nil)
+	form, err := (&Server{}).composeFormForRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if form.To != "Alice <alice@example.test>" || form.Subject != "Shared photo" || form.Body != "From Android" {
+		t.Fatalf("compose defaults = %+v", form)
+	}
+}
 
 func TestForwardComposePrefersSanitizedHTML(t *testing.T) {
 	form := forwardComposeForm(store.MessageRecord{

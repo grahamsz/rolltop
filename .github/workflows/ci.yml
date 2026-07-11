@@ -131,23 +131,107 @@ jobs:
           if-no-files-found: error
 
       - name: Build Android App
+        id: android-build
+        env:
+          ROLLTOP_ANDROID_KEYSTORE_BASE64: ${{ secrets.ROLLTOP_ANDROID_KEYSTORE_BASE64 }}
+          ROLLTOP_ANDROID_STORE_PASSWORD: ${{ secrets.ROLLTOP_ANDROID_STORE_PASSWORD }}
+          ROLLTOP_ANDROID_KEY_ALIAS: ${{ secrets.ROLLTOP_ANDROID_KEY_ALIAS }}
+          ROLLTOP_ANDROID_KEY_PASSWORD: ${{ secrets.ROLLTOP_ANDROID_KEY_PASSWORD }}
+          ROLLTOP_ANDROID_CERT_SHA256: ${{ secrets.ROLLTOP_ANDROID_CERT_SHA256 }}
         run: |
           mkdir -p build-artifacts/android
-          ./android/gradlew -p android :app:assembleDebug
-          cp android/app/build/outputs/apk/debug/app-debug.apk "build-artifacts/android/rolltop-android-${ROLLTOP_VERSION}-debug.apk"
-          mkdir -p frontend/public/android
-          cp android/app/build/outputs/apk/debug/app-debug.apk frontend/public/android/rolltop.apk
-          apk_sha256="$(sha256sum frontend/public/android/rolltop.apk | awk '{print $1}')"
-          version_code="$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' android/app/build.gradle.kts | head -n 1)"
-          version_name="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' android/app/build.gradle.kts | head -n 1)"
-          cat > frontend/public/android/latest.json <<EOF
+          rm -rf frontend/public/android
+
+          export ROLLTOP_ANDROID_VERSION_CODE="$((100000 + GITHUB_RUN_NUMBER))"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            export ROLLTOP_ANDROID_VERSION_NAME="${GITHUB_REF_NAME#v}"
+          else
+            export ROLLTOP_ANDROID_VERSION_NAME="0.2.${GITHUB_RUN_NUMBER}"
+          fi
+
+          signing_values=0
+          for value in \
+            "$ROLLTOP_ANDROID_KEYSTORE_BASE64" \
+            "$ROLLTOP_ANDROID_STORE_PASSWORD" \
+            "$ROLLTOP_ANDROID_KEY_ALIAS" \
+            "$ROLLTOP_ANDROID_KEY_PASSWORD" \
+            "$ROLLTOP_ANDROID_CERT_SHA256"; do
+            if [ -n "$value" ]; then signing_values=$((signing_values + 1)); fi
+          done
+          if [ "$signing_values" -ne 0 ] && [ "$signing_values" -ne 5 ]; then
+            echo "Android release signing is only partially configured." >&2
+            exit 1
+          fi
+
+          if [ "$signing_values" -eq 5 ]; then
+            export ROLLTOP_ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/rolltop-release.jks"
+            printf '%s' "$ROLLTOP_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ROLLTOP_ANDROID_KEYSTORE_FILE"
+          fi
+
+          ./android/gradlew -p android :app:testDebugUnitTest :app:lintDebug
+
+          if [ "$signing_values" -eq 5 ]; then
+            ./android/gradlew -p android :app:assembleRelease
+            apk_path="android/app/build/outputs/apk/release/app-release.apk"
+            metadata_path="android/app/build/outputs/apk/release/output-metadata.json"
+            artifact_suffix="release"
+            echo "server_update=true" >> "$GITHUB_OUTPUT"
+          else
+            if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+              echo "Tagged builds require the five ROLLTOP_ANDROID_* signing secrets." >&2
+              exit 1
+            fi
+            ./android/gradlew -p android :app:assembleDebug
+            apk_path="android/app/build/outputs/apk/debug/app-debug.apk"
+            metadata_path="android/app/build/outputs/apk/debug/output-metadata.json"
+            artifact_suffix="debug"
+            echo "server_update=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          apksigner_path="$(find "${ANDROID_HOME:?}/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
+          if [ -z "$apksigner_path" ]; then
+            echo "Could not locate Android apksigner." >&2
+            exit 1
+          fi
+          "$apksigner_path" verify --verbose --print-certs "$apk_path" | tee build-artifacts/android/apksigner-verification.txt
+          if [ "$signing_values" -eq 5 ]; then
+            expected_cert="$(printf '%s' "$ROLLTOP_ANDROID_CERT_SHA256" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+            actual_cert="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' build-artifacts/android/apksigner-verification.txt | head -n 1 | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+            if [[ ! "$expected_cert" =~ ^[0-9a-f]{64}$ ]] || [ "$actual_cert" != "$expected_cert" ]; then
+              echo "Android APK signer does not match ROLLTOP_ANDROID_CERT_SHA256." >&2
+              exit 1
+            fi
+          fi
+
+          cp "$apk_path" "build-artifacts/android/rolltop-android-${ROLLTOP_VERSION}-${artifact_suffix}.apk"
+          version_code="$(jq -r '.elements[0].versionCode' "$metadata_path")"
+          version_name="$(jq -r '.elements[0].versionName' "$metadata_path")"
+          if [ "$signing_values" -eq 5 ]; then
+            mkdir -p frontend/public/android
+            cp "$apk_path" frontend/public/android/rolltop.apk
+            apk_sha256="$(sha256sum frontend/public/android/rolltop.apk | awk '{print $1}')"
+            jq -n \
+              --argjson versionCode "$version_code" \
+              --arg versionName "$version_name" \
+              --arg apkUrl "/android/rolltop.apk" \
+              --arg sha256 "$apk_sha256" \
+              '{versionCode: $versionCode, versionName: $versionName, apkUrl: $apkUrl, sha256: $sha256}' \
+              > frontend/public/android/latest.json
+            test "$(jq -r '.versionCode' frontend/public/android/latest.json)" = "$version_code"
+            test "$(jq -r '.sha256' frontend/public/android/latest.json)" = "$(sha256sum frontend/public/android/rolltop.apk | awk '{print $1}')"
+          fi
+
           {
-            "versionCode": ${version_code:-1},
-            "versionName": "${version_name:-${ROLLTOP_VERSION}}",
-            "apkUrl": "/android/rolltop.apk",
-            "sha256": "${apk_sha256}"
-          }
-          EOF
+            echo "### Android Build"
+            echo
+            echo "Version: \`${version_name} (${version_code})\`"
+            echo "Variant: \`${artifact_suffix}\`"
+            if [ "$signing_values" -eq 5 ]; then
+              echo "Server self-update: published"
+            else
+              echo "Server self-update: not published; configure release-signing secrets"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Android App
         uses: actions/upload-artifact@v5
@@ -282,6 +366,25 @@ jobs:
             --label "org.opencontainers.image.version=${ROLLTOP_VERSION}" \
             -t "${ROLLTOP_IMAGE}:${ROLLTOP_VERSION}" \
             .
+
+      - name: Verify Docker Android Update Feed
+        if: steps.android-build.outputs.server_update == 'true'
+        run: |
+          container_id="$(docker create "${ROLLTOP_IMAGE}:${ROLLTOP_VERSION}")"
+          trap 'docker rm -f "$container_id" >/dev/null' EXIT
+          mkdir -p "$RUNNER_TEMP/rolltop-image-android"
+          docker cp "$container_id:/app/frontend/dist/android/latest.json" "$RUNNER_TEMP/rolltop-image-android/latest.json"
+          docker cp "$container_id:/app/frontend/dist/android/rolltop.apk" "$RUNNER_TEMP/rolltop-image-android/rolltop.apk"
+
+          cmp frontend/public/android/latest.json "$RUNNER_TEMP/rolltop-image-android/latest.json"
+          cmp frontend/public/android/rolltop.apk "$RUNNER_TEMP/rolltop-image-android/rolltop.apk"
+          expected_sha="$(jq -r '.sha256' "$RUNNER_TEMP/rolltop-image-android/latest.json")"
+          actual_sha="$(sha256sum "$RUNNER_TEMP/rolltop-image-android/rolltop.apk" | awk '{print $1}')"
+          test "$expected_sha" = "$actual_sha"
+
+          metadata_version="$(jq -r '.versionCode' "$RUNNER_TEMP/rolltop-image-android/latest.json")"
+          apk_version="$("${ANDROID_HOME:?}/build-tools/$(ls "${ANDROID_HOME}/build-tools" | sort -V | tail -n 1)/aapt" dump badging "$RUNNER_TEMP/rolltop-image-android/rolltop.apk" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" | head -n 1)"
+          test "$metadata_version" = "$apk_version"
 
       - name: Log In To GHCR
         if: github.event_name != 'pull_request'

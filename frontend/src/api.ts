@@ -247,8 +247,8 @@ export const api = {
       mailbox_id: number;
       conversation: number;
     }>(messageURL(id, showImages, highlightQuery)),
-  prefetchMessage: (id: string | number, showImages = false, highlightQuery = "") =>
-    prefetchJSON(messageURL(id, showImages, highlightQuery)),
+  prewarmMessage: (id: string | number) =>
+    prefetchJSON(`/api/messages/${id}/prefetch`),
   messageLoadStatus: (id: string) =>
     getJSON<{
       conversation: number;

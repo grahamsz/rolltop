@@ -161,10 +161,12 @@ func newMailWebPushNotification(count int, run store.SyncRun) webPushNotificatio
 		}
 	}
 	messageURL := "/mail"
-	apiURL := ""
-	if run.LatestNewMessageID > 0 {
+	apiURL := "/api/mail?page=1"
+	messageID := int64(0)
+	if count == 1 && run.LatestNewMessageID > 0 {
 		messageURL = webPushMessageURL(run.LatestNewMessageID)
-		apiURL = "/api/messages/" + strconv.FormatInt(run.LatestNewMessageID, 10)
+		apiURL = "/api/messages/" + strconv.FormatInt(run.LatestNewMessageID, 10) + "/prefetch"
+		messageID = run.LatestNewMessageID
 	}
 	return webPushNotification{
 		Title:     title,
@@ -174,7 +176,7 @@ func newMailWebPushNotification(count int, run store.SyncRun) webPushNotificatio
 		Badge:     "/icon.svg?v=transparent-logo-v2",
 		URL:       messageURL,
 		APIURL:    apiURL,
-		MessageID: run.LatestNewMessageID,
+		MessageID: messageID,
 	}
 }
 

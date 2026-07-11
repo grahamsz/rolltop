@@ -213,15 +213,11 @@ func safeSegment(value string) string {
 }
 
 func shouldNotifyNewMail(mailbox store.Mailbox, mailboxLastUIDAtStart uint32, item FetchedMessage) bool {
-	if mailboxLastUIDAtStart == 0 {
-		return false
-	}
 	if mailbox.Role != "inbox" && !strings.EqualFold(strings.TrimSpace(mailbox.Name), "INBOX") {
 		return false
 	}
-	when := item.InternalDate
-	if when.IsZero() {
-		return true
+	if mailboxLastUIDAtStart == 0 {
+		return !mailbox.StatusCheckedAt.IsZero() && mailbox.RemoteMessageCount == 0 && mailbox.RemoteUIDNext <= 1 && item.UID > 0
 	}
-	return !when.UTC().Before(time.Now().UTC().Add(-30 * time.Minute))
+	return item.UID > mailboxLastUIDAtStart
 }

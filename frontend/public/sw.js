@@ -98,9 +98,9 @@ function sameOriginPath(value, fallback) {
 
 async function warmNotificationMessage(data) {
   const apiURL = sameOriginPath(data?.apiURL, "");
-  if (!apiURL || !apiURL.startsWith("/api/messages/")) return;
+  if (!apiURL) return;
   const url = new URL(apiURL, self.location.origin);
-  if (!isNotificationMessageAPIURL(url)) return;
+  if (!isNotificationWarmAPIURL(url)) return;
   try {
     await fetch(apiURL, {
       method: "GET",
@@ -113,8 +113,9 @@ async function warmNotificationMessage(data) {
   }
 }
 
-function isNotificationMessageAPIURL(url) {
-  return /^\/api\/messages\/\d+$/.test(url.pathname) && !url.search;
+function isNotificationWarmAPIURL(url) {
+  if (/^\/api\/messages\/\d+\/prefetch$/.test(url.pathname) && !url.search) return true;
+  return url.pathname === "/api/mail" && url.searchParams.get("page") === "1" && Array.from(url.searchParams.keys()).length === 1;
 }
 
 self.addEventListener("message", (event) => {

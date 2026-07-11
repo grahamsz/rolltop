@@ -115,7 +115,14 @@ func TestNewMailWebPushNotificationBody(t *testing.T) {
 	if note.Body != "3 new messages synced. Latest: Quarterly update" {
 		t.Fatalf("body = %q", note.Body)
 	}
-	if note.URL != "/messages/42?back=%2Fmail" || note.APIURL != "/api/messages/42" || note.MessageID != 42 || note.Tag == "" {
+	if note.URL != "/mail" || note.APIURL != "/api/mail?page=1" || note.MessageID != 0 || note.Tag == "" {
+		t.Fatalf("notification = %+v", note)
+	}
+}
+
+func TestSingleNewMailWebPushDeepLinksAndPrefetchesWithoutOpening(t *testing.T) {
+	note := newMailWebPushNotification(1, store.SyncRun{LatestNewMessageID: 42})
+	if note.URL != "/messages/42?back=%2Fmail" || note.APIURL != "/api/messages/42/prefetch" || note.MessageID != 42 {
 		t.Fatalf("notification = %+v", note)
 	}
 }
