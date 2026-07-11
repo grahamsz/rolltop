@@ -858,6 +858,7 @@ function MessageList({
           <div
             className={`message-row ${conversation.is_read ? "read" : "unread"} ${selected ? "selected" : ""} ${movingOut ? "moving-out" : ""} ${highlightMessageIDs?.has(msg.id) ? "new-delivery" : ""}`}
             draggable
+            data-rolltop-message-drag="true"
             key={msg.id}
             role="link"
             tabIndex={0}
@@ -865,7 +866,12 @@ function MessageList({
             onKeyDown={(event) => openRowWithKeyboard(event, href)}
             onDragStart={(event) => startMessageDrag(event, conversation)}
           >
-            <label className="message-select" onClick={(event) => event.stopPropagation()} title="Select message">
+            <label
+              className={`message-select ${selected && selectedIDs.size > 1 ? "group-drag-source" : ""}`}
+              draggable={selected}
+              onClick={(event) => event.stopPropagation()}
+              title={selected && selectedIDs.size > 1 ? `Drag ${selectedIDs.size.toLocaleString()} selected messages or clear selection` : "Select message"}
+            >
               <input
                 type="checkbox"
                 checked={selected}

@@ -98,6 +98,25 @@
     transform: translateX(0);
   }
 
+  .sidebar.message-drag-active {
+    transition-duration: .12s;
+
+    .message-drop-target {
+      min-height: 44px;
+      background: rgba(196, 107, 68, .07);
+      box-shadow: inset 0 0 0 1px rgba(196, 107, 68, .16);
+    }
+
+    .message-drop-target.drop-target {
+      background: var(--hover);
+      box-shadow: inset 0 0 0 1px rgba(196, 107, 68, .34), inset 4px 0 0 var(--accent);
+    }
+
+    .folder-parent.message-drop-target .folder-main {
+      min-height: 44px;
+    }
+  }
+
   .sidebar-mobile-head {
     display: flex;
     align-items: center;
@@ -290,6 +309,10 @@
 
   .message-select {
     grid-column: 1;
+  }
+
+  .message-select.group-drag-source {
+    cursor: grab;
   }
 
   .star-action {

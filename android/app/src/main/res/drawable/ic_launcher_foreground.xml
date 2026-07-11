@@ -7,10 +7,10 @@
     <group
         android:pivotX="33.033203"
         android:pivotY="34.55764"
-        android:scaleX="0.70"
-        android:scaleY="0.70"
+        android:scaleX="0.65"
+        android:scaleY="0.65"
         android:translateX="20.966797"
-        android:translateY="19.44236">
+        android:translateY="17.94236">
         <group
             android:translateX="509.99438"
             android:translateY="175.90039">

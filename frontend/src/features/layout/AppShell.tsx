@@ -48,9 +48,57 @@ export function AppShell({
   children
 }: AppShellProps) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [messageDragActive, setMessageDragActive] = useState(false);
+  const dragOpenedSidebar = useRef(false);
+  const dragCloseTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (dragCloseTimer.current !== null) window.clearTimeout(dragCloseTimer.current);
+    };
+  }, []);
+
+  function clearDragCloseTimer() {
+    if (dragCloseTimer.current === null) return;
+    window.clearTimeout(dragCloseTimer.current);
+    dragCloseTimer.current = null;
+  }
+
+  function openMobileSidebar() {
+    clearDragCloseTimer();
+    dragOpenedSidebar.current = false;
+    setMobileSidebarOpen(true);
+  }
+
+  function closeMobileSidebar() {
+    clearDragCloseTimer();
+    dragOpenedSidebar.current = false;
+    setMobileSidebarOpen(false);
+  }
+
+  function beginMessageDrag(event: DragEvent<HTMLDivElement>) {
+    if (!isRolltopMessageDrag(event)) return;
+    clearDragCloseTimer();
+    setMessageDragActive(true);
+    if (!window.matchMedia("(max-width: 760px)").matches || mobileSidebarOpen) return;
+    dragOpenedSidebar.current = true;
+    setMobileSidebarOpen(true);
+  }
+
+  function endMessageDrag(event: DragEvent<HTMLDivElement>) {
+    if (!isRolltopMessageDrag(event)) return;
+    setMessageDragActive(false);
+    if (!dragOpenedSidebar.current) return;
+    clearDragCloseTimer();
+    dragCloseTimer.current = window.setTimeout(() => {
+      dragCloseTimer.current = null;
+      dragOpenedSidebar.current = false;
+      setMobileSidebarOpen(false);
+    }, 120);
+  }
 
   function composeFromMobile() {
-    setMobileSidebarOpen(false);
+    closeMobileSidebar();
     openCompose("");
   }
 
@@ -69,11 +117,15 @@ export function AppShell({
         openSecurityUnlock={openSecurityUnlock}
         lockSecurity={lockSecurity}
         logout={logout}
-        onMenu={() => setMobileSidebarOpen(true)}
+        onMenu={openMobileSidebar}
       />
-      <div className="app">
+      <div
+        className={`app ${messageDragActive ? "message-drag-active" : ""}`}
+        onDragStart={beginMessageDrag}
+        onDragEnd={endMessageDrag}
+      >
         {mobileSidebarOpen ? (
-          <button className="mobile-sidebar-scrim" type="button" aria-label="Close folders" onClick={() => setMobileSidebarOpen(false)} />
+          <button className="mobile-sidebar-scrim" type="button" aria-label="Close folders" onClick={closeMobileSidebar} />
         ) : null}
         <Sidebar
           mailboxes={mailboxes}
@@ -92,7 +144,8 @@ export function AppShell({
           refreshChrome={refreshChrome}
           onMoveMessages={onMoveMessages}
           mobileOpen={mobileSidebarOpen}
-          onClose={() => setMobileSidebarOpen(false)}
+          dragActive={messageDragActive}
+          onClose={closeMobileSidebar}
         />
         <main className="content">
           {accountNeedsPassword ? <AccountCredentialBanner notice={accountNotice} navigate={navigate} /> : null}
@@ -105,6 +158,15 @@ export function AppShell({
       </button>
     </>
   );
+}
+
+function isRolltopMessageDrag(event: DragEvent<HTMLElement>) {
+  const target = event.target;
+  if (target instanceof Element && target.closest("[data-rolltop-message-drag]")) return true;
+  const types = Array.from(event.dataTransfer.types);
+  return types.includes("application/x-rolltop-message-transfer") ||
+    types.includes("application/x-rolltop-messages") ||
+    types.includes("application/x-rolltop-message");
 }
 
 // This banner is intentionally high in the shell so a broken master key or
@@ -342,6 +404,7 @@ function Sidebar({
   refreshChrome,
   onMoveMessages,
   mobileOpen,
+  dragActive,
   onClose
 }: {
   mailboxes: Mailbox[];
@@ -360,6 +423,7 @@ function Sidebar({
   refreshChrome: () => Promise<Bootstrap | null>;
   onMoveMessages: (messageIDs: number[], mailbox: MoveTarget, action?: MessageTransferAction) => void;
   mobileOpen: boolean;
+  dragActive: boolean;
   onClose: () => void;
 }) {
   const [dropID, setDropID] = useState<number | null>(null);
@@ -371,6 +435,10 @@ function Sidebar({
   const allMailActive = (currentPath === "/mail" || currentPath.startsWith("/mail/")) && !activeMailbox;
   const accountGroups = useMemo(() => sidebarAccountGroups(mailboxes), [mailboxes]);
   const advertiseAndroidApp = shouldAdvertiseAndroidApp();
+
+  useEffect(() => {
+    if (!dragActive) setDropID(null);
+  }, [dragActive]);
 
   function open(event: MouseEvent, url: string) {
     event.preventDefault();
@@ -441,6 +509,7 @@ function Sidebar({
     if (ids.length > 0) {
       const crossAccount = sourceAccountIDs.some((accountID) => mailbox.account_id > 0 && accountID !== mailbox.account_id);
       onMoveMessages(ids, { id: mailbox.id, name: mailbox.name }, crossAccount || dragCopyRequested(event) ? "copy" : "move");
+      onClose();
     }
   }
 
@@ -460,7 +529,7 @@ function Sidebar({
     return (
       <a
         href={url}
-        className={`folder ${depth > 0 ? "folder-child" : ""} ${active ? "active" : ""} ${dropID === mailbox.id ? "drop-target" : ""}`}
+        className={`folder message-drop-target ${depth > 0 ? "folder-child" : ""} ${active ? "active" : ""} ${dropID === mailbox.id ? "drop-target" : ""}`}
         style={depth > 0 ? { paddingLeft: `${18 + depth * 18}px` } : undefined}
         key={mailbox.id}
         onClick={(event) => open(event, url)}
@@ -485,7 +554,7 @@ function Sidebar({
     return (
       <div className="folder-tree" key={node.mailbox.id}>
         <div
-          className={`folder folder-parent ${depth > 0 ? "folder-child" : ""} ${active ? "active" : ""} ${dropID === node.mailbox.id ? "drop-target" : ""}`}
+          className={`folder folder-parent message-drop-target ${depth > 0 ? "folder-child" : ""} ${active ? "active" : ""} ${dropID === node.mailbox.id ? "drop-target" : ""}`}
           style={depth > 0 ? { paddingLeft: `${18 + depth * 18}px` } : undefined}
           onDragEnter={(event) => onDragEnter(event, node.mailbox.id)}
           onDragOver={(event) => onDragOver(event, node.mailbox.id)}
@@ -506,7 +575,7 @@ function Sidebar({
   }
 
   return (
-    <aside className={`sidebar ${mobileOpen ? "open" : ""}`}>
+    <aside className={`sidebar ${mobileOpen ? "open" : ""} ${dragActive ? "message-drag-active" : ""}`}>
       <div className="sidebar-mobile-head">
         <span><Icon name="rolltop" />Folders</span>
         <button className="ghost" type="button" title="Close folders" aria-label="Close folders" onClick={onClose}><Icon name="close" /></button>

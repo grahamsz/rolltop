@@ -206,6 +206,7 @@ class MainActivity : ComponentActivity() {
             cacheMode = WebSettings.LOAD_DEFAULT
             mediaPlaybackRequiresUserGesture = true
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            setSupportMultipleWindows(true)
         }
         view.webViewClient = object : WebViewClient() {
             private var mainFrameCommitted = false
@@ -213,22 +214,19 @@ class MainActivity : ComponentActivity() {
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url.toString()
-                if (url.startsWith("mailto:")) {
-                    view.loadUrl(composeUrlFromMailto(request.url))
-                    return true
-                }
-                if ((request.url.scheme == "http" || request.url.scheme == "https") &&
-                    RolltopPrefs.internalLocation(RolltopPrefs.serverUrl(this@MainActivity), url) == null
+                val context = WebNavigationContext(
+                    isMainFrame = request.isForMainFrame,
+                    hasUserGesture = request.hasGesture(),
+                    isRedirect = request.isRedirect
+                )
+                val action = WebNavigationPolicy.action(serverOrigin, url, context)
+                val handled = handleWebNavigation(url, context, action)
+                if (action == WebNavigationAction.BLOCK && request.isForMainFrame &&
+                    (request.isRedirect || !request.hasGesture())
                 ) {
-                    try {
-                        startActivity(Intent(Intent.ACTION_VIEW, request.url))
-                    } catch (_: ActivityNotFoundException) {
-                        Toast.makeText(this@MainActivity, "No browser can open this link.", Toast.LENGTH_SHORT).show()
-                    }
                     failInitialLoad(view, "The server redirected outside the configured Rolltop address.")
-                    return true
                 }
-                return false
+                return handled
             }
 
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
@@ -270,7 +268,17 @@ class MainActivity : ComponentActivity() {
                 view.post { showConnectionFailure(view, message) }
             }
         }
-        rolltopWebChromeClient = RolltopWebChromeClient(this).also { view.webChromeClient = it }
+        rolltopWebChromeClient = RolltopWebChromeClient(this) { navigation ->
+            handleWebNavigation(
+                navigation.url,
+                WebNavigationContext(
+                    isMainFrame = true,
+                    hasUserGesture = navigation.hasUserGesture,
+                    isRedirect = navigation.isRedirect,
+                    isNewWindow = true
+                )
+            )
+        }.also { view.webChromeClient = it }
         androidWebBridge = AndroidWebBridge(this, view, serverOrigin, nativeShareStore) {
             contactPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
         }.also { it.attach() }
@@ -322,6 +330,44 @@ class MainActivity : ComponentActivity() {
 
     private fun rememberCurrentLocation() {
         RolltopPrefs.rememberVisitedUrl(this, webView?.url)
+    }
+
+    private fun handleWebNavigation(
+        candidate: String,
+        context: WebNavigationContext,
+        action: WebNavigationAction = WebNavigationPolicy.action(RolltopPrefs.serverUrl(this), candidate, context)
+    ): Boolean {
+        return when (action) {
+            WebNavigationAction.ALLOW_IN_WEBVIEW -> false
+            WebNavigationAction.OPEN_INTERNAL -> {
+                webView?.loadUrl(candidate)
+                true
+            }
+            WebNavigationAction.COMPOSE_MAILTO -> {
+                webView?.loadUrl(composeUrlFromMailto(Uri.parse(candidate)))
+                true
+            }
+            WebNavigationAction.OPEN_EXTERNAL -> {
+                openExternalWebUrl(candidate)
+                true
+            }
+            WebNavigationAction.BLOCK -> {
+                if (context.isMainFrame && context.hasUserGesture && !context.isRedirect) {
+                    Toast.makeText(this, "Rolltop blocked an unsupported link.", Toast.LENGTH_SHORT).show()
+                }
+                true
+            }
+        }
+    }
+
+    private fun openExternalWebUrl(candidate: String) {
+        val uri = Uri.parse(candidate)
+        if (uri.scheme?.lowercase() !in setOf("http", "https")) return
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE))
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "No browser can open this link.", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun checkForServerUpdate() {
