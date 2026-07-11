@@ -181,8 +181,8 @@ function validSharedFile(value: unknown, shareId: string): value is NativeShared
   ) return false;
   try {
     const url = new URL(item.url);
-    return url.origin === "https://appassets.androidplatform.net" &&
-      url.pathname.startsWith(`/rolltop-share/${shareId}/`);
+    return url.origin === window.location.origin &&
+      url.pathname.startsWith(`/rolltop-native-share/${shareId}/`);
   } catch {
     return false;
   }

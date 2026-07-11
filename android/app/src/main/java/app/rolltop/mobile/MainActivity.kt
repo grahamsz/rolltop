@@ -1,7 +1,6 @@
 package app.rolltop.mobile
 
 import android.Manifest
-import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -27,12 +26,14 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     private var webView: WebView? = null
     private var androidWebBridge: AndroidWebBridge? = null
     private var rolltopWebChromeClient: RolltopWebChromeClient? = null
@@ -40,6 +41,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installBackNavigation()
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             isAppearanceLightStatusBars = true
@@ -251,7 +253,7 @@ class MainActivity : Activity() {
         rolltopWebChromeClient = RolltopWebChromeClient(this).also { view.webChromeClient = it }
         androidWebBridge = AndroidWebBridge(this, view, serverOrigin, nativeShareStore).also { it.attach() }
         val root = FrameLayout(this).apply {
-            setBackgroundColor(SHELL_BACKGROUND)
+            setBackgroundColor(Color.WHITE)
             addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
         applySystemBarInsets(root)
@@ -296,6 +298,26 @@ class MainActivity : Activity() {
 
     private fun rememberCurrentLocation() {
         RolltopPrefs.rememberVisitedUrl(this, webView?.url)
+    }
+
+    private fun installBackNavigation() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val view = webView
+                if (view?.canGoBack() == true) {
+                    view.goBack()
+                    return
+                }
+                AndroidBackNavigation.messageFallbackUrl(RolltopPrefs.serverUrl(this@MainActivity), view?.url)
+                    ?.let {
+                        view?.loadUrl(it)
+                        return
+                    }
+
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+            }
+        })
     }
 
     private fun consumeNavigationIntent() {

@@ -2,7 +2,7 @@
     <style name="RolltopTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:statusBarColor">#f2f0eb</item>
+        <item name="android:statusBarColor">#ffffff</item>
         <item name="android:navigationBarColor">#f2f0eb</item>
         <item name="android:colorAccent">#1f5f46</item>
     </style>

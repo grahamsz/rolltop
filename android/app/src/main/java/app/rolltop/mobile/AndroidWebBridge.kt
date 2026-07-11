@@ -56,7 +56,7 @@ class AndroidWebBridge(
         val requestID = request.optString("requestId", "")
         when (request.optString("action", "")) {
             "sharedFiles" -> {
-                val manifest = shareStore.manifest(request.optString("shareId", ""))
+                val manifest = shareStore.manifest(request.optString("shareId", ""), serverOrigin)
                 reply.postMessage(response(requestID, manifest != null, manifest, "Shared files are no longer available.").toString())
             }
             "releaseShare" -> {

@@ -33,7 +33,7 @@ class NativeShareStore(private val context: Context) {
         return sessionID
     }
 
-    fun manifest(sessionID: String): JSONObject? {
+    fun manifest(sessionID: String, serverOrigin: String): JSONObject? {
         val session = synchronized(sessions) {
             pruneLocked()
             sessions[sessionID]
@@ -46,7 +46,7 @@ class NativeShareStore(private val context: Context) {
                         put("name", item.name)
                         put("type", item.mimeType)
                         put("size", item.size)
-                        put("url", "$ASSET_ORIGIN$ASSET_PATH$sessionID/${item.token}")
+                        put("url", NativeSharePolicy.shareUrl(serverOrigin, sessionID, item.token))
                     })
                 }
             })
@@ -58,9 +58,7 @@ class NativeShareStore(private val context: Context) {
     }
 
     fun intercept(uri: Uri, allowedOrigin: String): WebResourceResponse? {
-        if (uri.scheme != "https" || uri.host != ASSET_HOST || !uri.path.orEmpty().startsWith(ASSET_PATH)) return null
-        val parts = uri.path.orEmpty().removePrefix(ASSET_PATH).split('/')
-        if (parts.size != 2) return notFound(allowedOrigin)
+        val parts = NativeSharePolicy.requestParts(allowedOrigin, uri.toString()) ?: return null
         val item = synchronized(sessions) { sessions[parts[0]]?.items?.find { it.token == parts[1] } }
             ?: return notFound(allowedOrigin)
         val input = try {
@@ -154,9 +152,6 @@ class NativeShareStore(private val context: Context) {
 
     companion object {
         private val sessions = mutableMapOf<String, ShareSession>()
-        private const val ASSET_HOST = "appassets.androidplatform.net"
-        private const val ASSET_ORIGIN = "https://$ASSET_HOST"
-        private const val ASSET_PATH = "/rolltop-share/"
         private const val SESSION_TTL_MS = 15 * 60_000L
     }
 }

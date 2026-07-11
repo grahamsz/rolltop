@@ -3,7 +3,6 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Keep the complete brand mark inside the adaptive-icon safe region. -->
     <group
         android:pivotX="33.033203"
         android:pivotY="34.55764"
@@ -15,19 +14,16 @@
             android:translateX="509.99438"
             android:translateY="175.90039">
             <path
-                android:fillColor="#F7FAF8"
-                android:pathData="m-446.67797,-106.79728 -0.008,-32.18705 0,-0.002 -0.006,-3.89258c0,-16.75746 -13.51402,-30.27148 -30.27148,-30.27148h0.00056c-16.75746,0 -30.27149,13.51402 -30.27149,30.27148l-0.006,3.89258 0,0.002 -0.004,32.18705" />
-            <path
                 android:fillColor="@android:color/transparent"
                 android:pathData="m-446.67797,-109.53511 -0.008,-29.44922 0,-0.002 -0.006,-3.89258c0,-16.75746 -13.51402,-30.27148 -30.27148,-30.27148h0.00056c-16.75746,0 -30.27149,13.51402 -30.27149,30.27148l-0.006,3.89258 0,0.002 -0.004,29.44922"
-                android:strokeColor="#C46B44"
+                android:strokeColor="#000000"
                 android:strokeLineCap="round"
                 android:strokeWidth="5.5" />
             <path
-                android:fillColor="#151F2E"
+                android:fillColor="#000000"
                 android:pathData="m-454.95974,-139.81893 -15.33653,11.85302c-3.75097,2.89903 -9.93295,2.89799 -13.68392,-0.001l-14.98513,-11.58172 -0.00052,0.56844 -0.004,32.19493h44.0154l-0.004,-32.19286z" />
             <path
-                android:fillColor="#C46B44"
+                android:fillColor="#000000"
                 android:pathData="m-476.96253,-164.87683c-11.12016,0.00024 -20.09174,7.892 -21.73045,18.48931l19.27324,14.89573c1.30333,1.00731 3.25815,1.00731 4.56148,0l19.58588,-15.13706c-1.73637,-10.47584 -10.65408,-18.24774 -21.68963,-18.24798z" />
         </group>
     </group>

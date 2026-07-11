@@ -106,6 +106,59 @@
   z-index: 0;
 }
 
+.mail-pull-refresh {
+  --pull-distance: 0px;
+  position: relative;
+}
+
+.pull-refresh-indicator {
+  height: var(--pull-distance);
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0;
+  transition: height .16s ease, opacity .12s ease, color .12s ease;
+
+  .icon {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    transition: transform .12s ease;
+  }
+}
+
+.mail-pull-refresh.pulling .pull-refresh-indicator,
+.mail-pull-refresh.refreshing .pull-refresh-indicator {
+  opacity: 1;
+}
+
+.mail-pull-refresh.pulling .pull-refresh-indicator {
+  transition-property: opacity, color;
+}
+
+.mail-pull-refresh.ready .pull-refresh-indicator {
+  color: var(--accent-strong);
+
+  .icon {
+    transform: rotate(180deg);
+  }
+}
+
+.mail-pull-refresh.refreshing .pull-refresh-indicator {
+  height: 32px;
+  color: var(--accent-strong);
+
+  .icon {
+    animation: spin .8s linear infinite;
+  }
+}
+
 .message-list-stage.speed-slow {
   --message-list-slide-duration: .6s;
 }

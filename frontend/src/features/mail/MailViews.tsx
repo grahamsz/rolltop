@@ -2,9 +2,9 @@
 // surface sync clues, keep selection state stable, and link rows back to their source page.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ChangeEvent, DragEvent, KeyboardEvent, MouseEvent, ReactNode } from "react";
+import type { ChangeEvent, CSSProperties, DragEvent, KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { Star } from "@phosphor-icons/react";
-import { api } from "../../api";
+import { ApiError, api } from "../../api";
 import type { DatePrefs, Toast, LocationState } from "../../appTypes";
 import type { Bootstrap, Conversation, Mailbox, SyncRun } from "../../types";
 import { Icon } from "../../components/Icon";
@@ -14,6 +14,7 @@ import { displayTime } from "../../lib/format";
 import { effectiveMailboxSyncMode, mailboxActiveRun, mailboxNeedsSync, mailboxRefreshKey } from "../../lib/sync";
 import { HighlightedText } from "../../lib/searchHighlight";
 import { mailPageSize } from "../../lib/constants";
+import { usePullToRefresh } from "../../lib/pullToRefresh";
 import { mailRoute, mailURL, messageURL, routeWithSearch, searchRoute, searchURL } from "../../lib/routes";
 import { messageSecurityIndicators, messageSecurityPreviewText, messageSecuritySnippetClassName } from "../../plugins/messageSecurity";
 import type { RuntimePlugin } from "../../plugins/runtime";
@@ -67,6 +68,8 @@ export function MailView({
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncBusy, setSyncBusy] = useState(false);
+  const [pullRefreshing, setPullRefreshing] = useState(false);
+  const [manualRefreshGeneration, setManualRefreshGeneration] = useState(0);
   const loaded = useRef(false);
   const [error, setError] = useState("");
   const [hasPrev, setHasPrev] = useState(false);
@@ -80,7 +83,7 @@ export function MailView({
   const page = route.page;
   const mailbox = mailboxes.find((item) => String(item.id) === mailboxID);
   const totalCount = mailbox ? mailbox.message_count : mailboxes.filter((item) => item.show_in_all_mail !== false).reduce((sum, item) => sum + item.message_count, 0);
-  const refreshKey = `${mailGeneration}:${mailboxRefreshKey(latestSyncRun, mailbox)}`;
+  const refreshKey = `${mailGeneration}:${manualRefreshGeneration}:${mailboxRefreshKey(latestSyncRun, mailbox)}`;
   const listScopeKey = mailboxID || "all";
   const listKey = listScopeKey + ":" + page;
   const slideDirection = useListSlideDirection(listScopeKey, page);
@@ -92,6 +95,38 @@ export function MailView({
   const listTransitionSpeed: SlideSpeed = cachedTransitionPage ? "fast" : listPending ? "slow" : "fast";
   const activeRun = mailboxActiveRun(mailbox, activeSyncRuns, latestSyncRun);
   const effectiveMode = mailbox ? effectiveMailboxSyncMode(mailbox, mailboxes) : "auto";
+  const syncAlreadyRunning = syncBusy || (mailbox ? Boolean(activeRun) : activeSyncRuns.length > 0);
+
+  async function refreshByPull() {
+    const startedAt = performance.now();
+    setPullRefreshing(true);
+    try {
+      try {
+        if (!syncAlreadyRunning && (!mailbox || effectiveMode !== "never")) {
+          if (mailbox) await api.syncFolder(csrf, mailbox.id);
+          else await api.syncAccount(csrf);
+        }
+      } catch (err) {
+        // A sync may start between the chrome snapshot and this request. Its SSE
+        // updates will still refresh the list, so a conflict is not a pull error.
+        if (!(err instanceof ApiError && err.status === 409)) {
+          addToast(`Refresh failed: ${messageFromError(err)}`, "error");
+        }
+      }
+      setManualRefreshGeneration((current) => current + 1);
+      await refreshChrome();
+    } finally {
+      const remaining = 450 - (performance.now() - startedAt);
+      if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
+      setPullRefreshing(false);
+    }
+  }
+
+  const pullRefresh = usePullToRefresh<HTMLDivElement>({
+    disabled: listPending || pullRefreshing || syncBusy,
+    onRefresh: refreshByPull
+  });
+  const pullStyle = { "--pull-distance": `${pullRefresh.distance}px` } as CSSProperties;
 
   useEffect(() => {
     return () => {
@@ -217,38 +252,53 @@ export function MailView({
           loading: listPending
         }}
       />
-      {mailbox ? (
-        <FolderSyncNotice
-          mailbox={mailbox}
-          effectiveMode={effectiveMode}
-          activeRun={activeRun}
-          busy={syncBusy}
-          onSync={startFolderSync}
-        />
-      ) : null}
-      {error ? <div className="error">{error}</div> : null}
-      {!error ? (
-        <SlidingMessageListStage stageKey={listKey} direction={slideDirection} pending={listPending} speed={listTransitionSpeed}>
-          {listPending ? (
-            <MessageListSkeleton label="Loading messages" />
-          ) : (
-            <MessageList
-              csrf={csrf}
-              conversations={displayConversations}
-              hiddenMessageIDs={hiddenMessageIDs}
-              highlightMessageIDs={newMessageIDs}
-              showRecipients={mailbox?.role === "sent" || mailbox?.role === "drafts"}
-              openAsDraft={mailbox?.role === "drafts"}
-              datePrefs={datePrefs}
-              returnURL={mailURL(mailboxID, page)}
-              navigate={navigate}
-              messageSecurityPlugins={messageSecurityPlugins}
-              addToast={addToast}
-              onStarredChange={updateStarred}
-            />
-          )}
-        </SlidingMessageListStage>
-      ) : null}
+      <div
+        className={`mail-pull-refresh${pullRefresh.distance > 0 ? " pulling" : ""}${pullRefresh.ready ? " ready" : ""}${pullRefreshing ? " refreshing" : ""}`}
+        ref={pullRefresh.targetRef}
+        style={pullStyle}
+      >
+        <div
+          className="pull-refresh-indicator"
+          role="status"
+          aria-live="polite"
+          aria-label={pullRefreshing ? "Refreshing mail" : pullRefresh.ready ? "Release to refresh mail" : pullRefresh.distance > 0 ? "Pull to refresh mail" : undefined}
+        >
+          <Icon name="sync" />
+          {pullRefreshing ? <span>Refreshing mail</span> : null}
+        </div>
+        {mailbox ? (
+          <FolderSyncNotice
+            mailbox={mailbox}
+            effectiveMode={effectiveMode}
+            activeRun={activeRun}
+            busy={syncBusy}
+            onSync={startFolderSync}
+          />
+        ) : null}
+        {error ? <div className="error">{error}</div> : null}
+        {!error ? (
+          <SlidingMessageListStage stageKey={listKey} direction={slideDirection} pending={listPending} speed={listTransitionSpeed}>
+            {listPending ? (
+              <MessageListSkeleton label="Loading messages" />
+            ) : (
+              <MessageList
+                csrf={csrf}
+                conversations={displayConversations}
+                hiddenMessageIDs={hiddenMessageIDs}
+                highlightMessageIDs={newMessageIDs}
+                showRecipients={mailbox?.role === "sent" || mailbox?.role === "drafts"}
+                openAsDraft={mailbox?.role === "drafts"}
+                datePrefs={datePrefs}
+                returnURL={mailURL(mailboxID, page)}
+                navigate={navigate}
+                messageSecurityPlugins={messageSecurityPlugins}
+                addToast={addToast}
+                onStarredChange={updateStarred}
+              />
+            )}
+          </SlidingMessageListStage>
+        ) : null}
+      </div>
     </>
   );
 }
