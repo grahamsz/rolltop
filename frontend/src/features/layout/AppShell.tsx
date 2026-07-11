@@ -7,8 +7,8 @@ import { api } from "../../api";
 import type { AppShellProps, LocationState, MessageTransferAction, MoveTarget, SecurityUnlockState } from "../../appTypes";
 import type { Bootstrap, Mailbox, SyncRun, User } from "../../types";
 import { Icon, LogoMark } from "../../components/Icon";
+import { androidNativeAvailable, shouldAdvertiseAndroidApp } from "../../lib/androidNative";
 import { folderTree, nodeContainsMailbox, type FolderNode } from "../../lib/folders";
-import { shouldAdvertiseAndroidApp } from "../../lib/androidNative";
 import { mailRoute, mailURL, searchRoute, searchURL, currentLocation } from "../../lib/routes";
 import { createPluginSet } from "../../plugins/registry";
 import { SearchAutocomplete, useSearchAutocomplete } from "./SearchAutocomplete";
@@ -49,52 +49,320 @@ export function AppShell({
 }: AppShellProps) {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [messageDragActive, setMessageDragActive] = useState(false);
+  const [touchDragPreview, setTouchDragPreview] = useState<TouchDragPreview | null>(null);
+  const [touchDropID, setTouchDropID] = useState<number | null>(null);
+  const appRef = useRef<HTMLDivElement>(null);
   const dragOpenedSidebar = useRef(false);
-  const dragCloseTimer = useRef<number | null>(null);
+  const nativeDragInProgress = useRef(false);
+  const nativeDragActivationTimer = useRef<number | null>(null);
+  const mobileSidebarOpenRef = useRef(mobileSidebarOpen);
+  const onMoveMessagesRef = useRef(onMoveMessages);
+
+  mobileSidebarOpenRef.current = mobileSidebarOpen;
+  onMoveMessagesRef.current = onMoveMessages;
 
   useEffect(() => {
     return () => {
-      if (dragCloseTimer.current !== null) window.clearTimeout(dragCloseTimer.current);
+      if (nativeDragActivationTimer.current !== null) window.clearTimeout(nativeDragActivationTimer.current);
     };
   }, []);
 
-  function clearDragCloseTimer() {
-    if (dragCloseTimer.current === null) return;
-    window.clearTimeout(dragCloseTimer.current);
-    dragCloseTimer.current = null;
+  // WebView's native touch drag is canceled by drawer hit-test changes, so the
+  // Android shell uses a long-press gesture while mouse/desktop drag stays native.
+  useEffect(() => {
+    const root = appRef.current;
+    if (!root || !androidNativeAvailable()) return;
+    const appRoot = root;
+
+    let session: AndroidTouchDragSession | null = null;
+    let sessionEventTarget: HTMLElement | null = null;
+    let sessionListenersAttached = false;
+    let suspendedNativeDragElements: HTMLElement[] = [];
+    let suppressCompatibilityClick = false;
+    let compatibilityClickX = 0;
+    let compatibilityClickY = 0;
+    let compatibilityClickTimer: number | null = null;
+    let touchClassRemovalTimer: number | null = null;
+
+    function clearCompatibilityClickTimer() {
+      if (compatibilityClickTimer === null) return;
+      window.clearTimeout(compatibilityClickTimer);
+      compatibilityClickTimer = null;
+    }
+
+    function expireCompatibilityClickGuard() {
+      clearCompatibilityClickTimer();
+      compatibilityClickTimer = window.setTimeout(() => {
+        compatibilityClickTimer = null;
+        suppressCompatibilityClick = false;
+      }, 400);
+    }
+
+    function clearTouchClassRemovalTimer() {
+      if (touchClassRemovalTimer === null) return;
+      window.clearTimeout(touchClassRemovalTimer);
+      touchClassRemovalTimer = null;
+    }
+
+    function removeTouchDragClassAfterEvent() {
+      clearTouchClassRemovalTimer();
+      touchClassRemovalTimer = window.setTimeout(() => {
+        touchClassRemovalTimer = null;
+        document.documentElement.classList.remove("rolltop-touch-message-dragging");
+      }, 0);
+    }
+
+    function clearHoldTimer() {
+      if (!session || session.holdTimer === null) return;
+      window.clearTimeout(session.holdTimer);
+      session.holdTimer = null;
+    }
+
+    function suspendNativeDrag(source: HTMLElement) {
+      restoreNativeDrag();
+      const candidates = [source, ...Array.from(source.querySelectorAll<HTMLElement>("[draggable='true']"))];
+      suspendedNativeDragElements = candidates.filter((element, index) => element.draggable && candidates.indexOf(element) === index);
+      suspendedNativeDragElements.forEach((element) => { element.draggable = false; });
+    }
+
+    function restoreNativeDrag() {
+      suspendedNativeDragElements.forEach((element) => { element.draggable = true; });
+      suspendedNativeDragElements = [];
+    }
+
+    function closeAutoOpenedSidebar() {
+      if (!dragOpenedSidebar.current) return;
+      dragOpenedSidebar.current = false;
+      mobileSidebarOpenRef.current = false;
+      setMobileSidebarOpen(false);
+    }
+
+    function resetTouchDrag() {
+      const wasActive = session?.active === true;
+      if (session) {
+        compatibilityClickX = session.lastX;
+        compatibilityClickY = session.lastY;
+      }
+      clearHoldTimer();
+      session = null;
+      detachSessionListeners();
+      restoreNativeDrag();
+      if (!wasActive) return;
+      removeTouchDragClassAfterEvent();
+      setMessageDragActive(false);
+      setTouchDragPreview(null);
+      setTouchDropID(null);
+      closeAutoOpenedSidebar();
+      expireCompatibilityClickGuard();
+    }
+
+    function activateTouchDrag() {
+      if (!session || session.active) return;
+      session.holdTimer = null;
+      session.active = true;
+      session.startX = session.lastX;
+      session.startY = session.lastY;
+      suppressCompatibilityClick = true;
+      compatibilityClickX = session.lastX;
+      compatibilityClickY = session.lastY;
+      clearCompatibilityClickTimer();
+      clearTouchClassRemovalTimer();
+      document.documentElement.classList.add("rolltop-touch-message-dragging");
+      setMessageDragActive(true);
+      setTouchDragPreview(touchPreviewAt(session.lastX, session.lastY, session.messageIDs.length));
+      if (!mobileSidebarOpenRef.current) {
+        dragOpenedSidebar.current = true;
+        mobileSidebarOpenRef.current = true;
+        setMobileSidebarOpen(true);
+      }
+    }
+
+    function start(event: TouchEvent) {
+      if (!session) {
+        suppressCompatibilityClick = false;
+        clearCompatibilityClickTimer();
+      }
+      if (event.touches.length !== 1) {
+        if (session) resetTouchDrag();
+        return;
+      }
+      if (session) return;
+      const target = event.target;
+      const source = target instanceof Element ? target.closest<HTMLElement>("[data-rolltop-touch-drag='true']") : null;
+      if (!source || !appRoot.contains(source)) return;
+      const messageIDs = positiveIDs(source.dataset.rolltopTouchMessageIds);
+      if (messageIDs.length === 0) return;
+      const touch = event.touches[0];
+      suspendNativeDrag(source);
+      session = {
+        identifier: touch.identifier,
+        startX: touch.clientX,
+        startY: touch.clientY,
+        lastX: touch.clientX,
+        lastY: touch.clientY,
+        messageIDs,
+        accountIDs: positiveIDs(source.dataset.rolltopTouchAccountIds),
+        active: false,
+        movedAfterActivation: false,
+        holdTimer: window.setTimeout(activateTouchDrag, androidTouchDragHoldMS)
+      };
+      attachSessionListeners(source);
+    }
+
+    function move(event: TouchEvent) {
+      if (!session) return;
+      if (event.touches.length !== 1) {
+        resetTouchDrag();
+        return;
+      }
+      const touch = touchWithIdentifier(event.touches, session.identifier);
+      if (!touch) return;
+      session.lastX = touch.clientX;
+      session.lastY = touch.clientY;
+      if (!session.active) {
+        if (Math.hypot(touch.clientX - session.startX, touch.clientY - session.startY) > androidTouchDragSlop) {
+          resetTouchDrag();
+        }
+        return;
+      }
+      if (event.cancelable) event.preventDefault();
+      setTouchDragPreview(touchPreviewAt(touch.clientX, touch.clientY, session.messageIDs.length));
+      if (Math.hypot(touch.clientX - session.startX, touch.clientY - session.startY) > androidTouchDragSlop) {
+        session.movedAfterActivation = true;
+      }
+      setTouchDropID(session.movedAfterActivation ? touchDropTargetAt(touch.clientX, touch.clientY)?.id ?? null : null);
+    }
+
+    function finish(event: TouchEvent) {
+      if (!session) return;
+      const touch = touchWithIdentifier(event.changedTouches, session.identifier);
+      if (!touch) return;
+      if (!session.active) {
+        resetTouchDrag();
+        return;
+      }
+      if (event.cancelable) event.preventDefault();
+      const dropTarget = session.movedAfterActivation ? touchDropTargetAt(touch.clientX, touch.clientY) : null;
+      const messageIDs = session.messageIDs;
+      const accountIDs = session.accountIDs;
+      resetTouchDrag();
+      if (!dropTarget) return;
+      const crossAccount = accountIDs.some((accountID) => dropTarget.accountID > 0 && accountID !== dropTarget.accountID);
+      onMoveMessagesRef.current(messageIDs, { id: dropTarget.id, name: dropTarget.name }, crossAccount ? "copy" : "move");
+    }
+
+    function cancel() {
+      resetTouchDrag();
+    }
+
+    function suppressContextMenu(event: Event) {
+      if (session || suppressCompatibilityClick) event.preventDefault();
+    }
+
+    function suppressGeneratedClick(event: Event) {
+      if (!suppressCompatibilityClick || !(event instanceof globalThis.MouseEvent)) return;
+      if (Math.hypot(event.clientX - compatibilityClickX, event.clientY - compatibilityClickY) > 40) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      suppressCompatibilityClick = false;
+      clearCompatibilityClickTimer();
+    }
+
+    function suppressNativeTouchDrag(event: Event) {
+      if (!session) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState !== "visible") resetTouchDrag();
+    }
+
+    function attachSessionListeners(source: HTMLElement) {
+      if (sessionListenersAttached) return;
+      sessionListenersAttached = true;
+      sessionEventTarget = source;
+      source.addEventListener("touchmove", move, { passive: false });
+      source.addEventListener("touchend", finish, { passive: false });
+      source.addEventListener("touchcancel", cancel, { passive: true });
+    }
+
+    function detachSessionListeners() {
+      if (!sessionListenersAttached || !sessionEventTarget) return;
+      sessionListenersAttached = false;
+      sessionEventTarget.removeEventListener("touchmove", move);
+      sessionEventTarget.removeEventListener("touchend", finish);
+      sessionEventTarget.removeEventListener("touchcancel", cancel);
+      sessionEventTarget = null;
+    }
+
+    document.addEventListener("touchstart", start, { passive: true, capture: true });
+    document.addEventListener("contextmenu", suppressContextMenu, true);
+    document.addEventListener("click", suppressGeneratedClick, true);
+    document.addEventListener("dragstart", suppressNativeTouchDrag, true);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("blur", cancel);
+    return () => {
+      clearHoldTimer();
+      clearCompatibilityClickTimer();
+      clearTouchClassRemovalTimer();
+      detachSessionListeners();
+      restoreNativeDrag();
+      document.documentElement.classList.remove("rolltop-touch-message-dragging");
+      document.removeEventListener("touchstart", start, true);
+      document.removeEventListener("contextmenu", suppressContextMenu, true);
+      document.removeEventListener("click", suppressGeneratedClick, true);
+      document.removeEventListener("dragstart", suppressNativeTouchDrag, true);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("blur", cancel);
+    };
+  }, []);
+
+  function clearNativeDragActivationTimer() {
+    if (nativeDragActivationTimer.current === null) return;
+    window.clearTimeout(nativeDragActivationTimer.current);
+    nativeDragActivationTimer.current = null;
   }
 
   function openMobileSidebar() {
-    clearDragCloseTimer();
+    clearNativeDragActivationTimer();
     dragOpenedSidebar.current = false;
+    mobileSidebarOpenRef.current = true;
     setMobileSidebarOpen(true);
   }
 
   function closeMobileSidebar() {
-    clearDragCloseTimer();
+    clearNativeDragActivationTimer();
     dragOpenedSidebar.current = false;
+    mobileSidebarOpenRef.current = false;
     setMobileSidebarOpen(false);
   }
 
   function beginMessageDrag(event: DragEvent<HTMLDivElement>) {
     if (!isRolltopMessageDrag(event)) return;
-    clearDragCloseTimer();
-    setMessageDragActive(true);
-    if (!window.matchMedia("(max-width: 760px)").matches || mobileSidebarOpen) return;
-    dragOpenedSidebar.current = true;
-    setMobileSidebarOpen(true);
+    clearNativeDragActivationTimer();
+    nativeDragInProgress.current = true;
+    nativeDragActivationTimer.current = window.setTimeout(() => {
+      nativeDragActivationTimer.current = null;
+      if (!nativeDragInProgress.current) return;
+      setMessageDragActive(true);
+      if (!window.matchMedia("(max-width: 760px)").matches || mobileSidebarOpenRef.current) return;
+      dragOpenedSidebar.current = true;
+      mobileSidebarOpenRef.current = true;
+      setMobileSidebarOpen(true);
+    }, 0);
   }
 
   function endMessageDrag(event: DragEvent<HTMLDivElement>) {
     if (!isRolltopMessageDrag(event)) return;
+    if (!nativeDragInProgress.current) return;
+    nativeDragInProgress.current = false;
+    clearNativeDragActivationTimer();
     setMessageDragActive(false);
     if (!dragOpenedSidebar.current) return;
-    clearDragCloseTimer();
-    dragCloseTimer.current = window.setTimeout(() => {
-      dragCloseTimer.current = null;
-      dragOpenedSidebar.current = false;
-      setMobileSidebarOpen(false);
-    }, 120);
+    dragOpenedSidebar.current = false;
+    mobileSidebarOpenRef.current = false;
+    setMobileSidebarOpen(false);
   }
 
   function composeFromMobile() {
@@ -120,11 +388,12 @@ export function AppShell({
         onMenu={openMobileSidebar}
       />
       <div
+        ref={appRef}
         className={`app ${messageDragActive ? "message-drag-active" : ""}`}
         onDragStart={beginMessageDrag}
         onDragEnd={endMessageDrag}
       >
-        {mobileSidebarOpen ? (
+        {mobileSidebarOpen && !messageDragActive ? (
           <button className="mobile-sidebar-scrim" type="button" aria-label="Close folders" onClick={closeMobileSidebar} />
         ) : null}
         <Sidebar
@@ -145,12 +414,23 @@ export function AppShell({
           onMoveMessages={onMoveMessages}
           mobileOpen={mobileSidebarOpen}
           dragActive={messageDragActive}
+          touchDropID={touchDropID}
           onClose={closeMobileSidebar}
         />
         <main className="content">
           {accountNeedsPassword ? <AccountCredentialBanner notice={accountNotice} navigate={navigate} /> : null}
           {children}
         </main>
+        {touchDragPreview ? (
+          <div
+            className="message-touch-drag-preview"
+            style={{ left: touchDragPreview.left, top: touchDragPreview.top }}
+            aria-hidden="true"
+          >
+            <Icon name="mail" weight="bold" />
+            <span>{touchDragPreview.count === 1 ? "1 message" : `${touchDragPreview.count.toLocaleString()} messages`}</span>
+          </div>
+        ) : null}
       </div>
       <button className="mobile-compose-fab" type="button" onClick={composeFromMobile} aria-label="Compose">
         <Icon name="edit" weight="bold" />
@@ -167,6 +447,70 @@ function isRolltopMessageDrag(event: DragEvent<HTMLElement>) {
   return types.includes("application/x-rolltop-message-transfer") ||
     types.includes("application/x-rolltop-messages") ||
     types.includes("application/x-rolltop-message");
+}
+
+const androidTouchDragHoldMS = 300;
+const androidTouchDragSlop = 12;
+
+type TouchDragPreview = {
+  left: number;
+  top: number;
+  count: number;
+};
+
+type AndroidTouchDragSession = {
+  identifier: number;
+  startX: number;
+  startY: number;
+  lastX: number;
+  lastY: number;
+  messageIDs: number[];
+  accountIDs: number[];
+  active: boolean;
+  movedAfterActivation: boolean;
+  holdTimer: number | null;
+};
+
+type TouchDropTarget = {
+  id: number;
+  name: string;
+  accountID: number;
+};
+
+function positiveIDs(raw: string | undefined): number[] {
+  if (!raw) return [];
+  return Array.from(new Set(raw.split(",")
+    .map((value) => Number.parseInt(value, 10))
+    .filter((value) => Number.isFinite(value) && value > 0)));
+}
+
+function touchWithIdentifier(touches: TouchList, identifier: number): Touch | null {
+  for (let index = 0; index < touches.length; index += 1) {
+    if (touches[index].identifier === identifier) return touches[index];
+  }
+  return null;
+}
+
+function touchDropTargetAt(x: number, y: number): TouchDropTarget | null {
+  const target = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-rolltop-drop-mailbox-id]");
+  if (!target) return null;
+  const id = Number.parseInt(target.dataset.rolltopDropMailboxId || "", 10);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  const accountID = Number.parseInt(target.dataset.rolltopDropAccountId || "", 10);
+  return {
+    id,
+    name: target.dataset.rolltopDropMailboxName || "Folder",
+    accountID: Number.isFinite(accountID) && accountID > 0 ? accountID : 0
+  };
+}
+
+function touchPreviewAt(x: number, y: number, count: number): TouchDragPreview {
+  const width = 156;
+  return {
+    left: Math.max(8, Math.min(window.innerWidth - width - 8, x + 16)),
+    top: Math.max(72, y - 58),
+    count
+  };
 }
 
 // This banner is intentionally high in the shell so a broken master key or
@@ -405,6 +749,7 @@ function Sidebar({
   onMoveMessages,
   mobileOpen,
   dragActive,
+  touchDropID,
   onClose
 }: {
   mailboxes: Mailbox[];
@@ -424,6 +769,7 @@ function Sidebar({
   onMoveMessages: (messageIDs: number[], mailbox: MoveTarget, action?: MessageTransferAction) => void;
   mobileOpen: boolean;
   dragActive: boolean;
+  touchDropID: number | null;
   onClose: () => void;
 }) {
   const [dropID, setDropID] = useState<number | null>(null);
@@ -529,7 +875,10 @@ function Sidebar({
     return (
       <a
         href={url}
-        className={`folder message-drop-target ${depth > 0 ? "folder-child" : ""} ${active ? "active" : ""} ${dropID === mailbox.id ? "drop-target" : ""}`}
+        className={`folder message-drop-target ${depth > 0 ? "folder-child" : ""} ${active ? "active" : ""} ${dropID === mailbox.id || touchDropID === mailbox.id ? "drop-target" : ""}`}
+        data-rolltop-drop-mailbox-id={mailbox.id}
+        data-rolltop-drop-mailbox-name={mailbox.name}
+        data-rolltop-drop-account-id={mailbox.account_id}
         style={depth > 0 ? { paddingLeft: `${18 + depth * 18}px` } : undefined}
         key={mailbox.id}
         onClick={(event) => open(event, url)}
@@ -554,7 +903,10 @@ function Sidebar({
     return (
       <div className="folder-tree" key={node.mailbox.id}>
         <div
-          className={`folder folder-parent message-drop-target ${depth > 0 ? "folder-child" : ""} ${active ? "active" : ""} ${dropID === node.mailbox.id ? "drop-target" : ""}`}
+          className={`folder folder-parent message-drop-target ${depth > 0 ? "folder-child" : ""} ${active ? "active" : ""} ${dropID === node.mailbox.id || touchDropID === node.mailbox.id ? "drop-target" : ""}`}
+          data-rolltop-drop-mailbox-id={node.mailbox.id}
+          data-rolltop-drop-mailbox-name={node.mailbox.name}
+          data-rolltop-drop-account-id={node.mailbox.account_id}
           style={depth > 0 ? { paddingLeft: `${18 + depth * 18}px` } : undefined}
           onDragEnter={(event) => onDragEnter(event, node.mailbox.id)}
           onDragOver={(event) => onDragOver(event, node.mailbox.id)}

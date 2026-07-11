@@ -99,7 +99,7 @@
   }
 
   .sidebar.message-drag-active {
-    transition-duration: .12s;
+    transition: none;
 
     .message-drop-target {
       min-height: 44px;

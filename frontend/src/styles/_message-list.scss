@@ -98,6 +98,12 @@
   }
 }
 
+.message-row[data-rolltop-touch-drag="true"] {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .message-list-stage {
   --message-list-slide-gap: 22px;
   --message-list-slide-duration: .12s;
@@ -221,6 +227,32 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
+}
+
+.message-touch-drag-preview {
+  position: fixed;
+  z-index: 140;
+  width: 156px;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(196, 107, 68, .28);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  box-shadow: 0 12px 28px rgba(38, 35, 31, .24);
+  pointer-events: none;
+  font-size: 13px;
+  font-weight: 800;
+
+  .icon {
+    width: 18px;
+    height: 18px;
+    flex: none;
+    color: var(--accent-warm);
+  }
 }
 
 .message-drag-preview-row + .message-drag-preview-row {

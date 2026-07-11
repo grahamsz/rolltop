@@ -51,14 +51,26 @@ export function usePullToRefresh<T extends HTMLElement>({
       updateDistance(0);
     };
     const start = (event: TouchEvent) => {
-      if (disabledRef.current || event.touches.length !== 1 || pageScrollTop() > 1) return;
+      if (event.touches.length !== 1) {
+        reset();
+        return;
+      }
+      if (disabledRef.current || pageScrollTop() > 1) return;
       const touch = event.touches[0];
       tracking = true;
       startX = touch.clientX;
       startY = touch.clientY;
     };
     const move = (event: TouchEvent) => {
-      if (!tracking || event.touches.length !== 1) return;
+      if (!tracking) return;
+      if (event.touches.length !== 1) {
+        reset();
+        return;
+      }
+      if (document.documentElement.classList.contains("rolltop-touch-message-dragging")) {
+        reset();
+        return;
+      }
       const touch = event.touches[0];
       const rawDistance = touch.clientY - startY;
       const horizontalDistance = Math.abs(touch.clientX - startX);
@@ -75,6 +87,10 @@ export function usePullToRefresh<T extends HTMLElement>({
       updateDistance(displayedPullDistance(rawDistance));
     };
     const finish = () => {
+      if (document.documentElement.classList.contains("rolltop-touch-message-dragging")) {
+        reset();
+        return;
+      }
       const shouldRefresh = tracking && !disabledRef.current && distanceRef.current >= refreshThreshold;
       reset();
       if (shouldRefresh) void onRefreshRef.current();

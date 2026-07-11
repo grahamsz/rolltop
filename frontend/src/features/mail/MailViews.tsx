@@ -9,6 +9,7 @@ import type { DatePrefs, Toast, LocationState } from "../../appTypes";
 import type { Bootstrap, Conversation, Mailbox, SyncRun } from "../../types";
 import { Icon } from "../../components/Icon";
 import { ListHeader } from "../../components/common";
+import { androidNativeAvailable } from "../../lib/androidNative";
 import { messageFromError } from "../../lib/errors";
 import { displayTime } from "../../lib/format";
 import { effectiveMailboxSyncMode, mailboxActiveRun, mailboxNeedsSync, mailboxRefreshKey } from "../../lib/sync";
@@ -714,6 +715,10 @@ function MessageList({
   const visibleKey = visible.map((conversation) => conversation.message.id).join(",");
   const sourceKey = conversations.map((conversation) => conversation.message.id).join(",");
   const hiddenKey = Array.from(hiddenMessageIDs).sort((a, b) => a - b).join(",");
+  const nativeTouchDrag = androidNativeAvailable();
+  const selectedDragItems = selectedIDs.size > 0 ? visible.filter((conversation) => selectedIDs.has(conversation.message.id)) : [];
+  const selectedDragMessageIDs = uniquePositiveIDs(selectedDragItems.flatMap(conversationTransferMessageIDs));
+  const selectedDragAccountIDs = uniquePositiveIDs(selectedDragItems.flatMap(conversationTransferAccountIDs));
 
   useEffect(() => {
     return () => {
@@ -850,6 +855,8 @@ function MessageList({
         const securitySnippetClass = messageSecuritySnippetClassName(messageSecurityPlugins, msg);
         const securityIndicators = messageSecurityIndicators(messageSecurityPlugins, { location: "message-list", message: msg, state: msg });
         const selected = selectedIDs.has(msg.id);
+        const touchMessageIDs = selected && selectedDragMessageIDs.length > 0 ? selectedDragMessageIDs : conversationTransferMessageIDs(conversation);
+        const touchAccountIDs = selected && selectedDragAccountIDs.length > 0 ? selectedDragAccountIDs : conversationTransferAccountIDs(conversation);
         const movingOut = hiddenMessageIDs.has(msg.id);
         const participantText = showRecipients
           ? `To: ${conversation.recipient_participants || msg.to_addr || conversation.participants || "undisclosed recipients"}`
@@ -859,6 +866,9 @@ function MessageList({
             className={`message-row ${conversation.is_read ? "read" : "unread"} ${selected ? "selected" : ""} ${movingOut ? "moving-out" : ""} ${highlightMessageIDs?.has(msg.id) ? "new-delivery" : ""}`}
             draggable
             data-rolltop-message-drag="true"
+            data-rolltop-touch-drag={nativeTouchDrag ? "true" : undefined}
+            data-rolltop-touch-message-ids={nativeTouchDrag ? touchMessageIDs.join(",") : undefined}
+            data-rolltop-touch-account-ids={nativeTouchDrag ? touchAccountIDs.join(",") : undefined}
             key={msg.id}
             role="link"
             tabIndex={0}
