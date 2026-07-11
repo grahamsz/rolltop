@@ -32,15 +32,21 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.webkit.ServiceWorkerClientCompat
+import androidx.webkit.ServiceWorkerControllerCompat
+import androidx.webkit.WebViewFeature
 
 class MainActivity : ComponentActivity() {
     private var webView: WebView? = null
     private var androidWebBridge: AndroidWebBridge? = null
     private var rolltopWebChromeClient: RolltopWebChromeClient? = null
     private val nativeShareStore by lazy { NativeShareStore(applicationContext) }
+    private var updatePromptPolicy = UpdatePromptPolicy()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        updatePromptPolicy = UpdatePromptPolicy(savedInstanceState?.getInt(STATE_PROMPTED_UPDATE_CODE) ?: 0)
         installBackNavigation()
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
@@ -56,6 +62,11 @@ class MainActivity : ComponentActivity() {
         } else {
             showWeb(intent, savedInstanceState?.getBundle(STATE_WEB_VIEW))
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        checkForServerUpdate()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -79,6 +90,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         rememberCurrentLocation()
+        outState.putInt(STATE_PROMPTED_UPDATE_CODE, updatePromptPolicy.lastPromptedVersionCode)
         webView?.let { view ->
             val state = Bundle()
             view.saveState(state)
@@ -177,6 +189,7 @@ class MainActivity : ComponentActivity() {
         val view = WebView(this)
         webView = view
         val serverOrigin = RolltopPrefs.serverUrl(this)
+        installNativeShareServiceWorkerInterceptor(serverOrigin)
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
         view.settings.apply {
@@ -212,7 +225,7 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-                nativeShareStore.intercept(request.url, serverOrigin) ?: super.shouldInterceptRequest(view, request)
+                nativeShareStore.intercept(request, serverOrigin) ?: super.shouldInterceptRequest(view, request)
 
             override fun onPageCommitVisible(view: WebView, url: String) {
                 mainFrameCommitted = true
@@ -258,7 +271,7 @@ class MainActivity : ComponentActivity() {
         }
         applySystemBarInsets(root)
         setContentView(root)
-        UpdateChecker.checkInForeground(this)
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) checkForServerUpdate()
 
         val explicitTarget = explicitUrlForIntent(sourceIntent)
         val restored = explicitTarget == null && restoredState != null && view.restoreState(restoredState) != null
@@ -300,6 +313,22 @@ class MainActivity : ComponentActivity() {
         RolltopPrefs.rememberVisitedUrl(this, webView?.url)
     }
 
+    private fun checkForServerUpdate() {
+        if (RolltopPrefs.serverUrl(this).isBlank()) return
+        UpdateChecker.checkInForeground(this, force = true, shouldPrompt = updatePromptPolicy::shouldPrompt)
+    }
+
+    private fun installNativeShareServiceWorkerInterceptor(serverOrigin: String) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE) ||
+            !WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_SHOULD_INTERCEPT_REQUEST)
+        ) return
+        // Fetches owned by an active service worker bypass the page WebViewClient.
+        ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(object : ServiceWorkerClientCompat() {
+            override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? =
+                nativeShareStore.intercept(request, serverOrigin)
+        })
+    }
+
     private fun installBackNavigation() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -327,11 +356,12 @@ class MainActivity : ComponentActivity() {
     private fun applySystemBarInsets(view: View, contentPadding: Int = 0) {
         ViewCompat.setOnApplyWindowInsetsListener(view) { target, insets ->
             val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
             target.setPadding(
                 contentPadding + safe.left,
                 contentPadding + safe.top,
                 contentPadding + safe.right,
-                contentPadding + safe.bottom
+                contentPadding + maxOf(safe.bottom, keyboard.bottom)
             )
             insets
         }
@@ -381,6 +411,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val STATE_WEB_VIEW = "rolltop.web_view_state"
+        private const val STATE_PROMPTED_UPDATE_CODE = "rolltop.prompted_update_code"
         private val SHELL_BACKGROUND = Color.rgb(242, 240, 235)
     }
 }

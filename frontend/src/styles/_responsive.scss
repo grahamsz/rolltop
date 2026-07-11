@@ -360,26 +360,126 @@
     z-index: 120;
   }
 
-  .compose-window {
-    width: 100%;
-    height: 100dvh;
+  .compose-page {
+    position: fixed;
+    inset: 0;
+    z-index: 120;
     min-height: 0;
-    max-height: none;
+    display: block;
+    background: var(--surface);
+  }
+
+  .compose-window {
+    position: relative;
+    top: var(--compose-viewport-top, 0px);
+    width: 100%;
+    height: var(--compose-viewport-height, 100dvh);
+    min-height: 0;
+    max-height: var(--compose-viewport-height, 100dvh);
     border: 0;
     border-radius: 0;
   }
 
   .compose-head {
-    padding-top: env(safe-area-inset-top);
-    height: calc(42px + env(safe-area-inset-top));
+    height: 38px;
+    flex: 0 0 38px;
+    padding: 0 6px 0 10px;
+    box-shadow: inset 0 -2px 0 var(--accent-warm);
   }
 
-  .compose-body {
-    min-height: 0;
+  .compose-head-mark {
+    width: 16px;
+    height: 16px;
   }
 
-  .compose-editor {
-    min-height: 220px;
+  .compose-head-actions button {
+    width: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0;
+  }
+
+  .compose-window > .compose-scroll-region {
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .compose-window > .compose-scroll-region > .compose-body {
+    flex: 1 0 auto;
+    min-height: 180px;
+    overflow: visible;
+  }
+
+  .compose-window .compose-editor {
+    min-height: 180px;
+  }
+
+  .compose-format {
+    flex: 0 0 42px;
+    min-height: 42px;
+    margin: 0 8px;
+    padding: 5px 6px;
+
+    button {
+      min-width: 30px;
+      width: 30px;
+      min-height: 30px;
+      height: 30px;
+    }
+  }
+
+  .compose-sendbar {
+    flex: 0 0 54px;
+    min-height: 54px;
+    gap: 6px;
+    padding: 6px 8px;
+    overflow: hidden;
+  }
+
+  .compose-send-actions {
+    min-width: 0;
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
+  .send-button {
+    min-width: 116px;
+    min-height: 40px;
+    flex: 1 0 116px;
+  }
+
+  .save-draft-button {
+    min-width: 40px;
+    width: 40px;
+    min-height: 40px;
+    height: 40px;
+    flex: 0 0 40px;
+    padding: 0;
+
+    span {
+      display: none;
+    }
+  }
+
+  .compose-lower-tools {
+    flex-wrap: nowrap;
+    gap: 2px;
+  }
+
+  .compose-sendbar > button.ghost {
+    min-width: 36px;
+    width: 36px;
+    min-height: 40px;
+    padding: 0;
+    flex: none;
   }
 
   .inline-reply-row {

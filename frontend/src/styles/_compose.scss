@@ -36,6 +36,14 @@
   overflow: hidden;
 }
 
+.compose-scroll-region {
+  min-height: 0;
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .compose-loading {
   height: auto;
   min-height: 180px;

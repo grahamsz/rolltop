@@ -6,7 +6,8 @@ internal object NativeSharePolicy {
     fun shareUrl(serverOrigin: String, sessionID: String, token: String): String =
         serverOrigin.trimEnd('/') + SHARE_PATH + sessionID + "/" + token
 
-    fun requestParts(serverOrigin: String, requestUrl: String): List<String>? {
+    fun requestParts(serverOrigin: String, requestUrl: String, method: String = "GET"): List<String>? {
+        if (!method.equals("GET", ignoreCase = true)) return null
         val location = RolltopPrefs.internalLocation(serverOrigin, requestUrl) ?: return null
         val path = location.substringBefore('?').substringBefore('#')
         if (!path.startsWith(SHARE_PATH)) return null

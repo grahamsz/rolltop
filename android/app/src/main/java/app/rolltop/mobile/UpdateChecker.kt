@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -28,7 +30,11 @@ object UpdateChecker {
         }
     }
 
-    fun checkInForeground(activity: Activity, force: Boolean = false) {
+    fun checkInForeground(
+        activity: Activity,
+        force: Boolean = false,
+        shouldPrompt: (ReadyUpdate) -> Boolean = { true }
+    ) {
         if (!checking.compareAndSet(false, true)) return
         Thread {
             val update = try {
@@ -37,9 +43,14 @@ object UpdateChecker {
                 checking.set(false)
             }
             if (update == null || activity.isFinishing || activity.isDestroyed) return@Thread
+            notifyInstall(activity, update)
             activity.runOnUiThread {
                 if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
-                notifyInstall(activity, update)
+                val lifecycle = (activity as? LifecycleOwner)?.lifecycle
+                if (lifecycle != null && !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                    return@runOnUiThread
+                }
+                if (!shouldPrompt(update)) return@runOnUiThread
                 AlertDialog.Builder(activity)
                     .setTitle("Rolltop update ready")
                     .setMessage("Version ${update.versionName} has been downloaded from your Rolltop server.")
@@ -65,7 +76,7 @@ object UpdateChecker {
             return null
         }
         val offer = UpdatePolicy.parseOffer(base, BuildConfig.VERSION_CODE, metadata) ?: return cached
-        if (cached?.versionCode == offer.versionCode) {
+        if (!UpdatePolicy.needsAPKDownload(offer.versionCode, cached?.versionCode)) {
             RolltopPrefs.setReadyUpdate(context, offer.versionCode, offer.versionName)
             RolltopPrefs.setLastUpdateCheck(context, now)
             return ReadyUpdate(offer.versionCode, offer.versionName)
@@ -200,5 +211,5 @@ object UpdateChecker {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    private data class ReadyUpdate(val versionCode: Int, val versionName: String)
+    data class ReadyUpdate(val versionCode: Int, val versionName: String)
 }

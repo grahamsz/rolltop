@@ -5,6 +5,7 @@ import android.content.Intent
 import android.database.Cursor
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import androidx.core.content.IntentCompat
 import org.json.JSONArray
@@ -57,8 +58,8 @@ class NativeShareStore(private val context: Context) {
         synchronized(sessions) { sessions.remove(sessionID) }
     }
 
-    fun intercept(uri: Uri, allowedOrigin: String): WebResourceResponse? {
-        val parts = NativeSharePolicy.requestParts(allowedOrigin, uri.toString()) ?: return null
+    fun intercept(request: WebResourceRequest, allowedOrigin: String): WebResourceResponse? {
+        val parts = NativeSharePolicy.requestParts(allowedOrigin, request.url.toString(), request.method) ?: return null
         val item = synchronized(sessions) { sessions[parts[0]]?.items?.find { it.token == parts[1] } }
             ?: return notFound(allowedOrigin)
         val input = try {
@@ -128,6 +129,7 @@ class NativeShareStore(private val context: Context) {
     private fun responseHeaders(allowedOrigin: String) = mapOf(
         "Access-Control-Allow-Origin" to allowedOrigin,
         "Cache-Control" to "no-store",
+        "Vary" to "*",
         "X-Content-Type-Options" to "nosniff"
     )
 

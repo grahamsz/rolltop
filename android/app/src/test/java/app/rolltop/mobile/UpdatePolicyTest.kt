@@ -16,6 +16,13 @@ class UpdatePolicyTest {
     }
 
     @Test
+    fun aValidatedCachedOfferIsNotDownloadedAgain() {
+        assertFalse(UpdatePolicy.needsAPKDownload(100_092, 100_092))
+        assertTrue(UpdatePolicy.needsAPKDownload(100_092, null))
+        assertTrue(UpdatePolicy.needsAPKDownload(100_093, 100_092))
+    }
+
+    @Test
     fun apkURLMustRemainOnConfiguredHTTPSOrigin() {
         assertEquals(
             "https://mail.example.test/android/rolltop.apk",

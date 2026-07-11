@@ -1,4 +1,4 @@
-const STATIC_CACHE = "rolltop-static-v6";
+const STATIC_CACHE = "rolltop-static-v7";
 const STATIC_ASSETS = ["/", "/mail", "/manifest.webmanifest", "/icon.svg", "/icon.svg?v=transparent-logo-v2"];
 let securityUnlockUserID = 0;
 let securityUnlockState = { unlockedUntil: 0, keys: [] };
@@ -23,7 +23,10 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   if (req.method !== "GET" || url.origin !== self.location.origin) return;
 
-  if (url.pathname.startsWith("/rolltop-native-share/")) return;
+  if (url.pathname.startsWith("/rolltop-native-share/")) {
+    event.respondWith(fetch(req));
+    return;
+  }
 
   if (url.pathname.startsWith("/brand-icons/") || url.pathname.startsWith("/plugins/")) return;
 

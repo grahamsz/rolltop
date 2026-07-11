@@ -270,6 +270,29 @@ export function ComposeBox({
 
   useEffect(() => () => revokeAttachmentObjectURLs(attachmentsRef.current), []);
 
+  // Android WebView can report the keyboard through VisualViewport before dvh
+  // catches up. Size the full composer from that live viewport so its action
+  // bar stays above the IME while the message content becomes scrollable.
+  useEffect(() => {
+    if (inline) return;
+    const viewport = window.visualViewport;
+    const updateViewport = () => {
+      const height = Math.max(1, Math.round(viewport?.height || window.innerHeight));
+      const top = Math.max(0, Math.round(viewport?.offsetTop || 0));
+      formRef.current?.style.setProperty("--compose-viewport-height", `${height}px`);
+      formRef.current?.style.setProperty("--compose-viewport-top", `${top}px`);
+    };
+    updateViewport();
+    viewport?.addEventListener("resize", updateViewport);
+    viewport?.addEventListener("scroll", updateViewport);
+    window.addEventListener("resize", updateViewport);
+    return () => {
+      viewport?.removeEventListener("resize", updateViewport);
+      viewport?.removeEventListener("scroll", updateViewport);
+      window.removeEventListener("resize", updateViewport);
+    };
+  }, [inline]);
+
   useEffect(() => {
     if (!nativeShareID) return;
     let cancelled = false;
@@ -490,175 +513,177 @@ export function ComposeBox({
           </div>
         </div>
       ) : null}
-      {!inline ? (
-        <div className="compose-fields">
-          <div className="compose-line">
-            <span>From</span>
-            {identities.length > 1 ? (
-              <select
-                value={form.from_identity_id || primaryIdentity?.id || 0}
-                onChange={(event) => setField("from_identity_id", Number(event.target.value))}
-              >
-                {identities.map((identity) => (
-                  <option key={identity.id} value={identity.id}>
-                    {identity.header || identity.email}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <strong>{identities[0]?.header || composeFrom}</strong>
-            )}
-          </div>
-          <div className="compose-line">
-            <span>To</span>
-            <RecipientInput value={form.to} onChange={(value) => setField("to", value)} required />
-            <button className="ghost text-link" type="button" onClick={() => setShowCc((value) => !value)}>Cc</button>
-            <button className="ghost text-link" type="button" onClick={() => setShowBcc((value) => !value)}>Bcc</button>
-          </div>
-          {showCc ? (
+      <div className="compose-scroll-region">
+        {!inline ? (
+          <div className="compose-fields">
             <div className="compose-line">
-              <span>Cc</span>
-              <RecipientInput value={form.cc} onChange={(value) => setField("cc", value)} />
-            </div>
-          ) : null}
-          {showBcc ? (
-            <div className="compose-line">
-              <span>Bcc</span>
-              <RecipientInput value={form.bcc} onChange={(value) => setField("bcc", value)} />
-            </div>
-          ) : null}
-          <div className="compose-line">
-            <span>Subject</span>
-            <input
-              aria-label="Subject"
-              value={form.subject}
-              onChange={(event) => setField("subject", event.target.value)}
-              required
-            />
-          </div>
-        </div>
-      ) : (
-        <div className="inline-reply-meta">
-          {identities.length > 1 ? (
-            <div className="inline-reply-from">
               <span>From</span>
-              <select
-                value={form.from_identity_id || primaryIdentity?.id || 0}
-                onChange={(event) => setField("from_identity_id", Number(event.target.value))}
-              >
-                {identities.map((identity) => (
-                  <option key={identity.id} value={identity.id}>
-                    {identity.header || identity.email}
-                  </option>
-                ))}
-              </select>
+              {identities.length > 1 ? (
+                <select
+                  value={form.from_identity_id || primaryIdentity?.id || 0}
+                  onChange={(event) => setField("from_identity_id", Number(event.target.value))}
+                >
+                  {identities.map((identity) => (
+                    <option key={identity.id} value={identity.id}>
+                      {identity.header || identity.email}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <strong>{identities[0]?.header || composeFrom}</strong>
+              )}
             </div>
-          ) : null}
-          <div className="inline-reply-to">
-            <span>To</span>
-            <strong>{form.to}</strong>
+            <div className="compose-line">
+              <span>To</span>
+              <RecipientInput value={form.to} onChange={(value) => setField("to", value)} required />
+              <button className="ghost text-link" type="button" onClick={() => setShowCc((value) => !value)}>Cc</button>
+              <button className="ghost text-link" type="button" onClick={() => setShowBcc((value) => !value)}>Bcc</button>
+            </div>
+            {showCc ? (
+              <div className="compose-line">
+                <span>Cc</span>
+                <RecipientInput value={form.cc} onChange={(value) => setField("cc", value)} />
+              </div>
+            ) : null}
+            {showBcc ? (
+              <div className="compose-line">
+                <span>Bcc</span>
+                <RecipientInput value={form.bcc} onChange={(value) => setField("bcc", value)} />
+              </div>
+            ) : null}
+            <div className="compose-line">
+              <span>Subject</span>
+              <input
+                aria-label="Subject"
+                value={form.subject}
+                onChange={(event) => setField("subject", event.target.value)}
+                required
+              />
+            </div>
           </div>
-          <div className="inline-reply-actions">
-            <button className="ghost text-link" type="button" onClick={() => setShowCc((value) => !value)}>Cc</button>
-            <button className="ghost text-link" type="button" onClick={() => setShowBcc((value) => !value)}>Bcc</button>
-            <button className="ghost inline-close" type="button" title="Discard reply" onClick={onCancel}>
-              <Icon name="close" />
-            </button>
+        ) : (
+          <div className="inline-reply-meta">
+            {identities.length > 1 ? (
+              <div className="inline-reply-from">
+                <span>From</span>
+                <select
+                  value={form.from_identity_id || primaryIdentity?.id || 0}
+                  onChange={(event) => setField("from_identity_id", Number(event.target.value))}
+                >
+                  {identities.map((identity) => (
+                    <option key={identity.id} value={identity.id}>
+                      {identity.header || identity.email}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            <div className="inline-reply-to">
+              <span>To</span>
+              <strong>{form.to}</strong>
+            </div>
+            <div className="inline-reply-actions">
+              <button className="ghost text-link" type="button" onClick={() => setShowCc((value) => !value)}>Cc</button>
+              <button className="ghost text-link" type="button" onClick={() => setShowBcc((value) => !value)}>Bcc</button>
+              <button className="ghost inline-close" type="button" title="Discard reply" onClick={onCancel}>
+                <Icon name="close" />
+              </button>
+            </div>
           </div>
-        </div>
-      )}
-      {inline && showCc ? (
-        <div className="inline-reply-meta">
-          <span>Cc</span>
-          <RecipientInput value={form.cc} onChange={(value) => setField("cc", value)} />
-        </div>
-      ) : null}
-      {inline && showBcc ? (
-        <div className="inline-reply-meta">
-          <span>Bcc</span>
-          <RecipientInput value={form.bcc} onChange={(value) => setField("bcc", value)} />
-        </div>
-      ) : null}
-      <div
-        className={`compose-body ${composeSecurity.transform.active ? `pgp-transforming pgp-transform-${composeSecurity.transform.phase}` : ""}`}
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={handleComposeDrop}
-      >
+        )}
+        {inline && showCc ? (
+          <div className="inline-reply-meta">
+            <span>Cc</span>
+            <RecipientInput value={form.cc} onChange={(value) => setField("cc", value)} />
+          </div>
+        ) : null}
+        {inline && showBcc ? (
+          <div className="inline-reply-meta">
+            <span>Bcc</span>
+            <RecipientInput value={form.bcc} onChange={(value) => setField("bcc", value)} />
+          </div>
+        ) : null}
         <div
-          ref={editorRef}
-          className="compose-editor"
-          contentEditable={!sending}
-          data-placeholder="Write a message"
-          onPaste={handleEditorPaste}
-          suppressContentEditableWarning
-        />
-        {composeSecurity.transform.active ? (
-          <pre className="compose-pgp-ciphertext" aria-hidden="true">
-            {composeSecurity.transform.ciphertext || "Preparing PGP message..."}
-          </pre>
+          className={`compose-body ${composeSecurity.transform.active ? `pgp-transforming pgp-transform-${composeSecurity.transform.phase}` : ""}`}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={handleComposeDrop}
+        >
+          <div
+            ref={editorRef}
+            className="compose-editor"
+            contentEditable={!sending}
+            data-placeholder="Write a message"
+            onPaste={handleEditorPaste}
+            suppressContentEditableWarning
+          />
+          {composeSecurity.transform.active ? (
+            <pre className="compose-pgp-ciphertext" aria-hidden="true">
+              {composeSecurity.transform.ciphertext || "Preparing PGP message..."}
+            </pre>
+          ) : null}
+        </div>
+        {attachments.length > 0 || includedExistingAttachments.length > 0 || forwardedMessageAttachment || remainingExistingAttachmentCount > 0 || hasAttachmentWarning ? (
+          <div className="compose-attachments" aria-live="polite">
+            {remainingExistingAttachmentCount > 0 ? (
+              <button className="compose-existing-attachment-link ghost text-link" type="button" onClick={includeExistingAttachments}>
+                <Icon name="attach_file" />
+                Include previous {remainingExistingAttachmentCount === 1 ? "attachment" : "attachments"}
+              </button>
+            ) : null}
+            {includedExistingAttachments.length > 0 || attachments.length > 0 ? (
+              <div className="compose-attachment-list">
+                {includedExistingAttachments.map((attachment) => (
+                  <div className="compose-attachment compose-attachment-existing" key={`existing-${attachment.id}`}>
+                    <Icon name="attach_file" />
+                    <span>
+                      <strong>{composeExistingAttachmentName(attachment)}</strong>
+                      <small>Previous attachment - {formatBytes(attachment.size)}</small>
+                    </span>
+                    <button className="ghost" type="button" title="Remove attachment" onClick={() => removeExistingAttachment(attachment.id)}>
+                      <Icon name="close" />
+                    </button>
+                  </div>
+                ))}
+                {forwardedMessageAttachment ? (
+                  <div className="compose-attachment compose-attachment-existing" key="forwarded-message">
+                    <Icon name="file_text" />
+                    <span>
+                      <strong>{composeExistingAttachmentName(forwardedMessageAttachment)}</strong>
+                      <small>Original message - {formatBytes(forwardedMessageAttachment.size)}</small>
+                    </span>
+                    <button className="ghost" type="button" title="Remove attachment" onClick={removeForwardAttachment}>
+                      <Icon name="close" />
+                    </button>
+                  </div>
+                ) : null}
+                {attachments.map((attachment) => (
+                  <div className="compose-attachment" key={attachment.id}>
+                    <Icon name={attachment.inline ? "image" : "attach_file"} />
+                    <span>
+                      <strong>{attachment.filename}</strong>
+                      <small>{attachment.inline ? "Inline media" : "Attachment"} - {formatBytes(attachment.size)}</small>
+                    </span>
+                    <button className="ghost" type="button" title="Remove attachment" onClick={() => removeAttachment(attachment.id)}>
+                      <Icon name="close" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {hasAttachmentWarning ? (
+              <div className="compose-attachment-warning">
+                <Icon name="report" />
+                <span>Attachments total {formatBytes(totalAttachmentBytes)}. Many providers reject messages over 20 MB.</span>
+                {canResizePhotos ? (
+                  <button className="ghost text-link" type="button" disabled={resizing} onClick={resizePhotos}>
+                    {resizing ? "Resizing..." : "Resize photos"}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         ) : null}
       </div>
-      {attachments.length > 0 || includedExistingAttachments.length > 0 || forwardedMessageAttachment || remainingExistingAttachmentCount > 0 || hasAttachmentWarning ? (
-        <div className="compose-attachments" aria-live="polite">
-          {remainingExistingAttachmentCount > 0 ? (
-            <button className="compose-existing-attachment-link ghost text-link" type="button" onClick={includeExistingAttachments}>
-              <Icon name="attach_file" />
-              Include previous {remainingExistingAttachmentCount === 1 ? "attachment" : "attachments"}
-            </button>
-          ) : null}
-          {includedExistingAttachments.length > 0 || attachments.length > 0 ? (
-            <div className="compose-attachment-list">
-              {includedExistingAttachments.map((attachment) => (
-                <div className="compose-attachment compose-attachment-existing" key={`existing-${attachment.id}`}>
-                  <Icon name="attach_file" />
-                  <span>
-                    <strong>{composeExistingAttachmentName(attachment)}</strong>
-                    <small>Previous attachment - {formatBytes(attachment.size)}</small>
-                  </span>
-                  <button className="ghost" type="button" title="Remove attachment" onClick={() => removeExistingAttachment(attachment.id)}>
-                    <Icon name="close" />
-                  </button>
-                </div>
-              ))}
-              {forwardedMessageAttachment ? (
-                <div className="compose-attachment compose-attachment-existing" key="forwarded-message">
-                  <Icon name="file_text" />
-                  <span>
-                    <strong>{composeExistingAttachmentName(forwardedMessageAttachment)}</strong>
-                    <small>Original message - {formatBytes(forwardedMessageAttachment.size)}</small>
-                  </span>
-                  <button className="ghost" type="button" title="Remove attachment" onClick={removeForwardAttachment}>
-                    <Icon name="close" />
-                  </button>
-                </div>
-              ) : null}
-              {attachments.map((attachment) => (
-                <div className="compose-attachment" key={attachment.id}>
-                  <Icon name={attachment.inline ? "image" : "attach_file"} />
-                  <span>
-                    <strong>{attachment.filename}</strong>
-                    <small>{attachment.inline ? "Inline media" : "Attachment"} - {formatBytes(attachment.size)}</small>
-                  </span>
-                  <button className="ghost" type="button" title="Remove attachment" onClick={() => removeAttachment(attachment.id)}>
-                    <Icon name="close" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : null}
-          {hasAttachmentWarning ? (
-            <div className="compose-attachment-warning">
-              <Icon name="report" />
-              <span>Attachments total {formatBytes(totalAttachmentBytes)}. Many providers reject messages over 20 MB.</span>
-              {canResizePhotos ? (
-                <button className="ghost text-link" type="button" disabled={resizing} onClick={resizePhotos}>
-                  {resizing ? "Resizing..." : "Resize photos"}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
       <div className="compose-format" aria-label="Formatting">
         <button type="button" title="Bold" onClick={() => applyFormat("bold")}>B</button>
         <button type="button" title="Italic" onClick={() => applyFormat("italic")}><em>I</em></button>
@@ -704,9 +729,9 @@ export function ComposeBox({
             <Icon name="send" />
             {composeSecurity.sendButtonLabel(sending)}
           </button>
-          <button className="secondary save-draft-button" type="button" disabled={sending || savingDraft || resizing} onClick={() => void saveDraft()}>
+          <button className="secondary save-draft-button" type="button" title="Save draft" aria-label={savingDraft ? "Saving draft" : "Save draft"} disabled={sending || savingDraft || resizing} onClick={() => void saveDraft()}>
             <Icon name="draft" />
-            {savingDraft ? "Saving..." : "Save draft"}
+            <span>{savingDraft ? "Saving..." : "Save draft"}</span>
           </button>
           <div className="compose-lower-tools" aria-label="Message tools">
             {composeSecurity.renderControls({ attachmentInputRef, inlineMediaInputRef })}

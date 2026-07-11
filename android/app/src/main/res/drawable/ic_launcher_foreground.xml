@@ -3,24 +3,21 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Keep the complete brand mark inside the adaptive-icon safe region. -->
+    <!-- Direct conversion of graphics/logo.svg: no added backing geometry. -->
     <group
         android:pivotX="33.033203"
         android:pivotY="34.55764"
-        android:scaleX="0.72"
-        android:scaleY="0.72"
+        android:scaleX="0.70"
+        android:scaleY="0.70"
         android:translateX="20.966797"
         android:translateY="19.44236">
         <group
             android:translateX="509.99438"
             android:translateY="175.90039">
             <path
-                android:fillColor="#F7FAF8"
-                android:pathData="m-446.67797,-106.79728 -0.008,-32.18705 0,-0.002 -0.006,-3.89258c0,-16.75746 -13.51402,-30.27148 -30.27148,-30.27148h0.00056c-16.75746,0 -30.27149,13.51402 -30.27149,30.27148l-0.006,3.89258 0,0.002 -0.004,32.18705" />
-            <path
                 android:fillColor="@android:color/transparent"
                 android:pathData="m-446.67797,-109.53511 -0.008,-29.44922 0,-0.002 -0.006,-3.89258c0,-16.75746 -13.51402,-30.27148 -30.27148,-30.27148h0.00056c-16.75746,0 -30.27149,13.51402 -30.27149,30.27148l-0.006,3.89258 0,0.002 -0.004,29.44922"
-                android:strokeColor="#C46B44"
+                android:strokeColor="#C56C45"
                 android:strokeLineCap="round"
                 android:strokeWidth="5.5" />
             <path

@@ -84,7 +84,12 @@ async function loadSharedFiles(shareId: string): Promise<File[]> {
       if (!validSharedFile(item, shareId)) throw new Error("Android returned an invalid shared file.");
       const remainingBytes = MAX_SHARED_UPLOAD_BYTES - loadedBytes;
       if (item.size > remainingBytes) throw new Error("The shared files exceed Rolltop's 80 MB upload limit.");
-      const response = await fetch(item.url, { cache: "no-store", credentials: "omit" });
+      let response: Response;
+      try {
+        response = await fetch(item.url, { cache: "no-store", credentials: "omit" });
+      } catch {
+        throw new Error(`Android could not provide ${item.name}. Close this draft and share the file again.`);
+      }
       if (!response.ok) throw new Error(`Could not read ${item.name}.`);
       const blob = await readBoundedBlob(response, remainingBytes, item.name);
       loadedBytes += blob.size;

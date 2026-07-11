@@ -24,7 +24,7 @@ Rolltop still does not send SMTP mail from the Android shell. Compose actions ar
 
 Android `ACTION_SEND`, `ACTION_SEND_MULTIPLE`, `ACTION_SENDTO`, and `mailto:` links open Rolltop compose with the available subject/body fields prefilled. Shared photos and files are streamed from their Android content URIs into the existing compose attachment pipeline, so they appear as real removable attachments and use the normal multipart send/draft APIs. Multiple streams and `ClipData` are supported.
 
-The stream bridge is exposed only to the configured Rolltop HTTPS origin. It uses random, short-lived URLs intercepted inside the WebView; shared bodies are not logged or saved as separate attachment blobs by the Android shell.
+The stream bridge is exposed only to the configured Rolltop HTTPS origin. It uses random, short-lived URLs intercepted for both page and service-worker requests inside the WebView; shared bodies are not logged or saved as separate attachment blobs by the Android shell.
 
 The ordinary compose attachment and inline-photo buttons use Android's system file chooser as well.
 
@@ -61,7 +61,7 @@ Expected metadata:
 }
 ```
 
-The app checks promptly when its WebView starts and then through persistent, network-constrained WorkManager scheduling. When `versionCode` is newer than the installed app, the APK is downloaded, optionally verified with `sha256`, and offered through an in-app dialog and update notification. A downloaded update remains available across app restarts, including when notification permission is denied.
+The app checks lightweight metadata whenever it enters the foreground and also uses persistent, network-constrained WorkManager scheduling. When `versionCode` is newer than the installed app, the APK is downloaded, optionally verified with `sha256`, and offered through an in-app dialog and update notification. A validated download is reused for the same version and remains available across app restarts, including when notification permission is denied.
 
 Android does not allow a normal sideloaded app to silently replace itself. Users must confirm the install prompt, and may need to allow Rolltop to install unknown apps.
 

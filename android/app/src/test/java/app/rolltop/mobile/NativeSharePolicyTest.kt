@@ -43,5 +43,6 @@ class NativeSharePolicyTest {
         assertNull(NativeSharePolicy.requestParts(origin, "$origin/rolltop-native-share/session"))
         assertNull(NativeSharePolicy.requestParts(origin, "$origin/rolltop-native-share/session/token/extra"))
         assertNull(NativeSharePolicy.requestParts(origin, "$origin/mail"))
+        assertNull(NativeSharePolicy.requestParts(origin, "$origin/rolltop-native-share/session/token", "POST"))
     }
 }

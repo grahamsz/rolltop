@@ -16,6 +16,9 @@ object UpdatePolicy {
     fun shouldOffer(candidateVersionCode: Int, installedVersionCode: Int): Boolean =
         candidateVersionCode > installedVersionCode
 
+    fun needsAPKDownload(candidateVersionCode: Int, cachedVersionCode: Int?): Boolean =
+        candidateVersionCode != cachedVersionCode
+
     fun validSHA256(value: String): Boolean = value.isBlank() || sha256Pattern.matches(value)
 
     fun parseOffer(serverBaseURL: String, installedVersionCode: Int, metadata: JSONObject): UpdateOffer? {
