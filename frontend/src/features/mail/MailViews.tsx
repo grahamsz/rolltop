@@ -42,6 +42,7 @@ function searchActionNodes(plugins: RuntimePlugin[], query: string, navigate: (u
  * and shows a folder-level sync clue when the selected mailbox is manual or off.
  */
 export function MailView({
+  userID,
   csrf,
   datePrefs,
   location,
@@ -55,6 +56,7 @@ export function MailView({
   messageSecurityPlugins = [],
   addToast
 }: {
+  userID: number;
   csrf: string;
   datePrefs: DatePrefs;
   location: LocationState;
@@ -75,6 +77,7 @@ export function MailView({
   const [manualRefreshGeneration, setManualRefreshGeneration] = useState(0);
   const loaded = useRef(false);
   const [error, setError] = useState("");
+  const [showingSavedPage, setShowingSavedPage] = useState(false);
   const [hasPrev, setHasPrev] = useState(false);
   const [hasNext, setHasNext] = useState(false);
   const [newMessageIDs, setNewMessageIDs] = useState<Set<number>>(() => new Set());
@@ -87,10 +90,10 @@ export function MailView({
   const mailbox = mailboxes.find((item) => String(item.id) === mailboxID);
   const totalCount = mailbox ? mailbox.message_count : mailboxes.filter((item) => item.show_in_all_mail !== false).reduce((sum, item) => sum + item.message_count, 0);
   const refreshKey = `${mailGeneration}:${manualRefreshGeneration}:${mailboxRefreshKey(latestSyncRun, mailbox)}`;
-  const listScopeKey = mailboxID || "all";
+  const listScopeKey = `${userID}:${mailboxID || "all"}`;
   const listKey = listScopeKey + ":" + page;
   const slideDirection = useListSlideDirection(listScopeKey, page);
-  const cachedTransitionPage = previousListKey.current !== listKey ? api.cachedMail(mailboxID, page) : null;
+  const cachedTransitionPage = previousListKey.current !== listKey ? api.cachedMail(userID, mailboxID, page) : null;
   const displayConversations = cachedTransitionPage?.conversations || conversations;
   const displayHasPrev = cachedTransitionPage?.has_prev ?? hasPrev;
   const displayHasNext = cachedTransitionPage?.has_next ?? hasNext;
@@ -144,7 +147,7 @@ export function MailView({
     const isNewList = previousListKey.current !== listKey;
     const canAnimateNewMail = page === 1 && loaded.current && !isNewList && Boolean(refreshKey) && Boolean(latestSyncRun?.new_messages);
     if (isNewList || !loaded.current) {
-      const cached = api.cachedMail(mailboxID, page);
+      const cached = api.cachedMail(userID, mailboxID, page);
       if (cached) {
         previousPageIDs.current = new Set(cached.conversations.map((conversation) => conversation.message.id));
         previousListKey.current = listKey;
@@ -152,16 +155,18 @@ export function MailView({
         setHasPrev(cached.has_prev);
         setHasNext(cached.has_next);
         setLoading(false);
+        setShowingSavedPage(false);
       } else {
         setLoading(true);
         setConversations([]);
         setHasPrev(false);
         setHasNext(false);
+        setShowingSavedPage(false);
       }
     }
     setError("");
     api
-      .mail(mailboxID, page)
+      .mail(userID, mailboxID, page)
       .then((data) => {
         if (cancelled) return;
         const nextIDs = new Set(data.conversations.map((conversation) => conversation.message.id));
@@ -182,17 +187,29 @@ export function MailView({
         setConversations(data.conversations);
         setHasPrev(data.has_prev);
         setHasNext(data.has_next);
-        if (data.has_next) api.prefetchMail(mailboxID, page + 1);
-        if (data.has_prev && page > 1) api.prefetchMail(mailboxID, page - 1);
+        setShowingSavedPage(false);
+        if (data.has_next) api.prefetchMail(userID, mailboxID, page + 1);
+        if (data.has_prev && page > 1) api.prefetchMail(userID, mailboxID, page - 1);
       })
       .catch((err) => {
         if (!cancelled) {
-          previousPageIDs.current = new Set();
+          const cached = api.cachedMail(userID, mailboxID, page);
           previousListKey.current = listKey;
-          setConversations([]);
-          setHasPrev(false);
-          setHasNext(false);
-          setError(messageFromError(err));
+          if (cached) {
+            previousPageIDs.current = new Set(cached.conversations.map((conversation) => conversation.message.id));
+            setConversations(cached.conversations);
+            setHasPrev(cached.has_prev);
+            setHasNext(cached.has_next);
+            setShowingSavedPage(true);
+            setError(`Showing saved mail. Refresh failed: ${messageFromError(err)}`);
+          } else {
+            previousPageIDs.current = new Set();
+            setConversations([]);
+            setHasPrev(false);
+            setHasNext(false);
+            setShowingSavedPage(false);
+            setError(messageFromError(err));
+          }
         }
       })
       .finally(() => {
@@ -204,7 +221,7 @@ export function MailView({
     return () => {
       cancelled = true;
     };
-  }, [mailboxID, page, refreshKey, listKey, latestSyncRun?.new_messages]);
+  }, [userID, mailboxID, page, refreshKey, listKey, latestSyncRun?.new_messages]);
 
   const pageURL = (nextPage: number) => mailURL(mailboxID, nextPage);
 
@@ -287,8 +304,8 @@ export function MailView({
             onSync={startFolderSync}
           />
         ) : null}
-        {error ? <div className="error">{error}</div> : null}
-        {!error ? (
+        {error ? <div className={showingSavedPage ? "mail-cache-warning" : "error"} role="status">{error}</div> : null}
+        {!error || showingSavedPage ? (
           <SlidingMessageListStage stageKey={listKey} direction={slideDirection} pending={listPending} speed={listTransitionSpeed}>
             {listPending ? (
               <MessageListSkeleton label="Loading messages" />

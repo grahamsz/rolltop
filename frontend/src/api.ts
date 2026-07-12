@@ -11,6 +11,7 @@ import type {
   ComposeForm,
   ComposeIdentity,
   Conversation,
+  MailListResponse,
   Mailbox,
   MailIdentity,
   MessageSnooze,
@@ -24,6 +25,7 @@ import type {
   ThreadMessage,
   User
 } from "./types";
+import { clearAllMailSnapshot, clearOtherAllMailSnapshots, loadAllMailSnapshot, saveAllMailSnapshot } from "./lib/mailSnapshot";
 
 /** Error thrown for non-2xx API responses after the JSON error payload is decoded. */
 export class ApiError extends Error {
@@ -56,11 +58,11 @@ async function parse<T>(res: Response): Promise<T> {
   return data as T;
 }
 
-type MailListResponse = { conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean };
 type SnoozeListResponse = MailListResponse & { snoozes: MessageSnooze[] };
 
 const getCache = new Map<string, { etag: string; data: unknown }>();
 const getInflight = new Map<string, Promise<unknown>>();
+const mailCacheEpochs = new Map<number, number>();
 
 async function fetchGET(url: string, init: RequestInit): Promise<Response> {
   try {
@@ -76,32 +78,31 @@ async function fetchGET(url: string, init: RequestInit): Promise<Response> {
 }
 
 /**
- * GET JSON with lightweight ETag revalidation. The cache is process-local and
- * keyed by URL, so it only avoids repainting unchanged mailbox/search/settings
- * payloads during the current tab session.
+ * GET JSON with lightweight ETag revalidation. Callers can supply an explicit
+ * scope key when the same URL may return data for different authenticated users.
  */
-export async function getJSON<T>(url: string): Promise<T> {
-  const inflight = getInflight.get(url);
+export async function getJSON<T>(url: string, cacheKey = url): Promise<T> {
+  const inflight = getInflight.get(cacheKey);
   if (inflight) return inflight as Promise<T>;
 
   const request = (async () => {
     const headers: Record<string, string> = { Accept: "application/json" };
-    const cached = getCache.get(url);
+    const cached = getCache.get(cacheKey);
     if (cached?.etag) headers["If-None-Match"] = cached.etag;
     const res = await fetchGET(url, { headers });
     if (res.status === 304 && cached) return cached.data as T;
     const data = await parse<T>(res);
     const etag = res.headers.get("ETag") || "";
-    if (etag) getCache.set(url, { etag, data });
-    else getCache.delete(url);
+    if (etag) getCache.set(cacheKey, { etag, data });
+    else getCache.delete(cacheKey);
     return data;
   })();
 
-  getInflight.set(url, request);
+  getInflight.set(cacheKey, request);
   try {
     return await request;
   } finally {
-    if (getInflight.get(url) === request) getInflight.delete(url);
+    if (getInflight.get(cacheKey) === request) getInflight.delete(cacheKey);
   }
 }
 
@@ -188,6 +189,17 @@ function mailListURL(mailboxID: string | null, page: number) {
   return `/api/mail?${q}`;
 }
 
+function mailCacheEpoch(userID: number) {
+  const current = mailCacheEpochs.get(userID);
+  if (current !== undefined) return current;
+  mailCacheEpochs.set(userID, 0);
+  return 0;
+}
+
+function mailListCacheKey(userID: number, mailboxID: string | null, page: number, epoch = mailCacheEpoch(userID)) {
+  return `user:${userID}:mail-epoch:${epoch}:${mailListURL(mailboxID, page)}`;
+}
+
 function searchListURL(query: string, page: number) {
   const q = new URLSearchParams({ q: query, page: String(page) });
   return `/api/search?${q}`;
@@ -201,13 +213,58 @@ function messageURL(id: string | number, showImages: boolean, highlightQuery = "
   return `/api/messages/${id}${q}`;
 }
 
-function prefetchJSON<T>(url: string) {
-  void getJSON<T>(url).catch(() => undefined);
+function prefetchJSON<T>(url: string, cacheKey = url) {
+  void getJSON<T>(url, cacheKey).catch(() => undefined);
 }
 
-function cachedJSON<T>(url: string): T | null {
-  const cached = getCache.get(url);
+function cachedJSON<T>(cacheKey: string): T | null {
+  const cached = getCache.get(cacheKey);
   return cached ? cached.data as T : null;
+}
+
+function cachedMail(userID: number, mailboxID: string | null, page: number): MailListResponse | null {
+  const key = mailListCacheKey(userID, mailboxID, page);
+  const cached = cachedJSON<MailListResponse>(key);
+  if (cached || mailboxID || page !== 1) return cached;
+  return loadAllMailSnapshot(userID);
+}
+
+async function loadMail(userID: number, mailboxID: string | null, page: number): Promise<MailListResponse> {
+  const url = mailListURL(mailboxID, page);
+  const epoch = mailCacheEpoch(userID);
+  const key = mailListCacheKey(userID, mailboxID, page, epoch);
+  const data = await getJSON<MailListResponse>(url, key);
+  if (mailCacheEpoch(userID) !== epoch) {
+    getCache.delete(key);
+    return data;
+  }
+  if (!mailboxID && page === 1) saveAllMailSnapshot(userID, data);
+  return data;
+}
+
+function prefetchMail(userID: number, mailboxID: string | null, page: number) {
+  const url = mailListURL(mailboxID, page);
+  void loadMail(userID, mailboxID, page).catch(() => undefined);
+}
+
+function clearMailCache(userID: number) {
+  mailCacheEpochs.set(userID, mailCacheEpoch(userID) + 1);
+  const prefix = `user:${userID}:mail-epoch:`;
+  for (const key of getCache.keys()) {
+    if (key.startsWith(prefix)) getCache.delete(key);
+  }
+  clearAllMailSnapshot(userID);
+}
+
+function retainMailCacheForUser(userID: number) {
+  for (const cachedUserID of mailCacheEpochs.keys()) {
+    if (cachedUserID !== userID) clearMailCache(cachedUserID);
+  }
+  for (const key of getCache.keys()) {
+    const match = key.match(/^user:(\d+):mail-epoch:/);
+    if (match && Number(match[1]) !== userID) getCache.delete(key);
+  }
+  clearOtherAllMailSnapshots(userID);
 }
 
 
@@ -225,12 +282,11 @@ export const api = {
     postJSON<{ ok: boolean; subscription_id: number }>("/api/push/subscription", csrf, subscription),
   deletePushSubscription: (csrf: string, endpoint: string) =>
     deleteJSONBody<{ ok: boolean }>("/api/push/subscription", csrf, { endpoint }),
-  mail: (mailboxID: string | null, page: number) =>
-    getJSON<MailListResponse>(mailListURL(mailboxID, page)),
-  cachedMail: (mailboxID: string | null, page: number) =>
-    cachedJSON<MailListResponse>(mailListURL(mailboxID, page)),
-  prefetchMail: (mailboxID: string | null, page: number) =>
-    prefetchJSON<MailListResponse>(mailListURL(mailboxID, page)),
+  mail: loadMail,
+  cachedMail,
+  prefetchMail,
+  clearMailCache,
+  retainMailCacheForUser,
   snoozes: (page: number) => getJSON<SnoozeListResponse>(`/api/snoozes?${new URLSearchParams({ page: String(page) })}`),
   snoozeMessage: (csrf: string, id: number, until: Date) =>
     putJSON<{ ok: boolean; snoozed: boolean; snooze: MessageSnooze }>(`/api/messages/${id}/snooze`, csrf, { until: until.toISOString() }),

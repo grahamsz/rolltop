@@ -87,6 +87,14 @@ export type Conversation = {
   snoozed_until?: string;
 };
 
+/** MailListResponse is one paged conversation list returned by /api/mail. */
+export type MailListResponse = {
+  conversations: Conversation[];
+  page: number;
+  has_prev: boolean;
+  has_next: boolean;
+};
+
 export type MessageSnooze = {
   id: number;
   message_id: number;

@@ -242,6 +242,7 @@ export default function App() {
   const refreshBootstrap = useCallback(async () => {
     try {
       const data = await api.bootstrap();
+      api.retainMailCacheForUser(data.user?.id || 0);
       setBootstrap(data);
       setBootError("");
       return data;
@@ -501,16 +502,17 @@ export default function App() {
       notification.close();
       window.focus();
       if (single) api.prewarmMessage(messageID);
-      else api.prefetchMail(null, 1);
+      else if (bootstrap?.user) api.prefetchMail(bootstrap.user.id, null, 1);
       navigate(targetURL);
     };
     if (single) api.prewarmMessage(messageID);
-    else api.prefetchMail(null, 1);
-  }, [navigate, notificationsEnabled]);
+    else if (bootstrap?.user) api.prefetchMail(bootstrap.user.id, null, 1);
+  }, [bootstrap?.user, navigate, notificationsEnabled]);
 
   // When someone returns to an idle tab, warm All Mail before they click it.
   useEffect(() => {
     if (!bootstrap?.user) return;
+    const userID = bootstrap.user.id;
     function onMouseMove() {
       const now = Date.now();
       const inactiveFor = now - lastMouseActivityAt.current;
@@ -518,11 +520,11 @@ export default function App() {
       if (inactiveFor < allMailWakePrefetchAfterMS) return;
       if (now - lastAllMailWakePrefetchAt.current < allMailWakePrefetchAfterMS) return;
       lastAllMailWakePrefetchAt.current = now;
-      api.prefetchMail(null, 1);
+      api.prefetchMail(userID, null, 1);
     }
     window.addEventListener("mousemove", onMouseMove, { passive: true });
     return () => window.removeEventListener("mousemove", onMouseMove);
-  }, [bootstrap?.user]);
+  }, [bootstrap?.user?.id]);
 
   // The event stream keeps chrome data hot without each view polling for folder
   // counts or sync progress. Malformed events are ignored so cached views remain usable.
@@ -631,13 +633,14 @@ export default function App() {
     }
     await Promise.allSettled(cleanup);
     await api.logout(csrf);
+    if (bootstrap.user) api.clearMailCache(bootstrap.user.id);
     applySecurityUnlock(emptySecurityUnlockState, true);
     setSecurityUnlockOpen(false);
     setSecurityUnlockIdentityID(null);
     securityUnlockCallbackRef.current = null;
     setBootstrap((current) => (current ? { ...current, user: null, mailboxes: [] } : current));
     navigate("/login");
-  }, [applySecurityUnlock, bootstrap?.csrf, navigate]);
+  }, [applySecurityUnlock, bootstrap?.csrf, bootstrap?.user, navigate]);
 
   const openCompose = useCallback((query = "") => {
     setComposeOverlayQuery(query.replace(/^\?/, ""));

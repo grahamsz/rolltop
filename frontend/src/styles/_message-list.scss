@@ -1,5 +1,13 @@
 @use "mixins/components" as *;
 
+.mail-cache-warning {
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .search-result-actions {
   display: flex;
   align-items: center;

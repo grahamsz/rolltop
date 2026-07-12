@@ -131,6 +131,7 @@ export function RouteView({
   }
   return (
     <MailView
+      userID={user.id}
       csrf={csrf}
       datePrefs={user}
       location={location}
