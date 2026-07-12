@@ -27,6 +27,7 @@ class AndroidWebBridge(
     private var pendingContactAccessRequest: PendingContactRequest? = null
     private var contactPermissionRequestInFlight = false
     private val contactExecutor = Executors.newSingleThreadExecutor()
+    private val pushExecutor = Executors.newSingleThreadExecutor()
     @Volatile
     private var closed = false
 
@@ -73,6 +74,7 @@ class AndroidWebBridge(
         if (closed) return
         closed = true
         contactExecutor.shutdownNow()
+        pushExecutor.shutdownNow()
         pendingContactRequest = null
         pendingContactAccessRequest = null
     }
@@ -101,7 +103,49 @@ class AndroidWebBridge(
                 activity.runOnUiThread { loadContactSuggestions(requestID, query, reply) }
             }
             "requestContactAccess" -> activity.runOnUiThread { requestContactAccess(requestID, reply) }
+            "pushSubscription" -> loadPushSubscription(requestID, reply)
+            "registerPush" -> {
+                activity.runOnUiThread { NativePushRegistration.maybeRegister(activity) }
+                reply.postMessage(response(requestID, true, JSONObject.NULL).toString())
+            }
+            "unregisterPush" -> {
+                NativePushRegistration.unregister(activity)
+                reply.postMessage(response(requestID, true, JSONObject.NULL).toString())
+            }
             else -> reply.postMessage(response(requestID, false, error = "Unsupported native action.").toString())
+        }
+    }
+
+    private fun loadPushSubscription(requestID: String, reply: JavaScriptReplyProxy) {
+        try {
+            pushExecutor.execute {
+                if (closed) return@execute
+                val bootstrap = HttpJson.get(activity, RolltopPrefs.buildUrl(activity, "/api/bootstrap"))
+                val userId = bootstrap?.optJSONObject("user")?.optLong("id", 0) ?: 0
+                activity.runOnUiThread {
+                    if (!closed && !activity.isFinishing && !activity.isDestroyed) {
+                        reply.postMessage(response(requestID, true, pushSubscriptionResult(userId)).toString())
+                    }
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            reply.postMessage(response(requestID, true, JSONObject.NULL).toString())
+        }
+    }
+
+    private fun pushSubscriptionResult(authenticatedUserId: Long): Any {
+        val subscription = NativePushStore.subscription(activity) ?: return JSONObject.NULL
+        if (authenticatedUserId <= 0 || NativePushStore.ownerUserId(activity, subscription.instance) != authenticatedUserId) {
+            return JSONObject.NULL
+        }
+        val expected = NativePushPolicy.instanceForServerUser(RolltopPrefs.serverUrl(activity), authenticatedUserId)
+        if (subscription.instance != expected) return JSONObject.NULL
+        return JSONObject().apply {
+            put("endpoint", subscription.endpoint)
+            put("keys", JSONObject().apply {
+                put("p256dh", subscription.p256dh)
+                put("auth", subscription.auth)
+            })
         }
     }
 

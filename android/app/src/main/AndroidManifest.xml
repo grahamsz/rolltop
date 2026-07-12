@@ -67,6 +67,14 @@
             android:exported="false"
             android:theme="@style/RolltopTheme" />
 
+        <service
+            android:name=".RolltopPushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

@@ -697,17 +697,19 @@ function Topbar({
               <strong>{accountLabel}</strong>
               <small>{user.email}</small>
             </div>
-            <button
-              className={notificationsEnabled ? "account-menu-row account-menu-notifications active" : "account-menu-row account-menu-notifications"}
-              type="button"
-              role="switch"
-              aria-checked={notificationsEnabled}
-              onClick={() => void menuToggleNotifications()}
-            >
-              <Icon name="notifications" weight={notificationsEnabled ? "bold" : "regular"} />
-              <span><strong>Browser notifications</strong><small>{notificationsEnabled ? "Enabled for new mail" : "Paused for this browser"}</small></span>
-              <span className="notification-toggle-track"><span /></span>
-            </button>
+            {!androidNativeAvailable() ? (
+              <button
+                className={notificationsEnabled ? "account-menu-row account-menu-notifications active" : "account-menu-row account-menu-notifications"}
+                type="button"
+                role="switch"
+                aria-checked={notificationsEnabled}
+                onClick={() => void menuToggleNotifications()}
+              >
+                <Icon name="notifications" weight={notificationsEnabled ? "bold" : "regular"} />
+                <span><strong>Browser notifications</strong><small>{notificationsEnabled ? "Enabled for new mail" : "Paused for this browser"}</small></span>
+                <span className="notification-toggle-track"><span /></span>
+              </button>
+            ) : null}
             <button className="account-menu-row" type="button" role="menuitem" onClick={() => menuNavigate("/settings/account")}>
               <Icon name="settings" />
               <span><strong>Settings</strong><small>Profile, servers, folders, and identities</small></span>

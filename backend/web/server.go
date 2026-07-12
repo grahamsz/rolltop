@@ -99,8 +99,13 @@ type Server struct {
 	senderContactIconCache    map[int64]map[string]senderContactIconCacheEntry
 	composeIdentityMu         sync.Mutex
 	composeIdentityCache      map[int64]composeIdentityCacheEntry
-	webPushMu                 sync.Mutex
-	webPushSent               map[int64]webPushProgress
+	webPushDeliveryLocks      sync.Map
+	webPushScheduleMu         sync.Mutex
+	webPushRunning            map[int64]bool
+	webPushDirty              map[int64]bool
+	webPushClient             *http.Client
+	webPushSend               webPushSendFunc
+	webPushRetryDelay         func(int) time.Duration
 	startedAt                 time.Time
 }
 
@@ -284,7 +289,9 @@ func New(opts Options) (*Server, error) {
 		attachmentRepairRunning:   map[int64]map[int64]bool{},
 		senderContactIconCache:    map[int64]map[string]senderContactIconCacheEntry{},
 		composeIdentityCache:      map[int64]composeIdentityCacheEntry{},
-		webPushSent:               map[int64]webPushProgress{},
+		webPushRunning:            map[int64]bool{},
+		webPushDirty:              map[int64]bool{},
+		webPushClient:             newWebPushHTTPClient(),
 		startedAt:                 time.Now().UTC(),
 	}
 	if opts.Syncer != nil {
@@ -292,6 +299,7 @@ func New(opts Options) (*Server, error) {
 	}
 	srv.startAutoStartBackendPlugins(context.Background())
 	srv.warmAllMailFirstPages(context.Background())
+	srv.resumeNewMailWebPushAsync()
 	return srv, nil
 }
 

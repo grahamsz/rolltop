@@ -114,10 +114,12 @@ func TestWebPushSubscriptionsAreUserScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	firstP256DH, firstAuth := testWebPushKeyMaterial(1)
+	secondP256DH, secondAuth := testWebPushKeyMaterial(2)
 	saved, err := db.SaveWebPushSubscription(ctx, user.ID, WebPushSubscription{
 		Endpoint:  "https://push.example.test/send/one",
-		P256DH:    "receiver-key",
-		Auth:      "auth-secret",
+		P256DH:    firstP256DH,
+		Auth:      firstAuth,
 		UserAgent: "test browser",
 	})
 	if err != nil {
@@ -128,8 +130,8 @@ func TestWebPushSubscriptionsAreUserScoped(t *testing.T) {
 	}
 	if _, err := db.SaveWebPushSubscription(ctx, user.ID, WebPushSubscription{
 		Endpoint: "https://push.example.test/send/one",
-		P256DH:   "receiver-key-updated",
-		Auth:     "auth-secret-updated",
+		P256DH:   secondP256DH,
+		Auth:     secondAuth,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +139,7 @@ func TestWebPushSubscriptionsAreUserScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(subs) != 1 || subs[0].P256DH != "receiver-key-updated" {
+	if len(subs) != 1 || subs[0].P256DH != secondP256DH {
 		t.Fatalf("owner subscriptions = %+v", subs)
 	}
 	otherSubs, err := db.ListWebPushSubscriptions(ctx, other.ID)

@@ -22,6 +22,14 @@ export type AndroidContactSuggestionResult = {
   contacts: NativeContactEmail[];
 };
 
+export type AndroidPushSubscription = {
+  endpoint: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+};
+
 type NativeSharedFile = {
   name: string;
   type: string;
@@ -79,6 +87,38 @@ export async function androidContactSuggestions(query: string): Promise<AndroidC
 /** Request contact access only in response to the labeled compose affordance. */
 export async function requestAndroidContactAccess(): Promise<AndroidContactAccess> {
   return parseContactSuggestionResult(await nativeRequest("requestContactAccess", {})).access;
+}
+
+/** Return the device endpoint so the signed-in user can remove it before logout. */
+export async function androidPushSubscription(): Promise<AndroidPushSubscription | null> {
+  if (!androidNativeAvailable()) return null;
+  const result = await nativeRequest("pushSubscription", {});
+  if (result === null) return null;
+  if (!result || typeof result !== "object") throw new Error("Android returned an invalid push subscription.");
+  const value = result as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
+  if (
+    typeof value.endpoint !== "string" || !value.endpoint.startsWith("https://") ||
+    typeof value.keys?.p256dh !== "string" || !value.keys.p256dh ||
+    typeof value.keys?.auth !== "string" || !value.keys.auth
+  ) {
+    throw new Error("Android returned an invalid push subscription.");
+  }
+  return {
+    endpoint: value.endpoint,
+    keys: { p256dh: value.keys.p256dh, auth: value.keys.auth }
+  };
+}
+
+/** Start or refresh native push registration after the web session authenticates. */
+export async function registerAndroidPush(): Promise<void> {
+  if (!androidNativeAvailable()) return;
+  await nativeRequest("registerPush", {});
+}
+
+/** Invalidate the device endpoint after its server-side binding is removed. */
+export async function unregisterAndroidPush(): Promise<void> {
+  if (!androidNativeAvailable()) return;
+  await nativeRequest("unregisterPush", {});
 }
 
 export function loadAndroidSharedFiles(shareId: string): Promise<File[]> {

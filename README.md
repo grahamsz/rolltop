@@ -121,7 +121,7 @@ Search supports Gmail-style operators:
 - `is:read`
 - `is:unread`
 
-The web app is installable as a limited offline PWA. It caches the shell and recent GET API responses, so previously opened mail/search views can render when offline. Browser notifications can be enabled from the top bar; these are local PWA notifications driven by the app's authenticated server-sent event stream, not VAPID/web-push delivery from a remote push service. Notifications are only counted for recent INBOX arrivals after the mailbox has already completed an initial sync, so archive/backfill syncs do not create browser popups.
+The web app is installable as a limited offline PWA. It caches the shell and recent GET API responses, so previously opened mail/search views can render when offline. Browser notifications can be enabled from the top bar and use user-scoped VAPID Web Push subscriptions. The Android app uses the same server sender through UnifiedPush, with an embedded Play Services distributor and a 15-minute authenticated poll as fallbacks. Notifications are driven only by durable recent INBOX arrival events after the mailbox has completed its initial sync, so archive/backfill syncs do not create popups.
 
 rolltop uses IMAP `IDLE` for INBOX wakeups when the server supports it and keeps the scheduled INBOX poll as a fallback. Remote deletes and moves are reconciled after folder syncs by comparing local UIDs with the server's current UID set.
 

@@ -47,6 +47,9 @@ class MainActivity : ComponentActivity() {
     private val contactPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         androidWebBridge?.handleContactPermissionResult(granted)
     }
+    private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) NativePushRegistration.maybeRegister(this)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +74,8 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         checkForServerUpdate()
+        NativePushRegistration.maybeRegister(this)
+        PushSubscriptionWorker.schedule(this)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -239,6 +244,8 @@ class MainActivity : ComponentActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 RolltopPrefs.rememberVisitedUrl(this@MainActivity, url)
+                NativePushRegistration.maybeRegister(this@MainActivity)
+                PushSubscriptionWorker.schedule(this@MainActivity)
             }
 
             override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
@@ -462,7 +469,7 @@ class MainActivity : ComponentActivity() {
 
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 44)
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 

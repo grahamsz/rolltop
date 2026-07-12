@@ -1,6 +1,6 @@
 # Rolltop Android
 
-This is a native Android wrapper for a Rolltop server. It gives Rolltop an installable Android app surface with WebView session persistence, notification polling, Android contacts/file pickers, default mail app registration intents, Android share targets, and a server-driven update prompt flow.
+This is a native Android wrapper for a Rolltop server. It gives Rolltop an installable Android app surface with WebView session persistence, background push notifications, Android contacts/file pickers, default mail app registration intents, Android share targets, and a server-driven update prompt flow.
 
 ## Build
 
@@ -36,13 +36,17 @@ Typed recipient suggestions initially come from Rolltop's server-side contacts. 
 
 ## Notifications
 
-The app schedules a persistent, network-constrained 15-minute WorkManager poll against `/api/notifications/new-mail`. The server records only current incremental INBOX arrivals, and the app persists a durable event cursor bound to the configured server and authenticated user. Its first poll, an account switch, or a restored server cursor establishes a silent baseline, so existing unread mail is never replayed as thousands of new messages.
+Rolltop uses UnifiedPush for immediate background wakeups. An installed external distributor is preferred; on devices with Google Play Services, the embedded FCM distributor is the fallback. The embedded distributor accepts Rolltop's existing standards-based VAPID Web Push requests, so self-hosted servers do not need a Firebase project, `google-services.json`, or an FCM service-account secret.
+
+An IMAP `IDLE` wake starts the normal incremental INBOX sync. Each newly stored arrival enters a durable, user-scoped event feed, and the server sends a wake to every registered endpoint. The Android receiver immediately enqueues unique WorkManager work, then fetches `/api/notifications/new-mail` with the WebView session cookie. The push body is never trusted as account state; the authenticated cursor feed determines the exact messages to display.
+
+The app also keeps a persistent, network-constrained 15-minute poll as a fallback for a missing distributor, delayed push service, or transient delivery failure. Its cursor is bound to the configured server and authenticated user. First registration establishes a silent baseline before publishing the endpoint, so existing unread mail is never replayed as thousands of new messages. Device endpoints are rotated when the server or signed-in user changes and are unregistered during logout.
 
 A single arrival shows its sender and subject and opens that message. Multiple arrivals use an expanded inbox-style notification and open All Mail. Before a user opens the destination, the app makes a bounded best-effort warm-up request: message bodies use the side-effect-free `/api/messages/:id/prefetch` route, while multiple-message alerts warm the first All Mail page. Prefetching never marks a message read or queues an IMAP `\Seen` update.
 
 Android 13 and newer require the runtime notification permission.
 
-Polling relies on the WebView login cookie for the configured Rolltop server. If the session expires, the app stops notifying until the user signs in again.
+Push registration and polling rely on the WebView login cookie for the configured Rolltop server. If the session expires, the app stops notifying until the user signs in again. The Rolltop server also needs outbound HTTPS access to the selected distributor endpoint.
 
 ## Updates
 

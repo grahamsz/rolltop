@@ -406,15 +406,16 @@ type SyncRun struct {
 	Error              string
 }
 
-// WebPushSubscription stores one browser Push API endpoint for a user.
+// WebPushSubscription stores one browser or native Web Push endpoint for a user.
 type WebPushSubscription struct {
-	ID         int64
-	UserID     int64
-	Endpoint   string
-	P256DH     string
-	Auth       string
-	UserAgent  string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	LastSeenAt time.Time
+	ID                 int64
+	UserID             int64
+	Endpoint           string
+	P256DH             string
+	Auth               string
+	UserAgent          string
+	LastNewMailEventID int64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	LastSeenAt         time.Time
 }

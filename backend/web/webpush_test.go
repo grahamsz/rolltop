@@ -1,12 +1,17 @@
 package web
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"net"
+	"net/http"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -103,11 +108,36 @@ func TestEncryptWebPushPayloadBuildsAES128GCMRecord(t *testing.T) {
 	}
 }
 
+func TestSendWebPushUsesHighUrgencyForBackgroundMail(t *testing.T) {
+	receiver, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := make([]byte, 16)
+	if _, err := rand.Read(auth); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: webPushRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if got := request.Header.Get("Urgency"); got != webPushNewMailUrgency {
+			t.Fatalf("Urgency = %q, want %q", got, webPushNewMailUrgency)
+		}
+		return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{}, Body: http.NoBody}, nil
+	})}
+	_, err = sendWebPush(context.Background(), client, []byte("12345678901234567890123456789012"), store.WebPushSubscription{
+		Endpoint: "https://push.example.test/send/high-priority",
+		P256DH:   base64.RawURLEncoding.EncodeToString(webPushPublicKeyBytes(&receiver.PublicKey)),
+		Auth:     base64.RawURLEncoding.EncodeToString(auth),
+	}, []byte(`{"new_mail":true}`), "user@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNewMailWebPushNotificationBody(t *testing.T) {
-	note := newMailWebPushNotification(3, store.SyncRun{
-		LatestNewFrom:      "Alice Example <alice@example.test>",
-		LatestNewSubject:   "Quarterly update",
-		LatestNewMessageID: 42,
+	note := newMailWebPushNotification(3, store.NewMailEvent{
+		FromAddr:  "Alice Example <alice@example.test>",
+		Subject:   "Quarterly update",
+		MessageID: 42,
 	})
 	if note.Title != "rolltop - Alice Example" {
 		t.Fatalf("title = %q", note.Title)
@@ -121,8 +151,88 @@ func TestNewMailWebPushNotificationBody(t *testing.T) {
 }
 
 func TestSingleNewMailWebPushDeepLinksAndPrefetchesWithoutOpening(t *testing.T) {
-	note := newMailWebPushNotification(1, store.SyncRun{LatestNewMessageID: 42})
+	note := newMailWebPushNotification(1, store.NewMailEvent{MessageID: 42})
 	if note.URL != "/messages/42?back=%2Fmail" || note.APIURL != "/api/messages/42/prefetch" || note.MessageID != 42 {
 		t.Fatalf("notification = %+v", note)
 	}
+}
+
+func TestPublicWebPushDialerOnlyDialsResolvedPublicAddresses(t *testing.T) {
+	resolver := staticWebPushResolver{addresses: []netip.Addr{
+		netip.MustParseAddr("127.0.0.1"),
+		netip.MustParseAddr("10.0.0.5"),
+		netip.MustParseAddr("8.8.8.8"),
+	}}
+	dialer := &recordingWebPushDialer{err: errors.New("stop after validation")}
+	publicDialer := &publicWebPushDialer{resolver: resolver, dialer: dialer}
+	if _, err := publicDialer.DialContext(context.Background(), "tcp", "push.example.com:443"); err == nil {
+		t.Fatal("dial unexpectedly succeeded")
+	}
+	if !reflect.DeepEqual(dialer.addresses, []string{"8.8.8.8:443"}) {
+		t.Fatalf("dialed addresses = %v, want only the resolved public address", dialer.addresses)
+	}
+}
+
+func TestPublicWebPushDialerRejectsPrivateOnlyResolution(t *testing.T) {
+	dialer := &recordingWebPushDialer{}
+	publicDialer := &publicWebPushDialer{
+		resolver: staticWebPushResolver{addresses: []netip.Addr{
+			netip.MustParseAddr("169.254.169.254"),
+			netip.MustParseAddr("fd00::1"),
+			netip.MustParseAddr("64:ff9b::a00:1"),
+		}},
+		dialer: dialer,
+	}
+	if _, err := publicDialer.DialContext(context.Background(), "tcp", "push.example.com:443"); err == nil {
+		t.Fatal("private-only endpoint resolution was accepted")
+	}
+	if len(dialer.addresses) != 0 {
+		t.Fatalf("private addresses reached network dialer: %v", dialer.addresses)
+	}
+}
+
+func TestWebPushHTTPClientDoesNotFollowRedirects(t *testing.T) {
+	requests := 0
+	client := newWebPushHTTPClient()
+	client.Transport = webPushRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"https://redirect.example.com/private"}},
+			Body:       http.NoBody,
+		}, nil
+	})
+	response, err := client.Get("https://push.example.com/send")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusFound || requests != 1 {
+		t.Fatalf("redirect response status/requests = %d/%d, want 302/1", response.StatusCode, requests)
+	}
+}
+
+type staticWebPushResolver struct {
+	addresses []netip.Addr
+	err       error
+}
+
+func (r staticWebPushResolver) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
+	return r.addresses, r.err
+}
+
+type recordingWebPushDialer struct {
+	addresses []string
+	err       error
+}
+
+func (d *recordingWebPushDialer) DialContext(_ context.Context, _, address string) (net.Conn, error) {
+	d.addresses = append(d.addresses, address)
+	return nil, d.err
+}
+
+type webPushRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn webPushRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
 }

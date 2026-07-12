@@ -1,4 +1,4 @@
-// File overview: New-mail Web Push notification scheduling and delivery.
+// File overview: Durable new-mail Web Push notification scheduling and delivery.
 
 package web
 
@@ -10,15 +10,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"rolltop/backend/store"
 )
-
-type webPushProgress struct {
-	RunID       int64
-	NewMessages int
-}
 
 type webPushNotification struct {
 	Title     string `json:"title"`
@@ -31,119 +27,202 @@ type webPushNotification struct {
 	MessageID int64  `json:"message_id,omitempty"`
 }
 
-const webPushFreshRunWindow = 2 * time.Minute
+const webPushMaxRetryAttempts = 3
 
 func (s *Server) notifyNewMailWebPushAsync(userID int64) {
 	if s == nil || s.store == nil || userID <= 0 {
 		return
 	}
-	go s.notifyNewMailWebPush(context.Background(), userID)
+	s.webPushScheduleMu.Lock()
+	if s.webPushRunning == nil {
+		s.webPushRunning = map[int64]bool{}
+	}
+	if s.webPushDirty == nil {
+		s.webPushDirty = map[int64]bool{}
+	}
+	if s.webPushRunning[userID] {
+		s.webPushDirty[userID] = true
+		s.webPushScheduleMu.Unlock()
+		return
+	}
+	s.webPushRunning[userID] = true
+	s.webPushScheduleMu.Unlock()
+	go s.runScheduledNewMailWebPush(userID)
 }
 
-func (s *Server) notifyNewMailWebPush(ctx context.Context, userID int64) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	runs, err := s.store.ListSyncRunsForUser(ctx, userID, 1)
-	if err != nil || len(runs) == 0 {
-		if err != nil && ctx.Err() == nil {
-			log.Printf("web push sync run user_id=%d: %v", userID, err)
+func (s *Server) resumeNewMailWebPushAsync() {
+	if s == nil || s.store == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		users, err := s.store.ListUsers(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("web push resume users: %v", err)
+			}
+			return
 		}
-		return
-	}
-	run := runs[0]
-	count := run.NewMessages
-	if count <= 0 || strings.TrimSpace(run.LatestNewFrom) == "rolltop:maintenance" {
-		return
-	}
-	if !run.UpdatedAt.IsZero() && !s.startedAt.IsZero() && run.UpdatedAt.Before(s.startedAt) {
-		s.rememberWebPushProgress(userID, run.ID, count)
-		return
-	}
-	if !run.UpdatedAt.IsZero() && time.Since(run.UpdatedAt) > webPushFreshRunWindow {
-		s.rememberWebPushProgress(userID, run.ID, count)
-		return
-	}
-	delta := s.claimWebPushDelta(userID, run.ID, count)
-	if delta <= 0 {
-		return
-	}
-	if err := s.sendNewMailWebPush(ctx, userID, delta, run); err != nil && ctx.Err() == nil {
-		log.Printf("web push notify user_id=%d: %v", userID, err)
-	}
+		for _, user := range users {
+			s.notifyNewMailWebPushAsync(user.ID)
+		}
+	}()
 }
 
-func (s *Server) claimWebPushDelta(userID, runID int64, count int) int {
-	s.webPushMu.Lock()
-	defer s.webPushMu.Unlock()
-	if s.webPushSent == nil {
-		s.webPushSent = map[int64]webPushProgress{}
-	}
-	previous := s.webPushSent[userID]
-	delta := count
-	if previous.RunID == runID {
-		delta = count - previous.NewMessages
-	}
-	if delta <= 0 {
-		return 0
-	}
-	s.webPushSent[userID] = webPushProgress{RunID: runID, NewMessages: count}
-	return delta
-}
+func (s *Server) runScheduledNewMailWebPush(userID int64) {
+	retryAttempt := 0
+	for {
+		s.webPushScheduleMu.Lock()
+		delete(s.webPushDirty, userID)
+		s.webPushScheduleMu.Unlock()
 
-func (s *Server) rememberWebPushProgress(userID, runID int64, count int) {
-	s.webPushMu.Lock()
-	defer s.webPushMu.Unlock()
-	if s.webPushSent == nil {
-		s.webPushSent = map[int64]webPushProgress{}
-	}
-	current := s.webPushSent[userID]
-	if current.RunID == runID && current.NewMessages >= count {
-		return
-	}
-	s.webPushSent[userID] = webPushProgress{RunID: runID, NewMessages: count}
-}
-
-func (s *Server) sendNewMailWebPush(ctx context.Context, userID int64, count int, run store.SyncRun) error {
-	subs, err := s.store.ListWebPushSubscriptions(ctx, userID)
-	if err != nil {
-		return err
-	}
-	if len(subs) == 0 {
-		return nil
-	}
-	payload, err := json.Marshal(newMailWebPushNotification(count, run))
-	if err != nil {
-		return err
-	}
-	user, err := s.store.GetUserByID(ctx, userID)
-	subject := ""
-	if err == nil {
-		subject = user.Email
-	}
-	client := &http.Client{Timeout: webPushHTTPTimeout}
-	for _, sub := range subs {
-		result, err := sendWebPush(ctx, client, s.masterKey, sub, payload, subject)
-		if err == nil {
+		retryNeeded := s.notifyNewMailWebPush(context.Background(), userID)
+		s.webPushScheduleMu.Lock()
+		if s.webPushDirty[userID] {
+			delete(s.webPushDirty, userID)
+			s.webPushScheduleMu.Unlock()
+			retryAttempt = 0
 			continue
 		}
-		if result.StatusCode == http.StatusGone || result.StatusCode == http.StatusNotFound {
-			if deleteErr := s.store.DeleteWebPushSubscription(ctx, userID, sub.Endpoint); deleteErr != nil {
+		if retryNeeded && retryAttempt < webPushMaxRetryAttempts {
+			retryAttempt++
+			s.webPushScheduleMu.Unlock()
+			timer := time.NewTimer(s.newMailWebPushRetryDelay(retryAttempt))
+			<-timer.C
+			continue
+		}
+		delete(s.webPushRunning, userID)
+		s.webPushScheduleMu.Unlock()
+		return
+	}
+}
+
+func (s *Server) newMailWebPushRetryDelay(attempt int) time.Duration {
+	if s.webPushRetryDelay != nil {
+		return s.webPushRetryDelay(attempt)
+	}
+	switch attempt {
+	case 1:
+		return 2 * time.Second
+	case 2:
+		return 10 * time.Second
+	default:
+		return 30 * time.Second
+	}
+}
+
+func (s *Server) notifyNewMailWebPush(ctx context.Context, userID int64) bool {
+	if s == nil || s.store == nil || userID <= 0 {
+		return false
+	}
+	lock := s.webPushDeliveryLock(userID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	subs, err := s.store.ListWebPushSubscriptions(ctx, userID)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("web push subscriptions user_id=%d: %v", userID, err)
+		}
+		return true
+	}
+	if len(subs) == 0 {
+		return false
+	}
+	user, userErr := s.store.GetUserByID(ctx, userID)
+	subject := ""
+	if userErr == nil {
+		subject = user.Email
+	}
+	client := s.webPushClient
+	if client == nil {
+		client = newWebPushHTTPClient()
+	}
+	retryNeeded := false
+	for _, sub := range subs {
+		if ctx.Err() != nil {
+			return true
+		}
+		events, count, cursor, err := s.store.NewMailEventsAfter(ctx, userID, sub.LastNewMailEventID, newMailNotificationEnvelopeLimit)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("web push events user_id=%d subscription_id=%d: %v", userID, sub.ID, err)
+			}
+			retryNeeded = true
+			continue
+		}
+		if count <= 0 || cursor <= sub.LastNewMailEventID || len(events) == 0 {
+			continue
+		}
+		payload, err := json.Marshal(newMailWebPushNotification(count, events[len(events)-1]))
+		if err != nil {
+			log.Printf("web push payload user_id=%d subscription_id=%d: %v", userID, sub.ID, err)
+			continue
+		}
+		result, err := s.sendWebPushNotification(ctx, client, sub, payload, subject)
+		if err == nil {
+			advanced, err := s.store.AdvanceWebPushSubscriptionNewMailCursor(ctx, userID, sub, cursor)
+			if err != nil {
+				if ctx.Err() == nil {
+					log.Printf("web push cursor user_id=%d subscription_id=%d: %v", userID, sub.ID, err)
+				}
+				retryNeeded = true
+			} else if !advanced {
+				// The endpoint keys rotated while this encrypted delivery was in flight.
+				retryNeeded = true
+			}
+			continue
+		}
+		if webPushSubscriptionIsStale(result.StatusCode) {
+			deleted, deleteErr := s.store.DeleteWebPushSubscriptionIfCurrent(ctx, userID, sub)
+			if deleteErr != nil {
 				log.Printf("web push delete stale subscription user_id=%d host=%s: %v", userID, webPushEndpointHost(sub.Endpoint), deleteErr)
+				retryNeeded = true
+			} else if !deleted {
+				// A refreshed subscription reused the URL while this request was in flight.
+				retryNeeded = true
 			}
 			continue
 		}
 		if result.StatusCode >= webPushInvalidStatusMin {
 			log.Printf("web push delivery user_id=%d host=%s status=%d", userID, webPushEndpointHost(sub.Endpoint), result.StatusCode)
+			if webPushDeliveryIsRetryable(result.StatusCode) {
+				retryNeeded = true
+			}
 			continue
 		}
 		log.Printf("web push delivery user_id=%d host=%s: %v", userID, webPushEndpointHost(sub.Endpoint), err)
+		retryNeeded = true
 	}
-	return nil
+	return retryNeeded
 }
 
-func newMailWebPushNotification(count int, run store.SyncRun) webPushNotification {
-	sender := displayWebPushSender(run.LatestNewFrom)
-	subject := truncateWebPushText(run.LatestNewSubject, 110)
+func webPushDeliveryIsRetryable(status int) bool {
+	return status == 0 || status == http.StatusRequestTimeout || status == http.StatusTooEarly || status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
+}
+
+func webPushSubscriptionIsStale(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusNotFound || status == http.StatusGone
+}
+
+func (s *Server) webPushDeliveryLock(userID int64) *sync.Mutex {
+	lock, _ := s.webPushDeliveryLocks.LoadOrStore(userID, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+func (s *Server) sendWebPushNotification(ctx context.Context, client *http.Client, sub store.WebPushSubscription, payload []byte, subject string) (webPushSendResult, error) {
+	if s.webPushSend != nil {
+		return s.webPushSend(ctx, client, s.masterKey, sub, payload, subject)
+	}
+	return sendWebPush(ctx, client, s.masterKey, sub, payload, subject)
+}
+
+func newMailWebPushNotification(count int, latest store.NewMailEvent) webPushNotification {
+	sender := displayWebPushSender(latest.FromAddr)
+	subject := truncateWebPushText(latest.Subject, 110)
 	title := "rolltop"
 	if sender != "" {
 		title += " - " + sender
@@ -163,10 +242,10 @@ func newMailWebPushNotification(count int, run store.SyncRun) webPushNotificatio
 	messageURL := "/mail"
 	apiURL := "/api/mail?page=1"
 	messageID := int64(0)
-	if count == 1 && run.LatestNewMessageID > 0 {
-		messageURL = webPushMessageURL(run.LatestNewMessageID)
-		apiURL = "/api/messages/" + strconv.FormatInt(run.LatestNewMessageID, 10) + "/prefetch"
-		messageID = run.LatestNewMessageID
+	if count == 1 && latest.MessageID > 0 {
+		messageURL = webPushMessageURL(latest.MessageID)
+		apiURL = "/api/messages/" + strconv.FormatInt(latest.MessageID, 10) + "/prefetch"
+		messageID = latest.MessageID
 	}
 	return webPushNotification{
 		Title:     title,

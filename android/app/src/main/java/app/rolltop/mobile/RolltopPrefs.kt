@@ -29,6 +29,9 @@ object RolltopPrefs {
 
         val preferences = context.getSharedPreferences(NAME, Context.MODE_PRIVATE)
         val previous = normalizeBaseUrl(preferences.getString(KEY_SERVER_URL, "").orEmpty())
+        if (previous.isNotBlank() && previous != normalized) {
+            NativePushRegistration.clearForServerChange(context)
+        }
         preferences.edit().apply {
             putString(KEY_SERVER_URL, normalized)
             if (previous != normalized) {
@@ -74,6 +77,13 @@ object RolltopPrefs {
         return context.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
             .putLong(KEY_NEW_MAIL_USER_ID, userId)
             .putLong(KEY_NEW_MAIL_EVENT_ID, eventId)
+            .commit()
+    }
+
+    fun clearNewMailCursor(context: Context) {
+        context.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+            .remove(KEY_NEW_MAIL_USER_ID)
+            .remove(KEY_NEW_MAIL_EVENT_ID)
             .commit()
     }
 

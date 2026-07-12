@@ -20,7 +20,9 @@ import (
 	"hash"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -36,11 +38,14 @@ const (
 	webPushDefaultTTL       = 24 * time.Hour
 	webPushHTTPTimeout      = 10 * time.Second
 	webPushInvalidStatusMin = 400
+	webPushNewMailUrgency   = "high"
 )
 
 type webPushSendResult struct {
 	StatusCode int
 }
+
+type webPushSendFunc func(context.Context, *http.Client, []byte, store.WebPushSubscription, []byte, string) (webPushSendResult, error)
 
 type webPushEncryptedMessage struct {
 	Body      []byte
@@ -82,7 +87,7 @@ func sendWebPush(ctx context.Context, client *http.Client, masterKey []byte, sub
 		return webPushSendResult{}, err
 	}
 	if client == nil {
-		client = &http.Client{Timeout: webPushHTTPTimeout}
+		client = newWebPushHTTPClient()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encrypted.Body))
 	if err != nil {
@@ -93,7 +98,9 @@ func sendWebPush(ctx context.Context, client *http.Client, masterKey []byte, sub
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Crypto-Key", "p256ecdsa="+vapidPublicKey)
 	req.Header.Set("TTL", fmt.Sprintf("%.0f", webPushDefaultTTL.Seconds()))
-	req.Header.Set("Urgency", "normal")
+	// New-mail pushes immediately produce a user-visible notification, so high
+	// urgency is appropriate and lets FCM wake devices that are in Doze.
+	req.Header.Set("Urgency", webPushNewMailUrgency)
 	res, err := client.Do(req)
 	if err != nil {
 		return webPushSendResult{}, err
@@ -105,6 +112,112 @@ func sendWebPush(ctx context.Context, client *http.Client, masterKey []byte, sub
 		return result, nil
 	}
 	return result, fmt.Errorf("web push service returned %d", res.StatusCode)
+}
+
+func newWebPushHTTPClient() *http.Client {
+	transport := &http.Transport{
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
+	if defaults, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = defaults.Clone()
+	}
+	transport.Proxy = nil
+	transport.DialContext = (&publicWebPushDialer{
+		resolver: net.DefaultResolver,
+		dialer: &net.Dialer{
+			Timeout:   webPushHTTPTimeout,
+			KeepAlive: 30 * time.Second,
+		},
+	}).DialContext
+	return &http.Client{
+		Transport: transport,
+		Timeout:   webPushHTTPTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+type publicWebPushDialer struct {
+	resolver webPushResolver
+	dialer   webPushNetworkDialer
+}
+
+type webPushResolver interface {
+	LookupNetIP(context.Context, string, string) ([]netip.Addr, error)
+}
+
+type webPushNetworkDialer interface {
+	DialContext(context.Context, string, string) (net.Conn, error)
+}
+
+var nonPublicWebPushDialPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/32"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("fec0::/10"),
+}
+
+func (d *publicWebPushDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("invalid web push address: %w", err)
+	}
+	resolver := d.resolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	dialer := d.dialer
+	if dialer == nil {
+		dialer = &net.Dialer{Timeout: webPushHTTPTimeout}
+	}
+	addresses, err := resolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve web push endpoint: %w", err)
+	}
+	var lastErr error
+	for _, addr := range addresses {
+		addr = addr.Unmap()
+		if !isPublicWebPushAddress(addr) {
+			continue
+		}
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addr.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("connect to web push endpoint: %w", lastErr)
+	}
+	return nil, errors.New("web push endpoint did not resolve to a public address")
+}
+
+func isPublicWebPushAddress(addr netip.Addr) bool {
+	if !addr.IsValid() || !addr.IsGlobalUnicast() || addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsUnspecified() {
+		return false
+	}
+	for _, prefix := range nonPublicWebPushDialPrefixes {
+		if prefix.Contains(addr) {
+			return false
+		}
+	}
+	return true
 }
 
 func deriveWebPushVAPIDKey(masterKey []byte) (*ecdsa.PrivateKey, error) {

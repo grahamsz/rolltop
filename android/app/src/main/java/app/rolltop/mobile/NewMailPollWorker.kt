@@ -7,7 +7,10 @@ import android.content.Intent
 import androidx.core.app.NotificationCompat
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequest
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequest
 import androidx.work.WorkManager
 import androidx.work.Worker
@@ -17,57 +20,124 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
+internal data class NewMailPollResult(
+    val userId: Long = 0,
+    val authenticated: Boolean = false,
+    val shouldRetry: Boolean = false
+)
+
 class NewMailPollWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
     override fun doWork(): Result {
-        synchronized(POLL_LOCK) {
-            poll(applicationContext)
+        val result = synchronized(POLL_LOCK) {
+            NewMailPoller.poll(applicationContext)
         }
-        return Result.success()
+        return if (result.shouldRetry && runAttemptCount < MAX_RETRY_ATTEMPTS) Result.retry() else Result.success()
     }
 
-    private fun poll(context: Context) {
+    companion object {
+        const val EXTRA_TARGET_PATH = "app.rolltop.mobile.extra.TARGET_PATH"
+        private const val UNIQUE_WORK_NAME = "rolltop-new-mail-poll"
+        private const val UNIQUE_IMMEDIATE_WORK_NAME = "rolltop-new-mail-immediate"
+        private const val MAX_RETRY_ATTEMPTS = 3
+        private val POLL_LOCK = Any()
+
+        fun schedule(context: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+            val request = PeriodicWorkRequest.Builder(
+                NewMailPollWorker::class.java,
+                15,
+                TimeUnit.MINUTES
+            )
+                .setInitialDelay(1, TimeUnit.MINUTES)
+                .setConstraints(constraints)
+                .build()
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                UNIQUE_WORK_NAME,
+                ExistingPeriodicWorkPolicy.UPDATE,
+                request
+            )
+        }
+
+        fun enqueueImmediate(context: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+            val request = OneTimeWorkRequest.Builder(NewMailPollWorker::class.java)
+                .setConstraints(constraints)
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                UNIQUE_IMMEDIATE_WORK_NAME,
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                request
+            )
+        }
+
+        internal fun prepareForPushRegistration(context: Context): NewMailPollResult =
+            synchronized(POLL_LOCK) { NewMailPoller.poll(context) }
+
+    }
+}
+
+private object NewMailPoller {
+    private const val NOTIFICATION_ID = 1001
+    private const val NOTIFICATION_REQUEST_CODE = 100
+    private const val MAX_NOTIFICATION_LINES = 5
+    private const val MAX_TEXT_LENGTH = 120
+    private const val PREWARM_CONNECT_TIMEOUT_MILLIS = 1_500
+    private const val PREWARM_READ_TIMEOUT_MILLIS = 2_500
+
+    fun poll(context: Context): NewMailPollResult {
         val base = RolltopPrefs.serverUrl(context)
-        if (base.isBlank()) return
+        if (base.isBlank()) return NewMailPollResult()
         val previous = RolltopPrefs.newMailCursor(context)
         val path = if (previous == null) {
             "/api/notifications/new-mail"
         } else {
             "/api/notifications/new-mail?after=${previous.eventId}"
         }
-        val json = HttpJson.get(context, "$base$path") ?: return
+        val response = HttpJson.getResponse(context, "$base$path")
+            ?: return NewMailPollResult(shouldRetry = true)
+        if (response.statusCode == 401 || response.statusCode == 403) return NewMailPollResult()
+        if (NativePushPolicy.uploadResult(response.statusCode) == PushUploadResult.RETRY) {
+            return NewMailPollResult(shouldRetry = true)
+        }
+        if (response.statusCode !in 200..299) return NewMailPollResult()
+        val json = response.body ?: return NewMailPollResult(shouldRetry = true)
         val userId = json.optLong("user_id", 0)
         val cursor = json.optLong("cursor", -1)
         val count = json.optInt("count", 0)
-        val decision = NewMailNotificationPolicy.decide(previous, userId, cursor, count) ?: return
+        val decision = NewMailNotificationPolicy.decide(previous, userId, cursor, count)
+            ?: return NewMailPollResult()
         if (!decision.shouldNotify) {
-            RolltopPrefs.setNewMailCursor(context, decision.cursor.userId, decision.cursor.eventId)
-            return
+            return if (RolltopPrefs.setNewMailCursor(context, decision.cursor.userId, decision.cursor.eventId)) {
+                NewMailPollResult(userId, authenticated = true)
+            } else {
+                NewMailPollResult(shouldRetry = true)
+            }
         }
 
         val messages = newMailMessages(json)
         prewarm(context, count, messages)
         // Persist immediately before posting so a restarted worker cannot replay the alert.
-        if (!RolltopPrefs.setNewMailCursor(context, decision.cursor.userId, decision.cursor.eventId)) return
+        if (!RolltopPrefs.setNewMailCursor(context, decision.cursor.userId, decision.cursor.eventId)) {
+            return NewMailPollResult(shouldRetry = true)
+        }
         showNotification(context, count, messages)
+        return NewMailPollResult(userId, authenticated = true)
     }
 
     private fun prewarm(context: Context, count: Int, messages: List<NewMailMessage>) {
         val single = count == 1 && messages.size == 1
-        if (single) {
-            HttpJson.get(
-                context,
-                RolltopPrefs.buildUrl(context, "/api/messages/${messages[0].messageId}/prefetch"),
-                connectTimeoutMillis = PREWARM_CONNECT_TIMEOUT_MILLIS,
-                readTimeoutMillis = PREWARM_READ_TIMEOUT_MILLIS
-            )
-        } else {
-            HttpJson.get(
-                context,
-                RolltopPrefs.buildUrl(context, "/api/mail?page=1"),
-                connectTimeoutMillis = PREWARM_CONNECT_TIMEOUT_MILLIS,
-                readTimeoutMillis = PREWARM_READ_TIMEOUT_MILLIS
-            )
-        }
+        val path = if (single) "/api/messages/${messages[0].messageId}/prefetch" else "/api/mail?page=1"
+        HttpJson.get(
+            context,
+            RolltopPrefs.buildUrl(context, path),
+            connectTimeoutMillis = PREWARM_CONNECT_TIMEOUT_MILLIS,
+            readTimeoutMillis = PREWARM_READ_TIMEOUT_MILLIS
+        )
     }
 
     private fun newMailMessages(json: JSONObject): List<NewMailMessage> {
@@ -78,14 +148,7 @@ class NewMailPollWorker(context: Context, params: WorkerParameters) : Worker(con
             val eventId = item.optLong("event_id", 0)
             val messageId = item.optLong("message_id", 0)
             if (eventId <= 0 || messageId <= 0) continue
-            messages.add(
-                NewMailMessage(
-                    eventId = eventId,
-                    messageId = messageId,
-                    from = item.optString("from_addr"),
-                    subject = item.optString("subject")
-                )
-            )
+            messages.add(NewMailMessage(eventId, messageId, item.optString("from_addr"), item.optString("subject")))
         }
         return messages
     }
@@ -103,7 +166,7 @@ class NewMailPollWorker(context: Context, params: WorkerParameters) : Worker(con
             context,
             NOTIFICATION_REQUEST_CODE,
             Intent(context, MainActivity::class.java)
-                .putExtra(EXTRA_TARGET_PATH, targetPath)
+                .putExtra(NewMailPollWorker.EXTRA_TARGET_PATH, targetPath)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -119,20 +182,16 @@ class NewMailPollWorker(context: Context, params: WorkerParameters) : Worker(con
             val message = messages[0]
             val sender = notificationSender(message.from)
             val subject = notificationSubject(message.subject)
-            builder
-                .setContentTitle(sender)
-                .setContentText(subject)
+            builder.setContentTitle(sender).setContentText(subject)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(subject))
         } else {
             val shown = messages.takeLast(MAX_NOTIFICATION_LINES)
-            val style = NotificationCompat.InboxStyle()
-                .setBigContentTitle("$count new messages")
+            val style = NotificationCompat.InboxStyle().setBigContentTitle("$count new messages")
             for (message in shown) {
                 style.addLine("${notificationSender(message.from)}: ${notificationSubject(message.subject)}")
             }
             if (count > shown.size) style.setSummaryText("${count - shown.size} more")
-            builder
-                .setContentTitle("$count new messages")
+            builder.setContentTitle("$count new messages")
                 .setContentText(multipleNotificationSummary(shown))
                 .setStyle(style)
         }
@@ -167,35 +226,4 @@ class NewMailPollWorker(context: Context, params: WorkerParameters) : Worker(con
         val from: String,
         val subject: String
     )
-
-    companion object {
-        const val EXTRA_TARGET_PATH = "app.rolltop.mobile.extra.TARGET_PATH"
-        private const val UNIQUE_WORK_NAME = "rolltop-new-mail-poll"
-        private const val NOTIFICATION_ID = 1001
-        private const val NOTIFICATION_REQUEST_CODE = 100
-        private const val MAX_NOTIFICATION_LINES = 5
-        private const val MAX_TEXT_LENGTH = 120
-        private const val PREWARM_CONNECT_TIMEOUT_MILLIS = 1_500
-        private const val PREWARM_READ_TIMEOUT_MILLIS = 2_500
-        private val POLL_LOCK = Any()
-
-        fun schedule(context: Context) {
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build()
-            val request = PeriodicWorkRequest.Builder(
-                NewMailPollWorker::class.java,
-                15,
-                TimeUnit.MINUTES
-            )
-                .setInitialDelay(1, TimeUnit.MINUTES)
-                .setConstraints(constraints)
-                .build()
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-                UNIQUE_WORK_NAME,
-                ExistingPeriodicWorkPolicy.UPDATE,
-                request
-            )
-        }
-    }
 }

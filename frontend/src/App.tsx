@@ -13,6 +13,7 @@ import { ComposeOverlay } from "./features/compose/ComposeViews";
 import { RouteView } from "./RouteView";
 import { messageFromError } from "./lib/errors";
 import { currentLocation, messageURL } from "./lib/routes";
+import { androidNativeAvailable, androidPushSubscription, registerAndroidPush, unregisterAndroidPush } from "./lib/androidNative";
 import { emptyRuntimePlugins, loadRuntimePlugins, type RuntimePlugins } from "./plugins/runtime";
 import { emptySecurityUnlockState, securityUnlockPlugin } from "./plugins/securityUnlock";
 
@@ -36,8 +37,10 @@ function truncateNotificationText(value: string, max: number) {
 
 const allMailWakePrefetchAfterMS = 3 * 60 * 1000;
 const notificationPreferenceKey = "rolltop.notifications.enabled";
+const pushSubscriptionOwnerKey = "rolltop.push.owner-user-id";
 const pluginThemeLinkID = "rolltop-plugin-theme-css";
 const notificationIconURL = "/icon.svg?v=transparent-logo-v2";
+let inMemoryPushSubscriptionOwner = 0;
 
 function themeChoices(themes: ThemeDefinition[] | undefined): ThemeDefinition[] {
   return themes && themes.length > 0 ? themes : [
@@ -120,6 +123,25 @@ function webPushSupported() {
   return "Notification" in window && "serviceWorker" in navigator && "PushManager" in window && window.isSecureContext;
 }
 
+function pushSubscriptionOwner() {
+  try {
+    const value = Number(window.localStorage.getItem(pushSubscriptionOwnerKey));
+    return Number.isSafeInteger(value) && value > 0 ? value : inMemoryPushSubscriptionOwner;
+  } catch {
+    return inMemoryPushSubscriptionOwner;
+  }
+}
+
+function setPushSubscriptionOwner(userID: number | null) {
+  inMemoryPushSubscriptionOwner = userID && userID > 0 ? userID : 0;
+  try {
+    if (userID && userID > 0) window.localStorage.setItem(pushSubscriptionOwnerKey, String(userID));
+    else window.localStorage.removeItem(pushSubscriptionOwnerKey);
+  } catch {
+    // Endpoint rotation still works for this session when storage is unavailable.
+  }
+}
+
 function urlBase64ToUint8Array(value: string) {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
   const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -137,12 +159,17 @@ async function pushServiceWorkerRegistration() {
   return navigator.serviceWorker.ready;
 }
 
-async function subscribeWebPush(csrf: string) {
+async function subscribeWebPush(csrf: string, userID: number) {
   const [{ public_key: publicKey }, registration] = await Promise.all([
     api.pushVAPIDPublicKey(),
     pushServiceWorkerRegistration()
   ]);
   let subscription = await registration.pushManager.getSubscription();
+  if (subscription && pushSubscriptionOwner() !== userID) {
+    await subscription.unsubscribe();
+    subscription = await registration.pushManager.getSubscription();
+    if (subscription) throw new Error("Could not rotate the prior account's push subscription.");
+  }
   if (!subscription) {
     subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
@@ -150,6 +177,7 @@ async function subscribeWebPush(csrf: string) {
     });
   }
   await api.savePushSubscription(csrf, subscription.toJSON());
+  setPushSubscriptionOwner(userID);
 }
 
 async function unsubscribeWebPush(csrf: string) {
@@ -159,6 +187,7 @@ async function unsubscribeWebPush(csrf: string) {
   if (!subscription) return;
   await api.deletePushSubscription(csrf, subscription.endpoint).catch(() => undefined);
   await subscription.unsubscribe();
+  setPushSubscriptionOwner(null);
 }
 
 /**
@@ -404,12 +433,12 @@ export default function App() {
     const result = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
     if (result === "granted") {
       if (webPushSupported()) {
-        if (!bootstrap?.csrf) {
+        if (!bootstrap?.csrf || !bootstrap.user) {
           addToast("Sign in before enabling notifications.", "error");
           return;
         }
         try {
-          await subscribeWebPush(bootstrap.csrf);
+          await subscribeWebPush(bootstrap.csrf, bootstrap.user.id);
         } catch (err) {
           setNotificationPreference("off");
           setNotificationsEnabled(false);
@@ -430,7 +459,7 @@ export default function App() {
   useEffect(() => {
     if (!notificationsEnabled || !bootstrap?.user || !bootstrap.csrf || !webPushSupported()) return;
     let cancelled = false;
-    void subscribeWebPush(bootstrap.csrf).catch((err) => {
+    void subscribeWebPush(bootstrap.csrf, bootstrap.user.id).catch((err) => {
       if (cancelled) return;
       setNotificationPreference("off");
       setNotificationsEnabled(false);
@@ -440,6 +469,13 @@ export default function App() {
       cancelled = true;
     };
   }, [addToast, bootstrap?.csrf, bootstrap?.user, notificationsEnabled]);
+
+  useEffect(() => {
+    if (!bootstrap?.user || !androidNativeAvailable()) return;
+    void registerAndroidPush().catch(() => {
+      // Older APKs may load a newer web bundle before their in-place update.
+    });
+  }, [bootstrap?.user?.id]);
 
   const notifyNewMail = useCallback((count: number, run: SyncRun | null) => {
     if (!notificationsEnabled || !("Notification" in window) || Notification.permission !== "granted" || count <= 0) return;
@@ -580,7 +616,21 @@ export default function App() {
 
   const logout = useCallback(async () => {
     if (!bootstrap?.csrf) return;
-    await api.logout(bootstrap.csrf);
+    const csrf = bootstrap.csrf;
+    const cleanup: Promise<unknown>[] = [];
+    if (webPushSupported()) cleanup.push(unsubscribeWebPush(csrf));
+    if (androidNativeAvailable()) {
+      cleanup.push((async () => {
+        try {
+          const subscription = await androidPushSubscription();
+          if (subscription) await api.deletePushSubscription(csrf, subscription.endpoint);
+        } finally {
+          await unregisterAndroidPush();
+        }
+      })());
+    }
+    await Promise.allSettled(cleanup);
+    await api.logout(csrf);
     applySecurityUnlock(emptySecurityUnlockState, true);
     setSecurityUnlockOpen(false);
     setSecurityUnlockIdentityID(null);
