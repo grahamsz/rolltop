@@ -449,7 +449,7 @@ function isRolltopMessageDrag(event: DragEvent<HTMLElement>) {
     types.includes("application/x-rolltop-message");
 }
 
-const androidTouchDragHoldMS = 300;
+const androidTouchDragHoldMS = 180;
 const androidTouchDragSlop = 12;
 
 type TouchDragPreview = {
