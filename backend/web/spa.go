@@ -34,6 +34,7 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "frontend has not been built; run npm run build", http.StatusServiceUnavailable)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	http.ServeFile(w, r, index)
 }
 
@@ -52,8 +53,8 @@ func (s *Server) handleFrontendAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if isImmutableFrontendAsset(clean) {
-		w.Header().Set("Cache-Control", immutableFrontendAssetCacheControl)
+	if cacheControl := frontendAssetCacheControl(clean); cacheControl != "" {
+		w.Header().Set("Cache-Control", cacheControl)
 	}
 	http.ServeFile(w, r, full)
 }
@@ -122,6 +123,16 @@ func isImmutableFrontendAsset(cleanPath string) bool {
 	default:
 		return false
 	}
+}
+
+func frontendAssetCacheControl(cleanPath string) string {
+	if isImmutableFrontendAsset(cleanPath) {
+		return immutableFrontendAssetCacheControl
+	}
+	if filepath.ToSlash(filepath.Clean(cleanPath)) == "sw.js" {
+		return "no-cache"
+	}
+	return ""
 }
 
 func isAppRoute(p string) bool {

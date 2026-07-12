@@ -94,8 +94,29 @@ func TestHandleAppServesContactsRoute(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("cache-control = %q, want no-store", got)
+	}
 	if body := rec.Body.String(); !strings.Contains(body, "contacts") {
 		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestFrontendAssetCacheControl(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{path: "assets/index-release123.js", want: immutableFrontendAssetCacheControl},
+		{path: "assets/index-release123.css", want: immutableFrontendAssetCacheControl},
+		{path: "sw.js", want: "no-cache"},
+		{path: "manifest.webmanifest", want: ""},
+		{path: "icon.svg", want: ""},
+	}
+	for _, tt := range cases {
+		if got := frontendAssetCacheControl(tt.path); got != tt.want {
+			t.Fatalf("frontendAssetCacheControl(%q) = %q, want %q", tt.path, got, tt.want)
+		}
 	}
 }
 

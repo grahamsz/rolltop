@@ -1,4 +1,4 @@
-const STATIC_CACHE = "rolltop-static-v7";
+const STATIC_CACHE = "rolltop-static-v8";
 const STATIC_ASSETS = ["/", "/mail", "/manifest.webmanifest", "/icon.svg", "/icon.svg?v=transparent-logo-v2"];
 let securityUnlockUserID = 0;
 let securityUnlockState = { unlockedUntil: 0, keys: [] };
@@ -32,8 +32,9 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname.startsWith("/api/")) return;
 
+  const networkRequest = req.mode === "navigate" ? new Request(req, { cache: "no-cache" }) : req;
   event.respondWith(
-    fetch(req)
+    fetch(networkRequest)
       .then((res) => {
         if (res.ok) caches.open(STATIC_CACHE).then((cache) => cache.put(req, res.clone()));
         return res;

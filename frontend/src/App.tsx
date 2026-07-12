@@ -14,6 +14,7 @@ import { RouteView } from "./RouteView";
 import { messageFromError } from "./lib/errors";
 import { currentLocation, messageURL } from "./lib/routes";
 import { androidNativeAvailable, androidPushSubscription, registerAndroidPush, unregisterAndroidPush } from "./lib/androidNative";
+import { serverBuildIdentity, serverShellDiffers } from "./lib/shellFreshness";
 import { emptyRuntimePlugins, loadRuntimePlugins, type RuntimePlugins } from "./plugins/runtime";
 import { emptySecurityUnlockState, securityUnlockPlugin } from "./plugins/securityUnlock";
 import { defaultSwipePreferences } from "./lib/swipeActions";
@@ -219,6 +220,15 @@ export default function App() {
   const securityUnlockRef = useRef<SecurityUnlockState>(emptySecurityUnlockState);
   const activeUserIDRef = useRef<number | null>(null);
   const runtimePluginsRef = useRef<RuntimePlugins>(emptyRuntimePlugins());
+  const loadedBuildIdentityRef = useRef("");
+  const shellCheckRunningRef = useRef(false);
+  const shellReloadingRef = useRef(false);
+
+  const reloadForFreshShell = useCallback(() => {
+    if (shellReloadingRef.current) return;
+    shellReloadingRef.current = true;
+    window.location.reload();
+  }, []);
 
   // Navigation is intentionally tiny and local: Go serves every SPA route, so
   // the client only needs to update history and reparse LocationState.
@@ -256,6 +266,44 @@ export default function App() {
   useEffect(() => {
     void refreshBootstrap();
   }, [refreshBootstrap]);
+
+  // The Android wrapper can keep a SPA document alive across app resumes. Adopt
+  // a newly deployed server bundle only when its hashed shell assets change.
+  useEffect(() => {
+    if (!androidNativeAvailable()) return;
+    let cancelled = false;
+    async function checkShell() {
+      if (document.visibilityState !== "visible" || shellCheckRunningRef.current || shellReloadingRef.current) return;
+      shellCheckRunningRef.current = true;
+      try {
+        const differs = await serverShellDiffers();
+        if (!cancelled && differs) reloadForFreshShell();
+      } finally {
+        shellCheckRunningRef.current = false;
+      }
+    }
+    function onVisible() {
+      if (document.visibilityState === "visible") void checkShell();
+    }
+    void checkShell();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onVisible);
+    };
+  }, [reloadForFreshShell]);
+
+  useEffect(() => {
+    const identity = serverBuildIdentity(bootstrap);
+    if (!identity) return;
+    if (!loadedBuildIdentityRef.current) {
+      loadedBuildIdentityRef.current = identity;
+      return;
+    }
+    if (androidNativeAvailable() && loadedBuildIdentityRef.current !== identity) reloadForFreshShell();
+  }, [bootstrap?.build_version, bootstrap?.build_date, bootstrap?.build_label, reloadForFreshShell]);
 
   useEffect(() => {
     const savedTheme = bootstrap?.user?.theme;
