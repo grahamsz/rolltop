@@ -44,4 +44,13 @@ func TestShouldNotifyNewMailOnlyForCurrentIncrementalInboxArrivals(t *testing.T)
 	if !shouldNotifyNewMail(inbox, 10, delayed) {
 		t.Fatal("delayed incremental INBOX arrival was not treated as new mail")
 	}
+	if !shouldCancelSnoozeForNewMessage(archive, 10, current) {
+		t.Fatal("incremental non-INBOX arrival would not cancel a snooze")
+	}
+	if shouldCancelSnoozeForNewMessage(archive, 0, current) {
+		t.Fatal("initial non-INBOX backfill would cancel a snooze")
+	}
+	if !shouldCancelSnoozeForNewMessage(previouslyEmptyInbox, 0, FetchedMessage{UID: 1, InternalDate: now}) {
+		t.Fatal("first arrival after an empty mailbox would not cancel a snooze")
+	}
 }

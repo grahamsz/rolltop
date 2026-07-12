@@ -12,6 +12,8 @@ object RolltopPrefs {
     private const val KEY_LAST_LOCATION = "last_location"
     private const val KEY_NEW_MAIL_USER_ID = "new_mail_user_id"
     private const val KEY_NEW_MAIL_EVENT_ID = "new_mail_event_id"
+    private const val KEY_REMINDER_USER_ID = "reminder_user_id"
+    private const val KEY_REMINDER_EVENT_ID = "reminder_event_id"
     private const val KEY_LAST_UPDATE_CHECK = "last_update_check"
     private const val KEY_READY_UPDATE_CODE = "ready_update_code"
     private const val KEY_READY_UPDATE_NAME = "ready_update_name"
@@ -38,6 +40,8 @@ object RolltopPrefs {
                 remove(KEY_LAST_LOCATION)
                 remove(KEY_NEW_MAIL_USER_ID)
                 remove(KEY_NEW_MAIL_EVENT_ID)
+                remove(KEY_REMINDER_USER_ID)
+                remove(KEY_REMINDER_EVENT_ID)
                 remove(KEY_LAST_UPDATE_CHECK)
                 remove(KEY_READY_UPDATE_CODE)
                 remove(KEY_READY_UPDATE_NAME)
@@ -84,6 +88,28 @@ object RolltopPrefs {
         context.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
             .remove(KEY_NEW_MAIL_USER_ID)
             .remove(KEY_NEW_MAIL_EVENT_ID)
+            .commit()
+    }
+
+    internal fun reminderCursor(context: Context): NewMailCursor? {
+        val preferences = context.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+        val userId = preferences.getLong(KEY_REMINDER_USER_ID, 0)
+        if (userId <= 0 || !preferences.contains(KEY_REMINDER_EVENT_ID)) return null
+        return NewMailCursor(userId, preferences.getLong(KEY_REMINDER_EVENT_ID, 0).coerceAtLeast(0))
+    }
+
+    fun setReminderCursor(context: Context, userId: Long, eventId: Long): Boolean {
+        if (userId <= 0 || eventId < 0) return false
+        return context.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+            .putLong(KEY_REMINDER_USER_ID, userId)
+            .putLong(KEY_REMINDER_EVENT_ID, eventId)
+            .commit()
+    }
+
+    fun clearReminderCursor(context: Context) {
+        context.getSharedPreferences(NAME, Context.MODE_PRIVATE).edit()
+            .remove(KEY_REMINDER_USER_ID)
+            .remove(KEY_REMINDER_EVENT_ID)
             .commit()
     }
 

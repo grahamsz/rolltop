@@ -6,8 +6,16 @@ import (
 	"context"
 	"database/sql"
 	"net/mail"
+	"sort"
 	"strings"
 )
+
+type contactAutocompleteCandidate struct {
+	item      ContactAutocomplete
+	saved     bool
+	frequency int
+	recency   int
+}
 
 // NormalizeContactEmail canonicalizes email addresses for contact matching and Me identity lookup.
 func NormalizeContactEmail(value string) string {
@@ -255,7 +263,8 @@ func (s *Store) ListContactsForUser(ctx context.Context, userID int64, query str
 	return contacts, nil
 }
 
-// AutocompleteContactsForUser returns flattened contact email choices for compose recipient entry.
+// AutocompleteContactsForUser merges saved contacts with recent user-owned
+// correspondents. Recent addresses remain suggestions only; they are not imported.
 func (s *Store) AutocompleteContactsForUser(ctx context.Context, userID int64, query string, limit int) ([]ContactAutocomplete, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 10
@@ -270,22 +279,177 @@ func (s *Store) AutocompleteContactsForUser(ctx context.Context, userID int64, q
 		LEFT JOIN contact_icons ci ON ci.user_id = c.user_id AND ci.contact_id = c.id
 		WHERE e.user_id = ? AND (? = '' OR lower(e.email) LIKE ? OR lower(c.display_name) LIKE ? OR lower(c.given_name) LIKE ? OR lower(c.family_name) LIKE ? OR lower(c.organization) LIKE ?)
 		ORDER BY e.is_primary DESC, lower(CASE WHEN c.display_name <> '' THEN c.display_name ELSE c.given_name || ' ' || c.family_name END), lower(e.email)
-		LIMIT ?`, userID, query, like, like, like, like, like, limit)
+			LIMIT ?`, userID, query, like, like, like, like, like, limit*2)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []ContactAutocomplete
+	candidates := map[string]*contactAutocompleteCandidate{}
 	for rows.Next() {
 		var item ContactAutocomplete
 		var display, given, family string
 		if err := rows.Scan(&item.ContactID, &display, &given, &family, &item.Email, &item.Label, &item.IconURL); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		item.Name = contactName(display, given, family)
-		out = append(out, item)
+		key := NormalizeContactEmail(item.Email)
+		if key != "" {
+			candidates[key] = &contactAutocompleteCandidate{item: item, saved: true}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	own, err := s.autocompleteOwnAddresses(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	recentRows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT from_addr, to_addr, cc_addr
+		FROM messages WHERE user_id = ? ORDER BY date_unix DESC, id DESC LIMIT 250`, userID)
+	if err != nil {
+		return nil, err
+	}
+	recentIndex := 250
+	for recentRows.Next() {
+		var from, to, cc string
+		if err := recentRows.Scan(&from, &to, &cc); err != nil {
+			recentRows.Close()
+			return nil, err
+		}
+		for _, address := range autocompleteAddresses(from, to, cc) {
+			key := NormalizeContactEmail(address.Address)
+			if key == "" || own[key] || !autocompleteAddressMatches(address, query) {
+				continue
+			}
+			entry := candidates[key]
+			if entry == nil {
+				entry = &contactAutocompleteCandidate{item: ContactAutocomplete{
+					Name:  strings.TrimSpace(address.Name),
+					Email: address.Address,
+					Label: "Recent",
+				}}
+				candidates[key] = entry
+			}
+			entry.frequency++
+			if recentIndex > entry.recency {
+				entry.recency = recentIndex
+			}
+		}
+		recentIndex--
+	}
+	if err := recentRows.Err(); err != nil {
+		recentRows.Close()
+		return nil, err
+	}
+	recentRows.Close()
+
+	ranked := make([]*contactAutocompleteCandidate, 0, len(candidates))
+	for _, item := range candidates {
+		ranked = append(ranked, item)
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		left := autocompleteCandidateScore(ranked[i], query)
+		right := autocompleteCandidateScore(ranked[j], query)
+		if left != right {
+			return left > right
+		}
+		return strings.ToLower(ranked[i].item.Email) < strings.ToLower(ranked[j].item.Email)
+	})
+	out := make([]ContactAutocomplete, 0, min(limit, len(ranked)))
+	for _, item := range ranked {
+		out = append(out, item.item)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) autocompleteOwnAddresses(ctx context.Context, userID int64) (map[string]bool, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT email FROM mail_accounts WHERE user_id = ?
+		UNION SELECT e.email FROM contact_emails e JOIN contacts c ON c.user_id = e.user_id AND c.id = e.contact_id
+		WHERE e.user_id = ? AND c.is_me = 1`, userID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var address string
+		if err := rows.Scan(&address); err != nil {
+			return nil, err
+		}
+		if normalized := NormalizeContactEmail(address); normalized != "" {
+			out[normalized] = true
+		}
 	}
 	return out, rows.Err()
+}
+
+func autocompleteAddresses(values ...string) []*mail.Address {
+	var out []*mail.Address
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if len(value) > 8192 {
+			value = value[:8192]
+		}
+		addresses, err := mail.ParseAddressList(value)
+		if err != nil {
+			addresses = nil
+			for _, part := range strings.Split(value, ";") {
+				if address, parseErr := mail.ParseAddress(strings.TrimSpace(part)); parseErr == nil {
+					addresses = append(addresses, address)
+				}
+			}
+		}
+		for _, address := range addresses {
+			key := NormalizeContactEmail(address.Address)
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, address)
+		}
+	}
+	return out
+}
+
+func autocompleteAddressMatches(address *mail.Address, query string) bool {
+	if query == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(address.Address), query) ||
+		strings.Contains(strings.ToLower(address.Name), query)
+}
+
+func autocompleteCandidateScore(item *contactAutocompleteCandidate, query string) int {
+	score := item.recency + min(item.frequency, 20)*20
+	if item.saved {
+		score += 500
+	}
+	if query == "" {
+		return score
+	}
+	email := strings.ToLower(item.item.Email)
+	name := strings.ToLower(item.item.Name)
+	switch {
+	case email == query:
+		score += 2000
+	case strings.HasPrefix(email, query):
+		score += 1200
+	case strings.HasPrefix(name, query):
+		score += 1000
+	default:
+		score += 400
+	}
+	return score
 }
 
 // ListContactEmailsForSearchBoostForUser returns non-Me contact email addresses

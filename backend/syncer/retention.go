@@ -221,3 +221,10 @@ func shouldNotifyNewMail(mailbox store.Mailbox, mailboxLastUIDAtStart uint32, it
 	}
 	return item.UID > mailboxLastUIDAtStart
 }
+
+func shouldCancelSnoozeForNewMessage(mailbox store.Mailbox, mailboxLastUIDAtStart uint32, item FetchedMessage) bool {
+	if mailboxLastUIDAtStart == 0 {
+		return !mailbox.StatusCheckedAt.IsZero() && mailbox.RemoteMessageCount == 0 && mailbox.RemoteUIDNext <= 1 && item.UID > 0
+	}
+	return item.UID > mailboxLastUIDAtStart
+}

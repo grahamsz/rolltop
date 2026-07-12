@@ -27,6 +27,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiProfile(w, r)
 	case path == "mail":
 		s.apiMail(w, r)
+	case path == "snoozes":
+		s.apiSnoozes(w, r)
 	case path == "search":
 		s.apiSearch(w, r)
 	case path == "compose":
@@ -45,6 +47,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiPushSubscription(w, r)
 	case path == "notifications/new-mail":
 		s.apiNewMailNotifications(w, r)
+	case path == "notifications/reminders":
+		s.apiSnoozeReminderNotifications(w, r)
 	case path == "plugins":
 		s.apiPlugins(w, r)
 	case strings.HasPrefix(path, "plugins/"):
@@ -87,6 +91,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiBulkMoveMessages(w, r)
 	case path == "messages/bulk-copy":
 		s.apiBulkCopyMessages(w, r)
+	case path == "messages/bulk-read":
+		s.apiBulkReadMessages(w, r)
 	case strings.HasPrefix(path, "messages/"):
 		s.apiMessagePath(w, r, strings.TrimPrefix(path, "messages/"))
 	case strings.HasPrefix(path, "sync-runs/"):

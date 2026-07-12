@@ -13,6 +13,7 @@ import type {
   Conversation,
   Mailbox,
   MailIdentity,
+  MessageSnooze,
   MessageOriginalSource,
   PluginSetting,
   SMTPAccount,
@@ -56,6 +57,7 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 type MailListResponse = { conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean };
+type SnoozeListResponse = MailListResponse & { snoozes: MessageSnooze[] };
 
 const getCache = new Map<string, { etag: string; data: unknown }>();
 const getInflight = new Map<string, Promise<unknown>>();
@@ -229,6 +231,11 @@ export const api = {
     cachedJSON<MailListResponse>(mailListURL(mailboxID, page)),
   prefetchMail: (mailboxID: string | null, page: number) =>
     prefetchJSON<MailListResponse>(mailListURL(mailboxID, page)),
+  snoozes: (page: number) => getJSON<SnoozeListResponse>(`/api/snoozes?${new URLSearchParams({ page: String(page) })}`),
+  snoozeMessage: (csrf: string, id: number, until: Date) =>
+    putJSON<{ ok: boolean; snoozed: boolean; snooze: MessageSnooze }>(`/api/messages/${id}/snooze`, csrf, { until: until.toISOString() }),
+  unsnoozeMessage: (csrf: string, id: number) =>
+    deleteJSON<{ ok: boolean; snoozed: boolean }>(`/api/messages/${id}/snooze`, csrf),
   search: (query: string, page: number) =>
     getJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(searchListURL(query, page)),
   prefetchSearch: (query: string, page: number) =>
@@ -245,8 +252,9 @@ export const api = {
       compose_from: string;
       from_identities: ComposeIdentity[];
       mailbox_id: number;
-      conversation: number;
-    }>(messageURL(id, showImages, highlightQuery)),
+        conversation: number;
+        snoozed_until?: string;
+      }>(messageURL(id, showImages, highlightQuery)),
   prewarmMessage: (id: string | number) =>
     prefetchJSON(`/api/messages/${id}/prefetch`),
   messageLoadStatus: (id: string) =>
@@ -282,6 +290,8 @@ export const api = {
       message_ids: ids,
       mailbox_id: mailboxID
     }),
+  bulkRead: (csrf: string, ids: number[], read: boolean) =>
+    postJSON<{ ok: boolean; updated: number }>("/api/messages/bulk-read", csrf, { ids, read }),
   compose: (query: string) =>
     getJSON<{ compose: ComposeForm; compose_from: string; from_identities: ComposeIdentity[] }>(`/api/compose${query ? `?${query}` : ""}`),
   // Compose sends pure JSON when possible, then switches to multipart only when

@@ -29,13 +29,12 @@ internal data class NewMailPollResult(
 class NewMailPollWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
     override fun doWork(): Result {
         val result = synchronized(POLL_LOCK) {
-            NewMailPoller.poll(applicationContext)
+            pollNotifications(applicationContext)
         }
         return if (result.shouldRetry && runAttemptCount < MAX_RETRY_ATTEMPTS) Result.retry() else Result.success()
     }
 
     companion object {
-        const val EXTRA_TARGET_PATH = "app.rolltop.mobile.extra.TARGET_PATH"
         private const val UNIQUE_WORK_NAME = "rolltop-new-mail-poll"
         private const val UNIQUE_IMMEDIATE_WORK_NAME = "rolltop-new-mail-immediate"
         private const val MAX_RETRY_ATTEMPTS = 3
@@ -76,14 +75,194 @@ class NewMailPollWorker(context: Context, params: WorkerParameters) : Worker(con
         }
 
         internal fun prepareForPushRegistration(context: Context): NewMailPollResult =
-            synchronized(POLL_LOCK) { NewMailPoller.poll(context) }
+            synchronized(POLL_LOCK) { pollNotifications(context) }
+
+        private fun pollNotifications(context: Context): NewMailPollResult {
+            val mail = NewMailPoller.poll(context)
+            val reminders = SnoozeReminderPoller.poll(context)
+            return NewMailPollResult(
+                userId = mail.userId.takeIf { it > 0 } ?: reminders.userId,
+                authenticated = mail.authenticated || reminders.authenticated,
+                shouldRetry = mail.shouldRetry || reminders.shouldRetry
+            )
+        }
 
     }
 }
 
+private object SnoozeReminderPoller {
+    private const val OPEN_REQUEST_CODE = 200
+    private const val MARK_READ_REQUEST_CODE = 210
+    private const val REPLY_REQUEST_CODE = 220
+    private const val MAX_NOTIFICATION_LINES = 5
+    private const val MAX_TEXT_LENGTH = 120
+
+    fun poll(context: Context): NewMailPollResult {
+        val base = RolltopPrefs.serverUrl(context)
+        if (base.isBlank()) return NewMailPollResult()
+        val previous = RolltopPrefs.reminderCursor(context)
+        val path = if (previous == null) {
+            "/api/notifications/reminders"
+        } else {
+            "/api/notifications/reminders?after=${previous.eventId}"
+        }
+        val response = HttpJson.getResponse(context, "$base$path")
+            ?: return NewMailPollResult(shouldRetry = true)
+        if (response.statusCode == 401 || response.statusCode == 403) return NewMailPollResult()
+        if (response.statusCode == 404) return NewMailPollResult()
+        if (NativePushPolicy.uploadResult(response.statusCode) == PushUploadResult.RETRY) {
+            return NewMailPollResult(shouldRetry = true)
+        }
+        if (response.statusCode !in 200..299) return NewMailPollResult()
+        val json = response.body ?: return NewMailPollResult(shouldRetry = true)
+        val userId = json.optLong("user_id", 0)
+        val cursor = json.optLong("cursor", -1)
+        val count = json.optInt("count", 0)
+        val decision = NewMailNotificationPolicy.decide(previous, userId, cursor, count)
+            ?: return NewMailPollResult()
+        if (!decision.shouldNotify) {
+            return if (RolltopPrefs.setReminderCursor(context, decision.cursor.userId, decision.cursor.eventId)) {
+                NewMailPollResult(userId, authenticated = true)
+            } else {
+                NewMailPollResult(shouldRetry = true)
+            }
+        }
+        val reminders = reminders(json)
+        prewarm(context, count, reminders)
+        if (!RolltopPrefs.setReminderCursor(context, decision.cursor.userId, decision.cursor.eventId)) {
+            return NewMailPollResult(shouldRetry = true)
+        }
+        showNotification(context, userId, count, reminders)
+        return NewMailPollResult(userId, authenticated = true)
+    }
+
+    private fun reminders(json: JSONObject): List<SnoozeReminder> {
+        val raw = json.optJSONArray("reminders") ?: return emptyList()
+        val out = ArrayList<SnoozeReminder>(raw.length())
+        for (index in 0 until raw.length()) {
+            val item = raw.optJSONObject(index) ?: continue
+            val eventId = item.optLong("id", 0)
+            val messageId = item.optLong("message_id", 0)
+            if (eventId <= 0 || messageId <= 0) continue
+            out.add(SnoozeReminder(eventId, messageId, item.optString("from"), item.optString("subject")))
+        }
+        return out
+    }
+
+    private fun prewarm(context: Context, count: Int, reminders: List<SnoozeReminder>) {
+        val path = if (count == 1 && reminders.size == 1) {
+            "/api/messages/${reminders[0].messageId}/prefetch"
+        } else {
+            "/api/mail?page=1"
+        }
+        HttpJson.get(context, RolltopPrefs.buildUrl(context, path), 1_500, 2_500)
+    }
+
+    private fun showNotification(context: Context, userId: Long, count: Int, reminders: List<SnoozeReminder>) {
+        NotificationChannels.ensure(context)
+        val single = count == 1 && reminders.size == 1
+        val targetPath = if (single) {
+            val back = URLEncoder.encode("/mail", StandardCharsets.UTF_8.name())
+            "/messages/${reminders[0].messageId}?back=$back"
+        } else {
+            "/mail"
+        }
+        val openIntent = PendingIntent.getActivity(
+            context,
+            OPEN_REQUEST_CODE,
+            notificationActivityIntent(context, targetPath, userId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val builder = NotificationCompat.Builder(context, NotificationChannels.MAIL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentIntent(openIntent)
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setNumber(count)
+
+        val messageIDs = reminders.map { it.messageId }.filter { it > 0 }.distinct().toLongArray()
+        if (messageIDs.isNotEmpty() && NotificationActionPolicy.includesEveryNotifiedMessage(count, reminders.size)) {
+            val markReadIntent = PendingIntent.getBroadcast(
+                context,
+                MARK_READ_REQUEST_CODE,
+                Intent(context, NotificationActionReceiver::class.java)
+                    .setAction(NotificationActionReceiver.ACTION_MARK_READ)
+                    .putExtra(NotificationActionReceiver.EXTRA_MESSAGE_IDS, messageIDs)
+                    .putExtra(NotificationIntentPolicy.EXTRA_EXPECTED_USER_ID, userId)
+                    .putExtra(NotificationIntentPolicy.EXTRA_EXPECTED_SERVER_URL, RolltopPrefs.serverUrl(context))
+                    .putExtra(
+                        NotificationActionReceiver.EXTRA_NOTIFICATION_ID,
+                        NotificationIntentPolicy.SNOOZE_REMINDER_NOTIFICATION_ID
+                    ),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(
+                R.drawable.ic_notification,
+                context.getString(R.string.notification_action_mark_read),
+                markReadIntent
+            )
+        }
+        if (single) {
+            val reminder = reminders[0]
+            val sender = compactSender(reminder.from)
+            val subject = compactSubject(reminder.subject)
+            builder.setContentTitle(context.getString(R.string.notification_reminder_title, sender))
+                .setContentText(subject)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(subject))
+            val replyIntent = PendingIntent.getActivity(
+                context,
+                REPLY_REQUEST_CODE,
+                notificationActivityIntent(context, "/compose?reply=${reminder.messageId}", userId),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(
+                R.drawable.ic_notification,
+                context.getString(R.string.notification_action_reply),
+                replyIntent
+            )
+        } else {
+            val shown = reminders.takeLast(MAX_NOTIFICATION_LINES)
+            val style = NotificationCompat.InboxStyle()
+                .setBigContentTitle(context.getString(R.string.notification_reminders_title, count))
+            shown.forEach { style.addLine("${compactSender(it.from)}: ${compactSubject(it.subject)}") }
+            if (count > shown.size) style.setSummaryText("${count - shown.size} more")
+            builder.setContentTitle(context.getString(R.string.notification_reminders_title, count))
+                .setContentText(shown.takeLast(2).joinToString(", ") { compactSender(it.from) })
+                .setStyle(style)
+        }
+        try {
+            context.getSystemService(NotificationManager::class.java)
+                .notify(NotificationIntentPolicy.SNOOZE_REMINDER_NOTIFICATION_ID, builder.build())
+        } catch (_: SecurityException) {
+            // Android 13+ can revoke notification permission between polling and posting.
+        }
+    }
+
+    private fun compactSender(raw: String): String {
+        val compact = raw.trim().replace(Regex("\\s+"), " ")
+        var value = compact.substringBefore('<').trim().trim('"')
+        if (value.isBlank()) value = compact.substringAfter('<', compact).substringBefore('>').trim()
+        if ('@' in value) value = value.substringBefore('@')
+        return value.ifBlank { "Message" }.take(MAX_TEXT_LENGTH)
+    }
+
+    private fun compactSubject(raw: String): String = raw.trim().replace(Regex("\\s+"), " ")
+        .ifBlank { "(No subject)" }
+        .take(MAX_TEXT_LENGTH)
+
+    private data class SnoozeReminder(
+        val eventId: Long,
+        val messageId: Long,
+        val from: String,
+        val subject: String
+    )
+}
+
 private object NewMailPoller {
-    private const val NOTIFICATION_ID = 1001
     private const val NOTIFICATION_REQUEST_CODE = 100
+    private const val MARK_READ_REQUEST_CODE = 110
+    private const val REPLY_REQUEST_CODE = 120
     private const val MAX_NOTIFICATION_LINES = 5
     private const val MAX_TEXT_LENGTH = 120
     private const val PREWARM_CONNECT_TIMEOUT_MILLIS = 1_500
@@ -125,7 +304,7 @@ private object NewMailPoller {
         if (!RolltopPrefs.setNewMailCursor(context, decision.cursor.userId, decision.cursor.eventId)) {
             return NewMailPollResult(shouldRetry = true)
         }
-        showNotification(context, count, messages)
+        showNotification(context, userId, count, messages)
         return NewMailPollResult(userId, authenticated = true)
     }
 
@@ -153,7 +332,7 @@ private object NewMailPoller {
         return messages
     }
 
-    private fun showNotification(context: Context, count: Int, messages: List<NewMailMessage>) {
+    private fun showNotification(context: Context, userId: Long, count: Int, messages: List<NewMailMessage>) {
         NotificationChannels.ensure(context)
         val single = count == 1 && messages.size == 1
         val targetPath = if (single) {
@@ -165,9 +344,7 @@ private object NewMailPoller {
         val openIntent = PendingIntent.getActivity(
             context,
             NOTIFICATION_REQUEST_CODE,
-            Intent(context, MainActivity::class.java)
-                .putExtra(NewMailPollWorker.EXTRA_TARGET_PATH, targetPath)
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            notificationActivityIntent(context, targetPath, userId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val builder = NotificationCompat.Builder(context, NotificationChannels.MAIL)
@@ -178,12 +355,46 @@ private object NewMailPoller {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setNumber(count)
 
+        val messageIDs = messages.map { it.messageId }.filter { it > 0 }.distinct().toLongArray()
+        if (messageIDs.isNotEmpty() && NotificationActionPolicy.includesEveryNotifiedMessage(count, messages.size)) {
+            val markReadIntent = PendingIntent.getBroadcast(
+                context,
+                MARK_READ_REQUEST_CODE,
+                Intent(context, NotificationActionReceiver::class.java)
+                    .setAction(NotificationActionReceiver.ACTION_MARK_READ)
+                    .putExtra(NotificationActionReceiver.EXTRA_MESSAGE_IDS, messageIDs)
+                    .putExtra(NotificationIntentPolicy.EXTRA_EXPECTED_USER_ID, userId)
+                    .putExtra(NotificationIntentPolicy.EXTRA_EXPECTED_SERVER_URL, RolltopPrefs.serverUrl(context))
+                    .putExtra(
+                        NotificationActionReceiver.EXTRA_NOTIFICATION_ID,
+                        NotificationIntentPolicy.NEW_MAIL_NOTIFICATION_ID
+                    ),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(
+                R.drawable.ic_notification,
+                context.getString(R.string.notification_action_mark_read),
+                markReadIntent
+            )
+        }
+
         if (single) {
             val message = messages[0]
             val sender = notificationSender(message.from)
             val subject = notificationSubject(message.subject)
             builder.setContentTitle(sender).setContentText(subject)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(subject))
+            val replyIntent = PendingIntent.getActivity(
+                context,
+                REPLY_REQUEST_CODE,
+                notificationActivityIntent(context, "/compose?reply=${message.messageId}", userId),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(
+                R.drawable.ic_notification,
+                context.getString(R.string.notification_action_reply),
+                replyIntent
+            )
         } else {
             val shown = messages.takeLast(MAX_NOTIFICATION_LINES)
             val style = NotificationCompat.InboxStyle().setBigContentTitle("$count new messages")
@@ -196,7 +407,8 @@ private object NewMailPoller {
                 .setStyle(style)
         }
         try {
-            context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, builder.build())
+            context.getSystemService(NotificationManager::class.java)
+                .notify(NotificationIntentPolicy.NEW_MAIL_NOTIFICATION_ID, builder.build())
         } catch (_: SecurityException) {
             // Android 13+ can revoke notification permission between polling and posting.
         }
@@ -227,3 +439,10 @@ private object NewMailPoller {
         val subject: String
     )
 }
+
+private fun notificationActivityIntent(context: Context, targetPath: String, userId: Long): Intent =
+    Intent(context, MainActivity::class.java)
+        .putExtra(NotificationIntentPolicy.EXTRA_TARGET_PATH, targetPath)
+        .putExtra(NotificationIntentPolicy.EXTRA_EXPECTED_USER_ID, userId)
+        .putExtra(NotificationIntentPolicy.EXTRA_EXPECTED_SERVER_URL, RolltopPrefs.serverUrl(context))
+        .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)

@@ -26,7 +26,12 @@ func (s *Store) RecordNewMailEvent(ctx context.Context, userID int64, msg Messag
 	if err != nil {
 		return NewMailEvent{}, false, err
 	}
-	result, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO new_mail_events
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return NewMailEvent{}, false, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO new_mail_events
 		(user_id, message_id, from_addr, subject, created_at) VALUES (?, ?, ?, ?, ?)`,
 		userID, msg.ID, msg.FromAddr, msg.Subject, nowUnix())
 	if err != nil {
@@ -36,8 +41,17 @@ func (s *Store) RecordNewMailEvent(ctx context.Context, userID int64, msg Messag
 	if err != nil {
 		return NewMailEvent{}, false, err
 	}
+	created := rows > 0
+	if created {
+		if _, err := cancelSnoozeForNewMessage(ctx, tx, userID, msg); err != nil {
+			return NewMailEvent{}, false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return NewMailEvent{}, false, err
+	}
 	event, err := s.newMailEventForMessage(ctx, userID, msg.ID)
-	return event, rows > 0, err
+	return event, created, err
 }
 
 func (s *Store) newMailEventForMessage(ctx context.Context, userID, messageID int64) (NewMailEvent, error) {

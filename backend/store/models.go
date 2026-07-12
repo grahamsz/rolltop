@@ -408,14 +408,46 @@ type SyncRun struct {
 
 // WebPushSubscription stores one browser or native Web Push endpoint for a user.
 type WebPushSubscription struct {
-	ID                 int64
-	UserID             int64
-	Endpoint           string
-	P256DH             string
-	Auth               string
-	UserAgent          string
-	LastNewMailEventID int64
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	LastSeenAt         time.Time
+	ID                        int64
+	UserID                    int64
+	Endpoint                  string
+	P256DH                    string
+	Auth                      string
+	UserAgent                 string
+	LastNewMailEventID        int64
+	LastSnoozeReminderEventID int64
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	LastSeenAt                time.Time
+}
+
+// MessageSnooze is local-only reminder state for one user-owned conversation.
+type MessageSnooze struct {
+	ID           int64
+	UserID       int64
+	MessageID    int64
+	ThreadKey    string
+	Generation   int64
+	SnoozedUntil time.Time
+	RemindedAt   time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// SnoozedMessage pairs a snooze with the user-owned message that anchors it.
+type SnoozedMessage struct {
+	Snooze  MessageSnooze
+	Message MessageRecord
+}
+
+// SnoozeReminderEvent is a minimal, durable envelope for reminder clients.
+type SnoozeReminderEvent struct {
+	ID               int64
+	UserID           int64
+	MessageID        int64
+	SnoozeGeneration int64
+	FromAddr         string
+	Subject          string
+	DueAt            time.Time
+	CreatedAt        time.Time
 }

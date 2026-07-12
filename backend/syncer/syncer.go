@@ -428,7 +428,13 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			}
 			s.warmRemoteImagesForStoredMessage(msg, mailbox, parsed.HTML)
 			progress.MessagesStored++
-			if shouldNotifyNewMail(mailbox, mailboxLastUIDAtStart, item) {
+			notifyNewMail := shouldNotifyNewMail(mailbox, mailboxLastUIDAtStart, item)
+			if !notifyNewMail && shouldCancelSnoozeForNewMessage(mailbox, mailboxLastUIDAtStart, item) {
+				if _, err := s.Store.CancelSnoozeForNewMessage(ctx, userID, msg); err != nil {
+					return err
+				}
+			}
+			if notifyNewMail {
 				if err := s.recordNewMailEvent(ctx, userID, msg, &progress); err != nil {
 					return err
 				}
@@ -587,9 +593,15 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 			}
 		}
 		s.warmRemoteImagesForStoredMessage(msg, mailbox, parsed.HTML)
+		notifyNewMail := shouldNotifyNewMail(mailbox, plan.LastUID, item)
+		if !notifyNewMail && shouldCancelSnoozeForNewMessage(mailbox, plan.LastUID, item) {
+			if _, err := s.Store.CancelSnoozeForNewMessage(ctx, userID, msg); err != nil {
+				return err
+			}
+		}
 		if progress != nil {
 			progress.MessagesStored++
-			if shouldNotifyNewMail(mailbox, plan.LastUID, item) {
+			if notifyNewMail {
 				if err := s.recordNewMailEvent(ctx, userID, msg, progress); err != nil {
 					return err
 				}

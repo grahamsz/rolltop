@@ -57,17 +57,18 @@ func (s *Store) SaveWebPushSubscription(ctx context.Context, userID int64, sub W
 	userAgent := trimLimit(strings.TrimSpace(sub.UserAgent), 500)
 	ts := nowUnix()
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `INSERT INTO web_push_subscriptions
-			(user_id, endpoint, p256dh, auth, user_agent, created_at, updated_at, last_seen_at, last_new_mail_event_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, (
-			SELECT COALESCE(MAX(id), 0) FROM new_mail_events WHERE user_id = ?
-		))
+			(user_id, endpoint, p256dh, auth, user_agent, created_at, updated_at, last_seen_at,
+			 last_new_mail_event_id, last_snooze_reminder_event_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+			(SELECT COALESCE(MAX(id), 0) FROM new_mail_events WHERE user_id = ?),
+			(SELECT COALESCE(MAX(id), 0) FROM snooze_reminder_events WHERE user_id = ?))
 		ON CONFLICT(user_id, endpoint) DO UPDATE SET
 			p256dh = excluded.p256dh,
 			auth = excluded.auth,
 			user_agent = excluded.user_agent,
 			updated_at = excluded.updated_at,
 			last_seen_at = excluded.last_seen_at`,
-		userID, endpoint, p256dh, auth, userAgent, ts, ts, ts, userID)
+		userID, endpoint, p256dh, auth, userAgent, ts, ts, ts, userID, userID)
 	if err != nil {
 		return WebPushSubscription{}, err
 	}
@@ -75,13 +76,15 @@ func (s *Store) SaveWebPushSubscription(ctx context.Context, userID int64, sub W
 }
 
 func (s *Store) getWebPushSubscription(ctx context.Context, userID int64, endpoint string) (WebPushSubscription, error) {
-	return scanWebPushSubscription(s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT id, user_id, endpoint, p256dh, auth, user_agent, last_new_mail_event_id, created_at, updated_at, last_seen_at
+	return scanWebPushSubscription(s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT id, user_id, endpoint, p256dh, auth, user_agent,
+		last_new_mail_event_id, last_snooze_reminder_event_id, created_at, updated_at, last_seen_at
 		FROM web_push_subscriptions WHERE user_id = ? AND endpoint = ?`, userID, endpoint))
 }
 
 // ListWebPushSubscriptions returns the user's registered browser push endpoints.
 func (s *Store) ListWebPushSubscriptions(ctx context.Context, userID int64) ([]WebPushSubscription, error) {
-	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, endpoint, p256dh, auth, user_agent, last_new_mail_event_id, created_at, updated_at, last_seen_at
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, endpoint, p256dh, auth, user_agent,
+		last_new_mail_event_id, last_snooze_reminder_event_id, created_at, updated_at, last_seen_at
 		FROM web_push_subscriptions WHERE user_id = ? ORDER BY updated_at DESC, id DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -109,6 +112,25 @@ func (s *Store) AdvanceWebPushSubscriptionNewMailCursor(ctx context.Context, use
 		SET last_new_mail_event_id = ?
 		WHERE user_id = ? AND endpoint = ? AND p256dh = ? AND auth = ?
 			AND last_new_mail_event_id < ?`,
+		eventID, userID, endpoint, delivered.P256DH, delivered.Auth, eventID)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows > 0, err
+}
+
+// AdvanceWebPushSubscriptionSnoozeReminderCursor records an accepted reminder
+// push without changing the endpoint's independent new-mail cursor.
+func (s *Store) AdvanceWebPushSubscriptionSnoozeReminderCursor(ctx context.Context, userID int64, delivered WebPushSubscription, eventID int64) (bool, error) {
+	endpoint := strings.TrimSpace(delivered.Endpoint)
+	if userID <= 0 || endpoint == "" || delivered.P256DH == "" || delivered.Auth == "" || eventID <= 0 {
+		return false, errors.New("invalid web push snooze reminder cursor")
+	}
+	result, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE web_push_subscriptions
+		SET last_snooze_reminder_event_id = ?
+		WHERE user_id = ? AND endpoint = ? AND p256dh = ? AND auth = ?
+			AND last_snooze_reminder_event_id < ?`,
 		eventID, userID, endpoint, delivered.P256DH, delivered.Auth, eventID)
 	if err != nil {
 		return false, err
@@ -147,7 +169,8 @@ func (s *Store) DeleteWebPushSubscriptionIfCurrent(ctx context.Context, userID i
 func scanWebPushSubscription(row scanDest) (WebPushSubscription, error) {
 	var sub WebPushSubscription
 	var created, updated, lastSeen int64
-	err := row.Scan(&sub.ID, &sub.UserID, &sub.Endpoint, &sub.P256DH, &sub.Auth, &sub.UserAgent, &sub.LastNewMailEventID, &created, &updated, &lastSeen)
+	err := row.Scan(&sub.ID, &sub.UserID, &sub.Endpoint, &sub.P256DH, &sub.Auth, &sub.UserAgent,
+		&sub.LastNewMailEventID, &sub.LastSnoozeReminderEventID, &created, &updated, &lastSeen)
 	sub.CreatedAt = unixTime(created)
 	sub.UpdatedAt = unixTime(updated)
 	sub.LastSeenAt = unixTime(lastSeen)

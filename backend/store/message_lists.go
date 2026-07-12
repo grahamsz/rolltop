@@ -18,9 +18,14 @@ func (s *Store) ListMessagesForUser(ctx context.Context, userID int64, limit, of
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
-			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
-		FROM messages WHERE user_id = ? ORDER BY date_unix DESC, id DESC LIMIT ? OFFSET ?`, userID, limit, offset)
+	rows, err := db.QueryContext(ctx, `SELECT m.id, m.user_id, m.account_id, m.mailbox_id, m.blob_id, m.message_id_header, m.in_reply_to, m.references_header, m.thread_key, m.subject, m.language_code, m.from_addr, m.to_addr, m.cc_addr,
+			m.date_unix, m.internal_date_unix, m.uid, m.size, m.blob_path, m.body_text, m.body_html, m.is_read, m.read_sync_pending, m.is_starred, m.star_sync_pending, m.has_attachments, m.is_encrypted, m.is_signed, m.attachment_indexed_at, m.created_at, m.updated_at
+		FROM messages m
+		LEFT JOIN message_snoozes sn ON sn.user_id = m.user_id
+			AND sn.thread_key = COALESCE(NULLIF(m.thread_key, ''), 'id:' || m.id)
+		WHERE m.user_id = ? AND (sn.id IS NULL OR sn.snoozed_until <= ?)
+		ORDER BY CASE WHEN COALESCE(sn.snoozed_until, 0) > m.date_unix THEN sn.snoozed_until ELSE m.date_unix END DESC, m.id DESC
+		LIMIT ? OFFSET ?`, userID, nowUnix(), limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -37,9 +42,14 @@ func (s *Store) ListMessagesForMailbox(ctx context.Context, userID, mailboxID in
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
-			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
-		FROM messages WHERE user_id = ? AND mailbox_id = ? ORDER BY date_unix DESC, id DESC LIMIT ? OFFSET ?`, userID, mailboxID, limit, offset)
+	rows, err := db.QueryContext(ctx, `SELECT m.id, m.user_id, m.account_id, m.mailbox_id, m.blob_id, m.message_id_header, m.in_reply_to, m.references_header, m.thread_key, m.subject, m.language_code, m.from_addr, m.to_addr, m.cc_addr,
+			m.date_unix, m.internal_date_unix, m.uid, m.size, m.blob_path, m.body_text, m.body_html, m.is_read, m.read_sync_pending, m.is_starred, m.star_sync_pending, m.has_attachments, m.is_encrypted, m.is_signed, m.attachment_indexed_at, m.created_at, m.updated_at
+		FROM messages m
+		LEFT JOIN message_snoozes sn ON sn.user_id = m.user_id
+			AND sn.thread_key = COALESCE(NULLIF(m.thread_key, ''), 'id:' || m.id)
+		WHERE m.user_id = ? AND m.mailbox_id = ? AND (sn.id IS NULL OR sn.snoozed_until <= ?)
+		ORDER BY CASE WHEN COALESCE(sn.snoozed_until, 0) > m.date_unix THEN sn.snoozed_until ELSE m.date_unix END DESC, m.id DESC
+		LIMIT ? OFFSET ?`, userID, mailboxID, nowUnix(), limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -140,17 +150,21 @@ func (s *Store) ListLatestThreadMessagesForUser(ctx context.Context, userID int6
 	}
 	rows, err := db.QueryContext(ctx, `WITH keyed AS (
 			SELECT COALESCE(NULLIF(m.thread_key, ''), 'id:' || m.id) AS thread_group,
-				MAX(printf('%020d:%020d', m.date_unix, m.id)) AS latest_key
+				MAX(printf('%020d:%020d',
+					CASE WHEN COALESCE(sn.snoozed_until, 0) > m.date_unix THEN sn.snoozed_until ELSE m.date_unix END,
+					m.id)) AS latest_key
 			FROM messages m
 			JOIN mailboxes mb ON mb.id = m.mailbox_id AND mb.user_id = m.user_id
-			WHERE m.user_id = ? AND mb.show_in_all_mail = 1
+			LEFT JOIN message_snoozes sn ON sn.user_id = m.user_id
+				AND sn.thread_key = COALESCE(NULLIF(m.thread_key, ''), 'id:' || m.id)
+			WHERE m.user_id = ? AND mb.show_in_all_mail = 1 AND (sn.id IS NULL OR sn.snoozed_until <= ?)
 			GROUP BY thread_group
 			ORDER BY latest_key DESC LIMIT ? OFFSET ?
 		)
 		SELECT m.id, m.user_id, m.account_id, m.mailbox_id, m.blob_id, m.message_id_header, m.in_reply_to, m.references_header, m.thread_key, m.subject, m.language_code, m.from_addr, m.to_addr, m.cc_addr,
 			m.date_unix, m.internal_date_unix, m.uid, m.size, m.blob_path, m.body_text, m.body_html, m.is_read, m.read_sync_pending, m.is_starred, m.star_sync_pending, m.has_attachments, m.is_encrypted, m.is_signed, m.attachment_indexed_at, m.created_at, m.updated_at
 		FROM keyed k JOIN messages m ON m.id = CAST(substr(k.latest_key, 22) AS INTEGER)
-		ORDER BY k.latest_key DESC`, userID, limit, offset)
+		ORDER BY k.latest_key DESC`, userID, nowUnix(), limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -168,16 +182,21 @@ func (s *Store) ListLatestThreadMessagesForMailbox(ctx context.Context, userID, 
 		limit = 50
 	}
 	rows, err := db.QueryContext(ctx, `WITH keyed AS (
-			SELECT COALESCE(NULLIF(thread_key, ''), 'id:' || id) AS thread_group,
-				MAX(printf('%020d:%020d', date_unix, id)) AS latest_key
-			FROM messages WHERE user_id = ? AND mailbox_id = ?
+			SELECT COALESCE(NULLIF(m.thread_key, ''), 'id:' || m.id) AS thread_group,
+				MAX(printf('%020d:%020d',
+					CASE WHEN COALESCE(sn.snoozed_until, 0) > m.date_unix THEN sn.snoozed_until ELSE m.date_unix END,
+					m.id)) AS latest_key
+			FROM messages m
+			LEFT JOIN message_snoozes sn ON sn.user_id = m.user_id
+				AND sn.thread_key = COALESCE(NULLIF(m.thread_key, ''), 'id:' || m.id)
+			WHERE m.user_id = ? AND m.mailbox_id = ? AND (sn.id IS NULL OR sn.snoozed_until <= ?)
 			GROUP BY thread_group
 			ORDER BY latest_key DESC LIMIT ? OFFSET ?
 		)
 		SELECT m.id, m.user_id, m.account_id, m.mailbox_id, m.blob_id, m.message_id_header, m.in_reply_to, m.references_header, m.thread_key, m.subject, m.language_code, m.from_addr, m.to_addr, m.cc_addr,
 			m.date_unix, m.internal_date_unix, m.uid, m.size, m.blob_path, m.body_text, m.body_html, m.is_read, m.read_sync_pending, m.is_starred, m.star_sync_pending, m.has_attachments, m.is_encrypted, m.is_signed, m.attachment_indexed_at, m.created_at, m.updated_at
 		FROM keyed k JOIN messages m ON m.id = CAST(substr(k.latest_key, 22) AS INTEGER)
-		ORDER BY k.latest_key DESC`, userID, mailboxID, limit, offset)
+		ORDER BY k.latest_key DESC`, userID, mailboxID, nowUnix(), limit, offset)
 	if err != nil {
 		return nil, err
 	}

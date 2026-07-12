@@ -310,10 +310,27 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun explicitUrlForIntent(sourceIntent: Intent?): String? {
-        RolltopPrefs.resolveInternalUrl(
-            this,
-            sourceIntent?.getStringExtra(NewMailPollWorker.EXTRA_TARGET_PATH)
-        )?.let { return it }
+        if (sourceIntent?.hasExtra(NotificationIntentPolicy.EXTRA_TARGET_PATH) == true) {
+            val expectedServer = sourceIntent.getStringExtra(
+                NotificationIntentPolicy.EXTRA_EXPECTED_SERVER_URL
+            ).orEmpty()
+            val expectedUserID = sourceIntent.getLongExtra(
+                NotificationIntentPolicy.EXTRA_EXPECTED_USER_ID,
+                0
+            )
+            val currentUserID = RolltopPrefs.newMailCursor(this)?.userId ?: 0
+            if (!NotificationIntentPolicy.contextMatches(
+                    expectedServer,
+                    expectedUserID,
+                    RolltopPrefs.serverUrl(this),
+                    currentUserID
+                )
+            ) return null
+            return RolltopPrefs.resolveInternalUrl(
+                this,
+                sourceIntent.getStringExtra(NotificationIntentPolicy.EXTRA_TARGET_PATH)
+            )
+        }
 
         return when (sourceIntent?.action) {
             Intent.ACTION_SENDTO, Intent.ACTION_VIEW -> {

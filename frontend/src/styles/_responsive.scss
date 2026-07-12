@@ -197,6 +197,29 @@
     --message-list-slide-gap: 12px;
   }
 
+  .selection-action-bar {
+    align-items: stretch;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 6px 8px 8px;
+  }
+
+  .selection-action-summary {
+    flex: 1 1 100%;
+  }
+
+  .selection-actions {
+    width: 100%;
+    display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+
+    button {
+      min-width: 0;
+      padding-inline: 6px;
+    }
+  }
+
   .content-head {
     align-items: flex-start;
   }
@@ -348,6 +371,20 @@
     margin-right: 12px;
   }
 
+  .reported-authentication {
+    width: fit-content;
+    max-width: 100%;
+  }
+
+  .sender-security-caution {
+    flex: none;
+  }
+
+  .message-link-warning {
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
   .attachment-preview {
     max-width: 100%;
     margin-left: 0;
@@ -382,6 +419,21 @@
     width: auto;
     max-height: none;
     z-index: 120;
+  }
+
+  .compose-popover.minimized {
+    inset: auto 8px 0;
+    width: auto;
+    height: 38px;
+    max-height: 38px;
+
+    .compose-window {
+      top: 0;
+      height: 38px;
+      min-height: 38px;
+      max-height: 38px;
+      border-radius: 7px 7px 0 0;
+    }
   }
 
   .compose-page {
@@ -444,6 +496,7 @@
     min-height: 42px;
     margin: 0 8px;
     padding: 5px 6px;
+    gap: 2px;
 
     button {
       min-width: 30px;
@@ -451,6 +504,15 @@
       min-height: 30px;
       height: 30px;
     }
+  }
+
+  .compose-template-panel {
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    bottom: 102px;
+    width: auto;
+    max-height: min(280px, 42vh);
   }
 
   .compose-sendbar {

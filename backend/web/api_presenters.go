@@ -238,6 +238,7 @@ func apiConversations(conversations []conversationView) []apiConversation {
 			Snippet:                  conv.Snippet,
 			MatchTerms:               conv.MatchTerms,
 			MatchQueryTerms:          conv.MatchQueryTerms,
+			SnoozedUntil:             timeString(conv.SnoozedUntil),
 		})
 	}
 	return out
@@ -321,28 +322,63 @@ func (s *Server) apiThreadMessagesTimed(ctx context.Context, userID int64, views
 		bodyDoc := emailDocumentWithInlineAttachments(bodyHTML, view.DisplayBodyText, view.ImagesAllowed, view.ImageBlockRules, view.InlineAttachments)
 		stop()
 		out = append(out, apiThreadMessage{
-			Message:         apiMessageFromRecord(view.Message, view.Snippet),
-			Attachments:     atts,
-			HeaderDetails:   apiHeaderDetails(view.HeaderDetails),
-			OneClickUnsub:   view.OneClickUnsub,
-			OneClickSentAt:  timeString(view.OneClickSentAt),
-			SenderName:      view.SenderName,
-			SenderEmail:     view.SenderEmail,
-			SenderInitial:   view.SenderInitial,
-			SenderVisual:    senderVisual,
-			RecipientLine:   view.RecipientLine,
-			Snippet:         view.Snippet,
-			BodyDoc:         bodyDoc,
-			FullBodyDoc:     fullDoc,
-			HasHiddenQuoted: view.HasHiddenQuoted,
-			HasDisplayBody:  view.HasDisplayBody,
-			BodyPreviewOnly: view.BodyPreviewOnly,
-			HasRemoteImages: view.HasRemoteImages,
-			ImagesAllowed:   view.ImagesAllowed,
-			Expanded:        view.Expanded,
-			ReplySubject:    replySubject(view.Message.Subject),
-			CanReplyAll:     view.CanReplyAll,
+			Message:            apiMessageFromRecord(view.Message, view.Snippet),
+			Attachments:        atts,
+			HeaderDetails:      apiHeaderDetails(view.HeaderDetails),
+			SecurityIndicators: apiMessageSecurityIndicatorsFrom(view.SecurityIndicators),
+			OneClickUnsub:      view.OneClickUnsub,
+			OneClickSentAt:     timeString(view.OneClickSentAt),
+			SenderName:         view.SenderName,
+			SenderEmail:        view.SenderEmail,
+			SenderInitial:      view.SenderInitial,
+			SenderVisual:       senderVisual,
+			RecipientLine:      view.RecipientLine,
+			Snippet:            view.Snippet,
+			BodyDoc:            bodyDoc,
+			FullBodyDoc:        fullDoc,
+			HasHiddenQuoted:    view.HasHiddenQuoted,
+			HasDisplayBody:     view.HasDisplayBody,
+			BodyPreviewOnly:    view.BodyPreviewOnly,
+			HasRemoteImages:    view.HasRemoteImages,
+			ImagesAllowed:      view.ImagesAllowed,
+			Expanded:           view.Expanded,
+			ReplySubject:       replySubject(view.Message.Subject),
+			CanReplyAll:        view.CanReplyAll,
 		})
+	}
+	return out
+}
+
+func apiMessageSecurityIndicatorsFrom(indicators messageSecurityIndicators) *apiMessageSecurityIndicators {
+	reported := apiReportedAuthenticationFrom(indicators.ReportedAuthentication)
+	signals := make([]apiMessageSecuritySignal, 0, len(indicators.Signals))
+	for _, signal := range indicators.Signals {
+		if signal.Kind == "" {
+			continue
+		}
+		signals = append(signals, apiMessageSecuritySignal{
+			Kind:        signal.Kind,
+			DisplayHost: signal.DisplayHost,
+			TargetHost:  signal.TargetHost,
+			Scheme:      signal.Scheme,
+		})
+	}
+	if reported == nil && len(signals) == 0 {
+		return nil
+	}
+	return &apiMessageSecurityIndicators{ReportedAuthentication: reported, Signals: signals}
+}
+
+func apiReportedAuthenticationFrom(reported reportedAuthentication) *apiReportedAuthentication {
+	toAPI := func(value *reportedAuthenticationResult) *apiReportedAuthenticationResult {
+		if value == nil || value.Result == "" || value.Source == "" {
+			return nil
+		}
+		return &apiReportedAuthenticationResult{Result: value.Result, Source: value.Source}
+	}
+	out := &apiReportedAuthentication{SPF: toAPI(reported.SPF), DKIM: toAPI(reported.DKIM), DMARC: toAPI(reported.DMARC)}
+	if out.SPF == nil && out.DKIM == nil && out.DMARC == nil {
+		return nil
 	}
 	return out
 }

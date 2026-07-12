@@ -1,14 +1,26 @@
-// File overview: Compose, reply, and forward UI. It owns the editable body, recipient fields,
-// identity choice, file uploads, inline media CIDs, and optional client-side photo resizing.
+// File overview: Compose, reply, and forward UI. It owns local recovery, templates, recipient
+// chips, identity choice, file uploads, inline media CIDs, and optional photo resizing.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClipboardEvent, DragEvent, FormEvent } from "react";
+import type { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import DOMPurify from "dompurify";
 import { api } from "../../api";
 import type { LocationState, Toast } from "../../appTypes";
 import type { ContactAutocomplete, ComposeAttachmentUpload, ComposeExistingAttachment, ComposeForm, ComposeIdentity } from "../../types";
 import { Icon, LogoMark } from "../../components/Icon";
 import { messageFromError } from "../../lib/errors";
 import { textToHTML } from "../../lib/html";
+import {
+  clearComposeRecovery,
+  composeContentEqual,
+  loadComposeRecovery,
+  loadComposeTemplates,
+  saveComposeRecovery,
+  saveComposeTemplates,
+  type LocalComposeContent,
+  type LocalComposeRecovery,
+  type LocalComposeTemplate
+} from "../../lib/composeLocal";
 import {
   androidContactSuggestions,
   androidNativeAvailable,
@@ -32,6 +44,7 @@ type ComposeAttachment = ComposeAttachmentUpload & {
 
 /** Floating compose dialog used by the shell for new mail, replies, and forwards. */
 export function ComposeOverlay({
+  userID,
   csrf,
   query,
   securityEnabled,
@@ -41,6 +54,7 @@ export function ComposeOverlay({
   addToast,
   onClose
 }: {
+  userID: number;
   csrf: string;
   query: string;
   securityEnabled: boolean;
@@ -54,11 +68,13 @@ export function ComposeOverlay({
   const [from, setFrom] = useState("");
   const [identities, setIdentities] = useState<ComposeIdentity[]>([]);
   const [error, setError] = useState("");
+  const [minimized, setMinimized] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setForm(null);
     setError("");
+    setMinimized(false);
     api
       .compose(query)
       .then((data) => {
@@ -76,14 +92,17 @@ export function ComposeOverlay({
   }, [query]);
 
   return (
-    <div className="compose-popover" role="dialog" aria-label="Compose message">
+    <div className={`compose-popover ${minimized ? "minimized" : ""}`} role="dialog" aria-label="Compose message">
       {error ? <div className="error">{error}</div> : null}
       {form ? (
         <ComposeBox
+          userID={userID}
           csrf={csrf}
           composeFrom={from}
           identities={identities}
           initial={form}
+          recoveryContext={query || "new"}
+          minimized={minimized}
           securityEnabled={securityEnabled}
           securityPlugins={securityPlugins}
           securityUnlock={securityUnlock}
@@ -91,6 +110,7 @@ export function ComposeOverlay({
           addToast={addToast}
           onSent={onClose}
           onCancel={onClose}
+          onMinimize={() => setMinimized((current) => !current)}
         />
       ) : (
         <div className="compose-window compose-loading">
@@ -112,6 +132,7 @@ export function ComposeOverlay({
 
 /** Full-page compose route, mainly useful for direct links or narrow layouts. */
 export function ComposePage({
+  userID,
   csrf,
   location,
   navigate,
@@ -121,6 +142,7 @@ export function ComposePage({
   openSecurityUnlock,
   addToast
 }: {
+  userID: number;
   csrf: string;
   location: LocationState;
   navigate: (url: string) => void;
@@ -158,10 +180,12 @@ export function ComposePage({
       {error ? <div className="error">{error}</div> : null}
       {form ? (
         <ComposeBox
+          userID={userID}
           csrf={csrf}
           composeFrom={from}
           identities={identities}
           initial={form}
+          recoveryContext={location.search.replace(/^\?/, "") || "new"}
           securityEnabled={securityEnabled}
           securityPlugins={securityPlugins}
           securityUnlock={securityUnlock}
@@ -182,24 +206,31 @@ export function ComposePage({
  * fallback, From identity, recipient fields, files, inline media, and send state.
  */
 export function ComposeBox({
+  userID,
   csrf,
   composeFrom,
   identities = [],
   initial,
+  recoveryContext = "",
   inline = false,
+  minimized = false,
   securityEnabled = false,
   securityPlugins,
   securityUnlock,
   openSecurityUnlock,
   addToast,
   onSent,
-  onCancel
+  onCancel,
+  onMinimize
 }: {
+  userID: number;
   csrf: string;
   composeFrom: string;
   identities?: ComposeIdentity[];
   initial: ComposeForm;
+  recoveryContext?: string;
   inline?: boolean;
+  minimized?: boolean;
   securityEnabled?: boolean;
   securityPlugins: readonly RuntimePlugin[];
   securityUnlock: ComposeSecurityUnlockState;
@@ -207,6 +238,7 @@ export function ComposeBox({
   addToast: (message: string, kind?: Toast["kind"]) => number;
   onSent: () => void;
   onCancel?: () => void;
+  onMinimize?: () => void;
 }) {
   const [form, setForm] = useState<ComposeForm>(initial);
   const [showCc, setShowCc] = useState(Boolean(initial.cc));
@@ -215,12 +247,26 @@ export function ComposeBox({
   const [savingDraft, setSavingDraft] = useState(false);
   const [resizing, setResizing] = useState(false);
   const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
+  const [pendingRecovery, setPendingRecovery] = useState<LocalComposeRecovery | null>(null);
+  const [recoveryReady, setRecoveryReady] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [editorRevision, setEditorRevision] = useState(0);
+  const [templates, setTemplates] = useState<LocalComposeTemplate[]>(() => loadComposeTemplates(userID));
+  const [templateName, setTemplateName] = useState("");
   const editorRef = useRef<HTMLDivElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
+  const templateMenuRef = useRef<HTMLDetailsElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const inlineMediaInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsRef = useRef<ComposeAttachment[]>([]);
+  const recoveryTimerRef = useRef<number | null>(null);
+  const baselineRef = useRef<LocalComposeContent | null>(null);
+  const baselineAttachmentStateRef = useRef("");
   const nativeShareID = !inline ? new URLSearchParams(window.location.search).get("android_share") || "" : "";
+  const localComposeContext = useMemo(
+    () => composeLocalContext(recoveryContext, initial, inline),
+    [recoveryContext, initial.draft_message_id, initial.in_reply_to_id, inline]
+  );
   const primaryIdentity = useMemo(() => identities.find((identity) => identity.is_primary) || identities[0] || null, [identities]);
   const availableExistingAttachments = form.available_attachments || [];
   const includedExistingAttachmentIDs = form.include_attachment_ids || [];
@@ -255,10 +301,18 @@ export function ComposeBox({
   });
 
   useEffect(() => {
-    setForm({
+    const initialForm = {
       ...initial,
       from_identity_id: initial.from_identity_id || primaryIdentity?.id || 0
-    });
+    };
+    const initialHTML = initialEditorHTML(initial);
+    const baseline = localComposeContent(initialForm, recoverableEditorHTML(initialHTML));
+    baselineRef.current = baseline;
+    baselineAttachmentStateRef.current = composeAttachmentStateKey(initialForm, []);
+    setRecoveryReady(false);
+    setPendingRecovery(null);
+    setDirty(false);
+    setForm(initialForm);
     setShowCc(Boolean(initial.cc));
     setShowBcc(Boolean(initial.bcc));
     setAttachments((current) => {
@@ -266,16 +320,74 @@ export function ComposeBox({
       return [];
     });
     if (editorRef.current) {
-      editorRef.current.innerHTML = initialEditorHTML(initial);
+      editorRef.current.innerHTML = initialHTML;
       placeInitialCaret(editorRef.current);
     }
-  }, [initial, primaryIdentity?.id]);
+    const recovered = loadComposeRecovery(userID, localComposeContext);
+    if (recovered && !composeContentEqual(recoveryContent(recovered), baseline)) {
+      if (explicitServerComposeContext(recoveryContext, initial)) {
+        setPendingRecovery(recovered);
+        setDirty(true);
+      } else {
+        applyRecoveredContent(recovered, initialForm);
+      }
+    } else if (recovered) {
+      clearComposeRecovery(userID, localComposeContext);
+    }
+    setRecoveryReady(true);
+  }, [initial, localComposeContext, primaryIdentity?.id, userID]);
+
+  useEffect(() => {
+    setTemplates(loadComposeTemplates(userID));
+  }, [userID]);
+
+  useEffect(() => {
+    const closeTemplateMenu = (event: PointerEvent) => {
+      const menu = templateMenuRef.current;
+      if (!menu?.open || (event.target instanceof Node && menu.contains(event.target))) return;
+      menu.open = false;
+    };
+    document.addEventListener("pointerdown", closeTemplateMenu);
+    return () => document.removeEventListener("pointerdown", closeTemplateMenu);
+  }, []);
 
   useEffect(() => {
     attachmentsRef.current = attachments;
   }, [attachments]);
 
-  useEffect(() => () => revokeAttachmentObjectURLs(attachmentsRef.current), []);
+  useEffect(() => () => {
+    revokeAttachmentObjectURLs(attachmentsRef.current);
+    if (recoveryTimerRef.current !== null) window.clearTimeout(recoveryTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!recoveryReady || pendingRecovery) return;
+    const content = currentLocalComposeContent(form, editorRef.current);
+    const contentChanged = baselineRef.current ? !composeContentEqual(content, baselineRef.current) : false;
+    const attachmentsChanged = composeAttachmentStateKey(form, attachments) !== baselineAttachmentStateRef.current;
+    setDirty(contentChanged || attachmentsChanged);
+    if (recoveryTimerRef.current !== null) window.clearTimeout(recoveryTimerRef.current);
+    recoveryTimerRef.current = null;
+    if (!contentChanged) {
+      clearComposeRecovery(userID, localComposeContext);
+      return;
+    }
+    recoveryTimerRef.current = window.setTimeout(() => {
+      recoveryTimerRef.current = null;
+      saveComposeRecovery(userID, localComposeContext, content);
+    }, 650);
+  }, [attachments.length, editorRevision, form, localComposeContext, pendingRecovery, recoveryReady, userID]);
+
+  useEffect(() => {
+    if (!dirty) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      flushComposeRecovery();
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [dirty, form, editorRevision, localComposeContext, userID]);
 
   // Android WebView can report the keyboard through VisualViewport before dvh
   // catches up. Size the composer within its container so the persistent mobile
@@ -323,9 +435,68 @@ export function ComposeBox({
     setForm((current) => ({ ...current, [field]: value }));
   }
 
+  function applyRecoveredContent(recovery: LocalComposeRecovery, baseForm = form) {
+    setForm({
+      ...baseForm,
+      to: recovery.to,
+      cc: recovery.cc,
+      bcc: recovery.bcc,
+      subject: recovery.subject,
+      body: recovery.body,
+      body_html: recovery.bodyHTML,
+      from_identity_id: recovery.fromIdentityID || baseForm.from_identity_id
+    });
+    setShowCc(Boolean(recovery.cc));
+    setShowBcc(Boolean(recovery.bcc));
+    if (editorRef.current) {
+      editorRef.current.innerHTML = safeRecoveredEditorHTML(recovery);
+      placeInitialCaret(editorRef.current);
+    }
+    setPendingRecovery(null);
+    setEditorRevision((current) => current + 1);
+  }
+
+  function discardPendingRecovery() {
+    clearComposeRecovery(userID, localComposeContext);
+    setPendingRecovery(null);
+  }
+
+  function flushComposeRecovery() {
+    if (!recoveryReady || pendingRecovery) return;
+    const content = currentLocalComposeContent(form, editorRef.current);
+    if (baselineRef.current && !composeContentEqual(content, baselineRef.current)) {
+      saveComposeRecovery(userID, localComposeContext, content);
+    }
+  }
+
+  function clearLocalComposeRecovery() {
+    if (recoveryTimerRef.current !== null) window.clearTimeout(recoveryTimerRef.current);
+    recoveryTimerRef.current = null;
+    clearComposeRecovery(userID, localComposeContext);
+    setDirty(false);
+  }
+
+  function discardCompose() {
+    const changed = Boolean(pendingRecovery) || composeIsDirty(form, editorRef.current, baselineRef.current) ||
+      composeAttachmentStateKey(form, attachments) !== baselineAttachmentStateRef.current;
+    if (changed && !window.confirm("Discard this unsent message?")) return;
+    clearLocalComposeRecovery();
+    onCancel?.();
+  }
+
+  function minimizeCompose() {
+    flushComposeRecovery();
+    onMinimize?.();
+  }
+
+  function handleEditorInput() {
+    setEditorRevision((current) => current + 1);
+  }
+
   function applyFormat(command: string, value?: string) {
     editorRef.current?.focus();
     document.execCommand(command, false, value);
+    handleEditorInput();
   }
 
   // Attachments are kept as File objects until submit. Inline media also gets an
@@ -444,6 +615,49 @@ export function ComposeBox({
     addFiles(files, false);
   }
 
+  function saveCurrentTemplate() {
+    const name = templateName.trim().slice(0, 80);
+    if (!name) return;
+    const content = currentLocalComposeContent(form, editorRef.current);
+    const existing = templates.find((template) => template.name.toLowerCase() === name.toLowerCase());
+    if (existing && !window.confirm(`Replace the template "${existing.name}"?`)) return;
+    const template: LocalComposeTemplate = {
+      id: existing?.id || randomTemplateID(),
+      name,
+      subject: content.subject,
+      body: content.body,
+      bodyHTML: content.bodyHTML,
+      updatedAt: Date.now()
+    };
+    const next = [template, ...templates.filter((item) => item.id !== template.id)];
+    if (!saveComposeTemplates(userID, next)) {
+      addToast("Template is too large to save in this browser.", "error");
+      return;
+    }
+    setTemplates(next.slice(0, 20));
+    setTemplateName("");
+    if (templateMenuRef.current) templateMenuRef.current.open = false;
+    addToast(existing ? "Template updated." : "Template saved.");
+  }
+
+  function insertTemplate(template: LocalComposeTemplate) {
+    const editor = editorRef.current;
+    if (editor) insertComposeHTML(editor, safeTemplateHTML(template));
+    if (!form.subject.trim() && template.subject.trim()) setField("subject", template.subject);
+    handleEditorInput();
+    if (templateMenuRef.current) templateMenuRef.current.open = false;
+  }
+
+  function deleteTemplate(template: LocalComposeTemplate) {
+    if (!window.confirm(`Delete the template "${template.name}"?`)) return;
+    const next = templates.filter((item) => item.id !== template.id);
+    if (!saveComposeTemplates(userID, next)) {
+      addToast("Could not update templates in this browser.", "error");
+      return;
+    }
+    setTemplates(next);
+  }
+
   // Before sending, replace inline object URLs with cid: URLs and only upload
   // inline files that are still referenced in the edited body.
   async function submit(event: FormEvent) {
@@ -472,6 +686,7 @@ export function ComposeBox({
       if (composeSecurity.active) await delay(520);
       await api.send(csrf, prepared.form, prepared.attachments);
       sent = true;
+      clearLocalComposeRecovery();
       addToast("Message sent.");
       onSent();
     } catch (err) {
@@ -493,10 +708,15 @@ export function ComposeBox({
       body_html: preparedHTML.html,
       attach_public_key: composeSecurity.attachPublicKey
     };
+    const savedContent = currentLocalComposeContent(nextForm, editorRef.current);
+    const savedAttachmentState = composeAttachmentStateKey(nextForm, attachments);
     setSavingDraft(true);
     try {
       const prepared = await composeSecurity.prepareSubmitForm(nextForm, uploadAttachments);
       const data = await api.saveDraft(csrf, prepared.form, prepared.attachments);
+      baselineRef.current = savedContent;
+      baselineAttachmentStateRef.current = savedAttachmentState;
+      clearLocalComposeRecovery();
       setForm((current) => ({ ...current, draft_message_id: data.message_id }));
       addToast("Draft saved.");
     } catch (err) {
@@ -507,7 +727,7 @@ export function ComposeBox({
   }
 
   return (
-    <form ref={formRef} className={inline ? "inline-reply" : "compose-window"} onSubmit={submit}>
+    <form ref={formRef} className={`${inline ? "inline-reply" : "compose-window"}${minimized ? " minimized" : ""}`} onSubmit={submit}>
       {!inline ? (
         <div className="compose-head">
           <span className="compose-head-title">
@@ -515,16 +735,31 @@ export function ComposeBox({
             <span>New Message</span>
           </span>
           <div className="compose-head-actions">
-            <button className="ghost" type="button" title="Minimize" onClick={onCancel}>
-              <Icon name="minimize" />
-            </button>
-            <button className="ghost" type="button" title="Close" onClick={onCancel}>
+            {onMinimize ? (
+              <button className="ghost" type="button" title={minimized ? "Restore" : "Minimize"} onClick={minimizeCompose}>
+                <Icon name={minimized ? "edit" : "minimize"} />
+              </button>
+            ) : null}
+            <button className="ghost" type="button" title="Discard and close" onClick={discardCompose}>
               <Icon name="close" />
             </button>
           </div>
         </div>
       ) : null}
       <div className="compose-scroll-region">
+        {pendingRecovery ? (
+          <div className="compose-recovery-banner" role="status">
+            <Icon name="draft" />
+            <span>
+              <strong>Unsent changes found</strong>
+              <small>{formatRecoveryTime(pendingRecovery.updatedAt)}</small>
+            </span>
+            <button className="secondary" type="button" onClick={() => applyRecoveredContent(pendingRecovery)}>Restore</button>
+            <button className="ghost" type="button" title="Discard recovered changes" aria-label="Discard recovered changes" onClick={discardPendingRecovery}>
+              <Icon name="delete" />
+            </button>
+          </div>
+        ) : null}
         {!inline ? (
           <div className="compose-fields">
             <div className="compose-line">
@@ -596,7 +831,7 @@ export function ComposeBox({
             <div className="inline-reply-actions">
               <button className="ghost text-link" type="button" onClick={() => setShowCc((value) => !value)}>Cc</button>
               <button className="ghost text-link" type="button" onClick={() => setShowBcc((value) => !value)}>Bcc</button>
-              <button className="ghost inline-close" type="button" title="Discard reply" onClick={onCancel}>
+              <button className="ghost inline-close" type="button" title="Discard reply" onClick={discardCompose}>
                 <Icon name="close" />
               </button>
             </div>
@@ -624,6 +859,7 @@ export function ComposeBox({
             className="compose-editor"
             contentEditable={!sending}
             data-placeholder="Write a message"
+            onInput={handleEditorInput}
             onPaste={handleEditorPaste}
             suppressContentEditableWarning
           />
@@ -711,6 +947,40 @@ export function ComposeBox({
         <button type="button" title="Quote" onClick={() => applyFormat("formatBlock", "blockquote")}>
           <Icon name="format_quote" />
         </button>
+        <details className="compose-template-menu" ref={templateMenuRef}>
+          <summary title="Templates" aria-label="Templates">
+            <Icon name="bookmark" />
+          </summary>
+          <div className="compose-template-panel" aria-label="Templates">
+            {templates.map((template) => (
+              <div className="compose-template-row" key={template.id}>
+                <button type="button" title={`Insert ${template.name}`} onClick={() => insertTemplate(template)}>
+                  <span>{template.name}</span>
+                </button>
+                <button type="button" title={`Delete ${template.name}`} aria-label={`Delete ${template.name}`} onClick={() => deleteTemplate(template)}>
+                  <Icon name="delete" />
+                </button>
+              </div>
+            ))}
+            <div className="compose-template-save-row">
+              <input
+                value={templateName}
+                maxLength={80}
+                placeholder="Template name"
+                aria-label="Template name"
+                onChange={(event) => setTemplateName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  saveCurrentTemplate();
+                }}
+              />
+              <button type="button" title="Save template" aria-label="Save template" disabled={!templateName.trim()} onClick={saveCurrentTemplate}>
+                <Icon name="add" />
+              </button>
+            </div>
+          </div>
+        </details>
       </div>
       <input
         ref={attachmentInputRef}
@@ -748,7 +1018,7 @@ export function ComposeBox({
             {composeSecurity.renderControls({ attachmentInputRef, inlineMediaInputRef })}
           </div>
         </div>
-        <button className="ghost" type="button" title="Discard" onClick={onCancel}>
+        <button className="ghost" type="button" title="Discard" onClick={discardCompose}>
           <Icon name="delete" />
         </button>
       </div>
@@ -811,6 +1081,133 @@ function initialEditorHTML(initial: ComposeForm): string {
   const html = initial.body_html || textToHTML(initial.body);
   if (!isForwardDraft(initial)) return html;
   return `<div data-compose-caret-start="true"><br></div>${stripLeadingBreaks(html)}`;
+}
+
+function composeLocalContext(context: string, initial: ComposeForm, inline: boolean): string {
+  const query = context.replace(/^\?/, "").trim();
+  const params = new URLSearchParams(query);
+  for (const key of ["draft", "reply", "reply_all", "forward", "forward_attachment", "android_share"]) {
+    const value = params.get(key);
+    if (value) return `${key}:${value}`;
+  }
+  if (initial.draft_message_id > 0) return `draft:${initial.draft_message_id}`;
+  if (initial.in_reply_to_id > 0) return `${inline ? "inline-reply" : "reply"}:${initial.in_reply_to_id}`;
+  return query && query !== "new" ? `prefill:${query}` : "new";
+}
+
+function explicitServerComposeContext(context: string, initial: ComposeForm): boolean {
+  if (initial.draft_message_id > 0 || initial.in_reply_to_id > 0) return true;
+  const params = new URLSearchParams(context.replace(/^\?/, ""));
+  return ["draft", "reply", "reply_all", "forward", "forward_attachment"].some((key) => params.has(key));
+}
+
+function localComposeContent(form: ComposeForm, html: string): LocalComposeContent {
+  const safeHTML = recoverableEditorHTML(html);
+  return {
+    to: form.to.trim(),
+    cc: form.cc.trim(),
+    bcc: form.bcc.trim(),
+    subject: form.subject,
+    body: composeTextFromHTML(safeHTML),
+    bodyHTML: safeHTML,
+    fromIdentityID: form.from_identity_id || 0
+  };
+}
+
+function currentLocalComposeContent(form: ComposeForm, editor: HTMLDivElement | null): LocalComposeContent {
+  return localComposeContent(form, editor?.innerHTML || form.body_html || textToHTML(form.body));
+}
+
+function recoveryContent(recovery: LocalComposeRecovery): LocalComposeContent {
+  return {
+    to: recovery.to,
+    cc: recovery.cc,
+    bcc: recovery.bcc,
+    subject: recovery.subject,
+    body: composeTextFromHTML(recovery.bodyHTML || textToHTML(recovery.body)),
+    bodyHTML: recoverableEditorHTML(recovery.bodyHTML || textToHTML(recovery.body)),
+    fromIdentityID: recovery.fromIdentityID
+  };
+}
+
+function recoverableEditorHTML(html: string): string {
+  const clean = DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form"],
+    FORBID_ATTR: ["contenteditable"]
+  });
+  const template = document.createElement("template");
+  template.innerHTML = clean;
+  template.content.querySelectorAll<HTMLElement>("[data-compose-attachment-id]").forEach((node) => {
+    const next = node.nextSibling;
+    node.remove();
+    if (next instanceof HTMLBRElement) next.remove();
+  });
+  template.content.querySelectorAll<HTMLElement>("[data-compose-caret-start]").forEach((node) => node.removeAttribute("data-compose-caret-start"));
+  template.content.querySelectorAll<HTMLElement>("[src^='blob:']").forEach((node) => node.remove());
+  return template.innerHTML;
+}
+
+function safeRecoveredEditorHTML(recovery: LocalComposeRecovery): string {
+  return recoverableEditorHTML(recovery.bodyHTML || textToHTML(recovery.body));
+}
+
+function safeTemplateHTML(template: LocalComposeTemplate): string {
+  return recoverableEditorHTML(template.bodyHTML || textToHTML(template.body));
+}
+
+function composeTextFromHTML(html: string): string {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  template.content.querySelectorAll("br").forEach((node) => node.replaceWith("\n"));
+  template.content.querySelectorAll("p, div, blockquote, li").forEach((node) => node.append("\n"));
+  return (template.content.textContent || "").replace(/\n{3,}/g, "\n\n").replace(/\n+$/, "");
+}
+
+function composeIsDirty(form: ComposeForm, editor: HTMLDivElement | null, baseline: LocalComposeContent | null): boolean {
+  return baseline ? !composeContentEqual(currentLocalComposeContent(form, editor), baseline) : false;
+}
+
+function composeAttachmentStateKey(form: ComposeForm, attachments: ComposeAttachment[]): string {
+  const existing = [...(form.include_attachment_ids || [])].filter((id) => id > 0).sort((left, right) => left - right);
+  const uploads = attachments.map((attachment) => [
+    attachment.id,
+    attachment.filename,
+    attachment.size,
+    attachment.file.lastModified,
+    attachment.inline ? 1 : 0
+  ]);
+  return JSON.stringify({ existing, forward: form.forward_attachment_message_id || 0, uploads });
+}
+
+function insertComposeHTML(editor: HTMLDivElement, html: string) {
+  const selection = window.getSelection();
+  const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+  const fragment = document.createRange().createContextualFragment(html);
+  if (range && editor.contains(range.commonAncestorContainer)) {
+    range.deleteContents();
+    const last = fragment.lastChild;
+    range.insertNode(fragment);
+    if (last) {
+      range.setStartAfter(last);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+  } else {
+    editor.appendChild(fragment);
+  }
+  editor.focus();
+}
+
+function randomTemplateID(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `template-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function formatRecoveryTime(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "Saved locally";
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }
 
 function isForwardDraft(initial: ComposeForm): boolean {
@@ -926,19 +1323,21 @@ function formatBytes(bytes: number): string {
 function recipientEmailAddresses(values: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  values.join(",").split(/[;,]/).forEach((part) => {
-    const trimmed = part.trim();
-    if (!trimmed) return;
-    const angle = trimmed.match(/<([^>]+)>/);
-    const raw = (angle ? angle[1] : trimmed).replace(/^"|"$/g, "").trim().toLowerCase();
-    const match = raw.match(/[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/i);
-    const email = (match ? match[0] : raw).toLowerCase();
-    if (!email.includes("@") || seen.has(email)) return;
-    seen.add(email);
-    out.push(email);
+  values.flatMap(parseRecipientList).forEach((recipient) => {
+    if (!recipient.valid || seen.has(recipient.emailKey)) return;
+    seen.add(recipient.emailKey);
+    out.push(recipient.email);
   });
   return out;
 }
+
+type RecipientToken = {
+  raw: string;
+  name: string;
+  email: string;
+  emailKey: string;
+  valid: boolean;
+};
 
 type RecipientSuggestion = {
   key: string;
@@ -957,52 +1356,129 @@ function RecipientInput({
   required?: boolean;
   onChange: (value: string) => void;
 }) {
+  const [inputValue, setInputValue] = useState("");
   const [rolltopSuggestions, setRolltopSuggestions] = useState<ContactAutocomplete[]>([]);
   const [nativeSuggestions, setNativeSuggestions] = useState<NativeContactEmail[]>([]);
   const [nativeAccess, setNativeAccess] = useState<AndroidContactAccess | "unknown">("unknown");
   const [focused, setFocused] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(0);
   const [pickingAndroidContact, setPickingAndroidContact] = useState(false);
   const [requestingNativeAccess, setRequestingNativeAccess] = useState(false);
-  const query = lastRecipientToken(value);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const recipients = useMemo(() => dedupeRecipients(parseRecipientList(value)), [value]);
+  const query = inputValue.trim();
   const nativeAvailable = androidNativeAvailable();
   const suggestions = useMemo(
-    () => mergeRecipientSuggestions(rolltopSuggestions, nativeSuggestions),
-    [rolltopSuggestions, nativeSuggestions]
+    () => {
+      const selected = new Set(recipients.map((recipient) => recipient.emailKey).filter(Boolean));
+      return mergeRecipientSuggestions(rolltopSuggestions, nativeSuggestions).filter((suggestion) => !selected.has(suggestion.email.trim().toLowerCase()));
+    },
+    [recipients, rolltopSuggestions, nativeSuggestions]
   );
 
   useEffect(() => {
     let cancelled = false;
-    if (!focused || query.length < 2) {
+    if (!focused) {
       setRolltopSuggestions([]);
       setNativeSuggestions([]);
       return;
     }
-    api.contactAutocomplete(query).then((data) => {
-      if (!cancelled) setRolltopSuggestions(data.contacts || []);
-    }).catch(() => {
-      if (!cancelled) setRolltopSuggestions([]);
-    });
-    if (nativeAvailable && nativeAccess !== "denied") {
-      androidContactSuggestions(query).then((data) => {
-        if (cancelled) return;
-        setNativeAccess(data.access);
-        setNativeSuggestions(data.contacts);
+    const timer = window.setTimeout(() => {
+      api.contactAutocomplete(query).then((data) => {
+        if (!cancelled) setRolltopSuggestions(data.contacts || []);
       }).catch(() => {
-        if (!cancelled) setNativeSuggestions([]);
+        if (!cancelled) setRolltopSuggestions([]);
       });
-    } else {
-      setNativeSuggestions([]);
-    }
+      if (query.length >= 2 && nativeAvailable && nativeAccess !== "denied") {
+        androidContactSuggestions(query).then((data) => {
+          if (cancelled) return;
+          setNativeAccess(data.access);
+          setNativeSuggestions(data.contacts);
+        }).catch(() => {
+          if (!cancelled) setNativeSuggestions([]);
+        });
+      } else {
+        setNativeSuggestions([]);
+      }
+    }, 120);
     return () => {
+      window.clearTimeout(timer);
       cancelled = true;
     };
   }, [focused, nativeAccess, nativeAvailable, query]);
 
-  function choose(contact: RecipientSuggestion) {
-    onChange(replaceLastRecipient(value, formatNativeRecipient(contact.name, contact.email)));
+  useEffect(() => {
+    setActiveSuggestion(0);
+  }, [query, suggestions.length]);
+
+  useEffect(() => {
+    const invalid = recipients.some((recipient) => !recipient.valid);
+    const pending = inputValue.trim();
+    const pendingRecipients = pending ? parseRecipientList(pending) : [];
+    const pendingInvalid = pending !== "" && (pendingRecipients.length === 0 || pendingRecipients.some((recipient) => !recipient.valid));
+    inputRef.current?.setCustomValidity(invalid || pendingInvalid ? "Enter a valid email address." : "");
+  }, [inputValue, recipients]);
+
+  useEffect(() => {
+    const normalized = serializeRecipients(recipients);
+    if (normalized !== value) onChange(normalized);
+  }, [recipients, value]);
+
+  function commitRecipients(raw: string) {
+    const additions = parseRecipientList(raw);
+    if (additions.length === 0) return;
+    const next = dedupeRecipients([...recipients, ...additions]);
+    onChange(serializeRecipients(next));
+    setInputValue("");
     setRolltopSuggestions([]);
     setNativeSuggestions([]);
-    setFocused(false);
+  }
+
+  function removeRecipient(index: number) {
+    onChange(serializeRecipients(recipients.filter((_, recipientIndex) => recipientIndex !== index)));
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
+  function choose(contact: RecipientSuggestion) {
+    commitRecipients(formatNativeRecipient(contact.name, contact.email));
+    setFocused(true);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
+  function handleRecipientKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "ArrowDown" && suggestions.length > 0) {
+      event.preventDefault();
+      setActiveSuggestion((current) => (current + 1) % suggestions.length);
+      return;
+    }
+    if (event.key === "ArrowUp" && suggestions.length > 0) {
+      event.preventDefault();
+      setActiveSuggestion((current) => (current - 1 + suggestions.length) % suggestions.length);
+      return;
+    }
+    if (event.key === "Escape") {
+      setFocused(false);
+      setNativeSuggestions([]);
+      setRolltopSuggestions([]);
+      return;
+    }
+    if (event.key === "Backspace" && !inputValue && recipients.length > 0) {
+      event.preventDefault();
+      removeRecipient(recipients.length - 1);
+      return;
+    }
+    if (event.key === "Enter" && suggestions[activeSuggestion]) {
+      event.preventDefault();
+      choose(suggestions[activeSuggestion]);
+      return;
+    }
+    if (event.key === "Enter" || event.key === "," || event.key === ";") {
+      if (!inputValue.trim()) return;
+      event.preventDefault();
+      commitRecipients(inputValue);
+      return;
+    }
+    if (event.key === "Tab" && inputValue.trim()) commitRecipients(inputValue);
   }
 
   async function enableAndroidContactSuggestions() {
@@ -1032,9 +1508,7 @@ function RecipientInput({
     try {
       const contact = await pickAndroidContactEmail();
       if (!contact) return;
-      onChange(replaceLastRecipient(value, formatNativeRecipient(contact.name, contact.email)));
-      setRolltopSuggestions([]);
-      setNativeSuggestions([]);
+      commitRecipients(formatNativeRecipient(contact.name, contact.email));
     } catch {
       // The system picker may be unavailable or dismissed while the WebView is changing pages.
     } finally {
@@ -1045,13 +1519,33 @@ function RecipientInput({
   return (
     <div className="recipient-input">
       <div className="recipient-input-control">
-        <input
-          value={value}
-          required={required}
-          onFocus={() => setFocused(true)}
-          onBlur={() => window.setTimeout(() => setFocused(false), 120)}
-          onChange={(event) => onChange(event.target.value)}
-        />
+        <div className="recipient-chip-list">
+          {recipients.map((recipient, index) => (
+            <span className={`recipient-chip ${recipient.valid ? "" : "invalid"}`} key={`${recipient.emailKey || recipient.raw.toLowerCase()}:${index}`} title={recipient.valid ? recipient.email : "Invalid email address"}>
+              <span>{recipient.name || recipient.email || recipient.raw}</span>
+              <button type="button" title={`Remove ${recipient.name || recipient.email || "recipient"}`} aria-label={`Remove ${recipient.name || recipient.email || "recipient"}`} onClick={() => removeRecipient(index)}>
+                <Icon name="close" />
+              </button>
+            </span>
+          ))}
+          <input
+            ref={inputRef}
+            value={inputValue}
+            required={required && recipients.length === 0}
+            aria-label="Add recipient"
+            onFocus={() => setFocused(true)}
+            onBlur={() => {
+              if (inputValue.trim()) commitRecipients(inputValue);
+              window.setTimeout(() => setFocused(false), 120);
+            }}
+            onChange={(event) => {
+              const next = event.target.value;
+              if (/[;,]$/.test(next)) commitRecipients(next);
+              else setInputValue(next);
+            }}
+            onKeyDown={handleRecipientKeyDown}
+          />
+        </div>
         {nativeAvailable ? (
           <button
             className="ghost native-contact-picker"
@@ -1066,12 +1560,16 @@ function RecipientInput({
       </div>
       {focused && (suggestions.length > 0 || (nativeAvailable && nativeAccess === "permission_required")) ? (
         <div className="recipient-suggest">
-          {suggestions.map((contact) => (
+          {suggestions.map((contact, index) => (
             <button
               type="button"
               key={contact.key}
               title={contact.source === "android" ? "Android contact" : undefined}
-              onMouseDown={() => choose(contact)}
+              className={activeSuggestion === index ? "active" : undefined}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                choose(contact);
+              }}
             >
               {contact.iconURL ? <img src={contact.iconURL} alt="" /> : <span>{(contact.name || contact.email).slice(0, 1).toUpperCase()}</span>}
               <strong>{contact.name || contact.email}</strong>
@@ -1099,15 +1597,50 @@ function RecipientInput({
   );
 }
 
-function lastRecipientToken(value: string): string {
-  const parts = value.split(/[;,]/);
-  return (parts[parts.length - 1] || "").trim();
+function parseRecipientList(value: string): RecipientToken[] {
+  return splitRecipientValues(value).map(parseRecipient).filter((recipient) => recipient.raw !== "");
 }
 
-function replaceLastRecipient(value: string, next: string): string {
-  const match = value.match(/[;,][^;,]*$/);
-  if (!match || match.index === undefined) return `${next}, `;
-  return `${value.slice(0, match.index + 1)} ${next}, `;
+function splitRecipientValues(value: string): string[] {
+  const values: string[] = [];
+  let start = 0;
+  let quoted = false;
+  let angleDepth = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (char === '"' && value[index - 1] !== "\\") quoted = !quoted;
+    else if (!quoted && char === "<") angleDepth += 1;
+    else if (!quoted && char === ">") angleDepth = Math.max(0, angleDepth - 1);
+    else if (!quoted && angleDepth === 0 && (char === "," || char === ";")) {
+      values.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  values.push(value.slice(start).trim());
+  return values.filter(Boolean);
+}
+
+function parseRecipient(rawValue: string): RecipientToken {
+  const raw = rawValue.trim();
+  const angle = raw.match(/^(.*)<([^<>]+)>\s*$/);
+  const email = (angle ? angle[2] : raw).trim();
+  const name = angle ? angle[1].trim().replace(/^"|"$/g, "") : "";
+  const valid = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(email);
+  return { raw, name, email, emailKey: valid ? email.toLowerCase() : "", valid };
+}
+
+function dedupeRecipients(recipients: RecipientToken[]): RecipientToken[] {
+  const seen = new Set<string>();
+  return recipients.filter((recipient) => {
+    const key = recipient.emailKey || `invalid:${recipient.raw.toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function serializeRecipients(recipients: RecipientToken[]): string {
+  return recipients.map((recipient) => recipient.raw).join(", ");
 }
 
 function mergeRecipientSuggestions(

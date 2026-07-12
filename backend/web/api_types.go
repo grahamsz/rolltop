@@ -128,6 +128,7 @@ type apiConversation struct {
 	Snippet                  string     `json:"snippet"`
 	MatchTerms               []string   `json:"match_terms,omitempty"`
 	MatchQueryTerms          []string   `json:"match_query_terms,omitempty"`
+	SnoozedUntil             string     `json:"snoozed_until,omitempty"`
 }
 
 type apiAttachment struct {
@@ -244,27 +245,51 @@ type apiComposeIdentity struct {
 }
 
 type apiThreadMessage struct {
-	Message         apiMessage       `json:"message"`
-	Attachments     []apiAttachment  `json:"attachments"`
-	HeaderDetails   []apiHeaderItem  `json:"header_details"`
-	OneClickUnsub   bool             `json:"one_click_unsubscribe"`
-	OneClickSentAt  string           `json:"one_click_unsubscribe_sent_at"`
-	SenderName      string           `json:"sender_name"`
-	SenderEmail     string           `json:"sender_email"`
-	SenderInitial   string           `json:"sender_initial"`
-	SenderVisual    *apiSenderVisual `json:"sender_visual,omitempty"`
-	RecipientLine   string           `json:"recipient_line"`
-	Snippet         string           `json:"snippet"`
-	BodyDoc         string           `json:"body_doc"`
-	FullBodyDoc     string           `json:"full_body_doc"`
-	HasHiddenQuoted bool             `json:"has_hidden_quoted"`
-	HasDisplayBody  bool             `json:"has_display_body"`
-	BodyPreviewOnly bool             `json:"body_preview_only"`
-	HasRemoteImages bool             `json:"has_remote_images"`
-	ImagesAllowed   bool             `json:"images_allowed"`
-	Expanded        bool             `json:"expanded"`
-	ReplySubject    string           `json:"reply_subject"`
-	CanReplyAll     bool             `json:"can_reply_all"`
+	Message            apiMessage                    `json:"message"`
+	Attachments        []apiAttachment               `json:"attachments"`
+	HeaderDetails      []apiHeaderItem               `json:"header_details"`
+	SecurityIndicators *apiMessageSecurityIndicators `json:"security_indicators,omitempty"`
+	OneClickUnsub      bool                          `json:"one_click_unsubscribe"`
+	OneClickSentAt     string                        `json:"one_click_unsubscribe_sent_at"`
+	SenderName         string                        `json:"sender_name"`
+	SenderEmail        string                        `json:"sender_email"`
+	SenderInitial      string                        `json:"sender_initial"`
+	SenderVisual       *apiSenderVisual              `json:"sender_visual,omitempty"`
+	RecipientLine      string                        `json:"recipient_line"`
+	Snippet            string                        `json:"snippet"`
+	BodyDoc            string                        `json:"body_doc"`
+	FullBodyDoc        string                        `json:"full_body_doc"`
+	HasHiddenQuoted    bool                          `json:"has_hidden_quoted"`
+	HasDisplayBody     bool                          `json:"has_display_body"`
+	BodyPreviewOnly    bool                          `json:"body_preview_only"`
+	HasRemoteImages    bool                          `json:"has_remote_images"`
+	ImagesAllowed      bool                          `json:"images_allowed"`
+	Expanded           bool                          `json:"expanded"`
+	ReplySubject       string                        `json:"reply_subject"`
+	CanReplyAll        bool                          `json:"can_reply_all"`
+}
+
+type apiMessageSecurityIndicators struct {
+	ReportedAuthentication *apiReportedAuthentication `json:"reported_authentication,omitempty"`
+	Signals                []apiMessageSecuritySignal `json:"signals,omitempty"`
+}
+
+type apiReportedAuthentication struct {
+	SPF   *apiReportedAuthenticationResult `json:"spf,omitempty"`
+	DKIM  *apiReportedAuthenticationResult `json:"dkim,omitempty"`
+	DMARC *apiReportedAuthenticationResult `json:"dmarc,omitempty"`
+}
+
+type apiReportedAuthenticationResult struct {
+	Result string `json:"result"`
+	Source string `json:"source"`
+}
+
+type apiMessageSecuritySignal struct {
+	Kind        string `json:"kind"`
+	DisplayHost string `json:"display_host,omitempty"`
+	TargetHost  string `json:"target_host,omitempty"`
+	Scheme      string `json:"scheme,omitempty"`
 }
 
 type apiHeaderItem struct {

@@ -722,6 +722,7 @@ export default function App() {
       </AppShell>
       {composeOverlayQuery !== null ? (
         <ComposeOverlay
+          userID={bootstrap.user.id}
           csrf={bootstrap.csrf}
           query={composeOverlayQuery}
           securityEnabled={Boolean(unlockPlugin)}

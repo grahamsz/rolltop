@@ -20,6 +20,7 @@ import (
 
 type fakeFetcher struct {
 	messages      map[int64][]syncer.FetchedMessage
+	mailboxes     []syncer.MailboxInfo
 	calls         []int64
 	fetchUIDCalls [][]uint32
 	appendDate    time.Time
@@ -174,12 +175,81 @@ func TestNewMailEventsIncludeFirstArrivalAfterEmptyInboxSync(t *testing.T) {
 	}
 }
 
+func TestIncrementalNonInboxArrivalCancelsConversationSnoozeWithoutNewMailEvent(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchSvc, err := search.Open(filepath.Join(dir, "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchSvc.Close()
+	user, err := db.CreateUser(ctx, "archive-snooze@example.test", "Archive", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := []byte("12345678901234567890123456789012")
+	encrypted, err := mmcrypto.EncryptString(key, "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailAccount := account(user.ID, encrypted)
+	mailAccount.Mailbox = "*"
+	if _, err := db.UpsertMailAccount(ctx, mailAccount); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	fetcher := &fakeFetcher{
+		mailboxes: []syncer.MailboxInfo{{Name: "Archive"}},
+		messages: map[int64][]syncer.FetchedMessage{user.ID: {{
+			Mailbox: "Archive", UID: 1, InternalDate: now,
+			Raw: []byte(rawMessage("first@example.test", "Archive root", "first", false)),
+		}}},
+	}
+	service := &syncer.Service{Store: db, Blobs: blob.New(dir), Search: searchSvc, Fetcher: fetcher}
+	if _, err := service.SyncUserMailboxes(ctx, user.ID, []string{"Archive"}); err != nil {
+		t.Fatal(err)
+	}
+	boxes, err := db.ListMailboxesForUser(ctx, user.ID)
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("mailboxes = %+v err=%v", boxes, err)
+	}
+	messages, err := db.ListMessagesForMailbox(ctx, user.ID, boxes[0].ID, 10, 0)
+	if err != nil || len(messages) != 1 {
+		t.Fatalf("initial messages = %+v err=%v", messages, err)
+	}
+	if _, err := db.SnoozeMessage(ctx, user.ID, messages[0].ID, now.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	fetcher.messages[user.ID] = append(fetcher.messages[user.ID], syncer.FetchedMessage{
+		Mailbox: "Archive", UID: 2, InternalDate: now.Add(time.Minute),
+		Raw: []byte("From: second@example.test\r\nTo: archive@example.test\r\nSubject: Re: Archive root\r\nDate: Fri, 01 May 2026 12:01:00 +0000\r\nMessage-ID: <archive-reply@example.test>\r\nReferences: <Archive-root@example.test>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nsecond\r\n"),
+	})
+	if _, err := service.SyncUserMailboxes(ctx, user.ID, []string{"Archive"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.MessageSnoozeForUser(ctx, user.ID, messages[0].ID); err == nil {
+		t.Fatal("incremental Archive reply left its conversation snoozed")
+	}
+	events, count, cursor, err := db.NewMailEventsAfter(ctx, user.ID, 0, 5)
+	if err != nil || count != 0 || cursor != 0 || len(events) != 0 {
+		t.Fatalf("non-Inbox arrival emitted new-mail events = %+v count=%d cursor=%d err=%v", events, count, cursor, err)
+	}
+}
+
 func (f *cancelingFetcher) FetchMailbox(ctx context.Context, account store.MailAccount, mailbox string, afterUID uint32, handle func(syncer.FetchedMessage) error) error {
 	f.cancel()
 	return ctx.Err()
 }
 
 func (f *fakeFetcher) ListMailboxes(ctx context.Context, account store.MailAccount) ([]syncer.MailboxInfo, error) {
+	if len(f.mailboxes) > 0 {
+		return append([]syncer.MailboxInfo(nil), f.mailboxes...), nil
+	}
 	return []syncer.MailboxInfo{{Name: "INBOX"}}, nil
 }
 

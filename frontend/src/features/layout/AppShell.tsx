@@ -9,6 +9,7 @@ import type { Bootstrap, Mailbox, SyncRun, User } from "../../types";
 import { Icon, LogoMark } from "../../components/Icon";
 import { androidNativeAvailable, shouldAdvertiseAndroidApp } from "../../lib/androidNative";
 import { folderTree, nodeContainsMailbox, type FolderNode } from "../../lib/folders";
+import { shouldIgnoreMailShortcut } from "../../lib/keyboard";
 import { mailRoute, mailURL, searchRoute, searchURL, currentLocation } from "../../lib/routes";
 import { createPluginSet } from "../../plugins/registry";
 import { SearchAutocomplete, useSearchAutocomplete } from "./SearchAutocomplete";
@@ -614,6 +615,17 @@ function Topbar({
     setQuery(searchRoute(location.path).query);
   }, [location.path]);
 
+  useEffect(() => {
+    function focusSearch(event: KeyboardEvent) {
+      if (event.key !== "/" || shouldIgnoreMailShortcut(event)) return;
+      event.preventDefault();
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, []);
+
   function submit(event: FormEvent) {
     event.preventDefault();
     const trimmed = query.trim();
@@ -781,6 +793,7 @@ function Sidebar({
   const uptimeParts = [uptimeLabel ? `Up ${uptimeLabel}` : "", releaseLabel].filter(Boolean);
   const activeMailbox = mailRoute(currentPath).mailboxID;
   const allMailActive = (currentPath === "/mail" || currentPath.startsWith("/mail/")) && !activeMailbox;
+  const snoozedActive = currentPath === "/snoozes";
   const accountGroups = useMemo(() => sidebarAccountGroups(mailboxes), [mailboxes]);
   const advertiseAndroidApp = shouldAdvertiseAndroidApp();
 
@@ -950,6 +963,13 @@ function Sidebar({
         >
           <span className="folder-name"><Icon name="mail" weight={allMailActive ? "bold" : undefined} />All Mail</span>
         </a>
+    <a
+      href="/snoozes"
+      className={`folder ${snoozedActive ? "active" : ""}`}
+      onClick={(event) => open(event, "/snoozes")}
+    >
+      <span className="folder-name"><Icon name="clock" weight={snoozedActive ? "bold" : undefined} />Snoozed</span>
+    </a>
         <div className="side-section">Folders</div>
         {accountGroups.map((group) => (
           <div className="account-folder-group" key={group.key}>

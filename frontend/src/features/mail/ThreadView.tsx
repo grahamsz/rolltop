@@ -6,11 +6,12 @@ import type { MouseEvent, ReactNode } from "react";
 import { Star } from "@phosphor-icons/react";
 import { api } from "../../api";
 import type { DatePrefs, LocationState, SecurityUnlockState, Toast } from "../../appTypes";
-import type { Attachment, Bootstrap, ComposeForm, ComposeIdentity, ContactPGPKey, HeaderDetail, Mailbox, MessageOriginalSource, SearchExplanation, ThreadMessage } from "../../types";
+import type { Attachment, AuthenticationResult, Bootstrap, ComposeForm, ComposeIdentity, ContactPGPKey, HeaderDetail, Mailbox, MessageOriginalSource, MessageSecurityIndicators, SearchExplanation, ThreadMessage } from "../../types";
 import { Icon } from "../../components/Icon";
 import { androidNativeAvailable } from "../../lib/androidNative";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
+import { shouldIgnoreMailShortcut } from "../../lib/keyboard";
 import { HighlightedText, highlightEmailDocument } from "../../lib/searchHighlight";
 import { messageBackURL, messageHighlightQuery, messageHighlightTerms, messageSearchHitID } from "../../lib/routes";
 import { ComposeBox } from "../compose/ComposeViews";
@@ -24,6 +25,7 @@ import { senderVisualURL } from "../../plugins/senderVisuals";
 import { TrustImageSourceAction } from "../../plugins/trustedImageSources/TrustImageSourceAction";
 import type { RuntimePlugin } from "../../plugins/runtime";
 import { threadSecurityPlugin, type ThreadSecurityDecryptedAttachment, type ThreadSecurityGossipKey, type ThreadSecurityOpenResult, type ThreadSecuritySignatureStatus } from "../../plugins/threadSecurity";
+import { SnoozeControl } from "./SnoozeControl";
 
 type MessageLoadStatus = {
   conversation: number;
@@ -222,6 +224,93 @@ function SenderVisualOrAvatar({
     return <img className="thread-brand-icon" src={src} alt="" loading="lazy" onError={() => setFailedSrc(src)} />;
   }
   return <div className="avatar">{initial}</div>;
+}
+
+const reportedAuthenticationMethods = [
+  { key: "spf", label: "SPF" },
+  { key: "dkim", label: "DKIM" },
+  { key: "dmarc", label: "DMARC" }
+] as const;
+
+function authenticationResultClass(result: string): string {
+  const normalized = result.toLowerCase();
+  if (normalized === "pass") return "pass";
+  if (["fail", "softfail", "temperror", "permerror"].includes(normalized)) return "attention";
+  return "neutral";
+}
+
+function authenticationResultTooltip(method: string, result: AuthenticationResult): string {
+  const source = result.source === "received-spf" ? "Received-SPF" : "Authentication-Results";
+  return `Reported ${method} result: ${result.result}. Source: ${source} message header. Rolltop did not independently verify this result.`;
+}
+
+function ReportedAuthenticationIndicators({ indicators }: { indicators?: MessageSecurityIndicators }) {
+  const reported = indicators?.reported_authentication;
+  const results = reportedAuthenticationMethods.flatMap(({ key, label }) => {
+    const result = reported?.[key];
+    return result ? [{ key, label, result }] : [];
+  });
+  if (results.length === 0) return null;
+  const hasAttention = results.some(({ result }) => authenticationResultClass(result.result) === "attention");
+  const tooltip = [
+    "Authentication results reported by message headers. Rolltop did not independently verify them.",
+    ...results.map(({ label, result }) => authenticationResultTooltip(label, result))
+  ].join("\n");
+  return (
+    <span className={`reported-authentication ${hasAttention ? "attention" : ""}`} title={tooltip} aria-label={tooltip}>
+      <Icon name={hasAttention ? "shield_warning" : "shield"} weight={hasAttention ? "fill" : "regular"} />
+      <span className="reported-authentication-label">Reported</span>
+      {results.map(({ key, label, result }) => (
+        <span className={`reported-authentication-result ${authenticationResultClass(result.result)}`} key={key}>
+          {label} {result.result}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function MessageSenderSecurityCaution({ indicators }: { indicators?: MessageSecurityIndicators }) {
+  const signals = (indicators?.signals || []).filter((signal) => (
+    signal.kind === "sender_display_address_mismatch" || signal.kind === "reply_to_domain_mismatch"
+  ));
+  if (signals.length === 0) return null;
+  const details = signals.map((signal) => {
+    if (signal.kind === "sender_display_address_mismatch") {
+      const domains = signal.display_host && signal.target_host
+        ? ` The displayed address uses ${signal.display_host}; the actual sender uses ${signal.target_host}.`
+        : "";
+      return `The sender name contains an address from a different domain.${domains}`;
+    }
+    const domains = signal.display_host && signal.target_host
+      ? ` The From address uses ${signal.display_host}; replies go to ${signal.target_host}.`
+      : "";
+    return `The Reply-To address uses a different domain from the sender.${domains}`;
+  });
+  const tooltip = `${details.join("\n")} This can be legitimate and is not proof of phishing.`;
+  return (
+    <span className="sender-security-caution" title={tooltip} aria-label={tooltip}>
+      <Icon name="shield_warning" />
+      Sender caution
+    </span>
+  );
+}
+
+function MessageLinkSecurityNotice({ indicators }: { indicators?: MessageSecurityIndicators }) {
+  const signals = indicators?.signals || [];
+  const hasDestinationMismatch = signals.some((signal) => signal.kind === "link_destination_mismatch");
+  const hasRiskyScheme = signals.some((signal) => signal.kind === "risky_link_scheme");
+  if (!hasDestinationMismatch && !hasRiskyScheme) return null;
+  const detail = hasDestinationMismatch && hasRiskyScheme
+    ? "A visible link address differs from its destination, and another link uses a potentially unsafe destination type."
+    : hasDestinationMismatch
+      ? "A visible link address differs from where the link goes."
+      : "A link uses a potentially unsafe destination type.";
+  return (
+    <div className="message-link-warning" role="note">
+      <Icon name="shield_warning" weight="fill" />
+      <span><strong>Use care with links.</strong> {detail}</span>
+    </div>
+  );
 }
 
 function PGPEncryptionPill({
@@ -666,6 +755,7 @@ function RangePager({
  * prepares inline replies with the correct identity and recipient.
  */
 export function ThreadView({
+  userID,
   csrf,
   datePrefs,
   location,
@@ -679,6 +769,7 @@ export function ThreadView({
   openSecurityUnlock,
   addToast
 }: {
+  userID: number;
   csrf: string;
   datePrefs: DatePrefs;
   location: LocationState;
@@ -700,6 +791,7 @@ export function ThreadView({
   const [thread, setThread] = useState<ThreadMessage[]>([]);
   const [subject, setSubject] = useState("");
   const [mailboxID, setMailboxID] = useState<number | null>(null);
+  const [snoozedUntil, setSnoozedUntil] = useState("");
   const [composeFrom, setComposeFrom] = useState("");
   const [fromIdentities, setFromIdentities] = useState<ComposeIdentity[]>([]);
   const [showImages, setShowImages] = useState(() => new URLSearchParams(location.search).get("images") === "1");
@@ -776,6 +868,7 @@ export function ThreadView({
         setThread(data.thread);
         setSubject(data.message.subject || "(no subject)");
         setMailboxID(data.mailbox_id);
+    setSnoozedUntil(data.snoozed_until || "");
         setComposeFrom(data.compose_from);
         setFromIdentities(data.from_identities || []);
         setExpanded(new Set(data.thread.filter((item) => item.expanded).map((item) => item.message.id)));
@@ -1377,6 +1470,28 @@ export function ThreadView({
     });
   }
 
+  useEffect(() => {
+    function handleThreadShortcut(event: globalThis.KeyboardEvent) {
+      if (event.shiftKey || event.repeat || shouldIgnoreMailShortcut(event)) return;
+      if (inlineReply || originalSource || messagePluginPanel || pendingUnsubscribe) return;
+      const key = event.key.toLowerCase();
+      if (key === "u" || key === "escape") {
+        event.preventDefault();
+        navigate(backURL);
+        return;
+      }
+      if (loading || (key !== "r" && key !== "a" && key !== "f")) return;
+      const item = thread.find((threadItem) => threadItem.message.id === currentMessageID) || thread[thread.length - 1];
+      if (!item || (key === "a" && !item.can_reply_all)) return;
+      event.preventDefault();
+      if (key === "r") void beginReply(item);
+      else if (key === "a") void beginReply(item, true);
+      else openCompose(`forward=${item.message.id}`);
+    }
+    window.addEventListener("keydown", handleThreadShortcut);
+    return () => window.removeEventListener("keydown", handleThreadShortcut);
+  }, [backURL, currentMessageID, inlineReply, loading, messagePluginPanel, originalSource, pendingUnsubscribe, thread]);
+
   const displaySubject = pgpBodies[currentMessageID]?.protectedSubject || subject;
 
   async function toggleThreadStar(event: MouseEvent<HTMLButtonElement>, item: ThreadMessage) {
@@ -1395,10 +1510,34 @@ export function ThreadView({
     }
   }
 
+  async function snoozeThread(until: Date) {
+    try {
+      await api.snoozeMessage(csrf, currentMessageID, until);
+    } catch (err) {
+      addToast(`Snooze failed: ${messageFromError(err)}`, "error");
+      throw err;
+    }
+    addToast("Conversation snoozed.");
+    navigate(backURL);
+    void refreshChrome().catch(() => undefined);
+  }
+
+  async function unsnoozeThread() {
+    try {
+      await api.unsnoozeMessage(csrf, currentMessageID);
+    } catch (err) {
+      addToast(`Unsnooze failed: ${messageFromError(err)}`, "error");
+      return;
+    }
+    setSnoozedUntil("");
+    addToast("Conversation returned to mail.");
+    void refreshChrome().catch(() => undefined);
+  }
+
   return (
     <>
       <div className="content-head">
-        <div>
+    <div className="thread-head-main">
           {!androidNativeAvailable() ? (
             <button className="ghost" type="button" onClick={() => navigate(backURL)} title="Back to results">
               <Icon name="arrow_back" />
@@ -1409,6 +1548,16 @@ export function ThreadView({
           </h1>
           {mailbox ? <span className="label-pill">{mailbox.name}</span> : null}
         </div>
+    <div className="thread-header-actions">
+      {snoozedUntil && Date.parse(snoozedUntil) > Date.now() ? (
+        <button className="secondary" type="button" disabled={loading} onClick={() => void unsnoozeThread()} title="Unsnooze conversation">
+          <Icon name="clock" />
+          <span>Unsnooze</span>
+        </button>
+      ) : (
+        <SnoozeControl className="secondary" disabled={loading || currentMessageID <= 0} onSnooze={snoozeThread} />
+      )}
+    </div>
       </div>
       {error ? <div className="error">{error}</div> : null}
       {loading ? <div className="panel muted">Loading conversation...</div> : null}
@@ -1536,6 +1685,7 @@ export function ThreadView({
                       <span className="thread-email">
                         <HighlightedText text={item.sender_email} query={highlightQuery} terms={highlightTerms} />
                       </span>
+                      <MessageSenderSecurityCaution indicators={item.security_indicators} />
                       <OneClickUnsubscribeInlineAction
                         item={item}
                         plugins={pluginSet}
@@ -1543,6 +1693,7 @@ export function ThreadView({
                         sentLabel={unsubscribeSent}
                         onRequest={requestUnsubscribe}
                       />
+                      <ReportedAuthenticationIndicators indicators={item.security_indicators} />
                       {securityEnabled && item.message.is_encrypted ? (
                         <PGPEncryptionPill
                           state={pgpBody}
@@ -1647,6 +1798,7 @@ export function ThreadView({
                   />
                 </RemoteImageNotice>
                 <div className="thread-body">
+                  <MessageLinkSecurityNotice indicators={item.security_indicators} />
                   {item.body_preview_only ? (
                     <div className="body-notice">
                       <Icon name="report" />
@@ -1784,10 +1936,12 @@ export function ThreadView({
                   <div className="inline-reply-row">
                     <div className="avatar inline-reply-avatar">{composeInitial}</div>
                     <ComposeBox
+                      userID={userID}
                       csrf={csrf}
                       composeFrom={composeFrom}
                       identities={fromIdentities}
                       initial={inlineReply}
+                      recoveryContext={`reply:${item.message.id}`}
                       inline
                       securityEnabled={securityEnabled}
                       securityPlugins={messageSecurityPlugins}

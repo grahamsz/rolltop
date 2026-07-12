@@ -94,6 +94,77 @@
   min-width: 0;
 }
 
+.reported-authentication {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px 5px;
+  max-width: 100%;
+  min-height: 22px;
+  padding: 2px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.35;
+
+  .icon {
+    width: 13px;
+    height: 13px;
+    flex: none;
+    color: var(--muted);
+  }
+
+  &.attention {
+    border-color: color-mix(in srgb, var(--warning, #a85d24) 45%, var(--border));
+
+    .icon {
+      color: var(--warning, #a85d24);
+    }
+  }
+}
+
+.reported-authentication-label {
+  color: var(--text);
+}
+
+.reported-authentication-result {
+  white-space: nowrap;
+
+  &.pass {
+    color: var(--ok, #2f7d54);
+  }
+
+  &.attention {
+    color: var(--danger, #9f2f24);
+  }
+}
+
+.sender-security-caution {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  max-width: 100%;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--warning, #a85d24) 38%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning, #a85d24) 6%, var(--surface));
+  color: var(--warning, #8a4a1d);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: nowrap;
+
+  .icon {
+    width: 13px;
+    height: 13px;
+    flex: none;
+  }
+}
+
 .unsubscribe-action {
   min-height: 24px;
   border: 0;
@@ -488,6 +559,33 @@
   background: #fff;
   margin-left: 76px;
   margin-right: 20px;
+}
+
+.message-link-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 8px 0 10px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--warning, #a85d24) 34%, var(--border));
+  border-left: 3px solid var(--warning, #a85d24);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--warning, #a85d24) 7%, var(--surface));
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+
+  .icon {
+    width: 17px;
+    height: 17px;
+    flex: none;
+    margin-top: 1px;
+    color: var(--warning, #a85d24);
+  }
+
+  strong {
+    color: var(--text);
+  }
 }
 
 .email-frame {

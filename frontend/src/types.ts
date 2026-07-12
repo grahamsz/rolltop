@@ -84,6 +84,15 @@ export type Conversation = {
   snippet: string;
   match_terms?: string[];
   match_query_terms?: string[];
+  snoozed_until?: string;
+};
+
+export type MessageSnooze = {
+  id: number;
+  message_id: number;
+  snoozed_until: string;
+  created_at: string;
+  updated_at: string;
 };
 
 /** Attachment is message attachment metadata plus optional preview/search match details. */
@@ -124,11 +133,34 @@ export type HeaderDetail = {
   value: string;
 };
 
+/** AuthenticationResult is a receiver-reported header result, not a Rolltop verification. */
+export type AuthenticationResult = {
+  result: string;
+  source: "authentication-results" | "received-spf";
+};
+
+export type MessageSecuritySignal = {
+  kind: "sender_display_address_mismatch" | "reply_to_domain_mismatch" | "link_destination_mismatch" | "risky_link_scheme";
+  display_host?: string;
+  target_host?: string;
+  scheme?: string;
+};
+
+export type MessageSecurityIndicators = {
+  reported_authentication?: {
+    spf?: AuthenticationResult;
+    dkim?: AuthenticationResult;
+    dmarc?: AuthenticationResult;
+  };
+  signals?: MessageSecuritySignal[];
+};
+
 /** ThreadMessage is the render-ready payload for one message inside a conversation. */
 export type ThreadMessage = {
   message: Message;
   attachments: Attachment[];
   header_details: HeaderDetail[];
+  security_indicators?: MessageSecurityIndicators;
   one_click_unsubscribe: boolean;
   one_click_unsubscribe_sent_at: string;
   sender_name: string;

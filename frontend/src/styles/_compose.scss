@@ -21,6 +21,15 @@
   }
 }
 
+.compose-popover.minimized {
+  width: min(340px, calc(100vw - 24px));
+  max-height: 42px;
+
+  .error {
+    display: none;
+  }
+}
+
 .compose-window {
   width: min(720px, 100%);
   height: min(760px, calc(100dvh - 24px));
@@ -34,6 +43,16 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.compose-window.minimized {
+  height: 42px;
+  min-height: 42px;
+  max-height: 42px;
+
+  > :not(.compose-head) {
+    display: none;
+  }
 }
 
 .compose-scroll-region {
@@ -280,10 +299,23 @@
     min-width: 0;
   }
 
-  input {
+  .recipient-chip-list {
     flex: 1;
     min-width: 0;
-    width: 100%;
+    min-height: 43px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 4px 0;
+
+    > input {
+      flex: 1 1 120px;
+      min-width: 90px;
+      width: auto;
+      min-height: 32px;
+      padding: 4px 2px;
+    }
   }
 
   .native-contact-picker {
@@ -291,6 +323,45 @@
     width: 36px;
     height: 36px;
     padding: 0;
+  }
+}
+
+.recipient-chip {
+  max-width: min(100%, 270px);
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 3px 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-subtle);
+  color: var(--text);
+
+  > span {
+    @include truncate;
+  }
+
+  > button {
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
+    min-height: 24px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+
+    .icon {
+      width: 14px;
+      height: 14px;
+    }
+  }
+
+  &.invalid {
+    border-color: #b9473f;
+    background: rgba(185, 71, 63, .08);
+    color: #92362f;
   }
 }
 
@@ -322,6 +393,11 @@
 
     &:hover {
       background: var(--hover);
+    }
+
+    &.active {
+      background: var(--hover);
+      box-shadow: inset 3px 0 0 var(--accent);
     }
   }
 
@@ -357,6 +433,48 @@
       width: 17px;
       height: 17px;
     }
+  }
+}
+
+.compose-recovery-banner {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--text);
+
+  > .icon {
+    color: var(--accent-warm-strong);
+  }
+
+  > span {
+    min-width: 0;
+    display: grid;
+
+    strong,
+    small {
+      @include truncate;
+    }
+
+    small {
+      color: var(--muted);
+      font-size: 11px;
+    }
+  }
+
+  > button {
+    min-height: 32px;
+    padding: 4px 9px;
+  }
+
+  > button.ghost {
+    width: 32px;
+    min-width: 32px;
+    padding: 0;
   }
 }
 
@@ -530,7 +648,7 @@
   gap: 4px;
   padding: 6px 8px;
   color: #37413e;
-  overflow-x: auto;
+  overflow: visible;
 
   button {
     min-width: 32px;
@@ -548,6 +666,110 @@
       background: var(--hover);
       color: var(--accent-warm-strong);
     }
+
+    &:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+  }
+}
+
+.compose-template-menu {
+  position: relative;
+  flex: 0 0 32px;
+
+  > summary {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    cursor: pointer;
+    list-style: none;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+
+    &:hover {
+      background: var(--hover);
+      color: var(--accent-warm-strong);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+
+    .icon {
+      width: 17px;
+      height: 17px;
+    }
+  }
+}
+
+.compose-template-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 7px);
+  z-index: 75;
+  width: min(300px, calc(100vw - 28px));
+  max-height: min(320px, 48vh);
+  overflow-y: auto;
+  display: grid;
+  gap: 3px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.compose-template-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 3px;
+
+  > button {
+    width: auto;
+    min-width: 0;
+    justify-content: flex-start;
+    color: var(--text);
+
+    span {
+      @include truncate;
+    }
+  }
+
+  > button:last-child {
+    width: 32px;
+    min-width: 32px;
+  }
+}
+
+.compose-template-save-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 5px;
+  margin-top: 3px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+
+  input {
+    min-width: 0;
+    height: 34px;
+    padding: 5px 8px;
+  }
+
+  button {
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
   }
 }
 

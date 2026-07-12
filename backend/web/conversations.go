@@ -72,21 +72,28 @@ func stripStarSearchOperators(query string) (string, *bool) {
 
 func (s *Server) conversationViewsFromSeeds(ctx context.Context, userID int64, seeds []conversationSeed, own map[string]bool, query string) ([]conversationView, error) {
 	type group struct {
-		messages   []store.MessageRecord
-		seen       map[int64]bool
-		seed       store.MessageRecord
-		hasSeed    bool
-		terms      []string
-		fields     []string
-		queryTerms []string
+		messages     []store.MessageRecord
+		seen         map[int64]bool
+		seed         store.MessageRecord
+		hasSeed      bool
+		terms        []string
+		fields       []string
+		queryTerms   []string
+		snoozedUntil time.Time
 	}
 	threadKeys := make([]string, 0, len(seeds))
+	snoozeKeys := make([]string, 0, len(seeds))
 	for _, seed := range seeds {
+		snoozeKeys = append(snoozeKeys, store.SnoozeThreadKey(seed.Message))
 		if key := strings.TrimSpace(seed.Message.ThreadKey); key != "" {
 			threadKeys = append(threadKeys, key)
 		}
 	}
 	threadsByKey, err := s.store.ListThreadMessagesByKeysForUser(ctx, userID, threadKeys)
+	if err != nil {
+		return nil, err
+	}
+	activeSnoozes, err := s.store.ActiveMessageSnoozesForThreads(ctx, userID, snoozeKeys, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -108,6 +115,9 @@ func (s *Server) conversationViewsFromSeeds(ctx context.Context, userID int64, s
 			g.seed = seed.Message
 			g.hasSeed = true
 		}
+		if snooze, ok := activeSnoozes[store.SnoozeThreadKey(seed.Message)]; ok {
+			g.snoozedUntil = snooze.SnoozedUntil
+		}
 		g.terms = mergeTerms(g.terms, seed.MatchTerms)
 		g.fields = mergeFields(g.fields, seed.MatchFields)
 		g.queryTerms = mergeFields(g.queryTerms, seed.MatchQueryTerms)
@@ -123,6 +133,7 @@ func (s *Server) conversationViewsFromSeeds(ctx context.Context, userID int64, s
 	for _, key := range order {
 		group := groups[key]
 		view := summarizeConversation(group.messages, own)
+		view.SnoozedUntil = group.snoozedUntil
 		if view.HasAttachments {
 			view.AttachmentNames = s.conversationAttachmentNames(ctx, userID, group.messages, 3)
 			if len(view.AttachmentNames) == 0 {
@@ -160,6 +171,18 @@ func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q
 	targetEnd := targetStart + pageSize + 1
 	seen := map[string]bool{}
 	unique := make([]conversationSeed, 0, targetEnd)
+	dueSeeds, err := s.dueSearchConversationSeeds(ctx, userID, searchQuery, opts, own, mailboxFilter, starFilter)
+	if err != nil {
+		return nil, err
+	}
+	for _, seed := range dueSeeds {
+		key := conversationListKey([]store.MessageRecord{seed.Message}, own)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		unique = append(unique, seed)
+	}
 	rawOffset := 0
 	const batchSize = 100
 	for len(unique) < targetEnd {
@@ -187,7 +210,7 @@ func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q
 			queryTermsByID[hit.ID] = hit.QueryTerms
 		}
 		hydrateStart := time.Now()
-		messages, err := s.store.ListMessagesByIDsForUser(ctx, userID, ids)
+		messages, err := s.store.ListUnsnoozedMessagesByIDsForUser(ctx, userID, ids, time.Now().UTC())
 		if err != nil {
 			if timing != nil {
 				timing.hydrate += time.Since(hydrateStart)
@@ -226,6 +249,53 @@ func (s *Server) searchConversationSeedHits(ctx context.Context, userID int64, q
 		targetEnd = len(unique)
 	}
 	return unique[targetStart:targetEnd], nil
+}
+
+func (s *Server) dueSearchConversationSeeds(ctx context.Context, userID int64, query string, opts search.SearchOptions, own map[string]bool, mailboxFilter searchMailboxFilter, starFilter *bool) ([]conversationSeed, error) {
+	items, err := s.store.ListDueSnoozedMessagesForUser(ctx, userID, 200, 0, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]conversationSeed, 0, len(items))
+	for _, item := range items {
+		thread, err := s.store.ListThreadMessagesForUser(ctx, userID, item.Message)
+		if err != nil {
+			return nil, err
+		}
+		candidates := make([]store.MessageRecord, 0, len(thread))
+		ids := make([]int64, 0, len(thread))
+		byID := make(map[int64]store.MessageRecord, len(thread))
+		for _, msg := range thread {
+			if !mailboxFilter.matches(msg) || (starFilter != nil && msg.IsStarred != *starFilter) {
+				continue
+			}
+			candidates = append(candidates, msg)
+			ids = append(ids, msg.ID)
+			byID[msg.ID] = msg
+		}
+		if len(candidates) == 0 {
+			continue
+		}
+		if strings.TrimSpace(query) == "" {
+			out = append(out, conversationSeed{Message: candidates[len(candidates)-1]})
+			continue
+		}
+		result, matched, err := s.search.ExplainMessagesWithOptions(ctx, userID, ids, query, opts)
+		if err != nil {
+			return nil, err
+		}
+		if !matched {
+			continue
+		}
+		msg, ok := byID[result.ID]
+		if !ok {
+			continue
+		}
+		out = append(out, conversationSeed{
+			Message: msg, MatchTerms: result.Terms, MatchFields: result.Fields, MatchQueryTerms: result.QueryTerms,
+		})
+	}
+	return out, nil
 }
 
 func searchResultDisplayMessage(summary conversationView, seed store.MessageRecord) store.MessageRecord {

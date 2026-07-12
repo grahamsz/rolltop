@@ -23,6 +23,7 @@ rolltop is a single-container Go app that mirrors multiple IMAP inboxes per loca
 - Message sending uses the configured SMTP server.
 - Mailbox moves are explicit user actions and are mirrored to IMAP.
 - Read-state sync may update only the IMAP `\Seen` flag when a message is read locally.
+- Message authentication badges report bounded SPF, DKIM, and DMARC values found in received headers; Rolltop labels their source and does not claim to verify them independently.
 
 ## Configuration
 
@@ -107,6 +108,7 @@ Keep `.env.rolltop` with the same care as the Docker volume. Changing or losing 
 10. `/mail`, folder views, `/search`, and `/messages/{id}` only return current-user records.
 11. Folder counts show unread messages.
 12. Dragging a message onto a folder immediately removes it from the current view, shows a moving toast, and then applies the IMAP move.
+13. Snooze is local and conversation-scoped: future snoozes are hidden from normal lists and search, then resurface at the top without moving or deleting remote mail. A genuinely new incremental reply clears the active snooze.
 
 In account settings, `Folder scope` can be:
 
@@ -122,6 +124,8 @@ Search supports Gmail-style operators:
 - `is:unread`
 
 The web app is installable as a limited offline PWA. It caches the shell and recent GET API responses, so previously opened mail/search views can render when offline. Browser notifications can be enabled from the top bar and use user-scoped VAPID Web Push subscriptions. The Android app uses the same server sender through UnifiedPush, with an embedded Play Services distributor and a 15-minute authenticated poll as fallbacks. Notifications are driven only by durable recent INBOX arrival events after the mailbox has completed its initial sync, so archive/backfill syncs do not create popups.
+
+Mail lists support selection with batch read/unread and snooze actions plus `j`, `k`, and `x` keyboard navigation; `/` focuses search and thread shortcuts cover reply, reply-all, forward, and return-to-list. Compose keeps a bounded, per-user browser recovery copy, supports reusable local templates, and merges saved contacts with recent tenant-scoped correspondents. Recovery never serializes attachment bodies. Thread views show explicitly source-labeled authentication results and conservative sender/link cautions.
 
 rolltop uses IMAP `IDLE` for INBOX wakeups when the server supports it and keeps the scheduled INBOX poll as a fallback. Remote deletes and moves are reconciled after folder syncs by comparing local UIDs with the server's current UID set.
 

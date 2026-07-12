@@ -101,8 +101,11 @@ internal object NativePushRegistration {
         generation.incrementAndGet()
         registrationInFlightAttempt.set(NO_REGISTRATION)
         bootstrapRetryCount.set(0)
+        NotificationManagerCompat.from(context).cancel(NotificationIntentPolicy.NEW_MAIL_NOTIFICATION_ID)
+        NotificationManagerCompat.from(context).cancel(NotificationIntentPolicy.SNOOZE_REMINDER_NOTIFICATION_ID)
         val instance = NativePushStore.clearAll(context)
         RolltopPrefs.clearNewMailCursor(context)
+        RolltopPrefs.clearReminderCursor(context)
         if (instance == null) return
         runCatching { UnifiedPush.unregister(context, instance) }
     }

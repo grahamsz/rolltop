@@ -288,15 +288,20 @@ func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]Mailb
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT mb.id, mb.user_id, mb.account_id, mb.name, mb.sync_mode, mb.role, mb.icon,
 			mb.show_in_sidebar, mb.show_in_all_mail, mb.include_in_search, mb.uidvalidity, mb.last_uid, mb.created_at, mb.updated_at,
 			mb.remote_message_count, mb.remote_unread_count, mb.remote_uid_next, mb.status_checked_at,
-			ma.email, ma.label,
-			count(m.id),
-			COALESCE(sum(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END), 0)
-		FROM mailboxes mb
-		JOIN mail_accounts ma ON ma.id = mb.account_id AND ma.user_id = mb.user_id
-		LEFT JOIN messages m ON m.user_id = mb.user_id AND m.mailbox_id = mb.id
-		WHERE mb.user_id = ?
-		GROUP BY mb.id
-		ORDER BY CASE WHEN mb.role = 'inbox' OR lower(mb.name) = 'inbox' THEN 0 ELSE 1 END, ma.email, lower(mb.name)`, userID)
+				ma.email, ma.label,
+				count(m.id),
+				COALESCE(sum(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END), 0),
+				COALESCE(sum(CASE WHEN sn.id IS NOT NULL THEN 1 ELSE 0 END), 0),
+				COALESCE(sum(CASE WHEN sn.id IS NOT NULL AND m.is_read = 0 THEN 1 ELSE 0 END), 0)
+			FROM mailboxes mb
+			JOIN mail_accounts ma ON ma.id = mb.account_id AND ma.user_id = mb.user_id
+			LEFT JOIN messages m ON m.user_id = mb.user_id AND m.mailbox_id = mb.id
+			LEFT JOIN message_snoozes sn ON sn.user_id = m.user_id
+				AND sn.thread_key = COALESCE(NULLIF(m.thread_key, ''), 'id:' || m.id)
+				AND sn.snoozed_until > ?
+			WHERE mb.user_id = ?
+			GROUP BY mb.id
+			ORDER BY CASE WHEN mb.role = 'inbox' OR lower(mb.name) = 'inbox' THEN 0 ELSE 1 END, ma.email, lower(mb.name)`, nowUnix(), userID)
 	if err != nil {
 		return nil, err
 	}
@@ -305,10 +310,11 @@ func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]Mailb
 	for rows.Next() {
 		var ms MailboxSummary
 		var created, updated, statusChecked int64
-		var localMessages, localUnread int
+		var localMessages, localUnread, hiddenMessages, hiddenUnread int
 		if err := rows.Scan(&ms.ID, &ms.UserID, &ms.AccountID, &ms.Name, &ms.SyncMode, &ms.Role, &ms.Icon,
 			&ms.ShowInSidebar, &ms.ShowInAllMail, &ms.IncludeInSearch, &ms.UIDValidity, &ms.LastUID, &created, &updated,
-			&ms.RemoteMessageCount, &ms.RemoteUnreadCount, &ms.RemoteUIDNext, &statusChecked, &ms.AccountEmail, &ms.AccountLabel, &localMessages, &localUnread); err != nil {
+			&ms.RemoteMessageCount, &ms.RemoteUnreadCount, &ms.RemoteUIDNext, &statusChecked, &ms.AccountEmail, &ms.AccountLabel,
+			&localMessages, &localUnread, &hiddenMessages, &hiddenUnread); err != nil {
 			return nil, err
 		}
 		ms.SyncMode = normalizeSyncMode(ms.SyncMode)
@@ -318,14 +324,15 @@ func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]Mailb
 		ms.CreatedAt = unixTime(created)
 		ms.UpdatedAt = unixTime(updated)
 		ms.LocalMessageCount = localMessages
-		ms.MessageCount = localMessages
-		ms.UnreadCount = localUnread
+		visibleLocalMessages := max(0, localMessages-hiddenMessages)
+		ms.MessageCount = visibleLocalMessages
+		ms.UnreadCount = max(0, localUnread-hiddenUnread)
 		if statusChecked > 0 {
-			ms.MessageCount = ms.RemoteMessageCount
-			ms.UnreadCount = ms.RemoteUnreadCount
+			ms.MessageCount = max(0, ms.RemoteMessageCount-hiddenMessages)
+			ms.UnreadCount = max(0, ms.RemoteUnreadCount-hiddenUnread)
 		}
 		ms.SyncPercent = mailboxSyncPercent(ms.LastUID, ms.RemoteUIDNext, ms.MessageCount)
-		ms.LocalSyncPercent = localMailboxSyncPercent(localMessages, ms.MessageCount)
+		ms.LocalSyncPercent = localMailboxSyncPercent(visibleLocalMessages, ms.MessageCount)
 		out = append(out, ms)
 	}
 	return out, rows.Err()

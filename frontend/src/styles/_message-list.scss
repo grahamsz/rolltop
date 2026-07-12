@@ -8,6 +8,57 @@
   margin-bottom: 8px;
 }
 
+.selection-action-bar {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+  color: var(--text);
+}
+
+.selection-action-summary,
+.selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.selection-action-summary {
+  min-width: 0;
+
+  strong {
+    font-size: 15px;
+  }
+
+  span {
+    color: var(--muted);
+  }
+}
+
+.selection-action-bar button {
+  min-height: 34px;
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 10px;
+
+  .icon {
+    width: 17px;
+    height: 17px;
+  }
+}
+
+.selection-action-bar .selection-clear {
+  width: 34px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
 .message-table {
   --new-mail-row-height: 45px;
   background: transparent;
@@ -31,6 +82,8 @@
   text-decoration: none;
   align-items: center;
   cursor: pointer;
+  transition: transform .18s cubic-bezier(.2, .8, .2, 1);
+  z-index: 1;
 
   &.read {
     background: #fff;
@@ -80,6 +133,12 @@
     box-shadow: inset 3px 0 0 var(--accent);
   }
 
+  &.keyboard-focused {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+    z-index: 1;
+  }
+
   &.new-delivery {
     position: relative;
     z-index: 2;
@@ -93,9 +152,57 @@
     will-change: transform, opacity, max-height, padding;
   }
 
-  &:last-child {
+}
+
+.message-swipe-shell {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-subtle);
+
+  &:last-child .message-row {
     border-bottom: 0;
   }
+}
+
+.message-swipe-actions {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  pointer-events: none;
+
+  > span {
+    width: 112px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 16px;
+    font-weight: 800;
+    opacity: .55;
+
+    .icon {
+      width: 20px;
+      height: 20px;
+    }
+  }
+}
+
+.message-swipe-read {
+  justify-content: flex-start;
+  background: #dcefe7;
+  color: #245c49;
+}
+
+.message-swipe-snooze {
+  justify-content: flex-end;
+  background: #f4e4dc;
+  color: #8a452b;
+}
+
+.message-swipe-shell.revealing-read .message-swipe-read,
+.message-swipe-shell.revealing-snooze .message-swipe-snooze {
+  opacity: 1;
 }
 
 .message-row[data-rolltop-touch-drag="true"] {
@@ -451,4 +558,93 @@
   font-size: 12px;
   text-align: right;
   white-space: nowrap;
+}
+
+.snoozed-date {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.snooze-row-action {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-warm-strong);
+
+  .icon {
+    width: 17px;
+    height: 17px;
+  }
+}
+
+.snooze-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 240;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(21, 31, 46, .42);
+}
+
+.snooze-dialog {
+  width: min(390px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 18px 50px rgba(21, 31, 46, .28);
+  overflow: hidden;
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+
+    h2 {
+      font-size: 17px;
+      margin: 0;
+    }
+  }
+}
+
+.snooze-presets {
+  display: grid;
+
+  button {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 46px;
+    padding: 9px 14px;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    color: var(--text);
+
+    &:hover {
+      background: var(--hover);
+    }
+
+    small {
+      color: var(--muted);
+    }
+  }
+}
+
+.snooze-custom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 12px 14px;
+
+  input {
+    min-width: 0;
+  }
 }

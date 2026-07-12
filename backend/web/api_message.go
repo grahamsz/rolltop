@@ -62,6 +62,10 @@ func (s *Server) apiMessagePath(w http.ResponseWriter, r *http.Request, rest str
 		s.apiSetMessageStarred(w, r, id)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "snooze" {
+		s.apiMessageSnooze(w, r, id)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "unsubscribe" {
 		if !s.pluginEnabled(r.Context(), plugins.OneClickUnsubscribe) {
 			http.NotFound(w, r)
@@ -163,6 +167,24 @@ func (s *Server) apiMessage(w http.ResponseWriter, r *http.Request, id int64) {
 	fromIdentities := apiComposeIdentitiesFromChoices(composeChoices)
 	identitiesDone()
 	stop()
+	snoozedUntil := ""
+	if snooze, snoozeErr := s.store.MessageSnoozeForUser(r.Context(), cu.User.ID, msg.ID); snoozeErr == nil {
+		if snooze.SnoozedUntil.After(time.Now()) {
+			snoozedUntil = timeString(snooze.SnoozedUntil)
+		} else {
+			acknowledged, ackErr := s.store.AcknowledgeDueSnoozeForUser(r.Context(), cu.User.ID, msg.ID, time.Now().UTC())
+			if ackErr != nil {
+				s.serverError(w, ackErr)
+				return
+			}
+			if acknowledged {
+				s.notifySnoozeStateChanged(cu.User.ID)
+			}
+		}
+	} else if !errors.Is(snoozeErr, sql.ErrNoRows) {
+		s.serverError(w, snoozeErr)
+		return
+	}
 	writeMessageTimingHeaders(w, timing)
 	writeJSONCached(w, r, map[string]any{
 		"message":         apiMessageFromRecord(msg, msg.BodyText),
@@ -172,6 +194,7 @@ func (s *Server) apiMessage(w http.ResponseWriter, r *http.Request, id int64) {
 		"mailbox_id":      msg.MailboxID,
 		"raw_blob_url":    fmt.Sprintf("/blobs/%d", msg.BlobID),
 		"conversation":    len(views),
+		"snoozed_until":   snoozedUntil,
 		"showing_images":  r.URL.Query().Get("images") == "1",
 	})
 }
@@ -1249,13 +1272,16 @@ func (s *Server) threadViewsForMessageTimed(ctx context.Context, cu currentUser,
 		if timing != nil {
 			stop = timing.measure(&timing.headers)
 		}
-		headerDetails := messageHeaderDetailsFromHeader(headerFor(threadMsg), threadMsg)
+		header := headerFor(threadMsg)
+		headerDetails := messageHeaderDetailsFromHeader(header, threadMsg)
+		securityIndicators := messageSecurityIndicatorsFor(header, displayMsg, sourceHTML)
 		stop()
 		threadViews = append(threadViews, threadMessageView{
 			Message:                  displayMsg,
 			Attachments:              attachments,
 			InlineAttachments:        allAttachments,
 			HeaderDetails:            headerDetails,
+			SecurityIndicators:       securityIndicators,
 			OneClickUnsub:            oneClickUnsub,
 			OneClickSentAt:           oneClickSentAt,
 			AttachmentMatches:        attachmentMatches,

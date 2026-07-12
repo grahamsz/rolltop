@@ -4,6 +4,61 @@ package store
 
 import "context"
 
+// OwnedMessageIDsForUser filters an untrusted ID list down to messages owned by
+// the current user. The returned order matches the first occurrence in ids.
+func (s *Store) OwnedMessageIDsForUser(ctx context.Context, userID int64, messageIDs []int64) ([]int64, error) {
+	ids := make([]int64, 0, len(messageIDs))
+	seen := map[int64]bool{}
+	for _, id := range messageIDs {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if userID <= 0 || len(ids) == 0 {
+		return nil, nil
+	}
+	owned := make(map[int64]bool, len(ids))
+	for start := 0; start < len(ids); start += 500 {
+		end := start + 500
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, userID)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx,
+			`SELECT id FROM messages WHERE user_id = ? AND id IN (`+sqlPlaceholders(len(chunk))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			owned[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	out := make([]int64, 0, len(owned))
+	for _, id := range ids {
+		if owned[id] {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
 // UpdateMessageReadByUID updates local read state for a UID discovered during IMAP flag reconciliation.
 func (s *Store) UpdateMessageReadByUID(ctx context.Context, userID, accountID, mailboxID int64, uid uint32, isRead bool, pending bool) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET is_read = ?, read_sync_pending = ?, updated_at = ?

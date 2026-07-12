@@ -2,7 +2,7 @@
 // surface sync clues, keep selection state stable, and link rows back to their source page.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ChangeEvent, CSSProperties, DragEvent, KeyboardEvent, MouseEvent, ReactNode } from "react";
+import type { ChangeEvent, CSSProperties, DragEvent, KeyboardEvent, MouseEvent, ReactNode, TouchEvent } from "react";
 import { Star } from "@phosphor-icons/react";
 import { ApiError, api } from "../../api";
 import type { DatePrefs, Toast, LocationState } from "../../appTypes";
@@ -12,6 +12,7 @@ import { ListHeader } from "../../components/common";
 import { androidNativeAvailable } from "../../lib/androidNative";
 import { messageFromError } from "../../lib/errors";
 import { displayTime } from "../../lib/format";
+import { shouldIgnoreMailShortcut } from "../../lib/keyboard";
 import { effectiveMailboxSyncMode, mailboxActiveRun, mailboxNeedsSync, mailboxRefreshKey } from "../../lib/sync";
 import { HighlightedText } from "../../lib/searchHighlight";
 import { mailPageSize } from "../../lib/constants";
@@ -19,6 +20,7 @@ import { usePullToRefresh } from "../../lib/pullToRefresh";
 import { mailRoute, mailURL, messageURL, routeWithSearch, searchRoute, searchURL } from "../../lib/routes";
 import { messageSecurityIndicators, messageSecurityPreviewText, messageSecuritySnippetClassName } from "../../plugins/messageSecurity";
 import type { RuntimePlugin } from "../../plugins/runtime";
+import { defaultSnoozeUntil, SnoozeControl } from "./SnoozeControl";
 
 type SearchActionPlugin = RuntimePlugin & {
   renderSearchActions?: (context: {
@@ -217,6 +219,15 @@ export function MailView({
     }));
   }
 
+  function updateReadStates(states: ConversationReadState[]) {
+    const readByID = new Map(states.map((state) => [state.id, state.read]));
+    setConversations((current) => current.map((conversation) => {
+      const read = readByID.get(conversation.message.id);
+      if (read === undefined) return conversation;
+      return { ...conversation, is_read: read, message: { ...conversation.message, is_read: read } };
+    }));
+  }
+
   async function startFolderSync() {
     if (!mailbox) return;
     if (effectiveMode === "never") {
@@ -295,11 +306,125 @@ export function MailView({
                 messageSecurityPlugins={messageSecurityPlugins}
                 addToast={addToast}
                 onStarredChange={updateStarred}
+                onReadStatesChange={updateReadStates}
               />
             )}
           </SlidingMessageListStage>
         ) : null}
       </div>
+    </>
+  );
+}
+
+/** SnoozedView reuses the normal conversation list for active local reminders. */
+export function SnoozedView({
+  csrf,
+  datePrefs,
+  location,
+  navigate,
+  hiddenMessageIDs,
+  mailGeneration,
+  messageSecurityPlugins = [],
+  addToast
+}: {
+  csrf: string;
+  datePrefs: DatePrefs;
+  location: LocationState;
+  navigate: (url: string) => void;
+  hiddenMessageIDs: Set<number>;
+  mailGeneration: number;
+  messageSecurityPlugins?: RuntimePlugin[];
+  addToast: (message: string, kind?: Toast["kind"]) => number;
+}) {
+  const page = Math.max(1, Number.parseInt(new URLSearchParams(location.search).get("page") || "1", 10) || 1);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [hasPrev, setHasPrev] = useState(false);
+  const [hasNext, setHasNext] = useState(false);
+  const [refreshGeneration, setRefreshGeneration] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const pullRefresh = usePullToRefresh<HTMLDivElement>({
+    disabled: loading || refreshing,
+    onRefresh: async () => {
+      setRefreshing(true);
+      setRefreshGeneration((current) => current + 1);
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+      setRefreshing(false);
+    }
+  });
+  const pullStyle = { "--pull-distance": `${pullRefresh.distance}px` } as CSSProperties;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    api.snoozes(page)
+      .then((data) => {
+        if (cancelled) return;
+        setConversations(data.conversations);
+        setHasPrev(data.has_prev);
+        setHasNext(data.has_next);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(messageFromError(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [page, mailGeneration, refreshGeneration]);
+
+  function updateStarred(messageID: number, starredMessageID: number, starred: boolean) {
+    setConversations((current) => current.map((conversation) => {
+      if (conversation.message.id !== messageID && conversation.starred_message_id !== starredMessageID) return conversation;
+      return { ...conversation, starred_message_id: starred ? starredMessageID : conversation.message.id, message: { ...conversation.message, is_starred: starred } };
+    }));
+  }
+
+  function updateReadStates(states: ConversationReadState[]) {
+    const readByID = new Map(states.map((state) => [state.id, state.read]));
+    setConversations((current) => current.map((conversation) => {
+      const read = readByID.get(conversation.message.id);
+      return read === undefined ? conversation : { ...conversation, is_read: read, message: { ...conversation.message, is_read: read } };
+    }));
+  }
+
+  const pageURL = (nextPage: number) => `/snoozes${nextPage > 1 ? `?page=${nextPage}` : ""}`;
+  return (
+    <>
+      <ListHeader
+        title="Snoozed"
+        pager={{ page, pageSize: mailPageSize, itemCount: loading ? 0 : conversations.length, hasPrev, hasNext, pageURL, navigate, ariaLabel: "Snoozed pagination", loading }}
+      />
+    <div
+    className={`mail-pull-refresh${pullRefresh.distance > 0 ? " pulling" : ""}${pullRefresh.ready ? " ready" : ""}${refreshing ? " refreshing" : ""}`}
+    ref={pullRefresh.targetRef}
+    style={pullStyle}
+    >
+    <div className="pull-refresh-indicator" role="status" aria-live="polite">
+      <Icon name="sync" />
+      {refreshing ? <span>Refreshing snoozed</span> : null}
+    </div>
+    {error ? <div className="error">{error}</div> : null}
+    {!error ? <div className="message-list-pane">
+      {loading ? <MessageListSkeleton label="Loading snoozed messages" /> : (
+            <MessageList
+              csrf={csrf}
+              conversations={conversations}
+              hiddenMessageIDs={hiddenMessageIDs}
+              datePrefs={datePrefs}
+              returnURL={routeWithSearch(location.path, location.search)}
+              navigate={navigate}
+              messageSecurityPlugins={messageSecurityPlugins}
+              addToast={addToast}
+              onStarredChange={updateStarred}
+              onReadStatesChange={updateReadStates}
+              snoozedView
+            />
+      )}
+    </div> : null}
+    </div>
     </>
   );
 }
@@ -468,6 +593,15 @@ export function SearchView({
     }));
   }
 
+  function updateReadStates(states: ConversationReadState[]) {
+    const readByID = new Map(states.map((state) => [state.id, state.read]));
+    setConversations((current) => current.map((conversation) => {
+      const read = readByID.get(conversation.message.id);
+      if (read === undefined) return conversation;
+      return { ...conversation, is_read: read, message: { ...conversation.message, is_read: read } };
+    }));
+  }
+
   return (
     <>
       <ListHeader
@@ -508,6 +642,7 @@ export function SearchView({
               addToast={addToast}
               messageSecurityPlugins={messageSecurityPlugins}
               onStarredChange={updateStarred}
+              onReadStatesChange={updateReadStates}
             />
           )}
         </SlidingMessageListStage>
@@ -676,6 +811,11 @@ function conversationTransferAccountIDs(conversation: Conversation): number[] {
   return uniquePositiveIDs(ids);
 }
 
+type ConversationReadState = {
+  id: number;
+  read: boolean;
+};
+
 // MessageList is shared by mailbox and search pages. It owns local row selection,
 // shift-select ranges, drag payloads, optimistic star updates, and message links.
 function MessageList({
@@ -691,7 +831,9 @@ function MessageList({
   navigate,
   messageSecurityPlugins = [],
   addToast,
-  onStarredChange
+  onStarredChange,
+  onReadStatesChange,
+  snoozedView = false
 }: {
   csrf: string;
   conversations: Conversation[];
@@ -706,11 +848,21 @@ function MessageList({
   messageSecurityPlugins?: RuntimePlugin[];
   addToast: (message: string, kind?: Toast["kind"]) => number;
   onStarredChange: (messageID: number, starredMessageID: number, starred: boolean) => void;
+  onReadStatesChange: (states: ConversationReadState[]) => void;
+  snoozedView?: boolean;
 }) {
   const [selectedIDs, setSelectedIDs] = useState<Set<number>>(() => new Set());
   const [dismissedIDs, setDismissedIDs] = useState<Set<number>>(() => new Set());
+  const [readStateBusy, setReadStateBusy] = useState(false);
+  const [snoozeBusy, setSnoozeBusy] = useState(false);
+  const [swipeState, setSwipeState] = useState<{ id: number; deltaX: number } | null>(null);
+  const [keyboardIndex, setKeyboardIndex] = useState<number | null>(null);
   const lastSelectedIndex = useRef<number | null>(null);
   const moveOutTimers = useRef<Map<number, number>>(new Map());
+  const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const keyboardIndexRef = useRef<number | null>(null);
+  const swipeSession = useRef<{ id: number; startX: number; startY: number; lastX: number; lastY: number; active: boolean; blocked: boolean } | null>(null);
+  const suppressRowClickUntil = useRef(0);
   const visible = conversations.filter((conversation) => !dismissedIDs.has(conversation.message.id));
   const visibleKey = visible.map((conversation) => conversation.message.id).join(",");
   const sourceKey = conversations.map((conversation) => conversation.message.id).join(",");
@@ -719,6 +871,8 @@ function MessageList({
   const selectedDragItems = selectedIDs.size > 0 ? visible.filter((conversation) => selectedIDs.has(conversation.message.id)) : [];
   const selectedDragMessageIDs = uniquePositiveIDs(selectedDragItems.flatMap(conversationTransferMessageIDs));
   const selectedDragAccountIDs = uniquePositiveIDs(selectedDragItems.flatMap(conversationTransferAccountIDs));
+
+  keyboardIndexRef.current = keyboardIndex;
 
   useEffect(() => {
     return () => {
@@ -765,6 +919,48 @@ function MessageList({
       const next = new Set(Array.from(current).filter((id) => ids.has(id)));
       return next.size === current.size ? current : next;
     });
+    if (keyboardIndexRef.current !== null && keyboardIndexRef.current >= visible.length) {
+      keyboardIndexRef.current = null;
+      setKeyboardIndex(null);
+    }
+  }, [visibleKey]);
+
+  useEffect(() => {
+    function handleListShortcut(event: globalThis.KeyboardEvent) {
+      if (event.shiftKey || shouldIgnoreMailShortcut(event) || visible.length === 0) return;
+      const key = event.key.toLowerCase();
+      if (key !== "j" && key !== "k" && key !== "x") return;
+      event.preventDefault();
+      const focusedRow = document.activeElement instanceof Element
+        ? document.activeElement.closest<HTMLElement>("[data-rolltop-list-index]")
+        : null;
+      const focusedIndex = focusedRow ? Number.parseInt(focusedRow.dataset.rolltopListIndex || "", 10) : NaN;
+      const currentIndex = Number.isFinite(focusedIndex) ? focusedIndex : keyboardIndexRef.current;
+      const nextIndex = key === "j"
+        ? currentIndex === null ? 0 : Math.min(visible.length - 1, currentIndex + 1)
+        : key === "k"
+          ? currentIndex === null ? visible.length - 1 : Math.max(0, currentIndex - 1)
+          : currentIndex === null ? 0 : currentIndex;
+      keyboardIndexRef.current = nextIndex;
+      setKeyboardIndex(nextIndex);
+      const messageID = visible[nextIndex].message.id;
+      window.requestAnimationFrame(() => {
+        const row = rowRefs.current.get(messageID);
+        row?.focus({ preventScroll: true });
+        row?.scrollIntoView({ block: "nearest" });
+      });
+      if (key === "x" && !event.repeat) {
+        setSelectedIDs((current) => {
+          const next = new Set(current);
+          if (next.has(messageID)) next.delete(messageID);
+          else next.add(messageID);
+          return next;
+        });
+        lastSelectedIndex.current = nextIndex;
+      }
+    }
+    window.addEventListener("keydown", handleListShortcut);
+    return () => window.removeEventListener("keydown", handleListShortcut);
   }, [visibleKey]);
 
   function selectedDragConversations(conversation: Conversation): Conversation[] {
@@ -811,6 +1007,148 @@ function MessageList({
     lastSelectedIndex.current = index;
   }
 
+  function clearSelection() {
+    setSelectedIDs(new Set());
+    lastSelectedIndex.current = null;
+  }
+
+  async function markSelectedRead(read: boolean) {
+    const selected = visible.filter((conversation) => selectedIDs.has(conversation.message.id));
+    const messageIDs = uniquePositiveIDs(selected.flatMap(conversationTransferMessageIDs));
+    if (messageIDs.length === 0 || readStateBusy) return;
+    const previous = selected.map((conversation) => ({ id: conversation.message.id, read: conversation.is_read }));
+    onReadStatesChange(selected.map((conversation) => ({ id: conversation.message.id, read })));
+    setReadStateBusy(true);
+    try {
+      await api.bulkRead(csrf, messageIDs, read);
+    } catch (err) {
+      onReadStatesChange(previous);
+      addToast(`${read ? "Mark read" : "Mark unread"} failed: ${messageFromError(err)}`, "error");
+    } finally {
+      setReadStateBusy(false);
+    }
+  }
+
+  function optimisticallyDismiss(ids: number[]) {
+    setDismissedIDs((current) => new Set([...current, ...ids]));
+    setSelectedIDs((current) => {
+      const next = new Set(current);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
+  }
+
+  function restoreDismissed(ids: number[]) {
+    setDismissedIDs((current) => {
+      const next = new Set(current);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
+  }
+
+  async function snoozeConversations(items: Conversation[], until: Date) {
+    const ids = uniquePositiveIDs(items.map((conversation) => conversation.message.id));
+    if (ids.length === 0 || snoozeBusy) return;
+    if (!snoozedView) optimisticallyDismiss(ids);
+    clearSelection();
+    setSnoozeBusy(true);
+    try {
+      const results = await Promise.allSettled(ids.map((id) => api.snoozeMessage(csrf, id, until)));
+      const failed = ids.filter((_, index) => results[index].status === "rejected");
+      if (!snoozedView && failed.length > 0) restoreDismissed(failed);
+      const succeeded = ids.length - failed.length;
+      if (succeeded > 0) addToast(`${succeeded === 1 ? "Message" : `${succeeded.toLocaleString()} messages`} snoozed.`);
+      if (failed.length > 0) {
+        const first = results.find((result) => result.status === "rejected");
+        const reason = first?.status === "rejected" ? messageFromError(first.reason) : "Request failed";
+        addToast(`${failed.length.toLocaleString()} snooze ${failed.length === 1 ? "request" : "requests"} failed: ${reason}`, "error");
+        throw first?.status === "rejected" ? first.reason : new Error(reason);
+      }
+    } finally {
+      setSnoozeBusy(false);
+    }
+  }
+
+  async function unsnoozeConversations(items: Conversation[]) {
+    const ids = uniquePositiveIDs(items.map((conversation) => conversation.message.id));
+    if (ids.length === 0 || snoozeBusy) return;
+    optimisticallyDismiss(ids);
+    clearSelection();
+    setSnoozeBusy(true);
+    try {
+      const results = await Promise.allSettled(ids.map((id) => api.unsnoozeMessage(csrf, id)));
+      const failed = ids.filter((_, index) => results[index].status === "rejected");
+      if (failed.length > 0) restoreDismissed(failed);
+      const succeeded = ids.length - failed.length;
+      if (succeeded > 0) addToast(`${succeeded === 1 ? "Message" : `${succeeded.toLocaleString()} messages`} returned to mail.`);
+      if (failed.length > 0) {
+        const first = results.find((result) => result.status === "rejected");
+        const reason = first?.status === "rejected" ? messageFromError(first.reason) : "Request failed";
+        addToast(`${failed.length.toLocaleString()} unsnooze ${failed.length === 1 ? "request" : "requests"} failed: ${reason}`, "error");
+      }
+    } finally {
+      setSnoozeBusy(false);
+    }
+  }
+
+  async function markConversationRead(conversation: Conversation, read: boolean) {
+    const ids = conversationTransferMessageIDs(conversation);
+    const previous = conversation.is_read;
+    onReadStatesChange([{ id: conversation.message.id, read }]);
+    try {
+      await api.bulkRead(csrf, ids, read);
+    } catch (err) {
+      onReadStatesChange([{ id: conversation.message.id, read: previous }]);
+      addToast(`${read ? "Mark read" : "Mark unread"} failed: ${messageFromError(err)}`, "error");
+    }
+  }
+
+  function startRowSwipe(event: TouchEvent<HTMLDivElement>, conversation: Conversation) {
+    if (!nativeTouchDrag || event.touches.length !== 1 || (event.target as HTMLElement).closest("button,input,label")) return;
+    const touch = event.touches[0];
+    swipeSession.current = { id: conversation.message.id, startX: touch.clientX, startY: touch.clientY, lastX: touch.clientX, lastY: touch.clientY, active: false, blocked: false };
+  }
+
+  function moveRowSwipe(event: TouchEvent<HTMLDivElement>) {
+    const session = swipeSession.current;
+    if (!session || event.touches.length !== 1) return;
+    if (document.documentElement.classList.contains("rolltop-touch-message-dragging")) {
+      swipeSession.current = null;
+      setSwipeState(null);
+      return;
+    }
+    const touch = event.touches[0];
+    session.lastX = touch.clientX;
+    session.lastY = touch.clientY;
+    const deltaX = touch.clientX - session.startX;
+    const deltaY = touch.clientY - session.startY;
+    if (!session.active && !session.blocked) {
+      if (Math.abs(deltaY) > 10 && Math.abs(deltaY) >= Math.abs(deltaX)) session.blocked = true;
+      else if (Math.abs(deltaX) > 12 && Math.abs(deltaX) > Math.abs(deltaY) * 1.15) session.active = true;
+    }
+    if (!session.active) return;
+    event.preventDefault();
+    setSwipeState({ id: session.id, deltaX: Math.max(-112, Math.min(112, deltaX)) });
+  }
+
+  function finishRowSwipe(conversation: Conversation) {
+    const session = swipeSession.current;
+    swipeSession.current = null;
+    if (document.documentElement.classList.contains("rolltop-touch-message-dragging")) {
+      setSwipeState(null);
+      return;
+    }
+    if (!session || !session.active) {
+      setSwipeState(null);
+      return;
+    }
+    const deltaX = session.lastX - session.startX;
+    setSwipeState(null);
+    suppressRowClickUntil.current = Date.now() + 450;
+    if (deltaX >= 68) void markConversationRead(conversation, !conversation.is_read);
+    else if (deltaX <= -68) void snoozeConversations([conversation], defaultSnoozeUntil()).catch(() => undefined);
+  }
+
   async function toggleStar(event: MouseEvent<HTMLButtonElement>, conversation: Conversation) {
     event.preventDefault();
     event.stopPropagation();
@@ -827,6 +1165,7 @@ function MessageList({
   }
 
   function openRow(event: MouseEvent<HTMLDivElement>, href: string) {
+    if (Date.now() < suppressRowClickUntil.current) return;
     if ((event.target as HTMLElement).closest("button,input,label")) return;
     navigate(href);
   }
@@ -843,8 +1182,40 @@ function MessageList({
     return <div className="panel muted">No messages here.</div>;
   }
   const arrivalActive = visible.some((conversation) => highlightMessageIDs?.has(conversation.message.id));
+  const selectedConversations = visible.filter((conversation) => selectedIDs.has(conversation.message.id));
+  const canMarkRead = selectedConversations.some((conversation) => !conversation.is_read);
+  const canMarkUnread = selectedConversations.some((conversation) => conversation.is_read);
   return (
     <div className={`message-table ${arrivalActive ? "mail-arrival-shift" : ""}`}>
+      {selectedConversations.length > 0 ? (
+        <div className="selection-action-bar" role="toolbar" aria-label="Selected message actions" aria-busy={readStateBusy}>
+          <div className="selection-action-summary" aria-live="polite">
+            <button className="selection-clear" type="button" onClick={clearSelection} title="Clear selection" aria-label="Clear selection">
+              <Icon name="close" />
+            </button>
+            <strong>{selectedConversations.length.toLocaleString()}</strong>
+            <span>selected</span>
+          </div>
+          <div className="selection-actions">
+            <button type="button" disabled={readStateBusy || !canMarkRead} onClick={() => void markSelectedRead(true)} title="Mark selected messages read">
+              <Icon name="mail_open" />
+              <span>Mark read</span>
+            </button>
+            <button type="button" disabled={readStateBusy || !canMarkUnread} onClick={() => void markSelectedRead(false)} title="Mark selected messages unread">
+              <Icon name="mail" />
+              <span>Mark unread</span>
+            </button>
+      {snoozedView ? (
+        <button type="button" disabled={snoozeBusy} onClick={() => void unsnoozeConversations(selectedConversations)} title="Unsnooze selected messages">
+          <Icon name="clock" />
+          <span>Unsnooze</span>
+        </button>
+      ) : (
+        <SnoozeControl disabled={snoozeBusy} onSnooze={(until) => snoozeConversations(selectedConversations, until)} />
+      )}
+          </div>
+        </div>
+      ) : null}
       {visible.map((conversation, index) => {
         const msg = conversation.message;
         const matchTerms = conversation.match_terms || [];
@@ -858,23 +1229,42 @@ function MessageList({
         const touchMessageIDs = selected && selectedDragMessageIDs.length > 0 ? selectedDragMessageIDs : conversationTransferMessageIDs(conversation);
         const touchAccountIDs = selected && selectedDragAccountIDs.length > 0 ? selectedDragAccountIDs : conversationTransferAccountIDs(conversation);
         const movingOut = hiddenMessageIDs.has(msg.id);
+    const swipeDelta = swipeState?.id === msg.id ? swipeState.deltaX : 0;
         const participantText = showRecipients
           ? `To: ${conversation.recipient_participants || msg.to_addr || conversation.participants || "undisclosed recipients"}`
           : (conversation.participants || msg.from_addr || "Unknown sender");
         return (
-          <div
-            className={`message-row ${conversation.is_read ? "read" : "unread"} ${selected ? "selected" : ""} ${movingOut ? "moving-out" : ""} ${highlightMessageIDs?.has(msg.id) ? "new-delivery" : ""}`}
+      <div className={`message-swipe-shell ${swipeDelta > 0 ? "revealing-read" : swipeDelta < 0 ? "revealing-snooze" : ""}`} key={msg.id}>
+      <div className="message-swipe-actions" aria-hidden="true">
+        <span className="message-swipe-read"><Icon name={conversation.is_read ? "mail" : "mail_open"} /><small>{conversation.is_read ? "Unread" : "Read"}</small></span>
+        <span className="message-swipe-snooze"><Icon name="clock" /><small>Snooze</small></span>
+      </div>
+      <div
+            className={`message-row ${conversation.is_read ? "read" : "unread"} ${selected ? "selected" : ""} ${keyboardIndex === index ? "keyboard-focused" : ""} ${movingOut ? "moving-out" : ""} ${highlightMessageIDs?.has(msg.id) ? "new-delivery" : ""}`}
+      style={swipeDelta ? { transform: `translateX(${swipeDelta}px)` } : undefined}
             draggable
+            ref={(node) => {
+              if (node) rowRefs.current.set(msg.id, node);
+              else rowRefs.current.delete(msg.id);
+            }}
             data-rolltop-message-drag="true"
+            data-rolltop-list-index={index}
             data-rolltop-touch-drag={nativeTouchDrag ? "true" : undefined}
             data-rolltop-touch-message-ids={nativeTouchDrag ? touchMessageIDs.join(",") : undefined}
             data-rolltop-touch-account-ids={nativeTouchDrag ? touchAccountIDs.join(",") : undefined}
-            key={msg.id}
             role="link"
             tabIndex={0}
             onClick={(event) => openRow(event, href)}
+            onFocus={() => {
+              keyboardIndexRef.current = index;
+              setKeyboardIndex(index);
+            }}
             onKeyDown={(event) => openRowWithKeyboard(event, href)}
             onDragStart={(event) => startMessageDrag(event, conversation)}
+      onTouchStart={(event) => startRowSwipe(event, conversation)}
+      onTouchMove={moveRowSwipe}
+      onTouchEnd={() => finishRowSwipe(conversation)}
+      onTouchCancel={() => { swipeSession.current = null; setSwipeState(null); }}
           >
             <label
               className={`message-select ${selected && selectedIDs.size > 1 ? "group-drag-source" : ""}`}
@@ -923,7 +1313,15 @@ function MessageList({
                 </span>
               ) : conversation.has_attachments ? <Icon name="attach_file" /> : null}
             </span>
-            <span className="date">{displayTime(msg.date, datePrefs)}</span>
+      <span className={`date ${snoozedView ? "snoozed-date" : ""}`}>
+        {snoozedView ? (
+          <button className="snooze-row-action" type="button" disabled={snoozeBusy} onClick={() => void unsnoozeConversations([conversation])} title="Unsnooze" aria-label="Unsnooze">
+            <Icon name="clock" />
+          </button>
+        ) : null}
+        <span>{displayTime(snoozedView && conversation.snoozed_until ? conversation.snoozed_until : msg.date, datePrefs)}</span>
+      </span>
+      </div>
           </div>
         );
       })}

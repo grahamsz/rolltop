@@ -4,7 +4,7 @@
 import type React from "react";
 import type { LocationState, SecurityUnlockState, Toast } from "./appTypes";
 import type { Bootstrap, Mailbox, SyncRun, ThemeDefinition, User } from "./types";
-import { MailView, SearchView } from "./features/mail/MailViews";
+import { MailView, SearchView, SnoozedView } from "./features/mail/MailViews";
 import { ThreadView } from "./features/mail/ThreadView";
 import { ComposePage } from "./features/compose/ComposeViews";
 import { ContactsView } from "./features/contacts/ContactsView";
@@ -85,12 +85,16 @@ export function RouteView({
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const securityEnabled = Boolean(securityUnlockPlugin(runtimePlugins.all));
+  if (location.path === "/snoozes") {
+    return <SnoozedView csrf={csrf} datePrefs={user} location={location} navigate={navigate} hiddenMessageIDs={hiddenMessageIDs} mailGeneration={mailGeneration} messageSecurityPlugins={runtimePlugins.all} addToast={addToast} />;
+  }
   if (location.path === "/search" || location.path.startsWith("/search/")) {
     return <SearchView csrf={csrf} location={location} navigate={navigate} hiddenMessageIDs={hiddenMessageIDs} datePrefs={user} activeSyncRuns={activeSyncRuns} messageSecurityPlugins={runtimePlugins.all} searchActionPlugins={runtimePlugins.all} addToast={addToast} />;
   }
   if (location.path.startsWith("/messages/")) {
     return (
       <ThreadView
+        userID={user.id}
         csrf={csrf}
         datePrefs={user}
         location={location}
@@ -107,7 +111,7 @@ export function RouteView({
     );
   }
   if (location.path === "/compose") {
-    return <ComposePage csrf={csrf} location={location} navigate={navigate} securityEnabled={securityEnabled} securityPlugins={runtimePlugins.all} securityUnlock={securityUnlock} openSecurityUnlock={openSecurityUnlock} addToast={addToast} />;
+    return <ComposePage userID={user.id} csrf={csrf} location={location} navigate={navigate} securityEnabled={securityEnabled} securityPlugins={runtimePlugins.all} securityUnlock={securityUnlock} openSecurityUnlock={openSecurityUnlock} addToast={addToast} />;
   }
   if (location.path === "/contacts") {
     return <ContactsView csrf={csrf} contactPlugins={runtimePlugins.all} addToast={addToast} />;

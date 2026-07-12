@@ -106,6 +106,10 @@ type Server struct {
 	webPushClient             *http.Client
 	webPushSend               webPushSendFunc
 	webPushRetryDelay         func(int) time.Duration
+	snoozePushScheduleMu      sync.Mutex
+	snoozePushRunning         map[int64]bool
+	snoozePushDirty           map[int64]bool
+	snoozeSchedulerWake       chan struct{}
 	startedAt                 time.Time
 }
 
@@ -135,6 +139,7 @@ type threadMessageView struct {
 	Attachments              []store.Attachment
 	InlineAttachments        []store.Attachment
 	HeaderDetails            []messageHeaderDetail
+	SecurityIndicators       messageSecurityIndicators
 	OneClickUnsub            bool
 	OneClickSentAt           time.Time
 	AttachmentMatches        []string
@@ -174,6 +179,7 @@ type conversationView struct {
 	MatchTerms               []string
 	MatchFields              []string
 	MatchQueryTerms          []string
+	SnoozedUntil             time.Time
 	CanReplyAll              bool
 }
 
@@ -292,6 +298,9 @@ func New(opts Options) (*Server, error) {
 		webPushRunning:            map[int64]bool{},
 		webPushDirty:              map[int64]bool{},
 		webPushClient:             newWebPushHTTPClient(),
+		snoozePushRunning:         map[int64]bool{},
+		snoozePushDirty:           map[int64]bool{},
+		snoozeSchedulerWake:       make(chan struct{}, 1),
 		startedAt:                 time.Now().UTC(),
 	}
 	if opts.Syncer != nil {
@@ -300,6 +309,8 @@ func New(opts Options) (*Server, error) {
 	srv.startAutoStartBackendPlugins(context.Background())
 	srv.warmAllMailFirstPages(context.Background())
 	srv.resumeNewMailWebPushAsync()
+	srv.resumeSnoozeReminderWebPushAsync()
+	srv.startSnoozeScheduler()
 	return srv, nil
 }
 
@@ -321,6 +332,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/login", s.handleApp)
 	mux.HandleFunc("/mail", s.handleApp)
 	mux.HandleFunc("/mail/", s.handleApp)
+	mux.HandleFunc("/snoozes", s.handleApp)
 	mux.HandleFunc("/mailbox/", s.handleApp)
 	mux.HandleFunc("/search", s.handleApp)
 	mux.HandleFunc("/search/", s.handleApp)

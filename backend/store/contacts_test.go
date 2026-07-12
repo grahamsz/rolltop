@@ -52,6 +52,34 @@ func TestContactsAreScopedByUser(t *testing.T) {
 	}
 }
 
+func TestContactAutocompleteIncludesOnlyCurrentUsersRecentCorrespondents(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "recent@example.test", "Recent", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateUser(ctx, "other-recent@example.test", "Other", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createNewMailEventMessage(t, ctx, db, user, 11, "Alice Sender <alice@example.test>", "Hello")
+	createNewMailEventMessage(t, ctx, db, user, 12, "Alice Sender <alice@example.test>", "Again")
+	createNewMailEventMessage(t, ctx, db, other, 21, "Alice Secret <alice-secret@example.test>", "Other tenant")
+
+	items, err := db.AutocompleteContactsForUser(ctx, user.ID, "alice", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Email != "alice@example.test" || items[0].Label != "Recent" {
+		t.Fatalf("recent autocomplete = %+v", items)
+	}
+}
+
 func TestContactIconsAreScopedByUser(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))

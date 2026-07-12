@@ -2,4 +2,8 @@
     <string name="app_name">Rolltop</string>
     <string name="notification_channel_mail">Mail</string>
     <string name="notification_channel_updates">Updates</string>
+    <string name="notification_action_mark_read">Mark read</string>
+    <string name="notification_action_reply">Reply</string>
+    <string name="notification_reminder_title">Reminder: %1$s</string>
+    <string name="notification_reminders_title">%1$d reminders</string>
 </resources>
