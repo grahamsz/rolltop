@@ -94,6 +94,10 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) syncEventPayload(ctx context.Context, userID int64) (map[string]any, error) {
 	var data viewData
 	s.loadMailboxChrome(ctx, userID, &data)
+	swipePreferences, err := s.store.GetSwipePreferences(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
 	info := buildinfo.Current()
 	return map[string]any{
 		"mailboxes":             apiMailboxes(data.Mailboxes),
@@ -101,6 +105,7 @@ func (s *Server) syncEventPayload(ctx context.Context, userID int64) (map[string
 		"active_sync_runs":      apiSyncRuns(data.ActiveSyncRuns),
 		"sync_running":          data.SyncRunning,
 		"mail_generation":       s.mailListGeneration(userID),
+		"swipe_preferences":     apiSwipePreferencesFromStore(swipePreferences),
 		"server_started_at":     timeString(s.startedAt),
 		"server_uptime_seconds": int(time.Since(s.startedAt).Seconds()),
 		"build_version":         info.Version,

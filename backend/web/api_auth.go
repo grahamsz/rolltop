@@ -3,6 +3,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -33,6 +34,12 @@ func (s *Server) apiBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	if cu, ok := current(r); ok {
 		resp["user"] = safeUser(cu.User)
+		swipePreferences, err := s.store.GetSwipePreferences(r.Context(), cu.User.ID)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+		resp["swipe_preferences"] = apiSwipePreferencesFromStore(swipePreferences)
 		var chrome viewData
 		s.loadMailboxChrome(r.Context(), cu.User.ID, &chrome)
 		resp["mailboxes"] = apiMailboxes(chrome.Mailboxes)
@@ -61,6 +68,56 @@ func (s *Server) apiBootstrap(w http.ResponseWriter, r *http.Request) {
 		resp["enabled_plugins"] = []string{}
 	}
 	writeJSON(w, resp)
+}
+
+func (s *Server) apiSwipePreferences(w http.ResponseWriter, r *http.Request) {
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		preferences, err := s.store.GetSwipePreferences(r.Context(), cu.User.ID)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"swipe_preferences": apiSwipePreferencesFromStore(preferences)})
+	case http.MethodPost:
+		if !s.verifyCSRF(w, r) {
+			return
+		}
+		var in apiSwipePreferences
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+		preferences := store.SwipePreferences{
+			UserID:            cu.User.ID,
+			LeftAction:        in.LeftAction,
+			LeftSnoozePreset:  in.LeftSnoozePreset,
+			RightAction:       in.RightAction,
+			RightSnoozePreset: in.RightSnoozePreset,
+			ArchiveMailboxes:  make([]store.SwipeArchiveMailbox, 0, len(in.ArchiveMailboxes)),
+		}
+		for _, mailbox := range in.ArchiveMailboxes {
+			preferences.ArchiveMailboxes = append(preferences.ArchiveMailboxes, store.SwipeArchiveMailbox{AccountID: mailbox.AccountID, MailboxID: mailbox.MailboxID})
+		}
+		saved, err := s.store.SaveSwipePreferences(r.Context(), preferences)
+		if errors.Is(err, store.ErrInvalidSwipePreferences) {
+			writeAPIError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+		if s.events != nil {
+			s.events.Notify(cu.User.ID)
+		}
+		writeJSON(w, map[string]any{"swipe_preferences": apiSwipePreferencesFromStore(saved)})
+	default:
+		methodNotAllowed(w)
+	}
 }
 
 func (s *Server) apiSetup(w http.ResponseWriter, r *http.Request) {

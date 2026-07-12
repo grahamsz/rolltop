@@ -16,6 +16,7 @@ import { currentLocation, messageURL } from "./lib/routes";
 import { androidNativeAvailable, androidPushSubscription, registerAndroidPush, unregisterAndroidPush } from "./lib/androidNative";
 import { emptyRuntimePlugins, loadRuntimePlugins, type RuntimePlugins } from "./plugins/runtime";
 import { emptySecurityUnlockState, securityUnlockPlugin } from "./plugins/securityUnlock";
+import { defaultSwipePreferences } from "./lib/swipeActions";
 
 
 // Push notifications should identify the human sender when possible. This helper
@@ -546,7 +547,8 @@ export default function App() {
           build_date: chrome.build_date || current.build_date,
           build_label: chrome.build_label || current.build_label,
           public_site_url: chrome.public_site_url || current.public_site_url,
-          mail_generation: chrome.mail_generation ?? current.mail_generation
+          mail_generation: chrome.mail_generation ?? current.mail_generation,
+          swipe_preferences: chrome.swipe_preferences || current.swipe_preferences
         } : current);
         if (chrome.latest_sync_run) {
           const previous = lastNotify.current;
@@ -710,6 +712,7 @@ export default function App() {
           latestSyncRun={bootstrap.latest_sync_run || null}
           activeSyncRuns={bootstrap.active_sync_runs || []}
           mailGeneration={bootstrap.mail_generation || 0}
+          swipePreferences={bootstrap.swipe_preferences || defaultSwipePreferences()}
           enabledPlugins={bootstrap.enabled_plugins || []}
           availableThemes={bootstrap.available_themes || []}
           location={location}

@@ -1,3 +1,10 @@
+@media (max-width: 900px) {
+  .swipe-direction-row,
+  .swipe-direction-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 760px) {
   .topbar {
     height: 64px;
@@ -234,11 +241,14 @@
   }
 
   .settings-columns,
-  .search-tuning-row {
+  .search-tuning-row,
+  .swipe-direction-row,
+  .swipe-direction-controls {
     grid-template-columns: 1fr;
   }
 
-  .search-tuning-row {
+  .search-tuning-row,
+  .swipe-direction-row {
     gap: 12px;
   }
 

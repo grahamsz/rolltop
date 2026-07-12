@@ -6,7 +6,7 @@ import type { ChangeEvent, CSSProperties, DragEvent, KeyboardEvent, MouseEvent, 
 import { Star } from "@phosphor-icons/react";
 import { ApiError, api } from "../../api";
 import type { DatePrefs, Toast, LocationState } from "../../appTypes";
-import type { Bootstrap, Conversation, Mailbox, SyncRun } from "../../types";
+import type { Bootstrap, Conversation, Mailbox, SwipeAction, SwipePreferences, SyncRun } from "../../types";
 import { Icon } from "../../components/Icon";
 import { ListHeader } from "../../components/common";
 import { androidNativeAvailable } from "../../lib/androidNative";
@@ -20,7 +20,8 @@ import { usePullToRefresh } from "../../lib/pullToRefresh";
 import { mailRoute, mailURL, messageURL, routeWithSearch, searchRoute, searchURL } from "../../lib/routes";
 import { messageSecurityIndicators, messageSecurityPreviewText, messageSecuritySnippetClassName } from "../../plugins/messageSecurity";
 import type { RuntimePlugin } from "../../plugins/runtime";
-import { defaultSnoozeUntil, SnoozeControl } from "./SnoozeControl";
+import { defaultSwipePreferences, swipeActionPresentation, swipeSnoozeUntil } from "../../lib/swipeActions";
+import { SnoozeControl } from "./SnoozeControl";
 
 type SearchActionPlugin = RuntimePlugin & {
   renderSearchActions?: (context: {
@@ -49,6 +50,7 @@ export function MailView({
   navigate,
   hiddenMessageIDs,
   mailboxes,
+  swipePreferences,
   latestSyncRun,
   activeSyncRuns,
   mailGeneration,
@@ -63,6 +65,7 @@ export function MailView({
   navigate: (url: string) => void;
   hiddenMessageIDs: Set<number>;
   mailboxes: Mailbox[];
+  swipePreferences: SwipePreferences;
   latestSyncRun: SyncRun | null;
   activeSyncRuns: SyncRun[];
   mailGeneration: number;
@@ -245,6 +248,13 @@ export function MailView({
     }));
   }
 
+  function removeMovedConversations(messageIDs: number[]) {
+    const moved = new Set(messageIDs);
+    setConversations((current) => current.filter((conversation) =>
+      !conversationTransferMessageIDs(conversation).some((id) => moved.has(id))
+    ));
+  }
+
   async function startFolderSync() {
     if (!mailbox) return;
     if (effectiveMode === "never") {
@@ -314,6 +324,8 @@ export function MailView({
                 csrf={csrf}
                 conversations={displayConversations}
                 hiddenMessageIDs={hiddenMessageIDs}
+                mailboxes={mailboxes}
+                swipePreferences={swipePreferences}
                 highlightMessageIDs={newMessageIDs}
                 showRecipients={mailbox?.role === "sent" || mailbox?.role === "drafts"}
                 openAsDraft={mailbox?.role === "drafts"}
@@ -324,6 +336,7 @@ export function MailView({
                 addToast={addToast}
                 onStarredChange={updateStarred}
                 onReadStatesChange={updateReadStates}
+                onMessagesMoved={removeMovedConversations}
               />
             )}
           </SlidingMessageListStage>
@@ -340,6 +353,8 @@ export function SnoozedView({
   location,
   navigate,
   hiddenMessageIDs,
+  mailboxes,
+  swipePreferences,
   mailGeneration,
   messageSecurityPlugins = [],
   addToast
@@ -349,6 +364,8 @@ export function SnoozedView({
   location: LocationState;
   navigate: (url: string) => void;
   hiddenMessageIDs: Set<number>;
+  mailboxes: Mailbox[];
+  swipePreferences: SwipePreferences;
   mailGeneration: number;
   messageSecurityPlugins?: RuntimePlugin[];
   addToast: (message: string, kind?: Toast["kind"]) => number;
@@ -407,6 +424,13 @@ export function SnoozedView({
     }));
   }
 
+  function removeMovedConversations(messageIDs: number[]) {
+    const moved = new Set(messageIDs);
+    setConversations((current) => current.filter((conversation) =>
+      !conversationTransferMessageIDs(conversation).some((id) => moved.has(id))
+    ));
+  }
+
   const pageURL = (nextPage: number) => `/snoozes${nextPage > 1 ? `?page=${nextPage}` : ""}`;
   return (
     <>
@@ -430,6 +454,8 @@ export function SnoozedView({
               csrf={csrf}
               conversations={conversations}
               hiddenMessageIDs={hiddenMessageIDs}
+              mailboxes={mailboxes}
+              swipePreferences={swipePreferences}
               datePrefs={datePrefs}
               returnURL={routeWithSearch(location.path, location.search)}
               navigate={navigate}
@@ -437,6 +463,7 @@ export function SnoozedView({
               addToast={addToast}
               onStarredChange={updateStarred}
               onReadStatesChange={updateReadStates}
+              onMessagesMoved={removeMovedConversations}
               snoozedView
             />
       )}
@@ -531,6 +558,8 @@ export function SearchView({
   location,
   navigate,
   hiddenMessageIDs,
+  mailboxes,
+  swipePreferences,
   datePrefs,
   activeSyncRuns,
   messageSecurityPlugins = [],
@@ -541,6 +570,8 @@ export function SearchView({
   location: LocationState;
   navigate: (url: string) => void;
   hiddenMessageIDs: Set<number>;
+  mailboxes: Mailbox[];
+  swipePreferences: SwipePreferences;
   datePrefs: DatePrefs;
   activeSyncRuns: SyncRun[];
   messageSecurityPlugins?: RuntimePlugin[];
@@ -619,6 +650,13 @@ export function SearchView({
     }));
   }
 
+  function removeMovedConversations(messageIDs: number[]) {
+    const moved = new Set(messageIDs);
+    setConversations((current) => current.filter((conversation) =>
+      !conversationTransferMessageIDs(conversation).some((id) => moved.has(id))
+    ));
+  }
+
   return (
     <>
       <ListHeader
@@ -652,6 +690,8 @@ export function SearchView({
               csrf={csrf}
               conversations={conversations}
               hiddenMessageIDs={hiddenMessageIDs}
+              mailboxes={mailboxes}
+              swipePreferences={swipePreferences}
               navigate={navigate}
               searchQuery={query}
               datePrefs={datePrefs}
@@ -660,6 +700,7 @@ export function SearchView({
               messageSecurityPlugins={messageSecurityPlugins}
               onStarredChange={updateStarred}
               onReadStatesChange={updateReadStates}
+              onMessagesMoved={removeMovedConversations}
             />
           )}
         </SlidingMessageListStage>
@@ -839,6 +880,8 @@ function MessageList({
   csrf,
   conversations,
   hiddenMessageIDs,
+  mailboxes,
+  swipePreferences,
   highlightMessageIDs,
   showRecipients = false,
   openAsDraft = false,
@@ -850,11 +893,14 @@ function MessageList({
   addToast,
   onStarredChange,
   onReadStatesChange,
+  onMessagesMoved,
   snoozedView = false
 }: {
   csrf: string;
   conversations: Conversation[];
   hiddenMessageIDs: Set<number>;
+  mailboxes: Mailbox[];
+  swipePreferences: SwipePreferences;
   highlightMessageIDs?: Set<number>;
   showRecipients?: boolean;
   openAsDraft?: boolean;
@@ -866,12 +912,15 @@ function MessageList({
   addToast: (message: string, kind?: Toast["kind"]) => number;
   onStarredChange: (messageID: number, starredMessageID: number, starred: boolean) => void;
   onReadStatesChange: (states: ConversationReadState[]) => void;
+  onMessagesMoved: (messageIDs: number[]) => void;
   snoozedView?: boolean;
 }) {
   const [selectedIDs, setSelectedIDs] = useState<Set<number>>(() => new Set());
   const [dismissedIDs, setDismissedIDs] = useState<Set<number>>(() => new Set());
   const [readStateBusy, setReadStateBusy] = useState(false);
   const [snoozeBusy, setSnoozeBusy] = useState(false);
+  const [swipeActionBusy, setSwipeActionBusy] = useState(false);
+  const [pendingSwipeMoveIDs, setPendingSwipeMoveIDs] = useState<Set<number>>(() => new Set());
   const [swipeState, setSwipeState] = useState<{ id: number; deltaX: number } | null>(null);
   const [keyboardIndex, setKeyboardIndex] = useState<number | null>(null);
   const lastSelectedIndex = useRef<number | null>(null);
@@ -884,7 +933,11 @@ function MessageList({
   const visibleKey = visible.map((conversation) => conversation.message.id).join(",");
   const sourceKey = conversations.map((conversation) => conversation.message.id).join(",");
   const hiddenKey = Array.from(hiddenMessageIDs).sort((a, b) => a - b).join(",");
+  const pendingSwipeMoveKey = Array.from(pendingSwipeMoveIDs).sort((a, b) => a - b).join(",");
   const nativeTouchDrag = androidNativeAvailable();
+  const effectiveSwipePreferences = swipePreferences || defaultSwipePreferences();
+  const leftSwipePresentation = swipeActionPresentation(effectiveSwipePreferences.left_action);
+  const rightSwipePresentation = swipeActionPresentation(effectiveSwipePreferences.right_action);
   const selectedDragItems = selectedIDs.size > 0 ? visible.filter((conversation) => selectedIDs.has(conversation.message.id)) : [];
   const selectedDragMessageIDs = uniquePositiveIDs(selectedDragItems.flatMap(conversationTransferMessageIDs));
   const selectedDragAccountIDs = uniquePositiveIDs(selectedDragItems.flatMap(conversationTransferAccountIDs));
@@ -900,11 +953,16 @@ function MessageList({
 
   useEffect(() => {
     const sourceIDs = new Set(conversations.map((conversation) => conversation.message.id));
+    const sourceMessageIDs = new Set(conversations.flatMap(conversationTransferMessageIDs));
     setDismissedIDs((current) => {
       const next = new Set<number>();
       current.forEach((id) => {
-        if (sourceIDs.has(id) && hiddenMessageIDs.has(id)) next.add(id);
+        if (sourceMessageIDs.has(id) && (hiddenMessageIDs.has(id) || pendingSwipeMoveIDs.has(id))) next.add(id);
       });
+      return next.size === current.size ? current : next;
+    });
+    setPendingSwipeMoveIDs((current) => {
+      const next = new Set(Array.from(current).filter((id) => sourceMessageIDs.has(id)));
       return next.size === current.size ? current : next;
     });
     sourceIDs.forEach((id) => {
@@ -928,7 +986,7 @@ function MessageList({
         }
       }
     });
-  }, [conversations, hiddenKey, sourceKey, hiddenMessageIDs]);
+  }, [conversations, hiddenKey, pendingSwipeMoveKey, sourceKey, hiddenMessageIDs, pendingSwipeMoveIDs]);
 
   useEffect(() => {
     const ids = new Set(visible.map((conversation) => conversation.message.id));
@@ -1032,7 +1090,7 @@ function MessageList({
   async function markSelectedRead(read: boolean) {
     const selected = visible.filter((conversation) => selectedIDs.has(conversation.message.id));
     const messageIDs = uniquePositiveIDs(selected.flatMap(conversationTransferMessageIDs));
-    if (messageIDs.length === 0 || readStateBusy) return;
+    if (messageIDs.length === 0 || readStateBusy || snoozeBusy || swipeActionBusy) return;
     const previous = selected.map((conversation) => ({ id: conversation.message.id, read: conversation.is_read }));
     onReadStatesChange(selected.map((conversation) => ({ id: conversation.message.id, read })));
     setReadStateBusy(true);
@@ -1120,8 +1178,84 @@ function MessageList({
     }
   }
 
+  async function moveConversationBySwipe(conversation: Conversation, action: "trash" | "archive") {
+    const accountIDs = conversationTransferAccountIDs(conversation);
+    if (accountIDs.length !== 1) {
+      addToast(`Cannot ${action} a conversation containing messages from multiple accounts.`, "error");
+      return;
+    }
+    const accountID = accountIDs[0];
+    const target = action === "trash"
+      ? mailboxes.find((mailbox) => mailbox.account_id === accountID && mailbox.role === "trash")
+      : (() => {
+          const preference = effectiveSwipePreferences.archive_mailboxes.find((item) => item.account_id === accountID);
+          return preference
+            ? mailboxes.find((mailbox) => mailbox.id === preference.mailbox_id && mailbox.account_id === accountID && mailbox.role === "")
+            : undefined;
+        })();
+    if (!target) {
+      addToast(
+        action === "trash"
+          ? "Choose a Trash folder for this account before using the trash swipe action."
+          : "Choose an Archive folder for this account in swipe settings.",
+        "error"
+      );
+      return;
+    }
+    if (conversation.message.mailbox_id === target.id) {
+      addToast(`This conversation is already in ${target.name}.`);
+      return;
+    }
+    const messageIDs = conversationTransferMessageIDs(conversation);
+    const dismissedIDs = messageIDs;
+    setPendingSwipeMoveIDs((current) => new Set([...current, ...dismissedIDs]));
+    optimisticallyDismiss(dismissedIDs);
+    try {
+      for (const messageID of messageIDs) await api.moveMessage(csrf, messageID, target.id);
+      onMessagesMoved(messageIDs);
+      setPendingSwipeMoveIDs((current) => {
+        const next = new Set(current);
+        messageIDs.forEach((id) => next.delete(id));
+        return next;
+      });
+      addToast(`Moved ${messageIDs.length === 1 ? "message" : `${messageIDs.length.toLocaleString()} messages`} to ${target.name}.`);
+    } catch (err) {
+      setPendingSwipeMoveIDs((current) => {
+        const next = new Set(current);
+        dismissedIDs.forEach((id) => next.delete(id));
+        return next;
+      });
+      restoreDismissed(dismissedIDs);
+      addToast(`${action === "trash" ? "Move to trash" : "Archive"} failed: ${messageFromError(err)}`, "error");
+    }
+  }
+
+  async function executeSwipeAction(conversation: Conversation, action: SwipeAction, snoozePreset: SwipePreferences["left_snooze_preset"]) {
+    if (readStateBusy || snoozeBusy || swipeActionBusy) return;
+    setSwipeActionBusy(true);
+    try {
+      switch (action) {
+      case "mark_read":
+        await markConversationRead(conversation, true);
+        break;
+      case "mark_unread":
+        await markConversationRead(conversation, false);
+        break;
+      case "snooze":
+        await snoozeConversations([conversation], swipeSnoozeUntil(snoozePreset));
+        break;
+      case "trash":
+      case "archive":
+        await moveConversationBySwipe(conversation, action);
+        break;
+      }
+    } finally {
+      setSwipeActionBusy(false);
+    }
+  }
+
   function startRowSwipe(event: TouchEvent<HTMLDivElement>, conversation: Conversation) {
-    if (!nativeTouchDrag || event.touches.length !== 1 || (event.target as HTMLElement).closest("button,input,label")) return;
+    if (readStateBusy || snoozeBusy || swipeActionBusy || !nativeTouchDrag || event.touches.length !== 1 || (event.target as HTMLElement).closest("button,input,label")) return;
     const touch = event.touches[0];
     swipeSession.current = { id: conversation.message.id, startX: touch.clientX, startY: touch.clientY, lastX: touch.clientX, lastY: touch.clientY, active: false, blocked: false };
   }
@@ -1162,8 +1296,11 @@ function MessageList({
     const deltaX = session.lastX - session.startX;
     setSwipeState(null);
     suppressRowClickUntil.current = Date.now() + 450;
-    if (deltaX >= 68) void markConversationRead(conversation, !conversation.is_read);
-    else if (deltaX <= -68) void snoozeConversations([conversation], defaultSnoozeUntil()).catch(() => undefined);
+    if (deltaX >= 68) {
+      void executeSwipeAction(conversation, effectiveSwipePreferences.right_action, effectiveSwipePreferences.right_snooze_preset).catch(() => undefined);
+    } else if (deltaX <= -68) {
+      void executeSwipeAction(conversation, effectiveSwipePreferences.left_action, effectiveSwipePreferences.left_snooze_preset).catch(() => undefined);
+    }
   }
 
   async function toggleStar(event: MouseEvent<HTMLButtonElement>, conversation: Conversation) {
@@ -1205,7 +1342,7 @@ function MessageList({
   return (
     <div className={`message-table ${arrivalActive ? "mail-arrival-shift" : ""}`}>
       {selectedConversations.length > 0 ? (
-        <div className="selection-action-bar" role="toolbar" aria-label="Selected message actions" aria-busy={readStateBusy}>
+        <div className="selection-action-bar" role="toolbar" aria-label="Selected message actions" aria-busy={readStateBusy || snoozeBusy || swipeActionBusy}>
           <div className="selection-action-summary" aria-live="polite">
             <button className="selection-clear" type="button" onClick={clearSelection} title="Clear selection" aria-label="Clear selection">
               <Icon name="close" />
@@ -1214,21 +1351,21 @@ function MessageList({
             <span>selected</span>
           </div>
           <div className="selection-actions">
-            <button type="button" disabled={readStateBusy || !canMarkRead} onClick={() => void markSelectedRead(true)} title="Mark selected messages read">
+            <button type="button" disabled={readStateBusy || snoozeBusy || swipeActionBusy || !canMarkRead} onClick={() => void markSelectedRead(true)} title="Mark selected messages read">
               <Icon name="mail_open" />
               <span>Mark read</span>
             </button>
-            <button type="button" disabled={readStateBusy || !canMarkUnread} onClick={() => void markSelectedRead(false)} title="Mark selected messages unread">
+            <button type="button" disabled={readStateBusy || snoozeBusy || swipeActionBusy || !canMarkUnread} onClick={() => void markSelectedRead(false)} title="Mark selected messages unread">
               <Icon name="mail" />
               <span>Mark unread</span>
             </button>
       {snoozedView ? (
-        <button type="button" disabled={snoozeBusy} onClick={() => void unsnoozeConversations(selectedConversations)} title="Unsnooze selected messages">
+        <button type="button" disabled={readStateBusy || snoozeBusy || swipeActionBusy} onClick={() => void unsnoozeConversations(selectedConversations)} title="Unsnooze selected messages">
           <Icon name="clock" />
           <span>Unsnooze</span>
         </button>
       ) : (
-        <SnoozeControl disabled={snoozeBusy} onSnooze={(until) => snoozeConversations(selectedConversations, until)} />
+        <SnoozeControl disabled={readStateBusy || snoozeBusy || swipeActionBusy} onSnooze={(until) => snoozeConversations(selectedConversations, until)} />
       )}
           </div>
         </div>
@@ -1251,10 +1388,14 @@ function MessageList({
           ? `To: ${conversation.recipient_participants || msg.to_addr || conversation.participants || "undisclosed recipients"}`
           : (conversation.participants || msg.from_addr || "Unknown sender");
         return (
-      <div className={`message-swipe-shell ${swipeDelta > 0 ? "revealing-read" : swipeDelta < 0 ? "revealing-snooze" : ""}`} key={msg.id}>
+      <div className={`message-swipe-shell ${swipeDelta > 0 ? "revealing-start" : swipeDelta < 0 ? "revealing-end" : ""}`} key={msg.id}>
       <div className="message-swipe-actions" aria-hidden="true">
-        <span className="message-swipe-read"><Icon name={conversation.is_read ? "mail" : "mail_open"} /><small>{conversation.is_read ? "Unread" : "Read"}</small></span>
-        <span className="message-swipe-snooze"><Icon name="clock" /><small>Snooze</small></span>
+        <span className={`message-swipe-action message-swipe-action-start swipe-action-${rightSwipePresentation.className}`}>
+          <Icon name={rightSwipePresentation.icon} /><small>{rightSwipePresentation.label}</small>
+        </span>
+        <span className={`message-swipe-action message-swipe-action-end swipe-action-${leftSwipePresentation.className}`}>
+          <Icon name={leftSwipePresentation.icon} /><small>{leftSwipePresentation.label}</small>
+        </span>
       </div>
       <div
             className={`message-row ${conversation.is_read ? "read" : "unread"} ${selected ? "selected" : ""} ${keyboardIndex === index ? "keyboard-focused" : ""} ${movingOut ? "moving-out" : ""} ${highlightMessageIDs?.has(msg.id) ? "new-delivery" : ""}`}

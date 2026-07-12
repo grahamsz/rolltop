@@ -21,6 +21,23 @@ export type User = {
   search_compact_splitting: boolean;
 };
 
+export type SwipeAction = "trash" | "archive" | "snooze" | "mark_read" | "mark_unread";
+
+export type SwipeSnoozePreset = "later_today" | "tomorrow" | "next_week";
+
+export type SwipeArchiveMailbox = {
+  account_id: number;
+  mailbox_id: number;
+};
+
+export type SwipePreferences = {
+  left_action: SwipeAction;
+  left_snooze_preset: SwipeSnoozePreset;
+  right_action: SwipeAction;
+  right_snooze_preset: SwipeSnoozePreset;
+  archive_mailboxes: SwipeArchiveMailbox[];
+};
+
 /** Mailbox mirrors a folder summary row including sync, visibility, and indexing counters. */
 export type Mailbox = {
   id: number;
@@ -424,6 +441,7 @@ export type Bootstrap = {
   active_sync_runs?: SyncRun[];
   sync_running?: boolean;
   mail_generation?: number;
+  swipe_preferences?: SwipePreferences;
   account_needs_password?: boolean;
   account_notice?: string;
   enabled_plugins?: string[];
@@ -451,6 +469,7 @@ export type ChromeEvent = {
   active_sync_runs: SyncRun[];
   sync_running: boolean;
   mail_generation: number;
+  swipe_preferences?: SwipePreferences;
   server_started_at?: string;
   server_uptime_seconds?: number;
   build_version?: string;

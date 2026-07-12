@@ -196,20 +196,41 @@
   }
 }
 
-.message-swipe-read {
+.message-swipe-action-start {
   justify-content: flex-start;
+}
+
+.message-swipe-action-end {
+  justify-content: flex-end;
+}
+
+.swipe-action-read {
   background: #dcefe7;
   color: #245c49;
 }
 
-.message-swipe-snooze {
-  justify-content: flex-end;
+.swipe-action-unread {
+  background: #dce8f4;
+  color: #284f73;
+}
+
+.swipe-action-snooze {
   background: #f4e4dc;
   color: #8a452b;
 }
 
-.message-swipe-shell.revealing-read .message-swipe-read,
-.message-swipe-shell.revealing-snooze .message-swipe-snooze {
+.swipe-action-archive {
+  background: #dce9f1;
+  color: #28566c;
+}
+
+.swipe-action-trash {
+  background: #f3dddd;
+  color: #852f34;
+}
+
+.message-swipe-shell.revealing-start .message-swipe-action-start,
+.message-swipe-shell.revealing-end .message-swipe-action-end {
   opacity: 1;
 }
 

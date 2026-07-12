@@ -21,6 +21,19 @@ type apiUser struct {
 	SearchCompactSplitting bool   `json:"search_compact_splitting"`
 }
 
+type apiSwipeArchiveMailbox struct {
+	AccountID int64 `json:"account_id"`
+	MailboxID int64 `json:"mailbox_id"`
+}
+
+type apiSwipePreferences struct {
+	LeftAction        string                   `json:"left_action"`
+	LeftSnoozePreset  string                   `json:"left_snooze_preset"`
+	RightAction       string                   `json:"right_action"`
+	RightSnoozePreset string                   `json:"right_snooze_preset"`
+	ArchiveMailboxes  []apiSwipeArchiveMailbox `json:"archive_mailboxes"`
+}
+
 type apiAuthProvider struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`

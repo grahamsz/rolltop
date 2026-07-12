@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../api";
 import type { DatePrefs, LocationState, Toast } from "../../appTypes";
-import type { Account, AccountPurgeEstimate, Bootstrap, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SyncFolder, SyncRun, ThemeDefinition, User } from "../../types";
+import type { Account, AccountPurgeEstimate, Bootstrap, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SwipeAction, SwipePreferences, SwipeSnoozePreset, SyncFolder, SyncRun, ThemeDefinition, User } from "../../types";
 import { Icon } from "../../components/Icon";
 import { Field, Stat } from "../../components/common";
 import { emptyAccountForm, accountToForm } from "../../lib/accountForm";
@@ -13,6 +13,7 @@ import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
 import { folderParentNames, folderTree, type FolderNode } from "../../lib/folders";
 import { effectiveMailboxSyncMode, mergeSyncRuns } from "../../lib/sync";
+import { swipeActionChoices, swipeSnoozeChoices } from "../../lib/swipeActions";
 import { pluginIDs } from "../../plugins/registry";
 import type { RuntimePlugin } from "../../plugins/runtime";
 import { identitySecuritySettings } from "../../plugins/identitySecurity";
@@ -528,6 +529,17 @@ const dateLocaleChoices = [
   { value: "zh-TW", label: "Chinese Traditional (Taiwan)" }
 ];
 
+function cloneSwipePreferences(preferences: SwipePreferences): SwipePreferences {
+  return {
+    ...preferences,
+    archive_mailboxes: preferences.archive_mailboxes.map((mailbox) => ({ ...mailbox }))
+  };
+}
+
+function isSwipeArchiveChoice(mailbox: Mailbox): boolean {
+  return !["inbox", "sent", "drafts", "trash"].includes(mailbox.role);
+}
+
 function folderCanInherit(mailbox: Mailbox) {
   return folderParentNames(mailbox.name).length > 0;
 }
@@ -575,6 +587,7 @@ function folderVisibilityLabel(mailbox: Pick<Mailbox, "show_in_sidebar" | "show_
 export function SettingsView({
   csrf,
   user,
+  swipePreferences,
   mailboxes,
   activeSyncRuns,
   availableThemes,
@@ -586,6 +599,7 @@ export function SettingsView({
 }: {
   csrf: string;
   user: User;
+  swipePreferences: SwipePreferences;
   mailboxes: Mailbox[];
   activeSyncRuns: SyncRun[];
   availableThemes: ThemeDefinition[];
@@ -614,6 +628,10 @@ export function SettingsView({
   const [form, setForm] = useState(() => emptyAccountForm());
   const [smtpForm, setSMTPForm] = useState(() => emptySMTPForm());
   const [profileForm, setProfileForm] = useState(() => profileFormForUser(user, availableThemes));
+  const [swipeDraft, setSwipeDraft] = useState(() => cloneSwipePreferences(swipePreferences));
+  const [savingSwipePreferences, setSavingSwipePreferences] = useState(false);
+  const swipeDraftDirty = useRef(false);
+  const swipeDraftUserID = useRef(user.id);
   const [editingFolderID, setEditingFolderID] = useState<number | null>(null);
   const [folderDraft, setFolderDraft] = useState<FolderSettingsDraft | null>(null);
   const [newFolderName, setNewFolderName] = useState("");
@@ -720,6 +738,14 @@ export function SettingsView({
     user.search_attachment_weight,
     user.search_compact_splitting
   ]);
+
+  useEffect(() => {
+    if (swipeDraftUserID.current !== user.id) {
+      swipeDraftUserID.current = user.id;
+      swipeDraftDirty.current = false;
+    }
+    if (!swipeDraftDirty.current) setSwipeDraft(cloneSwipePreferences(swipePreferences));
+  }, [swipePreferences, user.id]);
 
   useEffect(() => {
     setFolders((current) => current.map((folder) => {
@@ -932,6 +958,59 @@ export function SettingsView({
       await refreshChrome();
     } catch (err) {
       addToast(messageFromError(err), "error");
+    }
+  }
+
+  async function saveSwipeSettings(event: FormEvent) {
+    event.preventDefault();
+    const archiveRequired = swipeDraft.left_action === "archive" || swipeDraft.right_action === "archive";
+    const trashRequired = swipeDraft.left_action === "trash" || swipeDraft.right_action === "trash";
+    if (archiveRequired && imapAccounts.length === 0) {
+      addToast("Add an IMAP server before choosing an archive swipe action.", "error");
+      return;
+    }
+    if (trashRequired && imapAccounts.length === 0) {
+      addToast("Add an IMAP server before choosing a trash swipe action.", "error");
+      return;
+    }
+    const missingTrashAccount = trashRequired
+      ? imapAccounts.find((account) => !mailboxes.some((mailbox) => mailbox.account_id === account.id && mailbox.role === "trash"))
+      : undefined;
+    if (missingTrashAccount) {
+      addToast(`Choose a Trash folder for ${imapAccountLabel(missingTrashAccount)}.`, "error");
+      return;
+    }
+    const archiveByAccount = new Map(swipeDraft.archive_mailboxes.map((item) => [item.account_id, item.mailbox_id]));
+    const missingAccount = archiveRequired
+      ? imapAccounts.find((account) => {
+          const mailboxID = archiveByAccount.get(account.id);
+          return !mailboxes.some((mailbox) => mailbox.id === mailboxID && mailbox.account_id === account.id && isSwipeArchiveChoice(mailbox));
+        })
+      : undefined;
+    if (missingAccount) {
+      addToast(`Choose an archive folder for ${imapAccountLabel(missingAccount)}.`, "error");
+      return;
+    }
+    const accountIDs = new Set(imapAccounts.map((item) => item.id));
+    const preferences: SwipePreferences = {
+      ...swipeDraft,
+      archive_mailboxes: swipeDraft.archive_mailboxes.filter((item) =>
+        accountIDs.has(item.account_id) && mailboxes.some((mailbox) =>
+          mailbox.id === item.mailbox_id && mailbox.account_id === item.account_id && isSwipeArchiveChoice(mailbox)
+        )
+      )
+    };
+    setSavingSwipePreferences(true);
+    try {
+      const saved = await api.saveSwipePreferences(csrf, preferences);
+      swipeDraftDirty.current = false;
+      setSwipeDraft(cloneSwipePreferences(saved.swipe_preferences));
+      addToast("Swipe actions saved.");
+      await refreshChrome();
+    } catch (err) {
+      addToast(messageFromError(err), "error");
+    } finally {
+      setSavingSwipePreferences(false);
     }
   }
 
@@ -1489,6 +1568,124 @@ export function SettingsView({
     );
   }
 
+  function renderSwipeSettings() {
+    const archiveRequired = swipeDraft.left_action === "archive" || swipeDraft.right_action === "archive";
+    const archiveUnavailable = archiveRequired && imapAccounts.length === 0;
+    const trashRequired = swipeDraft.left_action === "trash" || swipeDraft.right_action === "trash";
+    const trashUnavailable = trashRequired && imapAccounts.length === 0;
+    const missingTrashAccounts = trashRequired
+      ? imapAccounts.filter((account) => !mailboxes.some((mailbox) => mailbox.account_id === account.id && mailbox.role === "trash"))
+      : [];
+    const archiveByAccount = new Map(swipeDraft.archive_mailboxes.map((item) => [item.account_id, item.mailbox_id]));
+    const archiveChoices = (accountID: number) => mailboxes
+      .filter((mailbox) => mailbox.account_id === accountID && isSwipeArchiveChoice(mailbox))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const missingArchiveAccounts = archiveRequired
+      ? imapAccounts.filter((account) => {
+          const selectedID = archiveByAccount.get(account.id);
+          return !selectedID || !archiveChoices(account.id).some((mailbox) => mailbox.id === selectedID);
+        })
+      : [];
+
+    function updateArchiveMailbox(accountID: number, mailboxID: number) {
+      swipeDraftDirty.current = true;
+      setSwipeDraft((current) => ({
+        ...current,
+        archive_mailboxes: [
+          ...current.archive_mailboxes.filter((item) => item.account_id !== accountID),
+          ...(mailboxID > 0 ? [{ account_id: accountID, mailbox_id: mailboxID }] : [])
+        ]
+      }));
+    }
+
+    function directionRow(direction: "left" | "right", label: string) {
+      const actionKey = `${direction}_action` as const;
+      const snoozeKey = `${direction}_snooze_preset` as const;
+      return (
+        <div className="swipe-direction-row">
+          <div className="swipe-direction-label">
+            <Icon name={direction === "left" ? "arrow_back" : "arrow_forward"} />
+            <strong>{label}</strong>
+          </div>
+          <div className="swipe-direction-controls">
+            <label>
+              <span>Action</span>
+              <select
+                value={swipeDraft[actionKey]}
+                onChange={(event) => {
+                  swipeDraftDirty.current = true;
+                  setSwipeDraft((current) => ({ ...current, [actionKey]: event.target.value as SwipeAction }));
+                }}
+              >
+                {swipeActionChoices.map((choice) => <option value={choice.value} key={choice.value}>{choice.label}</option>)}
+              </select>
+            </label>
+            {swipeDraft[actionKey] === "snooze" ? (
+              <label>
+                <span>Snooze until</span>
+                <select
+                  value={swipeDraft[snoozeKey]}
+                  onChange={(event) => {
+                    swipeDraftDirty.current = true;
+                    setSwipeDraft((current) => ({ ...current, [snoozeKey]: event.target.value as SwipeSnoozePreset }));
+                  }}
+                >
+                  {swipeSnoozeChoices.map((choice) => <option value={choice.value} key={choice.value}>{choice.label}</option>)}
+                </select>
+              </label>
+            ) : null}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <form className="panel swipe-settings" onSubmit={saveSwipeSettings}>
+        <div className="panel-headline">
+          <h2>Swipe actions</h2>
+        </div>
+        <div className="swipe-direction-list">
+          {directionRow("right", "Swipe right")}
+          {directionRow("left", "Swipe left")}
+        </div>
+        {trashUnavailable || missingTrashAccounts.length > 0 ? (
+          <small className="swipe-validation">{trashUnavailable ? "Add an IMAP server before using Move to trash." : "Assign a Trash role folder for every IMAP account before using Move to trash."}</small>
+        ) : null}
+        {archiveRequired ? (
+          <section className="swipe-archive-settings">
+            <h3>Archive folders</h3>
+            <div className="swipe-archive-grid">
+              {imapAccounts.map((account) => {
+                const choices = archiveChoices(account.id);
+                return (
+                  <label key={account.id}>
+                    <span>{imapAccountLabel(account)}</span>
+                    <select
+                      value={archiveByAccount.get(account.id) || 0}
+                      disabled={choices.length === 0}
+                      onChange={(event) => updateArchiveMailbox(account.id, Number(event.target.value))}
+                    >
+                      <option value={0}>{choices.length === 0 ? "No eligible folders" : "Choose a folder"}</option>
+                      {choices.map((mailbox) => <option value={mailbox.id} key={mailbox.id}>{mailbox.name}</option>)}
+                    </select>
+                  </label>
+                );
+              })}
+            </div>
+            {archiveUnavailable || missingArchiveAccounts.length > 0 ? (
+              <small className="swipe-validation">{archiveUnavailable ? "Add an IMAP server before using Archive." : "Choose an archive folder for every IMAP account."}</small>
+            ) : null}
+          </section>
+        ) : null}
+        <div className="actions">
+          <button disabled={loading || savingSwipePreferences || archiveUnavailable || trashUnavailable || missingArchiveAccounts.length > 0 || missingTrashAccounts.length > 0}>
+            {savingSwipePreferences ? "Saving..." : "Save swipe actions"}
+          </button>
+        </div>
+      </form>
+    );
+  }
+
   function renderSearchSettings() {
     return (
       <form className="panel search-tuning-settings" onSubmit={saveProfile}>
@@ -1918,6 +2115,7 @@ export function SettingsView({
         {accountSettingsSummaryNodes(identitySecurityPlugins, { csrf, user, mailboxes, navigate, addToast })}
       </div>
       {renderDisplaySettings()}
+      {renderSwipeSettings()}
       {renderSearchSettings()}
       {renderStorageSettings()}
       {renderLicenseSettings()}

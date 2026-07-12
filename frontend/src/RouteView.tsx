@@ -3,7 +3,7 @@
 
 import type React from "react";
 import type { LocationState, SecurityUnlockState, Toast } from "./appTypes";
-import type { Bootstrap, Mailbox, SyncRun, ThemeDefinition, User } from "./types";
+import type { Bootstrap, Mailbox, SwipePreferences, SyncRun, ThemeDefinition, User } from "./types";
 import { MailView, SearchView, SnoozedView } from "./features/mail/MailViews";
 import { ThreadView } from "./features/mail/ThreadView";
 import { ComposePage } from "./features/compose/ComposeViews";
@@ -54,6 +54,7 @@ export function RouteView({
   latestSyncRun,
   activeSyncRuns,
   mailGeneration,
+  swipePreferences,
   enabledPlugins,
   availableThemes,
   location,
@@ -72,6 +73,7 @@ export function RouteView({
   latestSyncRun: SyncRun | null;
   activeSyncRuns: SyncRun[];
   mailGeneration: number;
+  swipePreferences: SwipePreferences;
   enabledPlugins: string[];
   availableThemes: ThemeDefinition[];
   location: LocationState;
@@ -86,10 +88,10 @@ export function RouteView({
 }) {
   const securityEnabled = Boolean(securityUnlockPlugin(runtimePlugins.all));
   if (location.path === "/snoozes") {
-    return <SnoozedView csrf={csrf} datePrefs={user} location={location} navigate={navigate} hiddenMessageIDs={hiddenMessageIDs} mailGeneration={mailGeneration} messageSecurityPlugins={runtimePlugins.all} addToast={addToast} />;
+    return <SnoozedView csrf={csrf} datePrefs={user} location={location} navigate={navigate} hiddenMessageIDs={hiddenMessageIDs} mailboxes={mailboxes} swipePreferences={swipePreferences} mailGeneration={mailGeneration} messageSecurityPlugins={runtimePlugins.all} addToast={addToast} />;
   }
   if (location.path === "/search" || location.path.startsWith("/search/")) {
-    return <SearchView csrf={csrf} location={location} navigate={navigate} hiddenMessageIDs={hiddenMessageIDs} datePrefs={user} activeSyncRuns={activeSyncRuns} messageSecurityPlugins={runtimePlugins.all} searchActionPlugins={runtimePlugins.all} addToast={addToast} />;
+    return <SearchView csrf={csrf} location={location} navigate={navigate} hiddenMessageIDs={hiddenMessageIDs} datePrefs={user} mailboxes={mailboxes} swipePreferences={swipePreferences} activeSyncRuns={activeSyncRuns} messageSecurityPlugins={runtimePlugins.all} searchActionPlugins={runtimePlugins.all} addToast={addToast} />;
   }
   if (location.path.startsWith("/messages/")) {
     return (
@@ -121,7 +123,7 @@ export function RouteView({
     if (rendered) return rendered;
   }
   if (location.path === "/settings/account" || location.path.startsWith("/settings/account/")) {
-    return <SettingsView csrf={csrf} user={user} mailboxes={mailboxes} activeSyncRuns={activeSyncRuns} availableThemes={availableThemes} location={location} navigate={navigate} refreshChrome={refreshChrome} identitySecurityPlugins={runtimePlugins.all} addToast={addToast} />;
+    return <SettingsView csrf={csrf} user={user} mailboxes={mailboxes} swipePreferences={swipePreferences} activeSyncRuns={activeSyncRuns} availableThemes={availableThemes} location={location} navigate={navigate} refreshChrome={refreshChrome} identitySecurityPlugins={runtimePlugins.all} addToast={addToast} />;
   }
   if (location.path === "/admin/users" && user.is_admin) {
     return <AdminUsersView csrf={csrf} refreshChrome={refreshChrome} addToast={addToast} />;
@@ -141,6 +143,7 @@ export function RouteView({
       latestSyncRun={latestSyncRun}
       activeSyncRuns={activeSyncRuns}
       mailGeneration={mailGeneration}
+      swipePreferences={swipePreferences}
       refreshChrome={refreshChrome}
       addToast={addToast}
       messageSecurityPlugins={runtimePlugins.all}

@@ -20,6 +20,7 @@ import type {
   SMTPAccount,
   SearchExplanation,
   StorageStats,
+  SwipePreferences,
   SyncFolder,
   SyncRun,
   ThreadMessage,
@@ -445,6 +446,8 @@ export const api = {
     search_compact_splitting: boolean;
   }) =>
     postJSON<{ user: User }>("/api/profile", csrf, profile),
+  saveSwipePreferences: (csrf: string, preferences: SwipePreferences) =>
+    postJSON<{ swipe_preferences: SwipePreferences }>("/api/profile/swipes", csrf, preferences),
   requestPasswordReset: (csrf: string, email: string) =>
     postJSON<{ ok: boolean }>("/api/password-reset/request", csrf, { email }),
   completePasswordReset: (csrf: string, token: string, password: string) =>
