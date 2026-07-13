@@ -714,11 +714,13 @@ export default function App() {
 
   if (!bootstrap) {
     return (
-      <div className="auth-page">
-        <div className="auth-brand"><LogoMark />rolltop</div>
-        {bootError ? <div className="error">{bootError}</div> : null}
+      <main className="startup-page" aria-busy={!bootError} aria-label={!bootError ? "Loading Rolltop" : undefined}>
+        <div className="startup-content">
+          <LogoMark className="startup-logo" />
+          {bootError ? <div className="error">{bootError}</div> : null}
+        </div>
         <ToastStack toasts={toasts} onDismiss={removeToast} />
-      </div>
+      </main>
     );
   }
 

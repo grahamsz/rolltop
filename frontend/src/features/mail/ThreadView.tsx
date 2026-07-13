@@ -1537,7 +1537,7 @@ export function ThreadView({
   return (
     <>
       <div className="content-head">
-    <div className="thread-head-main">
+        <div className="thread-head-main">
           {!androidNativeAvailable() ? (
             <button className="ghost" type="button" onClick={() => navigate(backURL)} title="Back to results">
               <Icon name="arrow_back" />
@@ -1548,16 +1548,6 @@ export function ThreadView({
           </h1>
           {mailbox ? <span className="label-pill">{mailbox.name}</span> : null}
         </div>
-    <div className="thread-header-actions">
-      {snoozedUntil && Date.parse(snoozedUntil) > Date.now() ? (
-        <button className="secondary" type="button" disabled={loading} onClick={() => void unsnoozeThread()} title="Unsnooze conversation">
-          <Icon name="clock" />
-          <span>Unsnooze</span>
-        </button>
-      ) : (
-        <SnoozeControl datePrefs={datePrefs} className="secondary" disabled={loading || currentMessageID <= 0} onSnooze={snoozeThread} />
-      )}
-    </div>
       </div>
       {error ? <div className="error">{error}</div> : null}
       {loading ? <div className="panel muted">Loading conversation...</div> : null}
@@ -1750,6 +1740,25 @@ export function ThreadView({
                           <Icon name="attach_file" />
                           Forward as attachment
                         </button>
+                        {snoozedUntil && Date.parse(snoozedUntil) > Date.now() ? (
+                          <button
+                            type="button"
+                            disabled={loading}
+                            onClick={(event) => {
+                              event.currentTarget.closest("details")?.removeAttribute("open");
+                              void unsnoozeThread();
+                            }}
+                          >
+                            <Icon name="clock" />
+                            Unsnooze
+                          </button>
+                        ) : (
+                          <SnoozeControl
+                            datePrefs={datePrefs}
+                            disabled={loading || currentMessageID <= 0}
+                            onSnooze={snoozeThread}
+                          />
+                        )}
                         <button type="button" onClick={(event) => void viewOriginal(event, item)}>
                           <Icon name="file_text" />
                           View original

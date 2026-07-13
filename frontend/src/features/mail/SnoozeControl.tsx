@@ -1,6 +1,7 @@
 // File overview: Reusable snooze picker with preset and custom reminder times.
 
 import { useMemo, useState } from "react";
+import type { MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import type { DatePrefs } from "../../appTypes";
 import { Icon } from "../../components/Icon";
@@ -58,6 +59,11 @@ export function SnoozeControl({
   const presets = useMemo(() => snoozePresets(new Date(), datePrefs), [open, datePrefs?.date_locale, datePrefs?.date_format]);
   const [custom, setCustom] = useState(() => localDateTimeInputValue(defaultSnoozeUntil()));
 
+  function openPicker(event: MouseEvent<HTMLButtonElement>) {
+    event.currentTarget.closest("details")?.removeAttribute("open");
+    setOpen(true);
+  }
+
   async function choose(until: Date) {
     if (busy || !until || until.getTime() <= Date.now()) return;
     setBusy(true);
@@ -108,7 +114,7 @@ export function SnoozeControl({
 
   return (
     <>
-      <button className={className} type="button" disabled={disabled || busy} onClick={() => setOpen(true)} title="Snooze">
+      <button className={className} type="button" disabled={disabled || busy} onClick={openPicker} title={label}>
         <Icon name="clock" />
         <span>{label}</span>
       </button>

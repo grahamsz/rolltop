@@ -23,6 +23,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -201,6 +202,33 @@ class MainActivity : ComponentActivity() {
         val view = WebView(this)
         webView = view
         val serverOrigin = RolltopPrefs.serverUrl(this)
+        val loadingOverlay = FrameLayout(this).apply {
+            setBackgroundColor(SHELL_BACKGROUND)
+            isClickable = true
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            contentDescription = getString(R.string.app_name)
+            addView(
+                ImageView(this@MainActivity).apply {
+                    setImageResource(R.drawable.ic_launcher_foreground)
+                    scaleType = ImageView.ScaleType.CENTER_INSIDE
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                },
+                FrameLayout.LayoutParams(dp(144), dp(144), Gravity.CENTER)
+            )
+        }
+        var loadingOverlayDismissed = false
+        fun dismissLoadingOverlay(delayMillis: Long = 0) {
+            val dismiss = Runnable {
+                if (loadingOverlayDismissed || loadingOverlay.parent == null) return@Runnable
+                loadingOverlayDismissed = true
+                loadingOverlay.animate()
+                    .alpha(0f)
+                    .setDuration(120)
+                    .withEndAction { (loadingOverlay.parent as? ViewGroup)?.removeView(loadingOverlay) }
+                    .start()
+            }
+            if (delayMillis > 0) view.postDelayed(dismiss, delayMillis) else dismiss.run()
+        }
         installNativeShareServiceWorkerInterceptor(serverOrigin)
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
@@ -240,12 +268,14 @@ class MainActivity : ComponentActivity() {
             override fun onPageCommitVisible(view: WebView, url: String) {
                 mainFrameCommitted = true
                 RolltopPrefs.rememberVisitedUrl(this@MainActivity, url)
+                if (RolltopPrefs.internalLocation(serverOrigin, url) != null) dismissLoadingOverlay(350)
             }
 
             override fun onPageFinished(view: WebView, url: String) {
                 RolltopPrefs.rememberVisitedUrl(this@MainActivity, url)
                 NativePushRegistration.maybeRegister(this@MainActivity)
                 PushSubscriptionWorker.schedule(this@MainActivity)
+                if (RolltopPrefs.internalLocation(serverOrigin, url) != null) dismissLoadingOverlay()
             }
 
             override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
@@ -292,6 +322,7 @@ class MainActivity : ComponentActivity() {
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.WHITE)
             addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(loadingOverlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
         applySystemBarInsets(root)
         setContentView(root)

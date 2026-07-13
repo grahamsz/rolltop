@@ -1,3 +1,25 @@
+.startup-page {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  background: var(--bg);
+}
+
+.startup-content {
+  width: min(100%, 460px);
+  display: grid;
+  justify-items: center;
+  gap: 24px;
+}
+
+.startup-logo {
+  width: 112px;
+  height: 118px;
+  display: block;
+}
+
 .auth-page {
   max-width: 460px;
   margin: 10vh auto 0;
