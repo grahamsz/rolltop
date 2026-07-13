@@ -301,10 +301,13 @@ class RolltopLoadingView @JvmOverloads constructor(
     companion object {
         const val DURATION_MS = 1_350L
 
-        private const val VIEWBOX_LEFT = -30f
-        private const val VIEWBOX_TOP = -110f
-        private const val VIEWBOX_WIDTH = 126.066406f
-        private const val VIEWBOX_HEIGHT = 289.11528f
+        private const val LOCKUP_SCALE = 0.70f
+        private const val VIEWBOX_CENTER_X = 33.033203f
+        private const val VIEWBOX_CENTER_Y = 34.55764f
+        private const val VIEWBOX_WIDTH = 126.066406f / LOCKUP_SCALE
+        private const val VIEWBOX_HEIGHT = 289.11528f / LOCKUP_SCALE
+        private const val VIEWBOX_LEFT = VIEWBOX_CENTER_X - VIEWBOX_WIDTH / 2f
+        private const val VIEWBOX_TOP = VIEWBOX_CENTER_Y - VIEWBOX_HEIGHT / 2f
         private const val OFFSCREEN_HEIGHT_FRACTION = 0.70f
 
         private const val BOTTOM_ENTRANCE_START = 0.01f
