@@ -1,0 +1,7 @@
+<resources>
+    <style name="RolltopStartingTheme" parent="@style/RolltopTheme">
+        <item name="android:windowSplashScreenBackground">@color/shell_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_screen_blank</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+    </style>
+</resources>

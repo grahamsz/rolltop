@@ -13,7 +13,6 @@ import { shouldIgnoreMailShortcut } from "../../lib/keyboard";
 import { mailRoute, mailURL, searchRoute, searchURL, currentLocation } from "../../lib/routes";
 import { createPluginSet } from "../../plugins/registry";
 import { SearchAutocomplete, useSearchAutocomplete } from "./SearchAutocomplete";
-import rolltopLogotypeURL from "../../assets/rolltop-logotype.png";
 
 /**
  * AppShell renders everything that survives route changes after login: topbar,
@@ -947,11 +946,12 @@ function Sidebar({
       <div className="sidebar-mobile-head">
         <a
           href="/mail"
-          className="sidebar-mobile-brand"
+          className="brand sidebar-mobile-brand"
           aria-label="Rolltop - All Mail"
           onClick={(event) => open(event, "/mail")}
         >
-          <img className="sidebar-mobile-logotype" src={rolltopLogotypeURL} alt="" />
+          <LogoMark />
+          <span className="brand-wordmark">rolltop</span>
         </a>
         <button className="ghost" type="button" title="Close folders" aria-label="Close folders" onClick={onClose}><Icon name="close" /></button>
       </div>

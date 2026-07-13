@@ -7,4 +7,6 @@
         <item name="android:navigationBarColor">@color/shell_background</item>
         <item name="android:colorAccent">#1f5f46</item>
     </style>
+
+    <style name="RolltopStartingTheme" parent="@style/RolltopTheme" />
 </resources>
