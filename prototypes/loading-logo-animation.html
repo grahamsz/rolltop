@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rolltop loading animation study</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #f2f0eb;
+      --paper: #f7faf8;
+      --orange: #c46b44;
+      --arch: #c56c45;
+      --navy: #151f2e;
+      --duration: 1500ms;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+    }
+
+    body {
+      min-height: 100vh;
+      min-height: 100dvh;
+      overflow: hidden;
+      background: var(--page);
+      color: var(--navy);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      min-height: 100vh;
+      min-height: 100dvh;
+    }
+
+    .stage {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      overflow: hidden;
+    }
+
+    .stage svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      overflow: hidden;
+    }
+
+    .band,
+    .curtain,
+    .core,
+    .arch {
+      transform-box: view-box;
+      transform-origin: center;
+    }
+
+    .band-top {
+      transform: translateY(-150px);
+    }
+
+    .band-bottom {
+      transform: translateY(150px);
+    }
+
+    .curtain-top {
+      transform: translateY(-190px);
+    }
+
+    .curtain-bottom {
+      transform: translateY(190px);
+    }
+
+    .core {
+      opacity: 0;
+    }
+
+    .arch {
+      opacity: 0;
+      stroke-dasharray: 1;
+      stroke-dashoffset: -1;
+    }
+
+    .is-playing .band-top {
+      animation: band-from-top var(--duration) cubic-bezier(.22, .72, .2, 1) both;
+    }
+
+    .is-playing .band-bottom {
+      animation: band-from-bottom var(--duration) cubic-bezier(.22, .72, .2, 1) both;
+    }
+
+    .is-playing .curtain-top {
+      animation: curtain-from-top var(--duration) cubic-bezier(.22, .72, .2, 1) both;
+    }
+
+    .is-playing .curtain-bottom {
+      animation: curtain-from-bottom var(--duration) cubic-bezier(.22, .72, .2, 1) both;
+    }
+
+    .is-playing .core {
+      animation: reveal-core var(--duration) cubic-bezier(.22, .72, .2, 1) both;
+    }
+
+    .is-playing .arch {
+      animation: draw-arch var(--duration) cubic-bezier(.42, 0, .18, 1) both;
+    }
+
+    .is-playing.is-preview .band,
+    .is-playing.is-preview .curtain,
+    .is-playing.is-preview .core,
+    .is-playing.is-preview .arch {
+      animation-delay: var(--preview-time);
+      animation-play-state: paused;
+    }
+
+    @keyframes band-from-top {
+      0%, 4% {
+        transform: translateY(-150px);
+      }
+      27%, 100% {
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes band-from-bottom {
+      0%, 4% {
+        transform: translateY(150px);
+      }
+      27%, 100% {
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes curtain-from-top {
+      0%, 34% {
+        transform: translateY(-190px);
+      }
+      62%, 100% {
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes curtain-from-bottom {
+      0%, 34% {
+        transform: translateY(190px);
+      }
+      62%, 100% {
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes reveal-core {
+      0%, 31% {
+        opacity: 0;
+      }
+      32%, 100% {
+        opacity: 1;
+      }
+    }
+
+    @keyframes draw-arch {
+      0%, 61% {
+        opacity: 0;
+        stroke-dashoffset: -1;
+      }
+      62% {
+        opacity: 1;
+        stroke-dashoffset: -1;
+      }
+      86%, 100% {
+        opacity: 1;
+        stroke-dashoffset: 0;
+      }
+    }
+
+    footer {
+      position: fixed;
+      inset: auto 0 0;
+      min-height: 76px;
+      display: grid;
+      place-items: center end;
+      padding: 12px max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+    }
+
+    button {
+      min-width: 92px;
+      min-height: 44px;
+      border: 1px solid #b7b3aa;
+      border-radius: 6px;
+      padding: 10px 16px;
+      background: var(--paper);
+      color: var(--navy);
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: var(--orange);
+      background: #fff;
+    }
+
+    button:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--orange) 45%, transparent);
+      outline-offset: 3px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .band,
+      .curtain {
+        display: none;
+      }
+
+      .core {
+        opacity: 1;
+        animation: none !important;
+      }
+
+      .arch {
+        opacity: 1;
+        stroke-dashoffset: 0;
+        animation: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="stage is-playing" id="stage" aria-label="Animated Rolltop logo">
+      <svg viewBox="-30 -110 126.066406 289.11528" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="logo-title">
+        <title id="logo-title">Rolltop</title>
+
+        <g class="band band-top" fill="#c46b44">
+          <rect x="11.257" y="-100" width="43.466" height="122" />
+          <g transform="translate(509.99438 175.90039)">
+            <path d="m-476.96253-164.87683c-11.12016.00024-20.09174 7.892-21.73045 18.48931l19.27324 14.89573c1.30333 1.00731 3.25815 1.00731 4.56148 0l19.58588-15.13706c-1.73637-10.47584-10.65408-18.24774-21.68963-18.24798z" />
+          </g>
+        </g>
+
+        <g class="band band-bottom" fill="#151f2e">
+          <rect x="11.025" y="54" width="44.015" height="116" />
+          <g transform="translate(509.99438 175.90039)">
+            <path d="m-454.95974-139.81893-15.33653 11.85302c-3.75097 2.89903-9.93295 2.89799-13.68392-.001l-14.98513-11.58172-.00052.56844-.004 32.19493h44.0154l-.004-32.19286z" />
+          </g>
+        </g>
+
+        <g class="curtain curtain-top">
+          <rect x="10" y="-122" width="46.066" height="191.2" fill="#f2f0eb" />
+        </g>
+        <g class="curtain curtain-bottom">
+          <rect x="10" y="0" width="46.066" height="191.2" fill="#f2f0eb" />
+        </g>
+
+        <g class="core" transform="translate(509.99438 175.90039)">
+          <path fill="#151f2e" d="m-454.95974-139.81893-15.33653 11.85302c-3.75097 2.89903-9.93295 2.89799-13.68392-.001l-14.98513-11.58172-.00052.56844-.004 32.19493h44.0154l-.004-32.19286z" />
+          <path fill="#c46b44" d="m-476.96253-164.87683c-11.12016.00024-20.09174 7.892-21.73045 18.48931l19.27324 14.89573c1.30333 1.00731 3.25815 1.00731 4.56148 0l19.58588-15.13706c-1.73637-10.47584-10.65408-18.24774-21.68963-18.24798z" />
+        </g>
+
+        <g transform="translate(509.99438 175.90039)">
+          <path
+            class="arch"
+            pathLength="1"
+            fill="none"
+            style="stroke: var(--arch)"
+            stroke-width="5.5"
+            stroke-linecap="round"
+            d="m-446.67797-109.53511-.008-29.44922v-.002l-.006-3.89258c0-16.75746-13.51402-30.27148-30.27148-30.27148h.00056c-16.75746 0-30.27149 13.51402-30.27149 30.27148l-.006 3.89258v.002l-.004 29.44922"
+          />
+        </g>
+      </svg>
+    </div>
+  </main>
+  <footer>
+    <button id="replay" type="button">Replay</button>
+  </footer>
+  <script>
+    const stage = document.getElementById("stage");
+    const replay = document.getElementById("replay");
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const previewTime = Number(new URLSearchParams(window.location.search).get("time"));
+    const animationDuration = 1500;
+
+    if (Number.isFinite(previewTime) && previewTime > 0) {
+      stage.style.setProperty("--preview-time", `${-Math.min(previewTime, animationDuration)}ms`);
+      stage.classList.add("is-preview");
+    }
+
+    function play() {
+      if (reducedMotion.matches) return;
+      stage.classList.remove("is-preview");
+      stage.classList.remove("is-playing");
+      void stage.offsetWidth;
+      stage.classList.add("is-playing");
+    }
+
+    replay.addEventListener("click", play);
+  </script>
+</body>
+</html>
