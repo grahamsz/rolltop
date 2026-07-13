@@ -803,6 +803,7 @@ export function ComposeBox({
                 aria-label="Subject"
                 value={form.subject}
                 onChange={(event) => setField("subject", event.target.value)}
+                spellCheck
                 required
               />
             </div>
@@ -861,6 +862,7 @@ export function ComposeBox({
             data-placeholder="Write a message"
             onInput={handleEditorInput}
             onPaste={handleEditorPaste}
+            spellCheck
             suppressContentEditableWarning
           />
           {composeSecurity.transform.active ? (

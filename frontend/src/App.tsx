@@ -277,10 +277,10 @@ export default function App() {
     if (!bootstrappedFromHTMLRef.current) void refreshBootstrap();
   }, [refreshBootstrap]);
 
-  // The Android wrapper can keep a SPA document alive across app resumes. Adopt
-  // a newly deployed server bundle only when its hashed shell assets change.
+  // A browser or Android wrapper can keep a SPA document alive across server
+  // deployments. Check only after a real background/foreground transition and
+  // adopt a newly deployed bundle when its hashed shell assets change.
   useEffect(() => {
-    if (!androidNativeAvailable()) return;
     let cancelled = false;
     let observedHidden = document.visibilityState === "hidden";
     async function checkShell() {

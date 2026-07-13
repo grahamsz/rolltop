@@ -249,17 +249,16 @@ function ReportedAuthenticationIndicators({ indicators }: { indicators?: Message
   const results = reportedAuthenticationMethods.flatMap(({ key, label }) => {
     const result = reported?.[key];
     return result ? [{ key, label, result }] : [];
-  });
+  }).filter(({ result }) => authenticationResultClass(result.result) === "attention");
   if (results.length === 0) return null;
-  const hasAttention = results.some(({ result }) => authenticationResultClass(result.result) === "attention");
   const tooltip = [
     "Authentication results reported by message headers. Rolltop did not independently verify them.",
     ...results.map(({ label, result }) => authenticationResultTooltip(label, result))
   ].join("\n");
   return (
-    <span className={`reported-authentication ${hasAttention ? "attention" : ""}`} title={tooltip} aria-label={tooltip}>
-      <Icon name={hasAttention ? "shield_warning" : "shield"} weight={hasAttention ? "fill" : "regular"} />
-      <span className="reported-authentication-label">Reported</span>
+    <span className="reported-authentication attention" title={tooltip} aria-label={tooltip} role="note">
+      <Icon name="shield_warning" weight="fill" />
+      <span className="reported-authentication-label">Authentication warning</span>
       {results.map(({ key, label, result }) => (
         <span className={`reported-authentication-result ${authenticationResultClass(result.result)}`} key={key}>
           {label} {result.result}

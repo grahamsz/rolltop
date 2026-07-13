@@ -382,6 +382,10 @@
     -webkit-line-clamp: 1;
   }
 
+  .thread-summary {
+    position: relative;
+  }
+
   .thread-body {
     margin-left: 12px;
     margin-right: 12px;
@@ -411,10 +415,19 @@
     grid-row: 1;
   }
 
+  .message-details {
+    position: static;
+  }
+
   .message-details dl {
-    left: auto;
-    right: 0;
-    max-width: calc(100vw - 28px);
+    left: 8px;
+    right: 8px;
+    top: calc(100% + 5px);
+    width: auto;
+    max-width: none;
+    max-height: min(60dvh, 420px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     grid-template-columns: max-content minmax(120px, 1fr);
   }
 
