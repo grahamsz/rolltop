@@ -217,17 +217,14 @@ class MainActivity : ComponentActivity() {
             )
         }
         var loadingOverlayDismissed = false
-        fun dismissLoadingOverlay(delayMillis: Long = 0) {
-            val dismiss = Runnable {
-                if (loadingOverlayDismissed || loadingOverlay.parent == null) return@Runnable
-                loadingOverlayDismissed = true
-                loadingOverlay.animate()
-                    .alpha(0f)
-                    .setDuration(120)
-                    .withEndAction { (loadingOverlay.parent as? ViewGroup)?.removeView(loadingOverlay) }
-                    .start()
-            }
-            if (delayMillis > 0) view.postDelayed(dismiss, delayMillis) else dismiss.run()
+        fun dismissLoadingOverlay() {
+            if (loadingOverlayDismissed || loadingOverlay.parent == null) return
+            loadingOverlayDismissed = true
+            loadingOverlay.animate()
+                .alpha(0f)
+                .setDuration(120)
+                .withEndAction { (loadingOverlay.parent as? ViewGroup)?.removeView(loadingOverlay) }
+                .start()
         }
         installNativeShareServiceWorkerInterceptor(serverOrigin)
         CookieManager.getInstance().setAcceptCookie(true)
@@ -268,14 +265,19 @@ class MainActivity : ComponentActivity() {
             override fun onPageCommitVisible(view: WebView, url: String) {
                 mainFrameCommitted = true
                 RolltopPrefs.rememberVisitedUrl(this@MainActivity, url)
-                if (RolltopPrefs.internalLocation(serverOrigin, url) != null) dismissLoadingOverlay(350)
             }
 
             override fun onPageFinished(view: WebView, url: String) {
                 RolltopPrefs.rememberVisitedUrl(this@MainActivity, url)
                 NativePushRegistration.maybeRegister(this@MainActivity)
                 PushSubscriptionWorker.schedule(this@MainActivity)
-                if (RolltopPrefs.internalLocation(serverOrigin, url) != null) dismissLoadingOverlay()
+                if (RolltopPrefs.internalLocation(serverOrigin, url) != null) {
+                    view.postVisualStateCallback(System.nanoTime(), object : WebView.VisualStateCallback() {
+                        override fun onComplete(requestId: Long) {
+                            dismissLoadingOverlay()
+                        }
+                    })
+                }
             }
 
             override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
@@ -330,7 +332,7 @@ class MainActivity : ComponentActivity() {
 
         val explicitTarget = explicitUrlForIntent(sourceIntent)
         val restored = explicitTarget == null && restoredState != null && view.restoreState(restoredState) != null
-        if (!restored) view.loadUrl(explicitTarget ?: urlForIntent(sourceIntent))
+        if (restored) view.reload() else view.loadUrl(explicitTarget ?: urlForIntent(sourceIntent))
         if (explicitTarget != null) consumeNavigationIntent()
     }
 
