@@ -182,6 +182,11 @@
   --swipe-action-label-opacity: 0;
   --swipe-action-start-shift: -12px;
   --swipe-action-end-shift: 12px;
+  --swipe-action-surface: var(--surface-subtle);
+  --swipe-action-ink: var(--muted);
+  --swipe-action-ready-surface: var(--surface-ink);
+  --swipe-action-ready-ink: #fff;
+  --swipe-row-height: 72px;
   position: relative;
   overflow: hidden;
   background: var(--surface-subtle);
@@ -200,10 +205,6 @@
   pointer-events: none;
 
   > .message-swipe-action {
-    --swipe-action-surface: var(--surface-subtle);
-    --swipe-action-ink: var(--muted);
-    --swipe-action-ready-surface: var(--surface-ink);
-    --swipe-action-ready-ink: #fff;
     width: 112px;
     flex: 0 0 112px;
     display: flex;
@@ -247,6 +248,7 @@
   align-items: center;
   justify-content: center;
   border-radius: 50%;
+  background: rgba(21, 31, 46, .08);
   background: color-mix(in srgb, currentColor 12%, transparent);
   transform: scale(var(--swipe-action-icon-scale));
   will-change: transform;
@@ -362,6 +364,32 @@
   }
 }
 
+.message-swipe-shell.swipe-phase-exiting {
+  height: var(--swipe-row-height);
+  pointer-events: none;
+  animation: message-swipe-shell-collapse .32s cubic-bezier(.4, 0, .2, 1) forwards;
+  will-change: height;
+
+  .message-row {
+    opacity: 0;
+    transition: transform .28s cubic-bezier(.4, 0, .2, 1), opacity .2s ease;
+    will-change: transform, opacity;
+  }
+
+  &.revealing-start .message-swipe-action-start,
+  &.revealing-end .message-swipe-action-end {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    background: var(--swipe-action-ready-surface);
+    color: var(--swipe-action-ready-ink);
+
+    .message-swipe-action-content {
+      opacity: 1;
+    }
+  }
+}
+
 @keyframes message-swipe-action-pop {
   0% {
     transform: scale(1);
@@ -376,13 +404,25 @@
   }
 }
 
+@keyframes message-swipe-shell-collapse {
+  0%,
+  58% {
+    height: var(--swipe-row-height);
+  }
+
+  100% {
+    height: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .message-swipe-shell .message-row,
   .message-swipe-action,
   .message-swipe-action-content,
   .message-swipe-action-icon,
   .message-swipe-action-icon .icon,
-  .message-swipe-action-content small {
+  .message-swipe-action-content small,
+  .message-swipe-shell.swipe-phase-exiting {
     animation: none;
     transition: none;
   }

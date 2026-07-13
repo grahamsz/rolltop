@@ -864,17 +864,20 @@ const messageSwipeMaxDistance = 112;
 const messageSwipeCommitDistance = 68;
 const messageSwipeCommitHoldMS = 170;
 const messageSwipeSettleMS = 210;
+const messageSwipeExitMS = 320;
 
 type MessageSwipeState = {
   id: number;
   deltaX: number;
   visualDeltaX: number;
   direction: "start" | "end";
-  phase: "tracking" | "committing" | "settling";
+  phase: "tracking" | "committing" | "settling" | "exiting";
   committed: boolean;
+  rowHeight?: number;
 };
 
-function messageSwipeAffordanceStyle(deltaX: number): CSSProperties | undefined {
+function messageSwipeAffordanceStyle(state: MessageSwipeState): CSSProperties | undefined {
+  const deltaX = state.visualDeltaX;
   const distance = Math.abs(deltaX);
   if (distance === 0) return undefined;
   const progress = Math.min(distance / messageSwipeCommitDistance, 1);
@@ -882,13 +885,15 @@ function messageSwipeAffordanceStyle(deltaX: number): CSSProperties | undefined 
   const shift = 12 * (1 - progress);
   const iconScale = progress < 1 ? .76 + (.24 * progress) : 1.08 - (.08 * overshoot);
   const labelProgress = Math.min(Math.max((distance - 18) / (messageSwipeCommitDistance - 18), 0), 1);
-  return {
+  const style = {
     "--swipe-action-content-opacity": (.28 + (.72 * progress)).toFixed(3),
     "--swipe-action-icon-scale": iconScale.toFixed(3),
     "--swipe-action-label-opacity": labelProgress.toFixed(3),
     "--swipe-action-start-shift": `-${shift.toFixed(1)}px`,
     "--swipe-action-end-shift": `${shift.toFixed(1)}px`
-  } as CSSProperties;
+  } as CSSProperties & Record<string, string>;
+  if (state.rowHeight) style["--swipe-row-height"] = `${state.rowHeight}px`;
+  return style;
 }
 
 // MessageList is shared by mailbox and search pages. It owns local row selection,
@@ -947,6 +952,7 @@ function MessageList({
   const swipeCompletionTimer = useRef<number | null>(null);
   const pendingSwipeActionIDs = useRef<Set<number>>(new Set());
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const swipeDismissTimers = useRef<Map<number, number>>(new Map());
   const keyboardIndexRef = useRef<number | null>(null);
   const swipeSession = useRef<{ id: number; startX: number; startY: number; lastX: number; lastY: number; active: boolean; blocked: boolean } | null>(null);
   const suppressRowClickUntil = useRef(0);
@@ -976,6 +982,8 @@ function MessageList({
     return () => {
       moveOutTimers.current.forEach((timer) => window.clearTimeout(timer));
       moveOutTimers.current.clear();
+      swipeDismissTimers.current.forEach((timer) => window.clearTimeout(timer));
+      swipeDismissTimers.current.clear();
       if (swipeCompletionTimer.current !== null) window.clearTimeout(swipeCompletionTimer.current);
     };
   }, []);
@@ -1154,6 +1162,60 @@ function MessageList({
     });
   }
 
+  function settleSwipeRow(messageID: number) {
+    setSwipeState((current) => current?.id === messageID
+      ? { ...current, deltaX: 0, phase: "settling", committed: false }
+      : current);
+    clearSwipeStateAfter(messageID, messageSwipeSettleMS);
+  }
+
+  function beginSwipeDismiss(messageID: number, ids: number[], direction: "start" | "end") {
+    const existingTimer = swipeDismissTimers.current.get(messageID);
+    if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) {
+      optimisticallyDismiss(ids);
+      setSwipeState((current) => current?.id === messageID ? null : current);
+      return;
+    }
+    const row = rowRefs.current.get(messageID);
+    const bounds = row?.getBoundingClientRect();
+    const distance = Math.max(bounds?.width || 0, window.innerWidth) + 24;
+    const rowHeight = Math.ceil(bounds?.height || row?.offsetHeight || 72);
+    const exitDelta = direction === "start" ? distance : -distance;
+    setSelectedIDs((current) => {
+      const next = new Set(current);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
+    setSwipeState((current) => current?.id === messageID
+      ? {
+          ...current,
+          deltaX: exitDelta,
+          visualDeltaX: exitDelta,
+          direction,
+          phase: "exiting",
+          committed: true,
+          rowHeight
+        }
+      : current);
+    const timer = window.setTimeout(() => {
+      swipeDismissTimers.current.delete(messageID);
+      optimisticallyDismiss(ids);
+      setSwipeState((current) => current?.id === messageID ? null : current);
+    }, messageSwipeExitMS);
+    swipeDismissTimers.current.set(messageID, timer);
+  }
+
+  function cancelSwipeDismiss(messageID: number) {
+    const timer = swipeDismissTimers.current.get(messageID);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      swipeDismissTimers.current.delete(messageID);
+      settleSwipeRow(messageID);
+    }
+  }
+
   function removePendingSwipeMoveIDs(ids: number[]) {
     setPendingSwipeMoveIDs((current) => {
       const next = new Set(current);
@@ -1285,13 +1347,14 @@ function MessageList({
     }
   }
 
-  function snoozeConversationBySwipe(conversation: Conversation, until: Date) {
+  function snoozeConversationBySwipe(conversation: Conversation, until: Date, direction: "start" | "end"): boolean {
     const ids = [conversation.message.id];
     const rowID = conversation.message.id;
     const registered = deferSwipeMutation(
       rowID,
       `Message snoozed until ${displaySnoozeUntil(until, datePrefs)}.`,
       () => {
+        cancelSwipeDismiss(rowID);
         if (!snoozedView) {
           removePendingSwipeSnoozeIDs(ids);
           restoreDismissed(ids);
@@ -1305,6 +1368,7 @@ function MessageList({
             removePendingSwipeSnoozeIDs(ids);
           }
         } catch (err) {
+          cancelSwipeDismiss(rowID);
           if (!snoozedView) {
             removePendingSwipeSnoozeIDs(ids);
             restoreDismissed(ids);
@@ -1313,19 +1377,20 @@ function MessageList({
         }
       }
     );
-    if (!registered) return;
+    if (!registered) return false;
     if (!snoozedView) {
       setPendingSwipeSnoozeIDs((current) => new Set([...current, ...ids]));
-      optimisticallyDismiss(ids);
+      beginSwipeDismiss(rowID, ids, direction);
     }
     clearSelection();
+    return !snoozedView;
   }
 
-  function moveConversationBySwipe(conversation: Conversation, action: "trash" | "archive") {
+  function moveConversationBySwipe(conversation: Conversation, action: "trash" | "archive", direction: "start" | "end"): boolean {
     const accountIDs = conversationTransferAccountIDs(conversation);
     if (accountIDs.length !== 1) {
       addToast(`Cannot ${action} a conversation containing messages from multiple accounts.`, "error");
-      return;
+      return false;
     }
     const accountID = accountIDs[0];
     const target = action === "trash"
@@ -1343,11 +1408,11 @@ function MessageList({
           : "Choose an Archive folder for this account in swipe settings.",
         "error"
       );
-      return;
+      return false;
     }
     if (conversation.message.mailbox_id === target.id) {
       addToast(`This conversation is already in ${target.name}.`);
-      return;
+      return false;
     }
     const messageIDs = conversationTransferMessageIDs(conversation);
     const dismissedIDs = messageIDs;
@@ -1355,6 +1420,7 @@ function MessageList({
       conversation.message.id,
       `Moved ${messageIDs.length === 1 ? "message" : `${messageIDs.length.toLocaleString()} messages`} to ${target.name}.`,
       () => {
+        cancelSwipeDismiss(conversation.message.id);
         removePendingSwipeMoveIDs(dismissedIDs);
         restoreDismissed(dismissedIDs);
       },
@@ -1375,39 +1441,47 @@ function MessageList({
         } catch (err) {
           removePendingSwipeMoveIDs(dismissedIDs);
           if (movedIDs.length > 0) onMessagesMoved(movedIDs);
-          else restoreDismissed(dismissedIDs);
+          else {
+            cancelSwipeDismiss(conversation.message.id);
+            restoreDismissed(dismissedIDs);
+          }
           const partial = movedIDs.length > 0 ? `${movedIDs.length.toLocaleString()} moved, but the remaining action failed` : `${action === "trash" ? "Move to trash" : "Archive"} failed`;
           addToast(`${partial}: ${messageFromError(err)}`, "error");
         }
       }
     );
-    if (!registered) return;
+    if (!registered) return false;
     setPendingSwipeMoveIDs((current) => new Set([...current, ...dismissedIDs]));
-    optimisticallyDismiss(dismissedIDs);
+    beginSwipeDismiss(conversation.message.id, dismissedIDs, direction);
+    return true;
   }
 
-  async function executeSwipeAction(conversation: Conversation, action: SwipeAction, snoozePreset: SwipePreferences["left_snooze_preset"]) {
-    if (readStateBusy || snoozeBusy || swipeActionBusy || pendingSwipeActionIDs.current.has(conversation.message.id)) return;
+  async function executeSwipeAction(
+    conversation: Conversation,
+    action: SwipeAction,
+    snoozePreset: SwipePreferences["left_snooze_preset"],
+    direction: "start" | "end"
+  ): Promise<boolean> {
+    if (readStateBusy || snoozeBusy || swipeActionBusy || pendingSwipeActionIDs.current.has(conversation.message.id)) return false;
     setSwipeActionBusy(true);
     try {
       switch (action) {
       case "mark_read":
         await markConversationRead(conversation, true);
-        break;
+        return false;
       case "mark_unread":
         await markConversationRead(conversation, false);
-        break;
+        return false;
       case "snooze":
-        snoozeConversationBySwipe(conversation, swipeSnoozeUntil(snoozePreset));
-        break;
+        return snoozeConversationBySwipe(conversation, swipeSnoozeUntil(snoozePreset), direction);
       case "trash":
       case "archive":
-        await moveConversationBySwipe(conversation, action);
-        break;
+        return moveConversationBySwipe(conversation, action, direction);
       }
     } finally {
       setSwipeActionBusy(false);
     }
+    return false;
   }
 
   function startRowSwipe(event: TouchEvent<HTMLDivElement>, conversation: Conversation) {
@@ -1495,9 +1569,11 @@ function MessageList({
     if (swipeCompletionTimer.current !== null) window.clearTimeout(swipeCompletionTimer.current);
     swipeCompletionTimer.current = window.setTimeout(() => {
       swipeCompletionTimer.current = null;
-      setSwipeState((current) => current?.id === session.id ? { ...current, deltaX: 0, phase: "settling" } : current);
-      void executeSwipeAction(conversation, action, snoozePreset).catch(() => undefined);
-      clearSwipeStateAfter(session.id, messageSwipeSettleMS);
+      void executeSwipeAction(conversation, action, snoozePreset, direction)
+        .then((dismissStarted) => {
+          if (!dismissStarted) settleSwipeRow(session.id);
+        })
+        .catch(() => settleSwipeRow(session.id));
     }, messageSwipeCommitHoldMS);
   }
 
@@ -1584,7 +1660,7 @@ function MessageList({
         const activeSwipe = swipeState?.id === msg.id ? swipeState : null;
         const swipeDelta = activeSwipe?.deltaX || 0;
         const swipeReady = Boolean(activeSwipe?.committed || (activeSwipe && Math.abs(activeSwipe.visualDeltaX) >= messageSwipeCommitDistance));
-        const swipeStyle = activeSwipe ? messageSwipeAffordanceStyle(activeSwipe.visualDeltaX) : undefined;
+        const swipeStyle = activeSwipe ? messageSwipeAffordanceStyle(activeSwipe) : undefined;
         const participantText = showRecipients
           ? `To: ${conversation.recipient_participants || msg.to_addr || conversation.participants || "undisclosed recipients"}`
           : (conversation.participants || msg.from_addr || "Unknown sender");
