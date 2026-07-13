@@ -45,11 +45,19 @@
 }
 
 .range-pager-loading {
-  height: 13px;
-  border-radius: 4px;
-  background: linear-gradient(90deg, rgba(84, 96, 91, .13), rgba(84, 96, 91, .23), rgba(84, 96, 91, .13));
-  background-size: 180% 100%;
-  animation: skeleton-sweep 1.15s ease-in-out infinite;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+
+  &::after {
+    content: "";
+    width: 13px;
+    height: 13px;
+    border: 2px solid rgba(84, 96, 91, .24);
+    border-top-color: var(--accent-warm);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
 }
 
 .range-pager-button {

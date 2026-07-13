@@ -103,5 +103,6 @@ func (s *Server) handleRemoteImage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("Vary", "Cookie")
 	http.ServeContent(w, r, hash, cache.FetchedAt, file)
 }

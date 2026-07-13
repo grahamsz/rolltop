@@ -2,7 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import type { DatePrefs } from "../../appTypes";
 import { Icon } from "../../components/Icon";
+import { displaySnoozeUntil } from "../../lib/format";
 
 export type SnoozePreset = {
   label: string;
@@ -21,16 +23,15 @@ export function defaultSnoozeUntil(now = new Date()) {
   return atLocalTime(now, 1, 9);
 }
 
-export function snoozePresets(now = new Date()): SnoozePreset[] {
+export function snoozePresets(now = new Date(), datePrefs?: DatePrefs): SnoozePreset[] {
   const laterToday = now.getHours() < 17 ? atLocalTime(now, 0, 18) : defaultSnoozeUntil(now);
   const tomorrow = defaultSnoozeUntil(now);
   const daysUntilMonday = ((8 - now.getDay()) % 7) || 7;
   const nextWeek = atLocalTime(now, daysUntilMonday, 9);
-  const time = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
   return [
-    { label: now.getHours() < 17 ? "Later today" : "Tomorrow morning", detail: time.format(laterToday), until: laterToday },
-    { label: "Tomorrow", detail: time.format(tomorrow), until: tomorrow },
-    { label: "Next week", detail: time.format(nextWeek), until: nextWeek }
+    { label: now.getHours() < 17 ? "Later today" : "Tomorrow morning", detail: displaySnoozeUntil(laterToday, datePrefs, now), until: laterToday },
+    { label: "Tomorrow", detail: displaySnoozeUntil(tomorrow, datePrefs, now), until: tomorrow },
+    { label: "Next week", detail: displaySnoozeUntil(nextWeek, datePrefs, now), until: nextWeek }
   ].filter((choice, index, choices) => choice.until.getTime() > now.getTime() && choices.findIndex((item) => item.until.getTime() === choice.until.getTime()) === index);
 }
 
@@ -41,18 +42,20 @@ function localDateTimeInputValue(value: Date) {
 
 export function SnoozeControl({
   onSnooze,
+  datePrefs,
   disabled = false,
   label = "Snooze",
   className = ""
 }: {
   onSnooze: (until: Date) => void | Promise<void>;
+  datePrefs?: DatePrefs;
   disabled?: boolean;
   label?: string;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const presets = useMemo(() => snoozePresets(), [open]);
+  const presets = useMemo(() => snoozePresets(new Date(), datePrefs), [open, datePrefs?.date_locale, datePrefs?.date_format]);
   const [custom, setCustom] = useState(() => localDateTimeInputValue(defaultSnoozeUntil()));
 
   async function choose(until: Date) {

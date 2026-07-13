@@ -10,7 +10,7 @@ import type { Attachment, AuthenticationResult, Bootstrap, ComposeForm, ComposeI
 import { Icon } from "../../components/Icon";
 import { androidNativeAvailable } from "../../lib/androidNative";
 import { messageFromError } from "../../lib/errors";
-import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
+import { displayDateTime, displaySnoozeUntil, displayTime, formatBytes } from "../../lib/format";
 import { shouldIgnoreMailShortcut } from "../../lib/keyboard";
 import { HighlightedText, highlightEmailDocument } from "../../lib/searchHighlight";
 import { messageBackURL, messageHighlightQuery, messageHighlightTerms, messageSearchHitID } from "../../lib/routes";
@@ -1517,7 +1517,7 @@ export function ThreadView({
       addToast(`Snooze failed: ${messageFromError(err)}`, "error");
       throw err;
     }
-    addToast("Conversation snoozed.");
+    addToast(`Conversation snoozed until ${displaySnoozeUntil(until, datePrefs)}.`);
     navigate(backURL);
     void refreshChrome().catch(() => undefined);
   }
@@ -1555,7 +1555,7 @@ export function ThreadView({
           <span>Unsnooze</span>
         </button>
       ) : (
-        <SnoozeControl className="secondary" disabled={loading || currentMessageID <= 0} onSnooze={snoozeThread} />
+        <SnoozeControl datePrefs={datePrefs} className="secondary" disabled={loading || currentMessageID <= 0} onSnooze={snoozeThread} />
       )}
     </div>
       </div>

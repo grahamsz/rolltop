@@ -324,6 +324,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/assets/", s.handleFrontendAsset)
 	mux.HandleFunc("/manifest.webmanifest", s.handleFrontendAsset)
 	mux.HandleFunc("/sw.js", s.handleFrontendAsset)
+	mux.HandleFunc("/offline.html", s.handleFrontendAsset)
 	mux.HandleFunc("/icon.svg", s.handleFrontendAsset)
 	mux.HandleFunc("/android/latest.json", s.handleAndroidLatest)
 	mux.HandleFunc("/android/rolltop.apk", s.handleAndroidAPK)
@@ -476,6 +477,8 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Vary", "Cookie")
 	pathValue := r.URL.Path
 	inline := false
 	switch {
@@ -569,6 +572,8 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Vary", "Cookie")
 	id, ok := idFromPath(r.URL.Path, "/blobs/")
 	if !ok {
 		http.NotFound(w, r)

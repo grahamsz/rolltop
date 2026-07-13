@@ -84,3 +84,22 @@ export function displayDateTime(value: string, prefs?: DatePrefs): string {
   }
   return date.toLocaleString(locale, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
+
+/** displaySnoozeUntil keeps same-day confirmations compact and adds a localized
+ * calendar day when the reminder is later than today. */
+export function displaySnoozeUntil(value: string | Date, prefs?: DatePrefs, now = new Date()): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return typeof value === "string" ? value : "";
+  const locale = dateLocale(prefs);
+  if (isSameLocalDay(date, now)) {
+    return new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(date);
+  }
+  return new Intl.DateTimeFormat(locale, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    ...(date.getFullYear() !== now.getFullYear() ? { year: "numeric" as const } : {}),
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
+}

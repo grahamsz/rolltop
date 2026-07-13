@@ -1,5 +1,5 @@
-const STATIC_CACHE = "rolltop-static-v8";
-const STATIC_ASSETS = ["/", "/mail", "/manifest.webmanifest", "/icon.svg", "/icon.svg?v=transparent-logo-v2"];
+const STATIC_CACHE = "rolltop-static-v9";
+const STATIC_ASSETS = ["/offline.html", "/manifest.webmanifest", "/icon.svg", "/icon.svg?v=transparent-logo-v2"];
 let securityUnlockUserID = 0;
 let securityUnlockState = { unlockedUntil: 0, keys: [] };
 let securityUnlockTimer = 0;
@@ -32,14 +32,27 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname.startsWith("/api/")) return;
 
-  const networkRequest = req.mode === "navigate" ? new Request(req, { cache: "no-cache" }) : req;
+  const acceptsHTML = req.headers.get("Accept")?.includes("text/html");
+  if (req.mode === "navigate" || acceptsHTML) {
+    const networkRequest = new Request(req, { cache: "no-cache" });
+    event.respondWith(
+      fetch(networkRequest).catch(() => req.mode === "navigate" ? caches.match("/offline.html") : Promise.reject(new Error("offline")))
+    );
+    return;
+  }
+
+  // Never put authenticated mail, attachment, blob, or image responses in a
+  // URL-only cache; user-local IDs can overlap after a session change.
+  const cacheablePublicAsset = url.pathname.startsWith("/assets/") || STATIC_ASSETS.includes(`${url.pathname}${url.search}`) || STATIC_ASSETS.includes(url.pathname);
+  if (!cacheablePublicAsset) return;
+
   event.respondWith(
-    fetch(networkRequest)
+    fetch(req)
       .then((res) => {
         if (res.ok) caches.open(STATIC_CACHE).then((cache) => cache.put(req, res.clone()));
         return res;
       })
-      .catch(() => caches.match(req).then((cached) => cached || caches.match("/mail")))
+      .catch(() => caches.match(req))
   );
 });
 

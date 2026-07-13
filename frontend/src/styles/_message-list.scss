@@ -8,6 +8,20 @@
   font-size: 13px;
 }
 
+.mail-list-loading {
+  height: 3px;
+  overflow: hidden;
+  background: var(--surface-subtle);
+
+  span {
+    display: block;
+    width: 42%;
+    height: 100%;
+    background: var(--accent-warm);
+    animation: fetch-progress 1s ease-in-out infinite;
+  }
+}
+
 .search-result-actions {
   display: flex;
   align-items: center;
@@ -399,34 +413,6 @@
   margin-top: 4px;
   color: var(--accent-strong);
   font-weight: 700;
-}
-
-.skeleton-row {
-  pointer-events: none;
-}
-
-.skeleton-block {
-  height: 12px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #edf2ef 0%, #dfe8e3 45%, #edf2ef 90%);
-  background-size: 220% 100%;
-  animation: skeleton-sweep 1.15s ease-in-out infinite;
-}
-
-.sender-skeleton {
-  grid-column: 3;
-  width: min(160px, 70%);
-}
-
-.subject-skeleton {
-  grid-column: 4;
-  width: min(620px, 92%);
-}
-
-.date-skeleton {
-  grid-column: 5;
-  width: 48px;
-  justify-self: end;
 }
 
 .message-select {

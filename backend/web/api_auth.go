@@ -18,6 +18,16 @@ func (s *Server) apiBootstrap(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	resp, err := s.bootstrapPayload(w, r)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	writeJSON(w, resp)
+}
+
+func (s *Server) bootstrapPayload(w http.ResponseWriter, r *http.Request) (map[string]any, error) {
 	info := buildinfo.Current()
 	resp := map[string]any{
 		"users_exist":           s.usersExist(r.Context()),
@@ -36,8 +46,7 @@ func (s *Server) apiBootstrap(w http.ResponseWriter, r *http.Request) {
 		resp["user"] = safeUser(cu.User)
 		swipePreferences, err := s.store.GetSwipePreferences(r.Context(), cu.User.ID)
 		if err != nil {
-			s.serverError(w, err)
-			return
+			return nil, err
 		}
 		resp["swipe_preferences"] = apiSwipePreferencesFromStore(swipePreferences)
 		var chrome viewData
@@ -67,7 +76,7 @@ func (s *Server) apiBootstrap(w http.ResponseWriter, r *http.Request) {
 		resp["account_notice"] = ""
 		resp["enabled_plugins"] = []string{}
 	}
-	writeJSON(w, resp)
+	return resp, nil
 }
 
 func (s *Server) apiSwipePreferences(w http.ResponseWriter, r *http.Request) {

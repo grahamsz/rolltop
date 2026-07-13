@@ -1,86 +1,190 @@
-// Bounded, user-scoped persistence for the first All Mail page. The snapshot
-// paints only after bootstrap has confirmed the same authenticated user.
+// Bounded, user-scoped persistence for recently visited mail list pages. A
+// snapshot paints only after the embedded bootstrap confirms the same user.
 
 import type { Conversation, MailListResponse, Message } from "../types";
 
-const snapshotVersion = 1;
+const snapshotVersion = 2;
 const maxSnapshotBytes = 900_000;
+const maxStoredSnapshotBytes = 2_400_000;
+const maxStoredSnapshots = 6;
 const maxSnapshotConversations = 200;
+const snapshotPrefix = `rolltop.mail.list.v${snapshotVersion}.`;
+const legacyAllMailPrefix = "rolltop.mail.all.v1.";
 
-type AllMailSnapshot = {
+type MailSnapshot = {
   version: number;
   user_id: number;
+  mailbox_id: number | null;
+  page_number: number;
   saved_at: number;
   page: MailListResponse;
 };
 
-export function allMailSnapshotStorageKey(userID: number): string {
-  return `rolltop.mail.all.v${snapshotVersion}.${userID}`;
+export function mailSnapshotStorageKey(userID: number, mailboxID: string | null, page: number): string {
+  const mailbox = normalizedMailboxID(mailboxID);
+  return `${snapshotPrefix}${userID}.${mailbox === null ? "all" : `box-${mailbox}`}.p${page}`;
 }
 
-export function loadAllMailSnapshot(userID: number): MailListResponse | null {
-  if (!positiveInteger(userID)) return null;
+export function loadMailSnapshot(userID: number, mailboxID: string | null, page: number): MailListResponse | null {
+  const mailbox = normalizedMailboxID(mailboxID);
+  if (!positiveInteger(userID) || !positiveInteger(page) || (mailboxID !== null && mailbox === null)) return null;
   try {
-    const parsed = JSON.parse(localStorage.getItem(allMailSnapshotStorageKey(userID)) || "null") as unknown;
-    if (!validSnapshot(parsed, userID)) return null;
-    return parsed.page;
+    const parsed = JSON.parse(localStorage.getItem(mailSnapshotStorageKey(userID, mailboxID, page)) || "null") as unknown;
+    if (validSnapshot(parsed, userID, mailbox, page)) return parsed.page;
   } catch {
-    return null;
+    // A corrupt current entry should not prevent migration of a valid v1 page.
   }
+  if (mailbox === null && page === 1) {
+    try {
+      const legacy = JSON.parse(localStorage.getItem(`${legacyAllMailPrefix}${userID}`) || "null") as unknown;
+      if (validLegacyAllMailSnapshot(legacy, userID)) {
+        saveMailSnapshot(userID, null, 1, legacy.page);
+        localStorage.removeItem(`${legacyAllMailPrefix}${userID}`);
+        return legacy.page;
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
-export function saveAllMailSnapshot(userID: number, page: MailListResponse): boolean {
-  if (!positiveInteger(userID) || !validMailPage(page)) return false;
-  const snapshot: AllMailSnapshot = {
+function validLegacyAllMailSnapshot(value: unknown, userID: number): value is { version: 1; user_id: number; saved_at: number; page: MailListResponse } {
+  if (!record(value)) return false;
+  return value.version === 1 && value.user_id === userID &&
+    typeof value.saved_at === "number" && Number.isFinite(value.saved_at) && value.saved_at > 0 &&
+    validMailPage(value.page) && value.page.page === 1 && value.page.has_prev === false;
+}
+
+export function saveMailSnapshot(userID: number, mailboxID: string | null, pageNumber: number, page: MailListResponse): boolean {
+  const mailbox = normalizedMailboxID(mailboxID);
+  if (!positiveInteger(userID) || !positiveInteger(pageNumber) || (mailboxID !== null && mailbox === null) ||
+    page.page !== pageNumber || !validMailPage(page)) return false;
+  const snapshot: MailSnapshot = {
     version: snapshotVersion,
     user_id: userID,
+    mailbox_id: mailbox,
+    page_number: pageNumber,
     saved_at: Date.now(),
     page
   };
   try {
     const serialized = JSON.stringify(snapshot);
     if (new TextEncoder().encode(serialized).byteLength > maxSnapshotBytes) return false;
-    localStorage.setItem(allMailSnapshotStorageKey(userID), serialized);
+    const key = mailSnapshotStorageKey(userID, mailboxID, pageNumber);
+    if (!storeWithQuotaRecovery(key, serialized, userID)) return false;
+    pruneMailSnapshots(userID);
     return true;
   } catch {
     return false;
   }
 }
 
-export function clearAllMailSnapshot(userID: number) {
+export function clearMailSnapshots(userID: number) {
   if (!positiveInteger(userID)) return;
   try {
-    localStorage.removeItem(allMailSnapshotStorageKey(userID));
+    const currentPrefix = `${snapshotPrefix}${userID}.`;
+    const legacyKey = `${legacyAllMailPrefix}${userID}`;
+    storageKeys().filter((key) => key.startsWith(currentPrefix) || key === legacyKey)
+      .forEach((key) => localStorage.removeItem(key));
   } catch {
     // Storage may be unavailable in private or locked-down browser contexts.
   }
 }
 
-export function clearOtherAllMailSnapshots(keepUserID: number) {
-  const prefix = `rolltop.mail.all.v${snapshotVersion}.`;
+export function clearOtherMailSnapshots(keepUserID: number) {
   try {
-    const keys: string[] = [];
-    for (let index = 0; index < localStorage.length; index += 1) {
-      const key = localStorage.key(index) || "";
-      if (key.startsWith(prefix) && key !== allMailSnapshotStorageKey(keepUserID)) keys.push(key);
-    }
-    keys.forEach((key) => localStorage.removeItem(key));
+    const keepPrefix = `${snapshotPrefix}${keepUserID}.`;
+    const keepLegacy = `${legacyAllMailPrefix}${keepUserID}`;
+    storageKeys().filter((key) =>
+      (key.startsWith(snapshotPrefix) && !key.startsWith(keepPrefix)) ||
+      (key.startsWith(legacyAllMailPrefix) && key !== keepLegacy)
+    ).forEach((key) => localStorage.removeItem(key));
   } catch {
     // Best-effort privacy cleanup for storage-restricted browsers.
   }
 }
 
-function validSnapshot(value: unknown, userID: number): value is AllMailSnapshot {
+function validSnapshot(value: unknown, userID: number, mailboxID: number | null, page: number): value is MailSnapshot {
   if (!record(value)) return false;
   return value.version === snapshotVersion && value.user_id === userID &&
+    value.mailbox_id === mailboxID && value.page_number === page &&
     typeof value.saved_at === "number" && Number.isFinite(value.saved_at) && value.saved_at > 0 &&
-    validMailPage(value.page);
+    validMailPage(value.page) && value.page.page === page;
 }
 
 function validMailPage(value: unknown): value is MailListResponse {
-  if (!record(value) || value.page !== 1 || value.has_prev !== false || typeof value.has_next !== "boolean") return false;
+  if (!record(value) || !positiveInteger(value.page) || typeof value.has_prev !== "boolean" || typeof value.has_next !== "boolean") return false;
   if (!Array.isArray(value.conversations) || value.conversations.length > maxSnapshotConversations) return false;
   return value.conversations.every(validConversation);
+}
+
+function storeWithQuotaRecovery(key: string, serialized: string, userID: number): boolean {
+  try {
+    localStorage.setItem(key, serialized);
+    return true;
+  } catch {
+    const pinned = mailSnapshotStorageKey(userID, null, 1);
+    const candidates = snapshotEntries(userID).filter((entry) => entry.key !== key).sort((left, right) => {
+      if (left.key === pinned) return 1;
+      if (right.key === pinned) return -1;
+      return left.savedAt - right.savedAt;
+    });
+    for (const candidate of candidates) {
+      localStorage.removeItem(candidate.key);
+      try {
+        localStorage.setItem(key, serialized);
+        return true;
+      } catch {
+        // Continue evicting this user's oldest snapshots until the write fits.
+      }
+    }
+    return false;
+  }
+}
+
+function pruneMailSnapshots(userID: number) {
+  const pinned = mailSnapshotStorageKey(userID, null, 1);
+  const entries = snapshotEntries(userID).sort((left, right) => {
+    if (left.key === pinned) return -1;
+    if (right.key === pinned) return 1;
+    return right.savedAt - left.savedAt;
+  });
+  let retainedBytes = 0;
+  entries.forEach((entry, index) => {
+    retainedBytes += entry.bytes;
+    if (index >= maxStoredSnapshots || retainedBytes > maxStoredSnapshotBytes) localStorage.removeItem(entry.key);
+  });
+}
+
+function snapshotEntries(userID: number): Array<{ key: string; savedAt: number; bytes: number }> {
+  const prefix = `${snapshotPrefix}${userID}.`;
+  return storageKeys().filter((key) => key.startsWith(prefix)).map((key) => {
+    const serialized = localStorage.getItem(key) || "";
+    let savedAt = 0;
+    try {
+      const value = JSON.parse(serialized) as { saved_at?: unknown };
+      if (typeof value.saved_at === "number" && Number.isFinite(value.saved_at)) savedAt = value.saved_at;
+    } catch {
+      // Invalid entries sort oldest and are evicted first.
+    }
+    return { key, savedAt, bytes: new TextEncoder().encode(serialized).byteLength };
+  });
+}
+
+function storageKeys(): string[] {
+  const keys: string[] = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
+function normalizedMailboxID(value: string | null): number | null {
+  if (value === null) return null;
+  const parsed = Number(value);
+  return positiveInteger(parsed) ? parsed : null;
 }
 
 function validConversation(value: unknown): value is Conversation {

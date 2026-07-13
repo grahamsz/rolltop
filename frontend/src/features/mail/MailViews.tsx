@@ -11,7 +11,7 @@ import { Icon } from "../../components/Icon";
 import { ListHeader } from "../../components/common";
 import { androidNativeAvailable } from "../../lib/androidNative";
 import { messageFromError } from "../../lib/errors";
-import { displayTime } from "../../lib/format";
+import { displaySnoozeUntil, displayTime } from "../../lib/format";
 import { shouldIgnoreMailShortcut } from "../../lib/keyboard";
 import { effectiveMailboxSyncMode, mailboxActiveRun, mailboxNeedsSync, mailboxRefreshKey } from "../../lib/sync";
 import { HighlightedText } from "../../lib/searchHighlight";
@@ -318,7 +318,7 @@ export function MailView({
         {!error || showingSavedPage ? (
           <SlidingMessageListStage stageKey={listKey} direction={slideDirection} pending={listPending} speed={listTransitionSpeed}>
             {listPending ? (
-              <MessageListSkeleton label="Loading messages" />
+              <div className="mail-list-loading" role="status" aria-label="Refreshing mail" aria-busy="true"><span /></div>
             ) : (
               <MessageList
                 csrf={csrf}
@@ -449,7 +449,7 @@ export function SnoozedView({
     </div>
     {error ? <div className="error">{error}</div> : null}
     {!error ? <div className="message-list-pane">
-      {loading ? <MessageListSkeleton label="Loading snoozed messages" /> : (
+      {loading ? <div className="mail-list-loading" role="status" aria-label="Refreshing snoozed mail" aria-busy="true"><span /></div> : (
             <MessageList
               csrf={csrf}
               conversations={conversations}
@@ -684,7 +684,7 @@ export function SearchView({
       {!error ? (
         <SlidingMessageListStage stageKey={searchKey} direction={slideDirection} pending={listPending} speed={listPending ? "slow" : "fast"}>
           {listPending ? (
-            <MessageListSkeleton label="Searching" />
+            <div className="mail-list-loading" role="status" aria-label="Searching mail" aria-busy="true"><span /></div>
           ) : (
             <MessageList
               csrf={csrf}
@@ -805,20 +805,6 @@ function SlidingMessageListStage({
       <div className="message-list-pane" key={stageKey} ref={currentPane}>
         {children}
       </div>
-    </div>
-  );
-}
-
-function MessageListSkeleton({ label }: { label: string }) {
-  return (
-    <div className="message-table loading-list" role="status" aria-label={label} aria-busy="true">
-      {Array.from({ length: 8 }, (_, index) => (
-        <div className="message-row skeleton-row" key={index}>
-          <span className="skeleton-block sender-skeleton" />
-          <span className="skeleton-block subject-skeleton" />
-          <span className="skeleton-block date-skeleton" />
-        </div>
-      ))}
     </div>
   );
 }
@@ -1132,7 +1118,7 @@ function MessageList({
       const failed = ids.filter((_, index) => results[index].status === "rejected");
       if (!snoozedView && failed.length > 0) restoreDismissed(failed);
       const succeeded = ids.length - failed.length;
-      if (succeeded > 0) addToast(`${succeeded === 1 ? "Message" : `${succeeded.toLocaleString()} messages`} snoozed.`);
+      if (succeeded > 0) addToast(`${succeeded === 1 ? "Message" : `${succeeded.toLocaleString()} messages`} snoozed until ${displaySnoozeUntil(until, datePrefs)}.`);
       if (failed.length > 0) {
         const first = results.find((result) => result.status === "rejected");
         const reason = first?.status === "rejected" ? messageFromError(first.reason) : "Request failed";
@@ -1365,7 +1351,7 @@ function MessageList({
           <span>Unsnooze</span>
         </button>
       ) : (
-        <SnoozeControl disabled={readStateBusy || snoozeBusy || swipeActionBusy} onSnooze={(until) => snoozeConversations(selectedConversations, until)} />
+        <SnoozeControl datePrefs={datePrefs} disabled={readStateBusy || snoozeBusy || swipeActionBusy} onSnooze={(until) => snoozeConversations(selectedConversations, until)} />
       )}
           </div>
         </div>

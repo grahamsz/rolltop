@@ -26,7 +26,7 @@ import type {
   ThreadMessage,
   User
 } from "./types";
-import { clearAllMailSnapshot, clearOtherAllMailSnapshots, loadAllMailSnapshot, saveAllMailSnapshot } from "./lib/mailSnapshot";
+import { clearMailSnapshots, clearOtherMailSnapshots, loadMailSnapshot, saveMailSnapshot } from "./lib/mailSnapshot";
 
 /** Error thrown for non-2xx API responses after the JSON error payload is decoded. */
 export class ApiError extends Error {
@@ -226,8 +226,7 @@ function cachedJSON<T>(cacheKey: string): T | null {
 function cachedMail(userID: number, mailboxID: string | null, page: number): MailListResponse | null {
   const key = mailListCacheKey(userID, mailboxID, page);
   const cached = cachedJSON<MailListResponse>(key);
-  if (cached || mailboxID || page !== 1) return cached;
-  return loadAllMailSnapshot(userID);
+  return cached || loadMailSnapshot(userID, mailboxID, page);
 }
 
 async function loadMail(userID: number, mailboxID: string | null, page: number): Promise<MailListResponse> {
@@ -239,7 +238,7 @@ async function loadMail(userID: number, mailboxID: string | null, page: number):
     getCache.delete(key);
     return data;
   }
-  if (!mailboxID && page === 1) saveAllMailSnapshot(userID, data);
+  saveMailSnapshot(userID, mailboxID, page, data);
   return data;
 }
 
@@ -254,7 +253,7 @@ function clearMailCache(userID: number) {
   for (const key of getCache.keys()) {
     if (key.startsWith(prefix)) getCache.delete(key);
   }
-  clearAllMailSnapshot(userID);
+  clearMailSnapshots(userID);
 }
 
 function retainMailCacheForUser(userID: number) {
@@ -265,7 +264,7 @@ function retainMailCacheForUser(userID: number) {
     const match = key.match(/^user:(\d+):mail-epoch:/);
     if (match && Number(match[1]) !== userID) getCache.delete(key);
   }
-  clearOtherAllMailSnapshots(userID);
+  clearOtherMailSnapshots(userID);
 }
 
 

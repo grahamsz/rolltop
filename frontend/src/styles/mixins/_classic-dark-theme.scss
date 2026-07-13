@@ -133,10 +133,6 @@
     color: var(--text);
   }
 
-  .skeleton-block {
-    background: linear-gradient(90deg, rgba(183, 179, 170, .08) 0%, rgba(183, 179, 170, .18) 45%, rgba(183, 179, 170, .08) 90%);
-  }
-
   .progress,
   .folder-sync-progress,
   .sync-percent > div {

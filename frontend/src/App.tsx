@@ -15,6 +15,7 @@ import { messageFromError } from "./lib/errors";
 import { currentLocation, messageURL } from "./lib/routes";
 import { androidNativeAvailable, androidPushSubscription, registerAndroidPush, unregisterAndroidPush } from "./lib/androidNative";
 import { serverBuildIdentity, serverShellDiffers } from "./lib/shellFreshness";
+import { embeddedBootstrap } from "./lib/startup";
 import { emptyRuntimePlugins, loadRuntimePlugins, type RuntimePlugins } from "./plugins/runtime";
 import { emptySecurityUnlockState, securityUnlockPlugin } from "./plugins/securityUnlock";
 import { defaultSwipePreferences } from "./lib/swipeActions";
@@ -200,7 +201,11 @@ async function unsubscribeWebPush(csrf: string) {
  */
 export default function App() {
   const [location, setLocation] = useState<LocationState>(() => currentLocation());
-  const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
+  const [bootstrap, setBootstrap] = useState<Bootstrap | null>(() => {
+    const initial = embeddedBootstrap();
+    if (initial) api.retainMailCacheForUser(initial.user?.id || 0);
+    return initial;
+  });
   const [runtimePlugins, setRuntimePlugins] = useState<RuntimePlugins>(() => emptyRuntimePlugins());
   const [bootError, setBootError] = useState("");
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -220,6 +225,8 @@ export default function App() {
   const securityUnlockRef = useRef<SecurityUnlockState>(emptySecurityUnlockState);
   const activeUserIDRef = useRef<number | null>(null);
   const runtimePluginsRef = useRef<RuntimePlugins>(emptyRuntimePlugins());
+  const bootstrappedFromHTMLRef = useRef(bootstrap !== null);
+  const bootstrapGenerationRef = useRef(0);
   const loadedBuildIdentityRef = useRef("");
   const shellCheckRunningRef = useRef(false);
   const shellReloadingRef = useRef(false);
@@ -251,20 +258,23 @@ export default function App() {
   // Bootstrap is the shared chrome contract: auth state, CSRF token, folder
   // counts, active sync runs, enabled plugins, and account warnings.
   const refreshBootstrap = useCallback(async () => {
+    const generation = bootstrapGenerationRef.current;
     try {
       const data = await api.bootstrap();
+      if (generation !== bootstrapGenerationRef.current) return null;
       api.retainMailCacheForUser(data.user?.id || 0);
       setBootstrap(data);
       setBootError("");
       return data;
     } catch (err) {
+      if (generation !== bootstrapGenerationRef.current) return null;
       setBootError(messageFromError(err));
       return null;
     }
   }, []);
 
   useEffect(() => {
-    void refreshBootstrap();
+    if (!bootstrappedFromHTMLRef.current) void refreshBootstrap();
   }, [refreshBootstrap]);
 
   // The Android wrapper can keep a SPA document alive across app resumes. Adopt
@@ -272,6 +282,7 @@ export default function App() {
   useEffect(() => {
     if (!androidNativeAvailable()) return;
     let cancelled = false;
+    let observedHidden = document.visibilityState === "hidden";
     async function checkShell() {
       if (document.visibilityState !== "visible" || shellCheckRunningRef.current || shellReloadingRef.current) return;
       shellCheckRunningRef.current = true;
@@ -282,16 +293,17 @@ export default function App() {
         shellCheckRunningRef.current = false;
       }
     }
-    function onVisible() {
-      if (document.visibilityState === "visible") void checkShell();
+    function onVisibilityChange() {
+      if (document.visibilityState === "hidden") {
+        observedHidden = true;
+      } else if (observedHidden) {
+        void checkShell();
+      }
     }
-    void checkShell();
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("pageshow", onVisible);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("pageshow", onVisible);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [reloadForFreshShell]);
 
@@ -668,6 +680,7 @@ export default function App() {
 
   const logout = useCallback(async () => {
     if (!bootstrap?.csrf) return;
+    bootstrapGenerationRef.current += 1;
     const csrf = bootstrap.csrf;
     const cleanup: Promise<unknown>[] = [];
     if (webPushSupported()) cleanup.push(unsubscribeWebPush(csrf));
@@ -683,6 +696,7 @@ export default function App() {
     }
     await Promise.allSettled(cleanup);
     await api.logout(csrf);
+    bootstrapGenerationRef.current += 1;
     if (bootstrap.user) api.clearMailCache(bootstrap.user.id);
     applySecurityUnlock(emptySecurityUnlockState, true);
     setSecurityUnlockOpen(false);
@@ -702,7 +716,7 @@ export default function App() {
     return (
       <div className="auth-page">
         <div className="auth-brand"><LogoMark />rolltop</div>
-        {bootError ? <div className="error">{bootError}</div> : <div className="panel muted">Loading mail...</div>}
+        {bootError ? <div className="error">{bootError}</div> : null}
         <ToastStack toasts={toasts} onDismiss={removeToast} />
       </div>
     );

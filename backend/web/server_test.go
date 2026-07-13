@@ -94,12 +94,114 @@ func TestHandleAppServesContactsRoute(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("cache-control = %q, want no-store", got)
+	if got := rec.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("cache-control = %q, want private, no-store", got)
+	}
+	if got := rec.Header().Get("Vary"); got != "*" {
+		t.Fatalf("vary = %q, want *", got)
 	}
 	if body := rec.Body.String(); !strings.Contains(body, "contacts") {
 		t.Fatalf("body = %q", body)
 	}
+}
+
+func TestHandleAppEmbedsOnlyCurrentUserBootstrap(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	foreign, err := db.CreateUser(ctx, "foreign-startup@example.test", "Foreign Startup", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := db.CreateUser(ctx, "owner-startup@example.test", "Owner Startup", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	distDir := filepath.Join(dir, frontendDistDir)
+	if err := os.MkdirAll(distDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "index.html"), []byte(`<!doctype html><html><head><meta name="rolltop-startup" /></head><body><div id="root"></div><script type="module" src="/assets/index.js"></script></body></html>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+
+	server := &Server{store: db, startedAt: time.Now()}
+	req := httptest.NewRequest(http.MethodGet, "/mail", nil)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey, currentUser{User: owner}))
+	rec := httptest.NewRecorder()
+	server.handleApp(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), foreign.Email) || strings.Contains(rec.Body.String(), foreign.Name) {
+		t.Fatalf("startup HTML exposed foreign user: %s", rec.Body.String())
+	}
+	payload := startupPayloadFromHTML(t, rec.Body.String())
+	user, ok := payload["user"].(map[string]any)
+	userID, idOK := user["id"].(float64)
+	if !ok || !idOK || user["email"] != owner.Email || int64(userID) != owner.ID {
+		t.Fatalf("startup user = %#v", payload["user"])
+	}
+
+	anon := httptest.NewRecorder()
+	server.handleApp(anon, httptest.NewRequest(http.MethodGet, "/mail", nil))
+	anonPayload := startupPayloadFromHTML(t, anon.Body.String())
+	if anonPayload["user"] != nil || strings.Contains(anon.Body.String(), owner.Email) || strings.Contains(anon.Body.String(), foreign.Email) {
+		t.Fatalf("anonymous startup exposed a user: %#v", anonPayload["user"])
+	}
+}
+
+func TestInjectStartupBootstrapEscapesScriptTerminator(t *testing.T) {
+	index := []byte(`<html><head><meta name="rolltop-startup" /></head><body><div id="root"></div></body></html>`)
+	name := `Owner </script><script>alert("x")</script>`
+	injected, err := injectStartupBootstrap(index, map[string]any{"user": map[string]any{"name": name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(injected), name) || strings.Contains(string(injected), `</script><script>`) {
+		t.Fatalf("startup JSON was not HTML escaped: %s", injected)
+	}
+	payload := startupPayloadFromHTML(t, string(injected))
+	user := payload["user"].(map[string]any)
+	if user["name"] != name {
+		t.Fatalf("decoded name = %q, want %q", user["name"], name)
+	}
+	if _, err := injectStartupBootstrap([]byte(`<html><body><div id="root"></div></body></html>`), map[string]any{}); err == nil {
+		t.Fatal("missing startup marker should fail")
+	}
+}
+
+func startupPayloadFromHTML(t *testing.T, html string) map[string]any {
+	t.Helper()
+	const start = `<script id="rolltop-startup" type="application/json">`
+	startIndex := strings.Index(html, start)
+	if startIndex < 0 {
+		t.Fatalf("missing startup payload in %s", html)
+	}
+	rest := html[startIndex+len(start):]
+	endIndex := strings.Index(rest, `</script>`)
+	if endIndex < 0 {
+		t.Fatalf("unterminated startup payload in %s", html)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(rest[:endIndex]), &payload); err != nil {
+		t.Fatalf("decode startup payload: %v", err)
+	}
+	return payload
 }
 
 func TestFrontendAssetCacheControl(t *testing.T) {
@@ -733,6 +835,9 @@ func TestSetupCreatesFirstAdmin(t *testing.T) {
 	handler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/bootstrap", nil))
 	if get.Code != http.StatusOK {
 		t.Fatalf("GET /api/bootstrap status = %d", get.Code)
+	}
+	if got := get.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("GET /api/bootstrap cache-control = %q", got)
 	}
 	if got := get.Header().Get("X-rolltop-Version"); got == "" {
 		t.Fatal("missing X-rolltop-Version header")

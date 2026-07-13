@@ -89,16 +89,6 @@
   }
 }
 
-@keyframes skeleton-sweep {
-  0% {
-    background-position: 120% 0;
-  }
-
-  100% {
-    background-position: -120% 0;
-  }
-}
-
 @keyframes message-list-track-left {
   from {
     transform: translateX(0);
@@ -135,7 +125,8 @@
   .message-list-track.slide-left,
   .message-list-track.slide-right,
   .mail-pull-refresh.refreshing .pull-refresh-indicator .icon,
-  .skeleton-block,
+  .mail-list-loading span,
+  .range-pager-loading::after,
   .fetch-status-progress span {
     animation: none;
   }

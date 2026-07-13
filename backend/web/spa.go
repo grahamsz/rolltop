@@ -3,7 +3,9 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,6 +14,8 @@ import (
 
 const frontendDistDir = "frontend/dist"
 const immutableFrontendAssetCacheControl = "public, max-age=31536000, immutable"
+
+var startupBootstrapMarker = []byte(`<meta name="rolltop-startup" />`)
 
 type androidLatestMetadata struct {
 	VersionCode int    `json:"versionCode"`
@@ -30,12 +34,46 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	index := filepath.Join(frontendDistDir, "index.html")
-	if _, err := os.Stat(index); err != nil {
+	contents, err := os.ReadFile(index)
+	if err != nil {
 		http.Error(w, "frontend has not been built; run npm run build", http.StatusServiceUnavailable)
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	http.ServeFile(w, r, index)
+	if s.store != nil {
+		payload, payloadErr := s.bootstrapPayload(w, r)
+		if payloadErr != nil {
+			s.serverError(w, payloadErr)
+			return
+		}
+		injected, injectErr := injectStartupBootstrap(contents, payload)
+		if injectErr != nil {
+			http.Error(w, "frontend startup marker is missing", http.StatusInternalServerError)
+			return
+		}
+		contents = injected
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
+	// Vary:* also makes Cache.put reject this response while older service
+	// workers are being replaced, so personalized startup JSON cannot linger.
+	w.Header().Set("Vary", "*")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(contents)
+}
+
+func injectStartupBootstrap(index []byte, payload any) ([]byte, error) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Contains(index, startupBootstrapMarker) {
+		return nil, errors.New("startup bootstrap marker is missing")
+	}
+	script := make([]byte, 0, len(startupBootstrapMarker)+len(encoded)+96)
+	script = append(script, `<script id="rolltop-startup" type="application/json">`...)
+	script = append(script, encoded...)
+	script = append(script, `</script>`...)
+	return bytes.Replace(index, startupBootstrapMarker, script, 1), nil
 }
 
 func (s *Server) handleFrontendAsset(w http.ResponseWriter, r *http.Request) {
