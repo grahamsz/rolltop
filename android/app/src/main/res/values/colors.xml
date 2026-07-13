@@ -1,3 +1,4 @@
 <resources>
     <color name="launcher_background">#F7FAF8</color>
+    <color name="shell_background">#F2F0EB</color>
 </resources>

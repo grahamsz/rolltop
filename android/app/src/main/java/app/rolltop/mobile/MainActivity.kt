@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.net.http.SslError
@@ -23,7 +24,6 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -43,6 +43,9 @@ class MainActivity : ComponentActivity() {
     private var webView: WebView? = null
     private var androidWebBridge: AndroidWebBridge? = null
     private var rolltopWebChromeClient: RolltopWebChromeClient? = null
+    private var loadingOverlay: FrameLayout? = null
+    private var loadingAnimationView: RolltopLoadingView? = null
+    private var loadingRevealGate: LoadingRevealGate? = null
     private val nativeShareStore by lazy { NativeShareStore(applicationContext) }
     private var updatePromptPolicy = UpdatePromptPolicy()
     private val contactPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -68,7 +71,11 @@ class MainActivity : ComponentActivity() {
         if (RolltopPrefs.serverUrl(this).isBlank()) {
             showSetup()
         } else {
-            showWeb(intent, savedInstanceState?.getBundle(STATE_WEB_VIEW))
+            showWeb(
+                intent,
+                savedInstanceState?.getBundle(STATE_WEB_VIEW),
+                savedInstanceState?.getLong(STATE_LOADING_ANIMATION_ELAPSED_MS) ?: 0L
+            )
         }
     }
 
@@ -101,6 +108,10 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         rememberCurrentLocation()
         outState.putInt(STATE_PROMPTED_UPDATE_CODE, updatePromptPolicy.lastPromptedVersionCode)
+        outState.putLong(
+            STATE_LOADING_ANIMATION_ELAPSED_MS,
+            loadingAnimationView?.elapsedMs ?: RolltopLoadingView.DURATION_MS
+        )
         webView?.let { view ->
             val state = Bundle()
             view.saveState(state)
@@ -110,6 +121,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        cancelLoadingExperience()
         androidWebBridge?.close()
         androidWebBridge = null
         rolltopWebChromeClient?.cancelPendingRequest()
@@ -127,6 +139,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showSetup(initialUrl: String = RolltopPrefs.serverUrl(this), message: String = "") {
+        cancelLoadingExperience()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -196,36 +209,60 @@ class MainActivity : ComponentActivity() {
         setContentView(root)
     }
 
-    private fun showWeb(sourceIntent: Intent?, restoredState: Bundle? = null) {
+    private fun showWeb(
+        sourceIntent: Intent?,
+        restoredState: Bundle? = null,
+        restoredLoadingElapsedMs: Long = 0L
+    ) {
+        cancelLoadingExperience()
         androidWebBridge?.close()
         androidWebBridge = null
         val view = WebView(this)
+        view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         webView = view
         val serverOrigin = RolltopPrefs.serverUrl(this)
+        val loadingAnimation = RolltopLoadingView(this).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
         val loadingOverlay = FrameLayout(this).apply {
             setBackgroundColor(SHELL_BACKGROUND)
             isClickable = true
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
             contentDescription = getString(R.string.app_name)
             addView(
-                ImageView(this@MainActivity).apply {
-                    setImageResource(R.drawable.ic_launcher_foreground)
-                    scaleType = ImageView.ScaleType.CENTER_INSIDE
-                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                },
-                FrameLayout.LayoutParams(dp(144), dp(144), Gravity.CENTER)
+                loadingAnimation,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
             )
         }
-        var loadingOverlayDismissed = false
-        fun dismissLoadingOverlay() {
-            if (loadingOverlayDismissed || loadingOverlay.parent == null) return
-            loadingOverlayDismissed = true
-            loadingOverlay.animate()
-                .alpha(0f)
-                .setDuration(120)
-                .withEndAction { (loadingOverlay.parent as? ViewGroup)?.removeView(loadingOverlay) }
-                .start()
+        fun removeLoadingOverlay() {
+            (view.parent as? View)?.setBackgroundColor(Color.WHITE)
+            (loadingOverlay.parent as? ViewGroup)?.removeView(loadingOverlay)
+            if (this.loadingOverlay === loadingOverlay) this.loadingOverlay = null
+            if (loadingAnimationView === loadingAnimation) loadingAnimationView = null
         }
+        lateinit var revealGate: LoadingRevealGate
+        revealGate = LoadingRevealGate {
+            if (webView !== view || loadingRevealGate !== revealGate || loadingOverlay.parent == null) {
+                return@LoadingRevealGate
+            }
+            loadingRevealGate = null
+            loadingOverlay.isClickable = false
+            loadingOverlay.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+            if (!loadingAnimation.animationsEnabled) {
+                removeLoadingOverlay()
+            } else {
+                loadingOverlay.animate()
+                    .alpha(0f)
+                    .setDuration(LOADING_CROSSFADE_MS)
+                    .withEndAction(::removeLoadingOverlay)
+                    .start()
+            }
+        }
+        loadingAnimation.onAnimationComplete = revealGate::markAnimationReady
         installNativeShareServiceWorkerInterceptor(serverOrigin)
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
@@ -241,6 +278,7 @@ class MainActivity : ComponentActivity() {
         view.webViewClient = object : WebViewClient() {
             private var mainFrameCommitted = false
             private var failureHandled = false
+            private var mainNavigationGeneration = 0L
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url.toString()
@@ -262,6 +300,13 @@ class MainActivity : ComponentActivity() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
                 nativeShareStore.intercept(request, serverOrigin) ?: super.shouldInterceptRequest(view, request)
 
+            override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+                mainNavigationGeneration += 1
+                if (webView === view && loadingRevealGate === revealGate) {
+                    revealGate.markContentPending()
+                }
+            }
+
             override fun onPageCommitVisible(view: WebView, url: String) {
                 mainFrameCommitted = true
                 RolltopPrefs.rememberVisitedUrl(this@MainActivity, url)
@@ -272,9 +317,14 @@ class MainActivity : ComponentActivity() {
                 NativePushRegistration.maybeRegister(this@MainActivity)
                 PushSubscriptionWorker.schedule(this@MainActivity)
                 if (RolltopPrefs.internalLocation(serverOrigin, url) != null) {
+                    val expectedGeneration = mainNavigationGeneration
                     view.postVisualStateCallback(System.nanoTime(), object : WebView.VisualStateCallback() {
                         override fun onComplete(requestId: Long) {
-                            dismissLoadingOverlay()
+                            if (webView !== view || loadingRevealGate !== revealGate ||
+                                mainNavigationGeneration != expectedGeneration ||
+                                RolltopPrefs.internalLocation(serverOrigin, view.url.orEmpty()) == null
+                            ) return
+                            revealGate.markContentReady()
                         }
                     })
                 }
@@ -322,10 +372,13 @@ class MainActivity : ComponentActivity() {
             contactPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
         }.also { it.attach() }
         val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(SHELL_BACKGROUND)
             addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(loadingOverlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
+        this.loadingOverlay = loadingOverlay
+        loadingAnimationView = loadingAnimation
+        loadingRevealGate = revealGate
         applySystemBarInsets(root)
         setContentView(root)
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) checkForServerUpdate()
@@ -333,6 +386,7 @@ class MainActivity : ComponentActivity() {
         val explicitTarget = explicitUrlForIntent(sourceIntent)
         val restored = explicitTarget == null && restoredState != null && view.restoreState(restoredState) != null
         if (restored) view.reload() else view.loadUrl(explicitTarget ?: urlForIntent(sourceIntent))
+        loadingAnimation.start(restoredLoadingElapsedMs)
         if (explicitTarget != null) consumeNavigationIntent()
     }
 
@@ -377,12 +431,25 @@ class MainActivity : ComponentActivity() {
 
     private fun showConnectionFailure(failedView: WebView, message: String) {
         if (webView !== failedView || isFinishing || isDestroyed) return
+        cancelLoadingExperience()
         androidWebBridge?.close()
         androidWebBridge = null
+        rolltopWebChromeClient?.cancelPendingRequest()
+        rolltopWebChromeClient = null
         webView = null
         failedView.stopLoading()
         showSetup(RolltopPrefs.serverUrl(this), message)
         failedView.destroy()
+    }
+
+    private fun cancelLoadingExperience() {
+        loadingRevealGate?.cancel()
+        loadingRevealGate = null
+        loadingAnimationView?.cancel()
+        loadingAnimationView = null
+        loadingOverlay?.animate()?.cancel()
+        (loadingOverlay?.parent as? ViewGroup)?.removeView(loadingOverlay)
+        loadingOverlay = null
     }
 
     private fun rememberCurrentLocation() {
@@ -526,6 +593,8 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val STATE_WEB_VIEW = "rolltop.web_view_state"
         private const val STATE_PROMPTED_UPDATE_CODE = "rolltop.prompted_update_code"
+        private const val STATE_LOADING_ANIMATION_ELAPSED_MS = "rolltop.loading_animation_elapsed_ms"
+        private const val LOADING_CROSSFADE_MS = 160L
         private val SHELL_BACKGROUND = Color.rgb(242, 240, 235)
     }
 }

@@ -129,19 +129,41 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 0 2px 12px;
+    min-height: 40px;
+    padding: 0 0 12px 4px;
     color: var(--text);
-    font-weight: 800;
+    flex: none;
 
-    span {
+    .sidebar-mobile-brand {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
+      min-width: 0;
+      max-width: calc(100% - 52px);
+      text-decoration: none;
     }
 
-    .icon {
-      color: var(--accent-warm);
+    .sidebar-mobile-logotype {
+      display: block;
+      width: auto;
+      height: 30px;
+      max-width: 164px;
+      object-fit: contain;
+      object-position: left center;
     }
+
+    > .ghost {
+      width: 40px;
+      min-width: 40px;
+      height: 40px;
+      min-height: 40px;
+      padding: 0;
+    }
+  }
+
+  :root[data-theme="classic_dark"] .sidebar-mobile-logotype,
+  :root[data-theme="matrix"] .sidebar-mobile-logotype {
+    filter: brightness(0) invert(1);
+    opacity: .94;
   }
 
   .sidebar .compose {
