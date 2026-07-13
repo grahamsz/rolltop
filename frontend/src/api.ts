@@ -64,6 +64,7 @@ type SnoozeListResponse = MailListResponse & { snoozes: MessageSnooze[] };
 const getCache = new Map<string, { etag: string; data: unknown }>();
 const getInflight = new Map<string, Promise<unknown>>();
 const mailCacheEpochs = new Map<number, number>();
+type MutationRequestOptions = { keepalive?: boolean };
 
 async function fetchGET(url: string, init: RequestInit): Promise<Response> {
   try {
@@ -108,7 +109,7 @@ export async function getJSON<T>(url: string, cacheKey = url): Promise<T> {
 }
 
 /** POST JSON to a mutating endpoint with the current CSRF token. */
-export async function postJSON<T>(url: string, csrf: string, body: unknown = {}): Promise<T> {
+export async function postJSON<T>(url: string, csrf: string, body: unknown = {}, options: MutationRequestOptions = {}): Promise<T> {
   return parse<T>(
     await fetch(url, {
       method: "POST",
@@ -117,13 +118,14 @@ export async function postJSON<T>(url: string, csrf: string, body: unknown = {})
         "Content-Type": "application/json",
         "X-CSRF-Token": csrf
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      ...(options.keepalive ? { keepalive: true } : {})
     })
   );
 }
 
 /** PUT JSON to a mutating endpoint with the current CSRF token. */
-export async function putJSON<T>(url: string, csrf: string, body: unknown = {}): Promise<T> {
+export async function putJSON<T>(url: string, csrf: string, body: unknown = {}, options: MutationRequestOptions = {}): Promise<T> {
   return parse<T>(
     await fetch(url, {
       method: "PUT",
@@ -132,7 +134,8 @@ export async function putJSON<T>(url: string, csrf: string, body: unknown = {}):
         "Content-Type": "application/json",
         "X-CSRF-Token": csrf
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      ...(options.keepalive ? { keepalive: true } : {})
     })
   );
 }
@@ -288,8 +291,8 @@ export const api = {
   clearMailCache,
   retainMailCacheForUser,
   snoozes: (page: number) => getJSON<SnoozeListResponse>(`/api/snoozes?${new URLSearchParams({ page: String(page) })}`),
-  snoozeMessage: (csrf: string, id: number, until: Date) =>
-    putJSON<{ ok: boolean; snoozed: boolean; snooze: MessageSnooze }>(`/api/messages/${id}/snooze`, csrf, { until: until.toISOString() }),
+  snoozeMessage: (csrf: string, id: number, until: Date, options?: MutationRequestOptions) =>
+    putJSON<{ ok: boolean; snoozed: boolean; snooze: MessageSnooze }>(`/api/messages/${id}/snooze`, csrf, { until: until.toISOString() }, options),
   unsnoozeMessage: (csrf: string, id: number) =>
     deleteJSON<{ ok: boolean; snoozed: boolean }>(`/api/messages/${id}/snooze`, csrf),
   search: (query: string, page: number) =>
@@ -334,20 +337,20 @@ export const api = {
     postJSON<{ ok: boolean; already_sent: boolean; sent_at: string }>(`/api/messages/${id}/unsubscribe`, csrf),
   setStarred: (csrf: string, id: number, starred: boolean) =>
     postJSON<{ ok: boolean; message: { id: number; is_starred: boolean } }>(`/api/messages/${id}/star`, csrf, { starred }),
-  moveMessage: (csrf: string, id: number, mailboxID: number) =>
-    postJSON<{ ok: boolean; mailbox: string }>(`/api/messages/${id}/move`, csrf, { mailbox_id: mailboxID }),
-  bulkMoveMessages: (csrf: string, ids: number[], mailboxID: number) =>
+  moveMessage: (csrf: string, id: number, mailboxID: number, options?: MutationRequestOptions) =>
+    postJSON<{ ok: boolean; mailbox: string }>(`/api/messages/${id}/move`, csrf, { mailbox_id: mailboxID }, options),
+  bulkMoveMessages: (csrf: string, ids: number[], mailboxID: number, options?: MutationRequestOptions) =>
     postJSON<{ ok: boolean; queued: boolean; moved?: number; run_id?: number; mailbox: string }>("/api/messages/bulk-move", csrf, {
       message_ids: ids,
       mailbox_id: mailboxID
-    }),
+    }, options),
   bulkCopyMessages: (csrf: string, ids: number[], mailboxID: number) =>
     postJSON<{ ok: boolean; queued: boolean; copied?: number; run_id?: number; mailbox: string }>("/api/messages/bulk-copy", csrf, {
       message_ids: ids,
       mailbox_id: mailboxID
     }),
-  bulkRead: (csrf: string, ids: number[], read: boolean) =>
-    postJSON<{ ok: boolean; updated: number }>("/api/messages/bulk-read", csrf, { ids, read }),
+  bulkRead: (csrf: string, ids: number[], read: boolean, options?: MutationRequestOptions) =>
+    postJSON<{ ok: boolean; updated: number }>("/api/messages/bulk-read", csrf, { ids, read }, options),
   compose: (query: string) =>
     getJSON<{ compose: ComposeForm; compose_from: string; from_identities: ComposeIdentity[] }>(`/api/compose${query ? `?${query}` : ""}`),
   // Compose sends pure JSON when possible, then switches to multipart only when

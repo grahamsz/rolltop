@@ -2,7 +2,7 @@
 // into feature views while passing only the shared state each view needs.
 
 import type React from "react";
-import type { LocationState, SecurityUnlockState, Toast } from "./appTypes";
+import type { AddToast, LocationState, SecurityUnlockState } from "./appTypes";
 import type { Bootstrap, Mailbox, SwipePreferences, SyncRun, ThemeDefinition, User } from "./types";
 import { MailView, SearchView, SnoozedView } from "./features/mail/MailViews";
 import { ThreadView } from "./features/mail/ThreadView";
@@ -20,7 +20,7 @@ type AccountSettingsRoutePlugin = RuntimePlugin & {
       user: User;
       mailboxes: Mailbox[];
       navigate: (url: string) => void;
-      addToast: (message: string, kind?: Toast["kind"]) => number;
+      addToast: AddToast;
     }) => React.ReactNode;
   }>;
 };
@@ -30,7 +30,7 @@ function pluginAccountSettingsRoute(plugins: RuntimePlugin[], path: string, cont
   user: User;
   mailboxes: Mailbox[];
   navigate: (url: string) => void;
-  addToast: (message: string, kind?: Toast["kind"]) => number;
+  addToast: AddToast;
 }) {
   for (const plugin of plugins as AccountSettingsRoutePlugin[]) {
     for (const route of plugin.accountSettingsRoutes || []) {
@@ -84,7 +84,7 @@ export function RouteView({
   runtimePlugins: RuntimePlugins;
   securityUnlock: SecurityUnlockState;
   openSecurityUnlock: (identityID?: number, onUnlocked?: (state: SecurityUnlockState) => void, recipientKeyIDs?: string[], fallbackEmail?: string) => void;
-  addToast: (message: string, kind?: Toast["kind"]) => number;
+  addToast: AddToast;
 }) {
   const securityEnabled = Boolean(securityUnlockPlugin(runtimePlugins.all));
   if (location.path === "/snoozes") {

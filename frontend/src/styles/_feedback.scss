@@ -279,6 +279,50 @@
   }
 }
 
+.toast-message {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.toast-action,
+.toast-dismiss {
+  flex: 0 0 auto;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.toast-action {
+  border: 1px solid rgba(255, 255, 255, .58);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .1);
+  padding: 4px 8px;
+  font-weight: 700;
+
+  &:hover,
+  &:focus-visible {
+    border-color: #fff;
+    background: rgba(255, 255, 255, .2);
+  }
+}
+
+.toast-dismiss {
+  width: 32px;
+  padding: 4px;
+
+  &:hover,
+  &:focus-visible {
+    background: rgba(255, 255, 255, .14);
+  }
+
+  svg {
+    width: 18px;
+    height: 18px;
+  }
+}
+
 .spinner {
   width: 16px;
   height: 16px;

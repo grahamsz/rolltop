@@ -169,16 +169,19 @@ function messageActionPanelNodes(plugins: readonly RuntimePlugin[], context: Mes
 function MessageDetailsToggle({
   summary,
   details,
+  indicators,
   highlightQuery,
   highlightTerms
 }: {
   summary: string;
   details: HeaderDetail[];
+  indicators?: MessageSecurityIndicators;
   highlightQuery: string;
   highlightTerms: string[];
 }) {
   const visibleDetails = details.filter((detail) => detail.value.trim() !== "");
-  if (visibleDetails.length === 0) {
+  const authenticationResults = reportedAuthenticationResults(indicators);
+  if (visibleDetails.length === 0 && authenticationResults.length === 0) {
     return (
       <div className="thread-recipients">
         <HighlightedText text={summary} query={highlightQuery} terms={highlightTerms} />
@@ -194,6 +197,7 @@ function MessageDetailsToggle({
         <Icon name="expand_more" />
       </summary>
       <dl>
+        {authenticationResults.length > 0 ? <ReportedAuthenticationDetails results={authenticationResults} /> : null}
         {visibleDetails.map((detail) => (
           <Fragment key={`${detail.label}:${detail.value}`}>
             <dt>{detail.label}</dt>
@@ -239,17 +243,61 @@ function authenticationResultClass(result: string): string {
   return "neutral";
 }
 
+function authenticationResultSource(result: AuthenticationResult): string {
+  return result.source === "received-spf" ? "Received-SPF" : "Authentication-Results";
+}
+
 function authenticationResultTooltip(method: string, result: AuthenticationResult): string {
-  const source = result.source === "received-spf" ? "Received-SPF" : "Authentication-Results";
+  const source = authenticationResultSource(result);
   return `Reported ${method} result: ${result.result}. Source: ${source} message header. Rolltop did not independently verify this result.`;
 }
 
-function ReportedAuthenticationIndicators({ indicators }: { indicators?: MessageSecurityIndicators }) {
+function reportedAuthenticationResults(indicators?: MessageSecurityIndicators) {
   const reported = indicators?.reported_authentication;
-  const results = reportedAuthenticationMethods.flatMap(({ key, label }) => {
+  return reportedAuthenticationMethods.flatMap(({ key, label }) => {
     const result = reported?.[key];
     return result ? [{ key, label, result }] : [];
-  }).filter(({ result }) => authenticationResultClass(result.result) === "attention");
+  });
+}
+
+function ReportedAuthenticationDetails({ results }: { results: ReturnType<typeof reportedAuthenticationResults> }) {
+  const sourceSummary = results
+    .map(({ label, result }) => `${label}: ${authenticationResultSource(result)}`)
+    .join("; ");
+  return (
+    <>
+      <dt className="reported-authentication-details-label">authentication</dt>
+      <dd className="reported-authentication-details">
+        <span className="reported-authentication-detail-pills" role="list" aria-label="Reported message authentication results">
+          {results.map(({ key, label, result }) => {
+            const statusClass = authenticationResultClass(result.result);
+            const tooltip = authenticationResultTooltip(label, result);
+            return (
+              <span
+                className={`reported-authentication-detail-pill ${statusClass}`}
+                key={key}
+                role="listitem"
+                title={tooltip}
+                aria-label={tooltip}
+              >
+                <Icon name={statusClass === "attention" ? "shield_warning" : "shield"} weight={statusClass === "attention" ? "fill" : "regular"} />
+                <span>{label}</span>
+                <strong>{result.result}</strong>
+              </span>
+            );
+          })}
+        </span>
+        <span className="reported-authentication-detail-source">
+          Sources: {sourceSummary}. Reported by message headers; Rolltop did not independently verify these results.
+        </span>
+      </dd>
+    </>
+  );
+}
+
+function ReportedAuthenticationIndicators({ indicators }: { indicators?: MessageSecurityIndicators }) {
+  const results = reportedAuthenticationResults(indicators)
+    .filter(({ result }) => authenticationResultClass(result.result) === "attention");
   if (results.length === 0) return null;
   const tooltip = [
     "Authentication results reported by message headers. Rolltop did not independently verify them.",
@@ -1698,6 +1746,7 @@ export function ThreadView({
                     <MessageDetailsToggle
                       summary={item.recipient_line}
                       details={item.header_details || []}
+                      indicators={item.security_indicators}
                       highlightQuery={highlightQuery}
                       highlightTerms={highlightTerms}
                     />

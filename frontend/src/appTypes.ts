@@ -15,6 +15,19 @@ export type Toast = {
   id: number;
   kind: "loading" | "success" | "error";
   message: string;
+  action?: {
+    label: string;
+    onClick: () => void;
+  };
+};
+
+export type ToastCommitReason = "dismiss" | "timeout" | "background";
+
+/** ToastUndo defers a mutation until its toast settles, giving the user a real cancellation window. */
+export type ToastUndo = {
+  label?: string;
+  onUndo: () => void;
+  onCommit: (reason: ToastCommitReason) => void;
 };
 
 /** MoveTarget identifies the destination mailbox for drag/drop message transfers. */
@@ -50,7 +63,7 @@ export type DatePrefs = Pick<User, "date_locale" | "date_format">;
 /** Navigate pushes a client-side URL without reloading the Go-served SPA. */
 export type Navigate = (url: string) => void;
 /** AddToast enqueues a global toast and returns its generated ID. */
-export type AddToast = (message: string, kind?: Toast["kind"]) => number;
+export type AddToast = (message: string, kind?: Toast["kind"], undo?: ToastUndo) => number;
 /** RefreshChrome reloads bootstrap/chrome state after mutations. */
 export type RefreshChrome = () => Promise<Bootstrap | null>;
 

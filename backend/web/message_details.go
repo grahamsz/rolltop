@@ -61,31 +61,7 @@ func messageHeaderDetailsFromHeader(header mail.Header, msg store.MessageRecord)
 	add("subject", msg.Subject)
 	add("mailed-by", mailedByDomain(header, msg.FromAddr))
 	add("signed-by", signedByDomain(header.Get("DKIM-Signature")))
-	for _, detail := range reportedAuthenticationHeaderDetails(reportedAuthenticationFromHeader(header)) {
-		add(detail.Label, detail.Value)
-	}
 	add("message-id", msg.MessageIDHeader)
-	return details
-}
-
-func reportedAuthenticationHeaderDetails(reported reportedAuthentication) []messageHeaderDetail {
-	details := make([]messageHeaderDetail, 0, 3)
-	appendResult := func(label string, result *reportedAuthenticationResult) {
-		if result == nil || result.Result == "" || result.Source == "" {
-			return
-		}
-		source := "Authentication-Results"
-		if result.Source == "received-spf" {
-			source = "Received-SPF"
-		}
-		details = append(details, messageHeaderDetail{
-			Label: label,
-			Value: result.Result + " (reported by the " + source + " header; not independently verified by Rolltop)",
-		})
-	}
-	appendResult("SPF", reported.SPF)
-	appendResult("DKIM", reported.DKIM)
-	appendResult("DMARC", reported.DMARC)
 	return details
 }
 

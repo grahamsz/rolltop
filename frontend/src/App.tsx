@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import type { Bootstrap, ChromeEvent, SyncRun, ThemeDefinition } from "./types";
-import type { LocationState, MessageTransferAction, MoveTarget, SecurityUnlockState, Toast } from "./appTypes";
+import type { LocationState, MessageTransferAction, MoveTarget, SecurityUnlockState, Toast, ToastCommitReason, ToastUndo } from "./appTypes";
 import { ToastStack } from "./components/common";
 import { LogoMark } from "./components/Icon";
 import { SetupPage, LoginPage, PasswordResetPage } from "./features/auth/AuthPages";
@@ -43,6 +43,8 @@ const notificationPreferenceKey = "rolltop.notifications.enabled";
 const pushSubscriptionOwnerKey = "rolltop.push.owner-user-id";
 const pluginThemeLinkID = "rolltop-plugin-theme-css";
 const notificationIconURL = "/icon.svg?v=transparent-logo-v2";
+const toastDurationMS = 4200;
+const undoToastDurationMS = 6000;
 let inMemoryPushSubscriptionOwner = 0;
 
 function themeChoices(themes: ThemeDefinition[] | undefined): ThemeDefinition[] {
@@ -212,6 +214,8 @@ export default function App() {
   const [hiddenMessageIDs, setHiddenMessageIDs] = useState<Set<number>>(() => new Set());
   const [composeOverlayQuery, setComposeOverlayQuery] = useState<string | null>(null);
   const toastSeq = useRef(1);
+  const toastTimers = useRef<Map<number, number>>(new Map());
+  const pendingToastUndos = useRef<Map<number, ToastUndo>>(new Map());
   const lastNotify = useRef<{ id: number; stored: number } | null>(null);
   const lastMouseActivityAt = useRef(Date.now());
   const lastAllMailWakePrefetchAt = useRef(0);
@@ -358,31 +362,80 @@ export default function App() {
     }
   }, [bootstrap, location.path, replaceRoute]);
 
-  const removeToast = useCallback((id: number) => {
+  const clearToast = useCallback((id: number) => {
+    const timer = toastTimers.current.get(id);
+    if (timer !== undefined) window.clearTimeout(timer);
+    toastTimers.current.delete(id);
     setToasts((items) => items.filter((toast) => toast.id !== id));
   }, []);
 
+  const settleToast = useCallback((id: number, reason: ToastCommitReason) => {
+    const pending = pendingToastUndos.current.get(id);
+    pendingToastUndos.current.delete(id);
+    clearToast(id);
+    pending?.onCommit(reason);
+  }, [clearToast]);
+
+  const removeToast = useCallback((id: number) => {
+    settleToast(id, "dismiss");
+  }, [settleToast]);
+
   const addToast = useCallback(
-    (message: string, kind: Toast["kind"] = "success") => {
+    (message: string, kind: Toast["kind"] = "success", undo?: ToastUndo) => {
       const id = toastSeq.current++;
-      setToasts((items) => [...items, { id, kind, message }]);
+      if (undo && kind !== "loading") pendingToastUndos.current.set(id, undo);
+      const action = undo && kind !== "loading" ? {
+        label: undo.label || "Undo",
+        onClick: () => {
+          const pending = pendingToastUndos.current.get(id);
+          if (!pending) return;
+          pendingToastUndos.current.delete(id);
+          clearToast(id);
+          pending.onUndo();
+        }
+      } : undefined;
+      setToasts((items) => [...items, { id, kind, message, action }]);
       if (kind !== "loading") {
-        window.setTimeout(() => removeToast(id), 4200);
+        const duration = undo ? undoToastDurationMS : toastDurationMS;
+        toastTimers.current.set(id, window.setTimeout(() => settleToast(id, "timeout"), duration));
       }
       return id;
     },
-    [removeToast]
+    [clearToast, settleToast]
   );
 
   const updateToast = useCallback(
     (id: number, message: string, kind: Toast["kind"]) => {
       setToasts((items) => items.map((toast) => (toast.id === id ? { ...toast, message, kind } : toast)));
       if (kind !== "loading") {
-        window.setTimeout(() => removeToast(id), 4200);
+        const timer = toastTimers.current.get(id);
+        if (timer !== undefined) window.clearTimeout(timer);
+        toastTimers.current.set(id, window.setTimeout(() => settleToast(id, "timeout"), toastDurationMS));
       }
     },
-    [removeToast]
+    [settleToast]
   );
+
+  useEffect(() => {
+    function flushDeferredToasts() {
+      Array.from(pendingToastUndos.current.keys()).forEach((id) => settleToast(id, "background"));
+    }
+    function removeStaleDeferredToasts() {
+      setToasts((items) => items.filter((toast) => !toast.action || pendingToastUndos.current.has(toast.id)));
+    }
+    function onVisibilityChange() {
+      if (document.visibilityState === "hidden") flushDeferredToasts();
+      else removeStaleDeferredToasts();
+    }
+    window.addEventListener("pagehide", flushDeferredToasts);
+    window.addEventListener("pageshow", removeStaleDeferredToasts);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", flushDeferredToasts);
+      window.removeEventListener("pageshow", removeStaleDeferredToasts);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [settleToast]);
 
   useEffect(() => {
     let cancelled = false;

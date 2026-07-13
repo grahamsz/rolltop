@@ -117,10 +117,18 @@ export function ToastStack({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: 
   return (
     <div className="toast-stack">
       {toasts.map((toast) => (
-        <button className={`toast ${toast.kind === "error" ? "error" : ""}`} key={toast.id} onClick={() => onDismiss(toast.id)}>
-          {toast.kind === "loading" ? <span className="spinner" /> : null}
-          <span>{toast.message}</span>
-        </button>
+        <div className={`toast ${toast.kind === "error" ? "error" : ""}`} key={toast.id}>
+          {toast.kind === "loading" ? <span className="spinner" aria-hidden="true" /> : null}
+          <span className="toast-message" role={toast.kind === "error" ? "alert" : "status"}>{toast.message}</span>
+          {toast.action ? (
+            <button className="toast-action" type="button" onClick={toast.action.onClick}>
+              {toast.action.label}
+            </button>
+          ) : null}
+          <button className="toast-dismiss" type="button" title="Dismiss" aria-label="Dismiss notification" onClick={() => onDismiss(toast.id)}>
+            <Icon name="close" />
+          </button>
+        </div>
       ))}
     </div>
   );
