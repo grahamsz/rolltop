@@ -12,7 +12,7 @@
       --orange: #c46b44;
       --arch: #c56c45;
       --navy: #151f2e;
-      --duration: 1500ms;
+      --duration: 1350ms;
     }
 
     * {
@@ -57,31 +57,17 @@
     }
 
     .band,
-    .curtain,
-    .core,
     .arch {
       transform-box: view-box;
       transform-origin: center;
     }
 
     .band-top {
-      transform: translateY(-150px);
+      transform: translateY(-70vh);
     }
 
     .band-bottom {
-      transform: translateY(150px);
-    }
-
-    .curtain-top {
-      transform: translateY(-190px);
-    }
-
-    .curtain-bottom {
-      transform: translateY(190px);
-    }
-
-    .core {
-      opacity: 0;
+      transform: translateY(70vh);
     }
 
     .arch {
@@ -90,41 +76,52 @@
       stroke-dashoffset: -1;
     }
 
+    .wordmark {
+      opacity: 0;
+      transform: scale(.78);
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+
     .is-playing .band-top {
-      animation: band-from-top var(--duration) cubic-bezier(.22, .72, .2, 1) both;
+      animation: band-from-top var(--duration) cubic-bezier(.14, .78, .24, 1) both;
     }
 
     .is-playing .band-bottom {
-      animation: band-from-bottom var(--duration) cubic-bezier(.22, .72, .2, 1) both;
+      animation: band-from-bottom var(--duration) cubic-bezier(.14, .78, .24, 1) both;
     }
 
-    .is-playing .curtain-top {
-      animation: curtain-from-top var(--duration) cubic-bezier(.22, .72, .2, 1) both;
+    .is-playing .band-top-shape {
+      animation: shape-top var(--duration) cubic-bezier(.16, .9, .3, 1.04) both;
     }
 
-    .is-playing .curtain-bottom {
-      animation: curtain-from-bottom var(--duration) cubic-bezier(.22, .72, .2, 1) both;
-    }
-
-    .is-playing .core {
-      animation: reveal-core var(--duration) cubic-bezier(.22, .72, .2, 1) both;
+    .is-playing .band-bottom-shape {
+      animation: shape-bottom var(--duration) cubic-bezier(.16, .9, .3, 1.04) both;
     }
 
     .is-playing .arch {
-      animation: draw-arch var(--duration) cubic-bezier(.42, 0, .18, 1) both;
+      animation: draw-arch var(--duration) cubic-bezier(.2, .8, .2, 1) both;
+    }
+
+    .is-playing .wordmark {
+      animation: wordmark-pop var(--duration) cubic-bezier(.16, .9, .3, 1.12) both;
     }
 
     .is-playing.is-preview .band,
-    .is-playing.is-preview .curtain,
-    .is-playing.is-preview .core,
-    .is-playing.is-preview .arch {
+    .is-playing.is-preview .band-top-shape,
+    .is-playing.is-preview .band-bottom-shape,
+    .is-playing.is-preview .arch,
+    .is-playing.is-preview .wordmark {
       animation-delay: var(--preview-time);
       animation-play-state: paused;
     }
 
     @keyframes band-from-top {
-      0%, 4% {
-        transform: translateY(-150px);
+      0%, 2% {
+        transform: translateY(-70vh);
+      }
+      22% {
+        transform: translateY(-5px);
       }
       27%, 100% {
         transform: translateY(0);
@@ -132,53 +129,62 @@
     }
 
     @keyframes band-from-bottom {
-      0%, 4% {
-        transform: translateY(150px);
+      0%, 2% {
+        transform: translateY(70vh);
+      }
+      22% {
+        transform: translateY(5px);
       }
       27%, 100% {
         transform: translateY(0);
       }
     }
 
-    @keyframes curtain-from-top {
-      0%, 34% {
-        transform: translateY(-190px);
+    @keyframes shape-top {
+      0%, 30% {
+        d: path("M33.03185 -180 C21.91169 -179.99976 12.94011 -172.10800 11.30140 -161.51069 L11.30140 29.51287 L30.57464 44.40860 C31.87797 45.41591 33.83279 45.41591 35.13612 44.40860 L54.72200 29.27154 L54.72200 -161.75202 C52.98563 -172.22786 44.06792 -179.99976 33.03237 -180 Z");
       }
-      62%, 100% {
-        transform: translateY(0);
-      }
-    }
-
-    @keyframes curtain-from-bottom {
-      0%, 34% {
-        transform: translateY(190px);
-      }
-      62%, 100% {
-        transform: translateY(0);
+      55%, 100% {
+        d: path("M33.03185 11.02356 C21.91169 11.02380 12.94011 18.91556 11.30140 29.51287 L11.30140 29.51287 L30.57464 44.40860 C31.87797 45.41591 33.83279 45.41591 35.13612 44.40860 L54.72200 29.27154 L54.72200 29.27154 C52.98563 18.79570 44.06792 11.02380 33.03237 11.02356 Z");
       }
     }
 
-    @keyframes reveal-core {
-      0%, 31% {
-        opacity: 0;
+    @keyframes shape-bottom {
+      0%, 30% {
+        d: path("M55.03464 36.08146 L39.69811 47.93448 C35.94714 50.83351 29.76516 50.83247 26.01419 47.93348 L11.02906 36.35176 L11.02854 36.92020 L11.02454 240 L55.03994 240 L55.03594 36.92227 Z");
       }
-      32%, 100% {
-        opacity: 1;
+      55%, 100% {
+        d: path("M55.03464 36.08146 L39.69811 47.93448 C35.94714 50.83351 29.76516 50.83247 26.01419 47.93348 L11.02906 36.35176 L11.02854 36.92020 L11.02454 69.11513 L55.03994 69.11513 L55.03594 36.92227 Z");
       }
     }
 
     @keyframes draw-arch {
-      0%, 61% {
+      0%, 51% {
         opacity: 0;
         stroke-dashoffset: -1;
       }
-      62% {
+      52% {
         opacity: 1;
         stroke-dashoffset: -1;
       }
-      86%, 100% {
+      78%, 100% {
         opacity: 1;
         stroke-dashoffset: 0;
+      }
+    }
+
+    @keyframes wordmark-pop {
+      0%, 78% {
+        opacity: 0;
+        transform: scale(.78);
+      }
+      87% {
+        opacity: 1;
+        transform: scale(1.055);
+      }
+      96%, 100% {
+        opacity: 1;
+        transform: scale(1);
       }
     }
 
@@ -215,19 +221,30 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .band,
-      .curtain {
-        display: none;
+      .band {
+        transform: none;
+        animation: none !important;
       }
 
-      .core {
-        opacity: 1;
+      .band-top-shape {
+        d: path("M33.03185 11.02356 C21.91169 11.02380 12.94011 18.91556 11.30140 29.51287 L11.30140 29.51287 L30.57464 44.40860 C31.87797 45.41591 33.83279 45.41591 35.13612 44.40860 L54.72200 29.27154 L54.72200 29.27154 C52.98563 18.79570 44.06792 11.02380 33.03237 11.02356 Z");
+        animation: none !important;
+      }
+
+      .band-bottom-shape {
+        d: path("M55.03464 36.08146 L39.69811 47.93448 C35.94714 50.83351 29.76516 50.83247 26.01419 47.93348 L11.02906 36.35176 L11.02854 36.92020 L11.02454 69.11513 L55.03994 69.11513 L55.03594 36.92227 Z");
         animation: none !important;
       }
 
       .arch {
         opacity: 1;
         stroke-dashoffset: 0;
+        animation: none !important;
+      }
+
+      .wordmark {
+        opacity: 1;
+        transform: none;
         animation: none !important;
       }
     }
@@ -239,41 +256,39 @@
       <svg viewBox="-30 -110 126.066406 289.11528" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="logo-title">
         <title id="logo-title">Rolltop</title>
 
-        <g class="band band-top" fill="#c46b44">
-          <rect x="11.257" y="-100" width="43.466" height="122" />
-          <g transform="translate(509.99438 175.90039)">
-            <path d="m-476.96253-164.87683c-11.12016.00024-20.09174 7.892-21.73045 18.48931l19.27324 14.89573c1.30333 1.00731 3.25815 1.00731 4.56148 0l19.58588-15.13706c-1.73637-10.47584-10.65408-18.24774-21.68963-18.24798z" />
+        <g class="mark">
+          <g class="band band-top" fill="#c46b44">
+            <path
+              class="band-top-shape"
+              d="M33.03185 -180 C21.91169 -179.99976 12.94011 -172.10800 11.30140 -161.51069 L11.30140 29.51287 L30.57464 44.40860 C31.87797 45.41591 33.83279 45.41591 35.13612 44.40860 L54.72200 29.27154 L54.72200 -161.75202 C52.98563 -172.22786 44.06792 -179.99976 33.03237 -180 Z"
+            />
           </g>
-        </g>
 
-        <g class="band band-bottom" fill="#151f2e">
-          <rect x="11.025" y="54" width="44.015" height="116" />
-          <g transform="translate(509.99438 175.90039)">
-            <path d="m-454.95974-139.81893-15.33653 11.85302c-3.75097 2.89903-9.93295 2.89799-13.68392-.001l-14.98513-11.58172-.00052.56844-.004 32.19493h44.0154l-.004-32.19286z" />
+          <g class="band band-bottom" fill="#151f2e">
+            <path
+              class="band-bottom-shape"
+              d="M55.03464 36.08146 L39.69811 47.93448 C35.94714 50.83351 29.76516 50.83247 26.01419 47.93348 L11.02906 36.35176 L11.02854 36.92020 L11.02454 240 L55.03994 240 L55.03594 36.92227 Z"
+            />
           </g>
-        </g>
 
-        <g class="curtain curtain-top">
-          <rect x="10" y="-122" width="46.066" height="191.2" fill="#f2f0eb" />
-        </g>
-        <g class="curtain curtain-bottom">
-          <rect x="10" y="0" width="46.066" height="191.2" fill="#f2f0eb" />
-        </g>
-
-        <g class="core" transform="translate(509.99438 175.90039)">
-          <path fill="#151f2e" d="m-454.95974-139.81893-15.33653 11.85302c-3.75097 2.89903-9.93295 2.89799-13.68392-.001l-14.98513-11.58172-.00052.56844-.004 32.19493h44.0154l-.004-32.19286z" />
-          <path fill="#c46b44" d="m-476.96253-164.87683c-11.12016.00024-20.09174 7.892-21.73045 18.48931l19.27324 14.89573c1.30333 1.00731 3.25815 1.00731 4.56148 0l19.58588-15.13706c-1.73637-10.47584-10.65408-18.24774-21.68963-18.24798z" />
-        </g>
-
-        <g transform="translate(509.99438 175.90039)">
-          <path
-            class="arch"
-            pathLength="1"
-            fill="none"
-            style="stroke: var(--arch)"
-            stroke-width="5.5"
-            stroke-linecap="round"
-            d="m-446.67797-109.53511-.008-29.44922v-.002l-.006-3.89258c0-16.75746-13.51402-30.27148-30.27148-30.27148h.00056c-16.75746 0-30.27149 13.51402-30.27149 30.27148l-.006 3.89258v.002l-.004 29.44922"
+          <g transform="translate(509.99438 175.90039)">
+            <path
+              class="arch"
+              pathLength="1"
+              fill="none"
+              style="stroke: var(--arch)"
+              stroke-width="5.5"
+              stroke-linecap="round"
+              d="m-446.67797-109.53511-.008-29.44922v-.002l-.006-3.89258c0-16.75746-13.51402-30.27148-30.27148-30.27148h.00056c-16.75746 0-30.27149 13.51402-30.27149 30.27148l-.006 3.89258v.002l-.004 29.44922"
+            />
+          </g>
+          <image
+            class="wordmark"
+            href="rolltop-logotype.png"
+            x="3.033"
+            y="77.5"
+            width="60"
+            height="17.419"
           />
         </g>
       </svg>
@@ -287,7 +302,7 @@
     const replay = document.getElementById("replay");
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     const previewTime = Number(new URLSearchParams(window.location.search).get("time"));
-    const animationDuration = 1500;
+    const animationDuration = 1350;
 
     if (Number.isFinite(previewTime) && previewTime > 0) {
       stage.style.setProperty("--preview-time", `${-Math.min(previewTime, animationDuration)}ms`);
