@@ -266,6 +266,11 @@ func (s *Server) apiThreadMessagesTimed(ctx context.Context, userID int64, views
 	out := make([]apiThreadMessage, 0, len(views))
 	attachmentPreviewEnabled := s.pluginEnabled(ctx, plugins.AttachmentPreview)
 	backendPlugins, _ := s.enabledBackendPlugins(ctx)
+	messageIDs := make([]int64, 0, len(views))
+	for _, view := range views {
+		messageIDs = append(messageIDs, view.Message.ID)
+	}
+	messageAnnotations := s.pluginMessageAnnotations(ctx, userID, messageIDs, backendPlugins)
 	bimiEnabled := s.pluginEnabled(ctx, plugins.BIMIBrandIcons)
 	gravatarEnabled := s.pluginEnabled(ctx, plugins.GravatarSenderIcons)
 	var userDB *sql.DB
@@ -335,8 +340,10 @@ func (s *Server) apiThreadMessagesTimed(ctx context.Context, userID int64, views
 		}
 		bodyDoc := emailDocumentWithInlineAttachments(bodyHTML, view.DisplayBodyText, view.ImagesAllowed, view.ImageBlockRules, view.InlineAttachments)
 		stop()
+		apiMsg := apiMessageFromRecord(view.Message, view.Snippet)
+		apiMsg.Annotations = messageAnnotations[view.Message.ID]
 		out = append(out, apiThreadMessage{
-			Message:            apiMessageFromRecord(view.Message, view.Snippet),
+			Message:            apiMsg,
 			Attachments:        atts,
 			HeaderDetails:      apiHeaderDetails(view.HeaderDetails),
 			SecurityIndicators: apiMessageSecurityIndicatorsFrom(view.SecurityIndicators),

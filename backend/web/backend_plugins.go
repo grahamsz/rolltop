@@ -36,6 +36,16 @@ func (s *Server) PluginEnabled(ctx context.Context, pluginID string) bool {
 	return s.pluginEnabled(ctx, pluginID)
 }
 
+// NotifyUserChanged invalidates per-user list state and wakes connected event
+// streams after a plugin changes user-visible local metadata.
+func (s *Server) NotifyUserChanged(userID int64) {
+	if s != nil {
+		s.notifyUserChanged(userID)
+	}
+}
+
+var _ plugins.UserChangeHost = (*Server)(nil)
+
 // QueueAccountMailboxSync lets an enabled backend plugin refetch a message it
 // has just appended to one of the signed-in user's configured IMAP mailboxes.
 // Resolve both records through tenant-scoped store methods before handing the
@@ -117,6 +127,18 @@ func (s *Server) MatchMessageSearch(ctx context.Context, userID, messageID int64
 		Fields:     hit.Fields,
 	}, nil
 }
+
+// SimilarMessages exposes the optional, read-only plugin similarity capability.
+// The search service resolves all candidate ownership and read-state predicates
+// through this server's tenant-aware store before querying Bleve.
+func (s *Server) SimilarMessages(ctx context.Context, userID int64, request plugins.SimilarMessagesRequest) ([]plugins.SimilarMessageResult, error) {
+	if s == nil || s.store == nil || s.search == nil {
+		return nil, errors.New("message similarity is not configured")
+	}
+	return s.search.SimilarMessages(ctx, s.store, userID, request)
+}
+
+var _ plugins.MessageSimilarityHost = (*Server)(nil)
 
 func (s *Server) StarMessage(ctx context.Context, userID, messageID int64, starred bool) error {
 	if s == nil || s.syncer == nil {

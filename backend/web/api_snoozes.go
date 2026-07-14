@@ -138,7 +138,7 @@ func (s *Server) apiSnoozes(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "private, no-store")
 	writeJSON(w, map[string]any{
-		"conversations": apiConversations(conversations),
+		"conversations": s.apiConversationsWithAnnotations(r.Context(), cu.User.ID, conversations),
 		"snoozes":       snoozes,
 		"page":          page,
 		"has_prev":      page > 1,

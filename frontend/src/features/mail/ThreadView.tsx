@@ -60,6 +60,14 @@ type MessageActionPlugin = RuntimePlugin & {
   renderMessageActionPanels?: (context: MessageActionContext) => ReactNode;
 };
 
+type MessageAnnotationPlugin = RuntimePlugin & {
+  renderMessageAnnotations?: (context: {
+    location: "message-list" | "thread";
+    message: ThreadMessage["message"];
+    annotations: NonNullable<ThreadMessage["message"]["annotations"]>;
+  }) => ReactNode;
+};
+
 type MessageActionContext = {
   csrf: string;
   item: ThreadMessage;
@@ -160,6 +168,17 @@ function messageActionPanelNodes(plugins: readonly RuntimePlugin[], context: Mes
     .map((plugin, index) => {
       const node = plugin.renderMessageActionPanels?.(context);
       return node ? <Fragment key={`message-panel-plugin-${index}`}>{node}</Fragment> : null;
+    })
+    .filter(Boolean);
+}
+
+function messageAnnotationNodes(plugins: readonly RuntimePlugin[], item: ThreadMessage) {
+  const annotations = item.message.annotations || [];
+  if (annotations.length === 0) return [];
+  return (plugins as readonly MessageAnnotationPlugin[])
+    .map((plugin, index) => {
+      const node = plugin.renderMessageAnnotations?.({ location: "thread", message: item.message, annotations });
+      return node ? <Fragment key={`message-annotation-${index}`}>{node}</Fragment> : null;
     })
     .filter(Boolean);
 }
@@ -1698,6 +1717,7 @@ export function ThreadView({
               closePanel: () => closeMessagePluginPanel(item.message.id, activeMessagePanel),
               addToast
             });
+            const annotationNodes = messageAnnotationNodes(messageSecurityPlugins, item);
             return (
               <article className={`thread-card ${isExpanded ? "" : "collapsed"}`} key={item.message.id}>
                 <div
@@ -1723,6 +1743,7 @@ export function ThreadView({
                         <HighlightedText text={item.sender_email} query={highlightQuery} terms={highlightTerms} />
                       </span>
                       <MessageSenderSecurityCaution indicators={item.security_indicators} />
+                      {annotationNodes}
                       <OneClickUnsubscribeInlineAction
                         item={item}
                         plugins={pluginSet}

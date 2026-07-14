@@ -65,6 +65,136 @@ type SearchMatchResult struct {
 	Fields     []string
 }
 
+const (
+	// Similarity searches are deliberately bounded because stored-message hooks
+	// run inline with sync and candidate doc-ID queries grow with every ID.
+	MaxSimilarityExplicitCandidates   = 2000
+	MaxSimilarityRecentReadCandidates = 5000
+	MaxSimilarityTerms                = 48
+	MaxSimilarityResults              = 12
+
+	SimilarityFieldSubject    = "subject"
+	SimilarityFieldFromDomain = "from_domain"
+	SimilarityFieldBody       = "body"
+)
+
+// SimilarityTerm is one weighted piece of evidence used to find messages with
+// related subject, sender-domain, or body text. Text is analyzed by the same
+// Bleve field analyzer used while indexing mail.
+type SimilarityTerm struct {
+	Field  string
+	Text   string
+	Weight float64
+}
+
+// RecentReadCandidates asks the host to resolve candidates from authoritative
+// SQLite read state. Since is clamped to the last 90 days and Limit to
+// MaxSimilarityRecentReadCandidates.
+type RecentReadCandidates struct {
+	Since time.Time
+	Limit int
+}
+
+// SimilarMessagesRequest selects exactly one candidate source: caller-provided
+// IDs or recent read mail. The host ownership-checks every candidate, always
+// excludes CurrentMessageID and its thread, and then applies ExcludeMessageIDs.
+type SimilarMessagesRequest struct {
+	CandidateMessageIDs []int64
+	RecentRead          *RecentReadCandidates
+	CurrentMessageID    int64
+	ExcludeMessageIDs   []int64
+	Terms               []SimilarityTerm
+	Limit               int
+}
+
+// SimilarMessageResult is a tenant-owned SQLite envelope paired with Bleve's
+// sparse similarity score and concrete matched-term coverage.
+type SimilarMessageResult struct {
+	MessageID            int64
+	Score                float64
+	MatchedTerms         []string
+	MatchedTermCount     int
+	MatchedFields        []string
+	WeightedTermCoverage float64
+	Date                 time.Time
+	From                 string
+	ThreadKey            string
+}
+
+// MessageSimilarityHost is an optional, read-only capability for plugins that
+// personalize a decision from tenant-owned similar mail.
+type MessageSimilarityHost interface {
+	BackendHost
+	SimilarMessages(context.Context, int64, SimilarMessagesRequest) ([]SimilarMessageResult, error)
+}
+
+// MessageClassificationAttachment is bounded MIME metadata supplied to a
+// classifier without persisting a second attachment body.
+type MessageClassificationAttachment struct {
+	Filename    string
+	ContentType string
+	Size        int64
+}
+
+// MessageClassificationInput is the in-memory, tenant-scoped payload exposed
+// after a newly stored message has committed to the search index.
+type MessageClassificationInput struct {
+	UserID        int64
+	MessageID     int64
+	AccountID     int64
+	MailboxID     int64
+	Date          time.Time
+	From          string
+	To            string
+	CC            string
+	Subject       string
+	BodyText      string
+	BodyTruncated bool
+	HasHTML       bool
+	IsEncrypted   bool
+	IsSigned      bool
+	Attachments   []MessageClassificationAttachment
+}
+
+// MessageClassificationHost is the read-only host surface supplied to
+// post-index classifiers.
+type MessageClassificationHost interface {
+	BackendHost
+	MessageSimilarityHost
+}
+
+// MessageClassifier classifies a message after its Bleve batch commits. Errors
+// are reported by the host but must not roll back already mirrored mail.
+type MessageClassifier interface {
+	BackendPlugin
+	ClassifyMessage(context.Context, MessageClassificationHost, MessageClassificationInput) error
+}
+
+// MessageAnnotation is a generic, batch-hydrated decoration for message lists
+// and detail views. Metadata must not contain raw message content or secrets.
+type MessageAnnotation struct {
+	PluginID string
+	Kind     string
+	Label    string
+	Level    string
+	Summary  string
+	Metadata map[string]string
+}
+
+// MessageAnnotationProvider returns annotations only for the supplied
+// tenant-owned message IDs. The host batches calls to avoid browser N+1 work.
+type MessageAnnotationProvider interface {
+	BackendPlugin
+	MessageAnnotations(context.Context, BackendHost, int64, []int64) (map[int64][]MessageAnnotation, error)
+}
+
+// UserChangeHost is an optional web-host capability for plugin writes that
+// invalidate message-list caches and should wake user event streams.
+type UserChangeHost interface {
+	BackendHost
+	NotifyUserChanged(int64)
+}
+
 // StoredMessageHost exposes existing mail operations that stored-message hooks
 // may apply after they have made a user-scoped decision.
 type StoredMessageHost interface {
@@ -459,6 +589,12 @@ func backendHookNames(plugin BackendPlugin) []string {
 	}
 	if _, ok := plugin.(StoredMessageHook); ok {
 		names = append(names, "stored-message")
+	}
+	if _, ok := plugin.(MessageClassifier); ok {
+		names = append(names, "message-classifier")
+	}
+	if _, ok := plugin.(MessageAnnotationProvider); ok {
+		names = append(names, "message-annotations")
 	}
 	if _, ok := plugin.(AttachmentActionProvider); ok {
 		names = append(names, "attachment-actions")

@@ -1,0 +1,111 @@
+{
+  "schema_version": "rolltop-spam-model-metadata-v1",
+  "model_version": "spamassassin-20030228-c779a6970e0f",
+  "binary_format_version": 1,
+  "feature_schema": "rolltop-spam-features-v1",
+  "dimension": 131072,
+  "trainer_version": "rolltop-ftrl-v2",
+  "seed": 20260713,
+  "model_sha256": "c779a6970e0ffaaaa500f80b8e63f9bb37e24702d8f6d3bbec365e3796ddc019",
+  "report_sha256": "2bea4a540287b909c14b04ffdc1059f119c38f7fe33d7d490766f84f3b63865e",
+  "medium_threshold": 0.35,
+  "high_threshold": 0.8,
+  "corpus": [
+    {
+      "name": "20030228_easy_ham.tar.bz2",
+      "url": "https://spamassassin.apache.org/old/publiccorpus/20030228_easy_ham.tar.bz2",
+      "sha256": "2b7b65904bcfcc31d2b5f51946f2d261370b257402cbbd62930b46ab83367438",
+      "label": "ham"
+    },
+    {
+      "name": "20030228_easy_ham_2.tar.bz2",
+      "url": "https://spamassassin.apache.org/old/publiccorpus/20030228_easy_ham_2.tar.bz2",
+      "sha256": "b4bd3dc5ae5b40f38e99a0e41ad7d16b428b56e818e3a6ffa07330d62004dd38",
+      "label": "ham"
+    },
+    {
+      "name": "20030228_hard_ham.tar.bz2",
+      "url": "https://spamassassin.apache.org/old/publiccorpus/20030228_hard_ham.tar.bz2",
+      "sha256": "ce2ce67880643dbde65ea7f85bffbfe4417349c4bd80b6b0de56262ae6b0a9c9",
+      "label": "ham"
+    },
+    {
+      "name": "20030228_spam.tar.bz2",
+      "url": "https://spamassassin.apache.org/old/publiccorpus/20030228_spam.tar.bz2",
+      "sha256": "c08debc32413804949a866be45ef78195cec2cbafd1da744ed76cdb860589743",
+      "label": "spam"
+    },
+    {
+      "name": "20050311_spam_2.tar.bz2",
+      "url": "https://spamassassin.apache.org/old/publiccorpus/20050311_spam_2.tar.bz2",
+      "sha256": "44280a0e28bf7645b2279e8e42659271ad82c6f40bf8d364dbda7f1df344a765",
+      "label": "spam"
+    }
+  ],
+  "counts": {
+    "total": 5385,
+    "parse_skipped": 8,
+    "spam": 1483,
+    "ham": 3902,
+    "train": 3767,
+    "validation": 808,
+    "test": 810,
+    "train_spam": 1037,
+    "validation_spam": 223,
+    "test_spam": 223
+  },
+  "hyperparameters": {
+    "dimension": 131072,
+    "epochs": 4,
+    "alpha": 0.08,
+    "beta": 1,
+    "l1": 0.08,
+    "l2": 0.8
+  },
+  "golden_inference": [
+    {
+      "name": "obvious_spam",
+      "message": {
+        "subject": "URGENT: claim your FREE cash prize now",
+        "body": "Congratulations winner! Click https://cash-prizes.invalid/claim to receive money today. Limited time offer.",
+        "from": "offers@bulk-mail.invalid",
+        "to": [
+          "customer@example.com"
+        ],
+        "mime_type": "text/html",
+        "html": true
+      },
+      "probability": 0.9989168766531925,
+      "tolerance": 1e-9
+    },
+    {
+      "name": "ordinary_ham",
+      "message": {
+        "subject": "Notes from Tuesday's engineering meeting",
+        "body": "Hi team, attached are the action items. Please review the database migration before Friday's meeting.",
+        "from": "alex@example.org",
+        "to": [
+          "team@example.org"
+        ],
+        "mime_type": "text/plain"
+      },
+      "probability": 0.32534724960299555,
+      "tolerance": 1e-9
+    },
+    {
+      "name": "newsletter",
+      "message": {
+        "subject": "Your weekly project newsletter",
+        "body": "This week: release notes, community events, and documentation updates. Manage preferences at https://news.example.org/preferences",
+        "from": "newsletter@news.example.org",
+        "to": [
+          "reader@example.com"
+        ],
+        "mime_type": "text/html",
+        "html": true
+      },
+      "probability": 0.0617945219940793,
+      "tolerance": 1e-9
+    }
+  ]
+}

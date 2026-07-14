@@ -97,7 +97,7 @@ func (s *Server) mailPageResponse(ctx context.Context, user store.User, mailboxI
 		conversations = conversations[:pageSize]
 	}
 	return map[string]any{
-		"conversations":  apiConversations(conversations),
+		"conversations":  s.apiConversationsWithAnnotations(ctx, user.ID, conversations),
 		"page":           page,
 		"has_prev":       page > 1,
 		"has_next":       hasNext,
@@ -176,7 +176,7 @@ func (s *Server) apiSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	writeSearchTimingHeaders(w, timing, page)
 	etag, ok := writeJSONCachedWithETag(w, r, map[string]any{
-		"conversations": apiConversations(conversations),
+		"conversations": s.apiConversationsWithAnnotations(r.Context(), cu.User.ID, conversations),
 		"page":          page,
 		"has_prev":      page > 1,
 		"has_next":      hasNext,

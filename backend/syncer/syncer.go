@@ -367,7 +367,14 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			errText = err.Error()
 			return run, err
 		}
+		classifiers, storedHooks, err := s.postStorePluginHooks(ctx)
+		if err != nil {
+			status = "failed"
+			errText = err.Error()
+			return run, err
+		}
 		searchBatch := newFetchedSearchIndexBatch(s)
+		classificationBatch := newMessageClassificationBatch(s, classifiers)
 		err = s.Fetcher.FetchMailbox(ctx, account, mailboxName, mailboxLastUIDAtStart, func(item FetchedMessage) error {
 			if item.Mailbox == "" {
 				item.Mailbox = mailboxName
@@ -416,13 +423,16 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			if err := searchBatch.Add(ctx, pendingIndex); err != nil {
 				return err
 			}
-			if hooks, err := s.storedMessageHooks(ctx); err != nil {
-				return err
-			} else if len(hooks) > 0 {
+			classificationBatch.Add(msg, parsed)
+			if searchBatch.Empty() {
+				classificationBatch.Flush(ctx)
+			}
+			if len(storedHooks) > 0 {
 				if err := searchBatch.Flush(ctx); err != nil {
 					return err
 				}
-				if err := s.importStoredMessageHooks(ctx, hooks, msg, mailbox); err != nil {
+				classificationBatch.Flush(ctx)
+				if err := s.importStoredMessageHooks(ctx, storedHooks, msg, mailbox); err != nil {
 					return err
 				}
 			}
@@ -457,6 +467,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			errText = err.Error()
 			return run, err
 		}
+		classificationBatch.Flush(ctx)
 		if s.shouldSyncInlineMetadata(planned) {
 			if err := s.syncMailboxReadFlags(ctx, userID, account, mailbox); err != nil {
 				log.Printf("sync seen flags user_id=%d mailbox=%s: %v", userID, mailboxName, err)
@@ -539,7 +550,12 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 	}
 	log.Printf("repair incomplete mailbox user_id=%d account_id=%d mailbox=%s local=%d remote=%d missing=%d last_uid=%d uidnext=%d", userID, account.ID, mailbox.Name, len(localUIDs), len(remoteUIDs), len(missing), plan.LastUID, plan.Status.UIDNext)
 
+	classifiers, storedHooks, err := s.postStorePluginHooks(ctx)
+	if err != nil {
+		return plan, false, err
+	}
 	searchBatch := newFetchedSearchIndexBatch(s)
+	classificationBatch := newMessageClassificationBatch(s, classifiers)
 	handle := func(item FetchedMessage) error {
 		if item.Mailbox == "" {
 			item.Mailbox = mailbox.Name
@@ -582,13 +598,16 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 		if err := searchBatch.Add(ctx, pendingIndex); err != nil {
 			return err
 		}
-		if hooks, err := s.storedMessageHooks(ctx); err != nil {
-			return err
-		} else if len(hooks) > 0 {
+		classificationBatch.Add(msg, parsed)
+		if searchBatch.Empty() {
+			classificationBatch.Flush(ctx)
+		}
+		if len(storedHooks) > 0 {
 			if err := searchBatch.Flush(ctx); err != nil {
 				return err
 			}
-			if err := s.importStoredMessageHooks(ctx, hooks, msg, mailbox); err != nil {
+			classificationBatch.Flush(ctx)
+			if err := s.importStoredMessageHooks(ctx, storedHooks, msg, mailbox); err != nil {
 				return err
 			}
 		}
@@ -630,6 +649,7 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 	if err := searchBatch.Flush(ctx); err != nil {
 		return plan, false, err
 	}
+	classificationBatch.Flush(ctx)
 	if highestRemoteUID > plan.LastUID {
 		if err := s.Store.UpdateMailboxLastUID(ctx, userID, mailbox.ID, highestRemoteUID); err != nil {
 			return plan, false, err

@@ -43,6 +43,10 @@ func (b *fetchedSearchIndexBatch) Add(ctx context.Context, item *pendingFetchedS
 	return b.Flush(ctx)
 }
 
+func (b *fetchedSearchIndexBatch) Empty() bool {
+	return b == nil || len(b.items) == 0
+}
+
 // Flush commits all pending search documents, then marks their attachment text
 // extraction as complete. The mark intentionally happens after the Bleve batch
 // so interrupted syncs leave rows eligible for reindex repair.

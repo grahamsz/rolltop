@@ -1,0 +1,86 @@
+.experimental-spam-badge {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: .72rem;
+  font-weight: 700;
+  gap: .25rem;
+  line-height: 1;
+  margin-inline: .3rem;
+  padding: .28rem .45rem;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.experimental-spam-badge .icon { height: .9rem; width: .9rem; }
+.experimental-spam-badge.low { background: color-mix(in srgb, #2f855a 12%, transparent); color: #28734d; }
+.experimental-spam-badge.medium { background: color-mix(in srgb, #c47a20 14%, transparent); color: #a65f0b; }
+.experimental-spam-badge.high { background: color-mix(in srgb, #c53030 14%, transparent); color: #b52626; }
+
+.experimental-spam-settings { display: grid; gap: 1rem; }
+.experimental-spam-model-card,
+.experimental-spam-backfill-card,
+.experimental-spam-privacy-card { display: grid; gap: 1rem; }
+
+.experimental-spam-state {
+  border-radius: 999px;
+  font-size: .75rem;
+  font-weight: 700;
+  padding: .35rem .65rem;
+}
+.experimental-spam-state.ready { background: color-mix(in srgb, #2f855a 14%, transparent); color: #28734d; }
+.experimental-spam-state.error { background: color-mix(in srgb, #c53030 14%, transparent); color: #b52626; }
+
+.experimental-spam-stats {
+  display: grid;
+  gap: .75rem;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+}
+.experimental-spam-stats > div {
+  background: var(--surface-soft, rgba(127, 127, 127, .08));
+  border-radius: .75rem;
+  display: grid;
+  gap: .2rem;
+  padding: .85rem;
+}
+.experimental-spam-stats strong { font-size: 1.35rem; }
+.experimental-spam-stats span { color: var(--muted, #68717d); font-size: .8rem; }
+
+.experimental-spam-backfill-controls {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+}
+.experimental-spam-backfill-controls label { display: grid; gap: .3rem; min-width: 11rem; }
+.experimental-spam-backfill-controls select { min-height: 2.5rem; }
+.experimental-spam-backfill-status { display: grid; gap: .45rem; }
+.experimental-spam-backfill-status > div:first-child { display: flex; justify-content: space-between; }
+.experimental-spam-progress { background: rgba(127, 127, 127, .17); border-radius: 999px; height: .45rem; overflow: hidden; }
+.experimental-spam-progress span { background: var(--accent, #c46b44); display: block; height: 100%; transition: width .2s ease; }
+
+.experimental-spam-detail { display: grid; gap: .85rem; }
+.experimental-spam-detail-body { display: grid; gap: .85rem; }
+.experimental-spam-stale { background: color-mix(in srgb, #c47a20 12%, transparent); border-radius: .6rem; margin: 0; padding: .65rem; }
+.experimental-spam-scoreline { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; }
+.experimental-spam-feedback-label { color: var(--muted, #68717d); font-size: .8rem; }
+.experimental-spam-evidence-grid { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); }
+.experimental-spam-evidence-grid > div { background: rgba(127, 127, 127, .08); border-radius: .6rem; display: grid; gap: .15rem; padding: .65rem; }
+.experimental-spam-evidence-grid span { color: var(--muted, #68717d); font-size: .75rem; }
+
+.experimental-spam-evidence-list { display: grid; gap: .35rem; }
+.experimental-spam-evidence-list ul { display: grid; gap: .3rem; list-style: none; margin: 0; padding: 0; }
+.experimental-spam-evidence-list li { align-items: baseline; display: flex; flex-wrap: wrap; gap: .4rem; justify-content: space-between; }
+.experimental-spam-evidence-list code { overflow-wrap: anywhere; }
+.experimental-spam-evidence-list small { color: var(--muted, #68717d); }
+.experimental-spam-detail-meta { color: var(--muted, #68717d); font-size: .75rem; }
+.experimental-spam-feedback-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+
+@media (prefers-color-scheme: dark) {
+  .experimental-spam-badge.low,
+  .experimental-spam-state.ready { color: #75d6a4; }
+  .experimental-spam-badge.medium { color: #efb15f; }
+  .experimental-spam-badge.high,
+  .experimental-spam-state.error { color: #ff8c8c; }
+}

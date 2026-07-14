@@ -82,6 +82,17 @@ export type Message = {
   is_encrypted: boolean;
   is_signed: boolean;
   snippet: string;
+  annotations?: MessageAnnotation[];
+};
+
+/** MessageAnnotation is compact, non-sensitive metadata supplied by an enabled backend plugin. */
+export type MessageAnnotation = {
+  plugin_id: string;
+  kind: string;
+  label: string;
+  level: string;
+  summary: string;
+  metadata?: Record<string, string>;
 };
 
 /** Conversation is a list/search row grouped around the latest visible thread message. */

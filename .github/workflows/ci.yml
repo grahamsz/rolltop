@@ -243,11 +243,18 @@ jobs:
       - name: Build Plugin Backends
         run: |
           mkdir -p build-artifacts/plugins
-          plugins='attachment_preview bimi_brand_icons gravatar_sender_icons language_search mail_filters one_click_unsubscribe remote_image_blocklist remote_imap_sync trusted_image_sources client_side_pgp mail_mcp'
+          plugins='attachment_preview bimi_brand_icons experimental_spam_filter gravatar_sender_icons language_search mail_filters one_click_unsubscribe remote_image_blocklist remote_imap_sync trusted_image_sources client_side_pgp mail_mcp'
           for plugin in $plugins; do
             mkdir -p "build-artifacts/plugins/${plugin}/backend"
             CGO_ENABLED=1 GOOS=linux go build -buildmode=plugin -trimpath -ldflags="-s -w" -o "build-artifacts/plugins/${plugin}/backend/${plugin}.so" "./plugins/${plugin}/backend"
           done
+
+      - name: Verify Checked-In Spam Model
+        run: |
+          go run ./plugins/experimental_spam_filter/training/cmd/spamtrain verify \
+            --model plugins/experimental_spam_filter/model/model.bin \
+            --metadata plugins/experimental_spam_filter/model/model.json \
+            --report plugins/experimental_spam_filter/model/benchmark.json
 
       - name: Upload Plugin Backends
         uses: actions/upload-artifact@v5

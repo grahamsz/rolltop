@@ -206,6 +206,17 @@ type MessageRecord struct {
 	UpdatedAt           time.Time
 }
 
+// MessageSimilarityCandidate is the minimal SQLite envelope needed to validate
+// and hydrate a Bleve similarity hit without loading stored message bodies.
+type MessageSimilarityCandidate struct {
+	ID        int64
+	UserID    int64
+	ThreadKey string
+	Date      time.Time
+	FromAddr  string
+	IsRead    bool
+}
+
 // SenderReadStat is a ranking hint derived from senders whose messages the user reads.
 type SenderReadStat struct {
 	Sender     string

@@ -1,0 +1,77 @@
+{
+  "schema_version": "rolltop-spam-benchmark-v1",
+  "model_sha256": "c779a6970e0ffaaaa500f80b8e63f9bb37e24702d8f6d3bbec365e3796ddc019",
+  "counts": {
+    "total": 5385,
+    "parse_skipped": 8,
+    "spam": 1483,
+    "ham": 3902,
+    "train": 3767,
+    "validation": 808,
+    "test": 810,
+    "train_spam": 1037,
+    "validation_spam": 223,
+    "test_spam": 223
+  },
+  "logistic": {
+    "pr_auc": 0.9841118315831836,
+    "roc_auc": 0.9926050985095599,
+    "brier_score": 0.03215432896055773,
+    "calibration_error": 0.03483910392861788,
+    "recall_target": 0.9,
+    "false_positive_rate_at_recall": 0.01192504258943782,
+    "threshold_at_recall": 0.9135976233463377
+  },
+  "naive_bayes": {
+    "pr_auc": 0.9719572487990866,
+    "roc_auc": 0.9855004927387838,
+    "brier_score": 0.07218873070903892,
+    "calibration_error": 0.07317037776784525,
+    "recall_target": 0.9,
+    "false_positive_rate_at_recall": 0.030664395229982964,
+    "threshold_at_recall": 1
+  },
+  "naive_bayes_recipe": "multinomial Laplace(alpha=1), unsigned feature hashing, observed training vocabulary, same bounded feature families",
+  "fpr_difference_95_ci": {
+    "lower": -0.03685092127303182,
+    "upper": -0.0017513134851138354
+  },
+  "runtime": {
+    "messages": 100,
+    "inference_nanoseconds_per_message": 1034778,
+    "allocated_bytes_per_message": 771535,
+    "model_bytes": 524328
+  },
+  "quality_gates": [
+    {
+      "name": "pr_auc_not_below_naive_bayes",
+      "value": 0.012154582784096979,
+      "limit": 0,
+      "passed": true
+    },
+    {
+      "name": "fpr_difference_95ci_upper_below_zero",
+      "value": -0.0017513134851138354,
+      "limit": 0,
+      "passed": true
+    },
+    {
+      "name": "model_size_bytes",
+      "value": 524328,
+      "limit": 2097152,
+      "passed": true
+    },
+    {
+      "name": "inference_nanoseconds_per_message",
+      "value": 1034778,
+      "limit": 50000000,
+      "passed": true
+    },
+    {
+      "name": "allocated_bytes_per_message",
+      "value": 771535,
+      "limit": 8388608,
+      "passed": true
+    }
+  ]
+}

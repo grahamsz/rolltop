@@ -30,10 +30,29 @@ type SearchActionPlugin = RuntimePlugin & {
   }) => ReactNode;
 };
 
+type MessageAnnotationPlugin = RuntimePlugin & {
+  renderMessageAnnotations?: (context: {
+    location: "message-list" | "thread";
+    message: Conversation["message"];
+    annotations: NonNullable<Conversation["message"]["annotations"]>;
+  }) => ReactNode;
+};
+
 function searchActionNodes(plugins: RuntimePlugin[], query: string, navigate: (url: string) => void) {
   if (!query) return [];
   return (plugins as SearchActionPlugin[])
     .map((plugin) => plugin.renderSearchActions?.({ query, navigate }))
+    .filter(Boolean);
+}
+
+function messageAnnotationNodes(plugins: RuntimePlugin[], message: Conversation["message"]) {
+  const annotations = message.annotations || [];
+  if (annotations.length === 0) return [];
+  return (plugins as MessageAnnotationPlugin[])
+    .map((plugin, index) => {
+      const node = plugin.renderMessageAnnotations?.({ location: "message-list", message, annotations });
+      return node ? <span key={`message-annotation-${index}`}>{node}</span> : null;
+    })
     .filter(Boolean);
 }
 
@@ -1653,6 +1672,7 @@ function MessageList({
         const previewText = messageSecurityPreviewText(messageSecurityPlugins, conversation.snippet, msg);
         const securitySnippetClass = messageSecuritySnippetClassName(messageSecurityPlugins, msg);
         const securityIndicators = messageSecurityIndicators(messageSecurityPlugins, { location: "message-list", message: msg, state: msg });
+        const annotationNodes = messageAnnotationNodes(messageSecurityPlugins, msg);
         const selected = selectedIDs.has(msg.id);
         const touchMessageIDs = selected && selectedDragMessageIDs.length > 0 ? selectedDragMessageIDs : conversationTransferMessageIDs(conversation);
         const touchAccountIDs = selected && selectedDragAccountIDs.length > 0 ? selectedDragAccountIDs : conversationTransferAccountIDs(conversation);
@@ -1745,6 +1765,7 @@ function MessageList({
                 <HighlightedText text={msg.subject || "(no subject)"} query={searchQuery} terms={matchTerms} />
               </strong>
               {securityIndicators}
+              {annotationNodes}
               <span className={`snippet ${securitySnippetClass}`}>
                 <HighlightedText text={previewText} query={securitySnippetClass ? "" : searchQuery} terms={securitySnippetClass ? [] : matchTerms} />
               </span>

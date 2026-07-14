@@ -227,6 +227,11 @@ func (s *Server) apiAdminPlugin(w http.ResponseWriter, r *http.Request, rest str
 		s.serverError(w, err)
 		return
 	}
+	users, err := s.store.ListUsers(r.Context())
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
 	if err := s.store.SetPluginEnabled(r.Context(), pluginID, in.Enabled); err != nil {
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
@@ -235,6 +240,7 @@ func (s *Server) apiAdminPlugin(w http.ResponseWriter, r *http.Request, rest str
 		s.serverError(w, err)
 		return
 	}
+	defer s.notifyPluginSettingChanged(users)
 	log.Printf("debug plugin setting updated plugin_id=%s enabled=%t", pluginID, in.Enabled)
 	if in.Enabled {
 		if _, _, err := s.startBackendPlugin(r.Context(), pluginID); err != nil {
@@ -250,6 +256,24 @@ func (s *Server) apiAdminPlugin(w http.ResponseWriter, r *http.Request, rest str
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "plugins": s.apiAdminPluginSettings(settings)})
+}
+
+// notifyPluginSettingChanged invalidates plugin-decorated list payloads for
+// every tenant and wakes active clients. It deliberately skips cache warming
+// and new-mail web-push work because an enablement change is not a mail event.
+func (s *Server) notifyPluginSettingChanged(users []store.User) {
+	if s == nil {
+		return
+	}
+	for _, user := range users {
+		if user.ID <= 0 {
+			continue
+		}
+		s.noteMailListChanged(user.ID)
+		if s.events != nil {
+			s.events.Notify(user.ID)
+		}
+	}
 }
 
 func (s *Server) apiAdminRemoteImageBlocklist(w http.ResponseWriter, r *http.Request) {

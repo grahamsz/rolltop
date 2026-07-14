@@ -21,3 +21,4 @@ android/app/build/
 coverage.out
 /rolltop
 tsconfig.tsbuildinfo
+.cache/rolltop-spam-corpus/

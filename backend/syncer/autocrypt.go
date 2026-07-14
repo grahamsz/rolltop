@@ -105,6 +105,13 @@ func (h syncPluginHost) MatchMessageSearch(ctx context.Context, userID, messageI
 	}, nil
 }
 
+func (h syncPluginHost) SimilarMessages(ctx context.Context, userID int64, request plugins.SimilarMessagesRequest) ([]plugins.SimilarMessageResult, error) {
+	if h.s == nil || h.s.Store == nil || h.s.Search == nil {
+		return nil, errors.New("message similarity is not configured")
+	}
+	return h.s.Search.SimilarMessages(ctx, h.s.Store, userID, request)
+}
+
 func (h syncPluginHost) StarMessage(ctx context.Context, userID, messageID int64, starred bool) error {
 	if h.s == nil {
 		return errors.New("sync service is not configured")
@@ -132,3 +139,5 @@ func (h syncPluginHost) ForwardMessage(ctx context.Context, userID, messageID in
 
 var _ plugins.BackendHost = syncPluginHost{}
 var _ plugins.StoredMessageHost = syncPluginHost{}
+var _ plugins.MessageSimilarityHost = syncPluginHost{}
+var _ plugins.MessageClassificationHost = syncPluginHost{}

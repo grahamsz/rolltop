@@ -157,7 +157,7 @@ func (s *Service) CopyMessage(ctx context.Context, userID, messageID, destMailbo
 	if err := s.applyCopiedMessageFlags(ctx, destAccount, dest, fetched.UID, msg, &fetched); err != nil {
 		return err
 	}
-	copied, _, pendingIndex, err := s.storeFetchedMessage(ctx, userID, destAccount, dest, fetched)
+	copied, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, destAccount, dest, fetched)
 	if err != nil {
 		return err
 	}
@@ -170,6 +170,15 @@ func (s *Service) CopyMessage(ctx context.Context, userID, messageID, destMailbo
 	}
 	if err := s.Store.UpdateMailboxLastUID(ctx, userID, dest.ID, copied.UID); err != nil {
 		return err
+	}
+	// A copied message is a new local row and should receive the same advisory
+	// post-index classification as a normally fetched message. Run it only after
+	// essential copy state is durable; plugin discovery and classifier failures
+	// remain best-effort and cannot turn a completed IMAP copy into a failure.
+	if classifiers, _, hookErr := s.postStorePluginHooks(ctx); hookErr != nil {
+		log.Printf("copied message classifiers unavailable user_id=%d message_id=%d error_type=%T", userID, copied.ID, hookErr)
+	} else {
+		s.classifyStoredMessage(ctx, classifiers, copied, parsed)
 	}
 	s.notify(userID)
 	return nil

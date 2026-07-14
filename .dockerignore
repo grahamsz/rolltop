@@ -1,11 +1,13 @@
 .git
 .beads
+.cache
 data
 tmp
 node_modules
 frontend/dist
 plugins/*/frontend/dist
 plugins/*/frontend_dist
+plugins/*/backend/*.so
 *.db
 *.db-*
 coverage.out

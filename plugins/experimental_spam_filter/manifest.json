@@ -1,0 +1,17 @@
+{
+  "id": "experimental_spam_filter",
+  "name": "Experimental spam filter",
+  "description": "Scores mail with a checked-in corpus model and tenant-local similar-message evidence.",
+  "version": "0.1.0",
+  "enabled_by_default": false,
+  "auto_start": true,
+  "experimental": true,
+  "backend": {
+    "kind": "go-plugin",
+    "binary": "backend/experimental_spam_filter.so"
+  },
+  "frontend": {
+    "module": "frontend_dist/index.js",
+    "css": "frontend_dist/styles.css"
+  }
+}
