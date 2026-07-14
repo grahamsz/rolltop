@@ -19,6 +19,7 @@ type spamFilterPlugin struct {
 	modelVersion string
 	modelError   string
 	backfills    map[int64]context.CancelFunc
+	bootstraps   map[int64]context.CancelFunc
 }
 
 // RolltopPlugin is loaded by the runtime Go-plugin host.
@@ -34,6 +35,7 @@ func (p *spamFilterPlugin) Start(host plugins.BackendStartHost) error {
 	p.stopLocked()
 	p.loadModelLocked()
 	p.backfills = make(map[int64]context.CancelFunc)
+	p.bootstraps = make(map[int64]context.CancelFunc)
 
 	handle, err := host.RegisterProtectedAPI(pluginID, plugins.ProtectedAPIRoute{
 		Path: apiPath, Prefix: true, Handle: p.handleAPI,
@@ -58,6 +60,10 @@ func (p *spamFilterPlugin) stopLocked() {
 		cancel()
 	}
 	p.backfills = nil
+	for _, cancel := range p.bootstraps {
+		cancel()
+	}
+	p.bootstraps = nil
 	for _, route := range p.routes {
 		route.Unregister()
 	}
@@ -92,4 +98,5 @@ var (
 	_ plugins.BackendPlugin             = (*spamFilterPlugin)(nil)
 	_ plugins.MessageClassifier         = (*spamFilterPlugin)(nil)
 	_ plugins.MessageAnnotationProvider = (*spamFilterPlugin)(nil)
+	_ plugins.MessageMoveObserver       = (*spamFilterPlugin)(nil)
 )

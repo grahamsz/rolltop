@@ -811,6 +811,10 @@ func TestOnboardingMailboxDefaultsDiscoverAllButAutoSyncInboxOnly(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	spam, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Spam")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if inbox.SyncMode != "auto" || inbox.Role != "inbox" {
 		t.Fatalf("inbox defaults = mode %q role %q, want auto/inbox", inbox.SyncMode, inbox.Role)
 	}
@@ -820,8 +824,102 @@ func TestOnboardingMailboxDefaultsDiscoverAllButAutoSyncInboxOnly(t *testing.T) 
 	if child.SyncMode != "manual" {
 		t.Fatalf("inbox child sync mode = %q, want manual", child.SyncMode)
 	}
+	if child.Role != "" {
+		t.Fatalf("inbox child role = %q, want no substring-derived role", child.Role)
+	}
 	if drafts.Role != "drafts" || drafts.ShowInAllMail {
 		t.Fatalf("drafts defaults = role %q show_in_all_mail %v, want drafts/false", drafts.Role, drafts.ShowInAllMail)
+	}
+	if spam.SyncMode != "manual" || spam.Role != "junk" || spam.Icon != "report" || spam.ShowInAllMail || !spam.IncludeInSearch {
+		t.Fatalf("spam defaults = mode %q role %q icon %q all-mail %t search %t, want manual/junk/report/false/true", spam.SyncMode, spam.Role, spam.Icon, spam.ShowInAllMail, spam.IncludeInSearch)
+	}
+}
+
+func TestDiscoveredMailboxRoleFillsEmptyRoleWithoutChangingSyncDefaults(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "owner@example.test", "Owner", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, MailAccount{UserID: user.ID, Email: "owner@example.test", Host: "imap.example.test", Port: 993, Username: "owner@example.test", EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := db.GetOrCreateMailboxWithRole(ctx, user.ID, account.ID, "Provider Bulk", "junk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mailbox.Role != "junk" || mailbox.Icon != "report" || mailbox.SyncMode != "manual" || mailbox.ShowInAllMail || !mailbox.IncludeInSearch {
+		t.Fatalf("discovered mailbox = %+v, want junk/report/manual/search-enabled", mailbox)
+	}
+	duplicate, err := db.GetOrCreateMailboxWithRole(ctx, user.ID, account.ID, "Second Provider Bulk", "junk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.Role != "" {
+		t.Fatalf("duplicate discovered special role = %q, want unassigned", duplicate.Role)
+	}
+	if err := db.UpdateMailboxSettings(ctx, user.ID, mailbox.ID, MailboxSettings{
+		SyncMode: "never", Role: "trash", Icon: "delete", ShowInSidebar: true, IncludeInSearch: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err = db.GetOrCreateMailboxWithRole(ctx, user.ID, account.ID, "Provider Bulk", "junk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mailbox.Role != "trash" || mailbox.Icon != "delete" || mailbox.SyncMode != "never" || mailbox.IncludeInSearch {
+		t.Fatalf("rediscovery overwrote user settings: %+v", mailbox)
+	}
+}
+
+func TestSeedJunkMailboxRolesUsesExactNames(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "migration@example.test", "Migration", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, MailAccount{UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993, Username: user.Email, EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spam, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Spam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX.spam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.ExecContext(ctx, `UPDATE mailboxes SET role = '', icon = 'folder' WHERE user_id = ?`, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedJunkMailboxRoles(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	spam, err = db.GetMailboxForUser(ctx, user.ID, spam.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err = db.GetMailboxForUser(ctx, user.ID, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spam.Role != "junk" || spam.Icon != "report" || spam.ShowInAllMail {
+		t.Fatalf("exact Spam backfill = role %q icon %q all-mail %t", spam.Role, spam.Icon, spam.ShowInAllMail)
+	}
+	if child.Role != "" {
+		t.Fatalf("substring mailbox backfill role = %q, want unassigned", child.Role)
 	}
 }
 

@@ -36,8 +36,36 @@ func (p *spamFilterPlugin) ClassifyMessage(ctx context.Context, host plugins.Mes
 	if _, err := st.GetMessageEnvelopeForUser(ctx, input.UserID, input.MessageID); err != nil {
 		return err
 	}
-	_, err = p.classifyAndSave(ctx, host, db, input, contentCoverage(input))
-	return err
+	if _, err = p.classifyAndSave(ctx, host, db, input, contentCoverage(input)); err != nil {
+		return err
+	}
+	return applyPendingMoveFeedback(ctx, db, input)
+}
+
+func applyPendingMoveFeedback(ctx context.Context, db *sql.DB, input plugins.MessageClassificationInput) error {
+	identity := messageIdentityKey(input.MessageIDHeader, input.From, input.To, input.Subject, input.Date)
+	if identity == "" {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	label, err := consumePendingMoveLabel(ctx, tx, input.UserID, input.AccountID, identity, time.Now().UTC())
+	if err != nil || label == "" {
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if _, err := LearnPersonalBayesTx(ctx, tx, input.UserID, input.MessageID, label, modelMessage(input)); err != nil {
+		return err
+	}
+	if err := setFeedbackTx(ctx, tx, input.UserID, input.MessageID, label); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func contentCoverage(input plugins.MessageClassificationInput) string {
@@ -66,11 +94,24 @@ func (p *spamFilterPlugin) classifyAndSave(ctx context.Context, host plugins.Mes
 	}
 	base := clampProbability(score.Probability)
 	explanation := contributionEvidence(score.Contributions)
+	bayesScore, err := ScorePersonalBayes(ctx, db, input.UserID, message)
+	if err != nil {
+		return classificationRecord{}, err
+	}
+	bayesAdjustment, bayesBucket := 0.0, ""
+	if bayesScore.Ready {
+		bayesAdjustment, bayesBucket = personalBayesLogOddsAdjustment(bayesScore.Probability)
+	}
+	explanation.PersonalBayes = &personalBayesExplanation{
+		Ready: bayesScore.Ready, Probability: bayesScore.Probability,
+		SpamMessages: bayesScore.SpamMessages, HamMessages: bayesScore.HamMessages,
+		StoredTokens: bayesScore.StoredTokens, TokensUsed: bayesScore.TokensUsed,
+		Bucket: bayesBucket, LogOddsAdjustment: bayesAdjustment,
+	}
 	terms := similarityTerms(input)
 
 	labeledProbability := 0.5
 	labeledCount := 0
-	personalized := base
 	spamIDs, hamIDs, labels, err := labeledCandidates(ctx, db, input.UserID)
 	if err != nil {
 		return classificationRecord{}, err
@@ -85,38 +126,46 @@ func (p *spamFilterPlugin) classifyAndSave(ctx context.Context, host plugins.Mes
 		})
 		if similarityErr == nil {
 			labeledProbability, labeledCount, explanation.LabeledNeighbors = labeledNeighborScore(hits, labels)
-			if labeledCount >= 3 {
-				lambda := math.Min(0.4, 0.1*float64(labeledCount))
-				personalized = base*(1-lambda) + labeledProbability*lambda
-			}
 		}
 	}
+	explanation.LabeledLogOddsAdjustment = labeledNeighborLogOddsAdjustment(labeledProbability, labeledCount)
 
 	recentSupport := 0.0
 	if len(terms) > 0 {
+		// Keep explicitly spam-labeled candidates in the result set long enough
+		// for scoreRecentReadReputation to veto their sender. The scorer removes
+		// them before calculating either generic or exact-sender support.
 		hits, similarityErr := host.SimilarMessages(ctx, input.UserID, plugins.SimilarMessagesRequest{
 			RecentRead: &plugins.RecentReadCandidates{
 				Since: time.Now().UTC().Add(-recentReadWindow),
 				Limit: plugins.MaxSimilarityRecentReadCandidates,
 			},
-			CurrentMessageID:  input.MessageID,
-			ExcludeMessageIDs: spamIDs,
-			Terms:             terms,
-			Limit:             plugins.MaxSimilarityResults,
+			CurrentMessageID: input.MessageID,
+			Terms:            terms,
+			Limit:            plugins.MaxSimilarityResults,
 		})
 		if similarityErr == nil {
 			spamHits, feedbackErr := spamLabeledMessageIDs(ctx, db, input.UserID, similarityHitIDs(hits))
 			if feedbackErr == nil {
-				hits = filterSpamHits(hits, spamHits)
-				recentSupport, explanation.RecentReadNeighbors = recentReadScore(hits, time.Now().UTC())
+				reputation := scoreRecentReadReputation(recentReadReputationInput{
+					CurrentFrom: input.From, Hits: hits, SpamVetoMessageIDs: spamHits, Now: time.Now().UTC(),
+				})
+				explanation.GenericReadSupport = reputation.GenericSupport
+				explanation.ExactSenderTemplateSupport = reputation.ExactSenderTemplateSupport
+				explanation.ReputationLogOddsAdjustment = reputation.LogOddsAdjustment
+				explanation.RecentReadNeighbors = reputation.Neighbors
+				recentSupport = math.Max(reputation.GenericSupport, reputation.ExactSenderTemplateSupport)
 			}
 		}
 	}
 
-	finalProbability := clampProbability(personalized * (1 - 0.15*recentSupport))
+	finalLogOdds := probabilityLogOdds(base) + bayesAdjustment + explanation.LabeledLogOddsAdjustment + explanation.ReputationLogOddsAdjustment
+	finalProbability := clampProbability(probabilityFromLogOdds(finalLogOdds))
 	record := classificationRecord{
 		MessageID:                  input.MessageID,
 		ModelVersion:               score.ModelVersion,
+		ModelName:                  classifier.ModelName(),
+		TrainingCorpus:             classifier.TrainingCorpus(),
 		BaseProbability:            base,
 		LabeledNeighborProbability: labeledProbability,
 		LabeledNeighborCount:       labeledCount,
@@ -229,28 +278,6 @@ func labeledNeighborScore(hits []plugins.SimilarMessageResult, labels map[int64]
 	return clampProbability(weightedSpam / totalWeight), count, evidence
 }
 
-func recentReadScore(hits []plugins.SimilarMessageResult, now time.Time) (float64, []neighborEvidence) {
-	weightSum := 0.0
-	evidence := make([]neighborEvidence, 0, len(hits))
-	for _, hit := range hits {
-		coverage := clampProbability(hit.WeightedTermCoverage)
-		if hit.MatchedTermCount < 3 || coverage < 0.25 || hit.Date.IsZero() {
-			continue
-		}
-		age := now.Sub(hit.Date)
-		if age < 0 {
-			age = 0
-		}
-		if age > recentReadWindow {
-			continue
-		}
-		decay := math.Pow(0.5, age.Hours()/(30*24))
-		weightSum += coverage * decay
-		evidence = append(evidence, neighborFromHit(hit, "read"))
-	}
-	return clampProbability(1 - math.Exp(-weightSum/2)), evidence
-}
-
 func neighborFromHit(hit plugins.SimilarMessageResult, label string) neighborEvidence {
 	terms := append([]string(nil), hit.MatchedTerms...)
 	if len(terms) > maxStoredMatchedTerms {
@@ -274,7 +301,10 @@ func contributionEvidence(contributions []spammodel.Contribution) classification
 	positive := make([]signalEvidence, 0, len(contributions))
 	negative := make([]signalEvidence, 0, len(contributions))
 	for _, contribution := range contributions {
-		item := signalEvidence{Feature: safeFeature(contribution.Feature), Contribution: contribution.Impact}
+		item := signalEvidence{
+			Feature: safeFeature(contribution.Feature), Description: safeFeature(contribution.Description),
+			Contribution: contribution.Impact,
+		}
 		if item.Feature == "" || item.Contribution == 0 {
 			continue
 		}

@@ -10,11 +10,24 @@ import (
 )
 
 const (
-	TrainerVersion   = "rolltop-ftrl-v2"
-	TrainingSeed     = int64(20260713)
-	trainingEpochs   = 4
-	NaiveBayesRecipe = "multinomial Laplace(alpha=1), unsigned feature hashing, observed training vocabulary, same bounded feature families"
+	TrainerVersion = "rolltop-named-rule-perceptron-v2"
+	TrainingSeed   = int64(20260713)
+	minRuleSupport = 5
 )
+
+type PerceptronConfig struct {
+	Epochs        int     `json:"epochs"`
+	LearningRate  float64 `json:"learning_rate"`
+	HamPreference float64 `json:"ham_preference"`
+	WeightDecay   float64 `json:"weight_decay"`
+}
+
+var DefaultPerceptronConfig = PerceptronConfig{
+	Epochs:        30,
+	LearningRate:  1.0,
+	HamPreference: 0.5,
+	WeightDecay:   0.995,
+}
 
 type splitSet struct {
 	Train      []sample
@@ -22,6 +35,9 @@ type splitSet struct {
 	Test       []sample
 }
 
+// splitSamples is deterministic and stratified by dated archive. Message IDs
+// in the public corpus include a content digest, so ordered slicing does not
+// depend on filesystem traversal order.
 func splitSamples(samples []sample) splitSet {
 	bySource := make(map[string][]sample)
 	for _, item := range samples {
@@ -51,131 +67,206 @@ func splitSamples(samples []sample) splitSet {
 	return result
 }
 
-type ftrl struct {
-	alpha float64
-	beta  float64
-	l1    float64
-	l2    float64
-	z     []float64
-	n     []float64
-	biasZ float64
-	biasN float64
+type hitSample struct {
+	ID     string
+	Source string
+	Spam   bool
+	Hits   []spammodel.Feature
 }
 
-func newFTRL(dimension uint32) *ftrl {
-	return &ftrl{
-		alpha: 0.08,
-		beta:  1,
-		l1:    0.08,
-		l2:    0.8,
-		z:     make([]float64, dimension),
-		n:     make([]float64, dimension),
+func massCheckSamples(samples []sample) ([]hitSample, error) {
+	result := make([]hitSample, len(samples))
+	for index, item := range samples {
+		hits, err := spammodel.ExtractFeatures(item.Message, spammodel.DefaultDimension)
+		if err != nil {
+			return nil, err
+		}
+		result[index] = hitSample{ID: item.ID, Source: item.Source, Spam: item.Spam, Hits: hits}
 	}
+	return result, nil
 }
 
-func (learner *ftrl) weight(index uint32) float64 {
-	z := learner.z[index]
-	if math.Abs(z) <= learner.l1 {
-		return 0
+type RuleAudit struct {
+	Index           uint32                 `json:"index"`
+	Name            string                 `json:"name"`
+	Description     string                 `json:"description"`
+	Polarity        spammodel.RulePolarity `json:"polarity"`
+	Count           bool                   `json:"count"`
+	TrainHits       int                    `json:"train_messages_hit"`
+	TrainSpamHits   int                    `json:"train_spam_messages_hit"`
+	TrainHamHits    int                    `json:"train_ham_messages_hit"`
+	TotalHitValue   float64                `json:"total_hit_value"`
+	SpamHitRate     float64                `json:"spam_hit_rate"`
+	HamHitRate      float64                `json:"ham_hit_rate"`
+	SpamOverOverall float64                `json:"spam_over_overall"`
+	Discrimination  float64                `json:"discrimination"`
+	RangeLow        float64                `json:"range_low"`
+	RangeHigh       float64                `json:"range_high"`
+	Enabled         bool                   `json:"enabled"`
+	DisabledReason  string                 `json:"disabled_reason,omitempty"`
+	FittedScore     float64                `json:"fitted_score"`
+}
+
+type scoreRange struct {
+	low  float64
+	high float64
+}
+
+func auditRuleHits(samples []hitSample) ([]RuleAudit, []scoreRange, error) {
+	definitions := spammodel.RuleDefinitions()
+	if len(definitions) == 0 || len(definitions) > 128 {
+		return nil, nil, errors.New("named-rule manifest must contain between 1 and 128 rules")
 	}
-	return -(z - math.Copysign(learner.l1, z)) /
-		((learner.beta+math.Sqrt(learner.n[index]))/learner.alpha + learner.l2)
-}
-
-func (learner *ftrl) biasWeight() float64 {
-	return -learner.biasZ / ((learner.beta+math.Sqrt(learner.biasN))/learner.alpha + learner.l2)
-}
-
-func (learner *ftrl) predict(features []spammodel.Feature) float64 {
-	logit := learner.biasWeight()
-	for _, feature := range features {
-		logit += learner.weight(feature.Index) * feature.Value
-	}
-	return logistic(logit)
-}
-
-func (learner *ftrl) update(features []spammodel.Feature, target, classWeight float64) {
-	prediction := learner.predict(features)
-	baseGradient := (prediction - target) * classWeight
-	for _, feature := range features {
-		gradient := baseGradient * feature.Value
-		weight := learner.weight(feature.Index)
-		sigma := (math.Sqrt(learner.n[feature.Index]+gradient*gradient) - math.Sqrt(learner.n[feature.Index])) / learner.alpha
-		learner.z[feature.Index] += gradient - sigma*weight
-		learner.n[feature.Index] += gradient * gradient
-	}
-	biasWeight := learner.biasWeight()
-	biasSigma := (math.Sqrt(learner.biasN+baseGradient*baseGradient) - math.Sqrt(learner.biasN)) / learner.alpha
-	learner.biasZ += baseGradient - biasSigma*biasWeight
-	learner.biasN += baseGradient * baseGradient
-}
-
-func trainLogistic(samples []sample, dimension uint32) ([]float32, float64, error) {
-	if len(samples) == 0 {
-		return nil, 0, errors.New("training set is empty")
-	}
-	spamCount := 0
+	audits := make([]RuleAudit, len(definitions))
+	ranges := make([]scoreRange, spammodel.DefaultDimension)
+	spamMessages, hamMessages := 0, 0
 	for _, item := range samples {
 		if item.Spam {
-			spamCount++
+			spamMessages++
+		} else {
+			hamMessages++
+		}
+		seen := make(map[uint32]bool, len(item.Hits))
+		for _, hit := range item.Hits {
+			if int(hit.Index) >= len(definitions) || hit.Name != definitions[hit.Index].Name || hit.Value <= 0 {
+				return nil, nil, errors.New("mass-check produced an unknown or invalid rule hit")
+			}
+			audit := &audits[hit.Index]
+			audit.TotalHitValue += hit.Value
+			if seen[hit.Index] {
+				continue
+			}
+			seen[hit.Index] = true
+			audit.TrainHits++
+			if item.Spam {
+				audit.TrainSpamHits++
+			} else {
+				audit.TrainHamHits++
+			}
 		}
 	}
-	hamCount := len(samples) - spamCount
-	if spamCount == 0 || hamCount == 0 {
-		return nil, 0, errors.New("training set must contain spam and ham")
+	if spamMessages == 0 || hamMessages == 0 {
+		return nil, nil, errors.New("rule audit requires both spam and ham")
 	}
-	spamWeight := float64(len(samples)) / (2 * float64(spamCount))
-	hamWeight := float64(len(samples)) / (2 * float64(hamCount))
-	learner := newFTRL(dimension)
+	for index, definition := range definitions {
+		audit := &audits[index]
+		audit.Index = definition.Index
+		audit.Name = definition.Name
+		audit.Description = definition.Description
+		audit.Polarity = definition.Polarity
+		audit.Count = definition.Count
+		audit.SpamHitRate = float64(audit.TrainSpamHits) / float64(spamMessages)
+		audit.HamHitRate = float64(audit.TrainHamHits) / float64(hamMessages)
+		denominator := audit.SpamHitRate + audit.HamHitRate
+		if denominator > 0 {
+			audit.SpamOverOverall = audit.SpamHitRate / denominator
+		}
+		audit.Discrimination = math.Abs(audit.SpamHitRate - audit.HamHitRate)
+		audit.Enabled = true
+		switch {
+		case audit.TrainHits < minRuleSupport:
+			audit.Enabled = false
+			audit.DisabledReason = "support below five training messages"
+		case definition.Polarity == spammodel.SpamRule && audit.SpamHitRate <= audit.HamHitRate:
+			audit.Enabled = false
+			audit.DisabledReason = "observed hit rates contradict spam polarity"
+		case definition.Polarity == spammodel.HamRule && audit.HamHitRate <= audit.SpamHitRate:
+			audit.Enabled = false
+			audit.DisabledReason = "observed hit rates contradict ham polarity"
+		}
+		if audit.Enabled {
+			if definition.Polarity == spammodel.SpamRule {
+				audit.RangeHigh = definition.MaxScore
+			} else {
+				audit.RangeLow = -definition.MaxScore
+			}
+			ranges[index] = scoreRange{low: audit.RangeLow, high: audit.RangeHigh}
+		}
+	}
+	return audits, ranges, nil
+}
+
+func trainPerceptron(samples []hitSample, ranges []scoreRange, config PerceptronConfig) ([]float32, float64, error) {
+	if len(samples) == 0 || len(ranges) != int(spammodel.DefaultDimension) {
+		return nil, 0, errors.New("perceptron requires mass-check rows and complete score ranges")
+	}
+	if config.Epochs <= 0 || config.LearningRate <= 0 || config.HamPreference < 0 || config.WeightDecay <= 0 || config.WeightDecay > 1 {
+		return nil, 0, errors.New("invalid perceptron configuration")
+	}
+	weights := make([]float64, spammodel.DefaultDimension)
+	bias := -0.5
 	order := make([]int, len(samples))
 	for index := range order {
 		order[index] = index
 	}
 	random := rand.New(rand.NewSource(TrainingSeed))
-	for epoch := 0; epoch < trainingEpochs; epoch++ {
+	for epoch := 0; epoch < config.Epochs; epoch++ {
+		bias *= config.WeightDecay
+		for index := range weights {
+			weights[index] *= config.WeightDecay
+		}
 		random.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
-		for _, index := range order {
-			item := samples[index]
-			features, err := spammodel.ExtractFeatures(item.Message, dimension)
-			if err != nil {
-				return nil, 0, err
+		for _, sampleIndex := range order {
+			item := samples[sampleIndex]
+			hitMass := 0.0
+			for _, hit := range item.Hits {
+				hitMass += hit.Value
 			}
-			target := 0.0
-			weight := hamWeight
-			if item.Spam {
-				target = 1
-				weight = spamWeight
+			repetitions := 1
+			if !item.Spam {
+				repetitions += int(math.Min(32, hitMass*config.HamPreference))
 			}
-			learner.update(features, target, weight)
+			for repetition := 0; repetition < repetitions; repetition++ {
+				activation := bias
+				for _, hit := range item.Hits {
+					activation += weights[hit.Index] * hit.Value
+				}
+				prediction := logistic(activation)
+				target := 0.0
+				if item.Spam {
+					target = 1
+				}
+				delta := config.LearningRate * prediction * (1 - prediction) * (target - prediction) / (hitMass + 1)
+				bias += delta
+				for _, hit := range item.Hits {
+					index := int(hit.Index)
+					weights[index] += delta * hit.Value
+					if weights[index] < ranges[index].low {
+						weights[index] = ranges[index].low
+					}
+					if weights[index] > ranges[index].high {
+						weights[index] = ranges[index].high
+					}
+				}
+			}
 		}
 	}
-	weights := make([]float32, dimension)
-	for index := range weights {
-		weights[index] = float32(learner.weight(uint32(index)))
+	result := make([]float32, len(weights))
+	for index, value := range weights {
+		result[index] = float32(value)
 	}
-	return weights, learner.biasWeight(), nil
+	return result, bias, nil
 }
 
-func fitCalibration(classifier *spammodel.Classifier, validation []sample) (float64, float64, error) {
+func fitCalibration(weights []float32, bias float64, validation []hitSample) (float64, float64, error) {
 	if len(validation) == 0 {
-		return 1, 0, errors.New("validation set is empty")
+		return 0, 0, errors.New("validation set is empty")
 	}
 	logits := make([]float64, len(validation))
 	targets := make([]float64, len(validation))
 	for index, item := range validation {
-		score, err := classifier.Classify(item.Message)
-		if err != nil {
-			return 0, 0, err
+		logit := bias
+		for _, hit := range item.Hits {
+			logit += float64(weights[hit.Index]) * hit.Value
 		}
-		probability := math.Max(1e-9, math.Min(1-1e-9, score.Probability))
-		logits[index] = math.Log(probability / (1 - probability))
+		logits[index] = logit
 		if item.Spam {
 			targets[index] = 1
 		}
 	}
 	a, b := 1.0, 0.0
-	for iteration := 0; iteration < 800; iteration++ {
-		var gradientA, gradientB float64
+	for iteration := 0; iteration < 1000; iteration++ {
+		gradientA, gradientB := 0.0, 0.0
 		for index, logit := range logits {
 			errorValue := logistic(a*logit+b) - targets[index]
 			gradientA += errorValue * logit
@@ -184,75 +275,10 @@ func fitCalibration(classifier *spammodel.Classifier, validation []sample) (floa
 		rate := 0.08 / math.Sqrt(float64(iteration+1))
 		a -= rate * gradientA / float64(len(logits))
 		b -= rate * gradientB / float64(len(logits))
-		a = math.Max(0.05, math.Min(5, a))
-		b = math.Max(-8, math.Min(8, b))
+		a = math.Max(0.05, math.Min(8, a))
+		b = math.Max(-12, math.Min(12, b))
 	}
 	return a, b, nil
-}
-
-type naiveBayes struct {
-	spamCounts []float64
-	hamCounts  []float64
-	active     []bool
-	vocabulary int
-	spamTotal  float64
-	hamTotal   float64
-	spamDocs   int
-	hamDocs    int
-}
-
-func trainNaiveBayes(samples []sample, dimension uint32) (*naiveBayes, error) {
-	classifier := &naiveBayes{
-		spamCounts: make([]float64, dimension),
-		hamCounts:  make([]float64, dimension),
-		active:     make([]bool, dimension),
-	}
-	for _, item := range samples {
-		features, err := spammodel.ExtractCountFeatures(item.Message, dimension)
-		if err != nil {
-			return nil, err
-		}
-		if item.Spam {
-			classifier.spamDocs++
-		} else {
-			classifier.hamDocs++
-		}
-		for _, feature := range features {
-			value := feature.Value
-			if !classifier.active[feature.Index] {
-				classifier.active[feature.Index] = true
-				classifier.vocabulary++
-			}
-			if item.Spam {
-				classifier.spamCounts[feature.Index] += value
-				classifier.spamTotal += value
-			} else {
-				classifier.hamCounts[feature.Index] += value
-				classifier.hamTotal += value
-			}
-		}
-	}
-	if classifier.spamDocs == 0 || classifier.hamDocs == 0 || classifier.vocabulary == 0 {
-		return nil, errors.New("naive Bayes requires spam and ham")
-	}
-	return classifier, nil
-}
-
-func (classifier *naiveBayes) predict(features []spammodel.Feature) (float64, float64) {
-	vocabulary := float64(classifier.vocabulary)
-	totalDocs := float64(classifier.spamDocs + classifier.hamDocs)
-	spamLog := math.Log(float64(classifier.spamDocs) / totalDocs)
-	hamLog := math.Log(float64(classifier.hamDocs) / totalDocs)
-	for _, feature := range features {
-		if !classifier.active[feature.Index] {
-			continue
-		}
-		value := feature.Value
-		spamLog += value * math.Log((classifier.spamCounts[feature.Index]+1)/(classifier.spamTotal+vocabulary))
-		hamLog += value * math.Log((classifier.hamCounts[feature.Index]+1)/(classifier.hamTotal+vocabulary))
-	}
-	logOdds := spamLog - hamLog
-	return logistic(logOdds), logOdds
 }
 
 func logistic(value float64) float64 {

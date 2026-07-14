@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -22,6 +23,172 @@ func TestRawBodySectionUsesPeek(t *testing.T) {
 	if got, want := section.FetchItem(), imap.FetchItem("BODY.PEEK[]"); got != want {
 		t.Fatalf("raw body fetch item = %q, want %q", got, want)
 	}
+}
+
+func TestTrainingBodySectionUsesBoundedPeek(t *testing.T) {
+	section := trainingBodySection()
+	if !section.Peek {
+		t.Fatal("training body section does not use PEEK")
+	}
+	if got, want := section.Partial, []int{0, syncer.MaxTrainingCandidateBodyBytes}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("training body partial = %#v, want %#v", got, want)
+	}
+	if got, want := section.FetchItem(), imap.FetchItem("BODY.PEEK[]<0.524288>"); got != want {
+		t.Fatalf("training body fetch item = %q, want %q", got, want)
+	}
+}
+
+func TestMailboxDiscoveryInfoPreservesAttributesAndSkipsNoSelect(t *testing.T) {
+	remote := &imap.MailboxInfo{Name: "Bulk", Attributes: []string{imap.HasNoChildrenAttr, imap.JunkAttr}}
+	got, ok := mailboxDiscoveryInfo(remote)
+	if !ok || got.Name != "Bulk" || !reflect.DeepEqual(got.Attributes, remote.Attributes) {
+		t.Fatalf("mailbox discovery info = %+v, %t", got, ok)
+	}
+	remote.Attributes[1] = imap.TrashAttr
+	if got.Attributes[1] != imap.JunkAttr {
+		t.Fatal("mailbox discovery attributes alias the IMAP response")
+	}
+	if got, ok := mailboxDiscoveryInfo(&imap.MailboxInfo{Name: "Group", Attributes: []string{imap.NoSelectAttr}}); ok {
+		t.Fatalf("NoSelect mailbox accepted: %+v", got)
+	}
+}
+
+func TestSearchTrainingCandidatesIsReadOnlyBoundedAndNewestFirst(t *testing.T) {
+	since := time.Date(2026, time.January, 1, 9, 30, 0, 0, time.UTC)
+	before := since.Add(30 * 24 * time.Hour)
+	fake := &fakeTrainingCandidateClient{
+		status:     &imap.MailboxStatus{Messages: 4},
+		searchUIDs: []uint32{2, 3, 1, 3, 0},
+		messages: map[uint32]*imap.Message{
+			1: trainingMetadataMessage(1, "one@example.test"),
+			2: trainingMetadataMessage(2, "two@example.test"),
+			3: trainingMetadataMessage(3, "three@example.test"),
+		},
+	}
+	got, err := (&Fetcher{BatchSize: 2}).searchTrainingCandidates(context.Background(), fake, "INBOX", syncer.TrainingCandidateQuery{
+		Since: since, Before: before, SeenOnly: true, Limit: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fake.readOnly || fake.selected != "INBOX" {
+		t.Fatalf("SELECT mailbox=%q readOnly=%t, want INBOX/true", fake.selected, fake.readOnly)
+	}
+	if fake.criteria == nil || !fake.criteria.Since.Equal(since) || !fake.criteria.Before.Equal(before) || !reflect.DeepEqual(fake.criteria.WithFlags, []string{imap.SeenFlag}) {
+		t.Fatalf("search criteria = %+v", fake.criteria)
+	}
+	if got.Matched != 3 {
+		t.Fatalf("matched = %d, want 3 unique UIDs", got.Matched)
+	}
+	if len(got.Candidates) != 2 || got.Candidates[0].UID != 3 || got.Candidates[1].UID != 2 {
+		t.Fatalf("candidates = %+v, want UIDs 3,2", got.Candidates)
+	}
+	if !reflect.DeepEqual(got.Candidates[0].From, []string{"three@example.test"}) || got.Candidates[0].Subject != "Subject 3" {
+		t.Fatalf("candidate envelope = %+v", got.Candidates[0])
+	}
+	for _, item := range fake.fetchItems {
+		if strings.HasPrefix(string(item), "BODY") || item == imap.FetchRFC822 || item == imap.FetchRFC822Header || item == imap.FetchRFC822Text {
+			t.Fatalf("metadata search fetched body item %q", item)
+		}
+	}
+}
+
+func TestFetchTrainingCandidatesUsesReadOnlyPeekAndCapsPayload(t *testing.T) {
+	raw := bytes.Repeat([]byte("x"), syncer.MaxTrainingCandidateBodyBytes+37)
+	fake := &fakeTrainingCandidateClient{
+		status: &imap.MailboxStatus{Messages: 1},
+		messages: map[uint32]*imap.Message{
+			7: {
+				Uid:          7,
+				InternalDate: time.Date(2026, time.February, 2, 3, 4, 5, 0, time.UTC),
+				Size:         uint32(len(raw)),
+				Flags:        []string{imap.SeenFlag},
+				Body: map[*imap.BodySectionName]imap.Literal{
+					{Partial: []int{0}}: bytes.NewReader(raw),
+				},
+			},
+		},
+	}
+	var got []syncer.TrainingCandidate
+	err := (&Fetcher{}).fetchTrainingCandidates(context.Background(), fake, "INBOX", []uint32{7}, func(candidate syncer.TrainingCandidate) error {
+		got = append(got, candidate)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fake.readOnly {
+		t.Fatal("training body fetch selected mailbox read-write")
+	}
+	if len(got) != 1 || got[0].UID != 7 || len(got[0].Raw) != syncer.MaxTrainingCandidateBodyBytes || !got[0].Truncated {
+		t.Fatalf("candidate = UID %d bytes %d truncated %t", got[0].UID, len(got[0].Raw), got[0].Truncated)
+	}
+	wantItem := trainingBodySection().FetchItem()
+	if !containsFetchItem(fake.fetchItems, wantItem) {
+		t.Fatalf("fetch items = %#v, want %q", fake.fetchItems, wantItem)
+	}
+}
+
+type fakeTrainingCandidateClient struct {
+	status     *imap.MailboxStatus
+	searchUIDs []uint32
+	messages   map[uint32]*imap.Message
+	selected   string
+	readOnly   bool
+	criteria   *imap.SearchCriteria
+	fetchItems []imap.FetchItem
+}
+
+func (f *fakeTrainingCandidateClient) Select(name string, readOnly bool) (*imap.MailboxStatus, error) {
+	f.selected = name
+	f.readOnly = readOnly
+	return f.status, nil
+}
+
+func (f *fakeTrainingCandidateClient) UidSearch(criteria *imap.SearchCriteria) ([]uint32, error) {
+	f.criteria = criteria
+	return append([]uint32(nil), f.searchUIDs...), nil
+}
+
+func (f *fakeTrainingCandidateClient) UidFetch(seqset *imap.SeqSet, items []imap.FetchItem, ch chan *imap.Message) error {
+	defer close(ch)
+	f.fetchItems = append(f.fetchItems, items...)
+	for uid, message := range f.messages {
+		if seqset.Contains(uid) {
+			ch <- message
+		}
+	}
+	return nil
+}
+
+func trainingMetadataMessage(uid uint32, from string) *imap.Message {
+	return &imap.Message{
+		Uid:          uid,
+		InternalDate: time.Date(2026, time.January, int(uid), 12, 0, 0, 0, time.UTC),
+		Size:         100 + uid,
+		Flags:        []string{imap.SeenFlag},
+		Envelope: &imap.Envelope{
+			Date:      time.Date(2026, time.January, int(uid), 11, 0, 0, 0, time.UTC),
+			Subject:   fmt.Sprintf("Subject %d", uid),
+			From:      []*imap.Address{trainingAddress(from)},
+			To:        []*imap.Address{trainingAddress("owner@example.test")},
+			MessageId: fmt.Sprintf("<%d@example.test>", uid),
+		},
+	}
+}
+
+func trainingAddress(value string) *imap.Address {
+	parts := strings.SplitN(value, "@", 2)
+	return &imap.Address{MailboxName: parts[0], HostName: parts[1]}
+}
+
+func containsFetchItem(items []imap.FetchItem, want imap.FetchItem) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestFetcherCommandTimeoutUsesBoundedDefault(t *testing.T) {

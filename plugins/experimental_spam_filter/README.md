@@ -1,29 +1,102 @@
 # Experimental spam filter
 
-This disabled-by-default plugin adds advisory spam-risk scoring to Rolltop. It combines a checked-in, corpus-trained logistic model with two tenant-local Bleve signals:
+This disabled-by-default plugin adds advisory spam-risk scoring to Rolltop. It
+is native Go and SQLite: there is no sidecar process and no network work during
+ordinary classification. It has three deliberately separate evidence stages:
 
-- Explicit **Spam** and **Not spam** feedback is strong personalization evidence.
-- Similar messages that are currently read and dated within the last 90 days are weak ham evidence, capped so they can reduce a score by no more than 15%.
+- A checked-in **named-rule scorecard** runs deterministic header, MIME,
+  structure, URI, and phrase tests. An offline mass-check fits only the rule
+  scores; it never learns arbitrary character fragments.
+- **Personal Bayes** learns token document frequencies from this user's explicit
+  **Spam** and **Not spam** feedback plus an optional, user-confirmed snapshot
+  of their own recent mail. Explicit labels always override inferred snapshot
+  labels. Bayes is inactive until it has 200 messages of each class and is never
+  seeded from a public corpus.
+- Tenant-local **recent-read similarity** is bounded reputation evidence. Exact
+  sender plus a recurring content template can lower risk more than generic
+  overlap, but bare sender identity is never an allowlist.
 
-The plugin only stores probabilities, bounded explanations, feedback labels, and backfill progress in each user's database. It does not store another copy of message bodies. It never sends mail or moves, archives, hides, deletes, or changes the remote state of a message.
+The plugin never sends mail or initiates a move, archive, hide, delete, or other
+remote mutation. When the user successfully moves mail into or out of a folder
+Rolltop recognizes as Junk, the plugin observes that completed action as strong
+explicit feedback; it does not perform the move itself.
 
-## Runtime behavior
+## Why the stages are separate
 
-New messages are scored after their Bleve batch commits. Classification is best-effort: a model or similarity failure does not fail message import or incremental sync. The corpus score remains usable when there are too few tenant-local neighbors or similarity is unavailable.
+This follows SpamAssassin's architecture more closely than a single model over
+all text. SpamAssassin mass-checks authored rule hits and tunes their scores,
+while each user's Bayesian database learns that user's verified ham and spam.
+Apache specifically warns against training personal Bayes from public mail
+streams because it creates misleading token associations.
 
-The browser API is under `/api/plugins/experimental_spam_filter`. All routes derive the tenant from the authenticated session, and every mutation requires Rolltop's CSRF token. Browser payloads never accept `user_id`.
+Rolltop uses Apache's historical public corpus only as a reproducible regression
+and rule-score-fitting input. The artifact is a **Rolltop rule scorecard**, not a
+SpamAssassin model. Its metadata and benchmark report say exactly which corpus
+was used and which held-out checks passed.
 
-Risk bands default to:
+## Personal bootstrap from recent mail
 
-- low: below `0.35`
-- medium: `0.35` through below `0.80`
-- high: `0.80` and above
+The settings page can build an on-demand personal-Bayes snapshot without asking
+the user to press a feedback button 400 times. For each selected account, the
+user confirms an Inbox and a Spam/Junk folder, previews the broad candidate
+counts, and explicitly starts the run.
 
-Explicit feedback overrides the displayed band for that message without rewriting the underlying model evidence.
+The snapshot examines the six-month window ending 48 hours before the run:
 
-## Training and checked-in weights
+- Spam candidates come from the confirmed Spam/Junk folder.
+- Not-spam candidates must be marked `\Seen`, be at least 48 hours old, and
+  belong to an exact sender with at least three read messages spanning 14 days
+  and an 80% read rate in the sampled Inbox history.
+- Inferred not-spam must also remain below the independent named-rule spam
+  threshold and have no strong spam rule. Encrypted and unparseable messages
+  are rejected.
+- The sample is bounded to 5,000 metadata candidates per folder, 2,000 examined
+  not-spam bodies, 20 not-spam messages per sender, and 500 unique messages per
+  class. Spam is reduced when necessary so it never outnumbers accepted ham.
 
-The reproducible trainer lives beside the runtime model. Its normal workflow is:
+The local cache is not assumed to contain six months of bodies. The confirmed
+run logs into the existing IMAP account, selects each folder read-only, searches
+metadata, and fetches only selected messages with a 512 KiB `BODY.PEEK` limit.
+It does not change `\Seen`, move messages, enable the separate experimental IMAP
+sync plugin, create local message/search/blob records, or extend Rolltop's body
+cache. Fetched bytes are parsed in memory and discarded after tokenization.
+
+Automatic labels form a replaceable snapshot. A completed run atomically
+replaces the previous automatic snapshot; cancellation or failure leaves the
+previous snapshot intact. **Reset inferred training** removes only automatic
+labels. Explicit button feedback and successful user-initiated moves into or out
+of recognized Junk folders remain, and take precedence over automatic labels
+for the same message fingerprint.
+
+## Runtime and privacy
+
+New messages are scored after their tenant-scoped Bleve batch commits.
+Classification is best-effort: a plugin failure cannot fail incremental mail
+sync. Browser routes derive `user_id` from the authenticated session and every
+mutation requires Rolltop's CSRF token.
+
+Personal Bayes persists tenant-keyed message counts, source/origin metadata, and
+hashed token IDs, not a second copy of message text. Learning is idempotent;
+changing an explicit label subtracts the old document counts before adding the
+new class. Clearing explicit feedback reveals any underlying automatic snapshot
+label for that fingerprint. Neither model output nor read state continuously
+auto-trains Bayes: inferred training happens only after the user previews and
+confirms a bootstrap run.
+
+Recent-read candidates come from authoritative SQLite `is_read` state and use
+IMAP `INTERNALDATE` (or local ingestion time for legacy rows), not the
+sender-controlled `Date` header. Same-thread/day repetition is collapsed,
+explicit spam feedback vetoes wanted-mail evidence, and every adjustment is
+bounded in log-odds space.
+
+The browser API is under `/api/plugins/experimental_spam_filter`. Stored
+classification explanations contain named rule IDs, bounded probabilities and
+counts, and neighbor message IDs/metadata; they do not contain raw bodies.
+
+## Offline mass-check and checked-in weights
+
+Normal builds, plugin startup, and GitHub Actions verify checked-in artifacts;
+they do not download or retrain. A maintainer explicitly refreshes them:
 
 ```sh
 go run ./plugins/experimental_spam_filter/training/cmd/spamtrain download \
@@ -41,7 +114,10 @@ go run ./plugins/experimental_spam_filter/training/cmd/spamtrain verify \
   --report plugins/experimental_spam_filter/model/benchmark.json
 ```
 
-Only derived weights, provenance, and aggregate benchmark results are checked in. Corpus archives, extracted messages, and feature dumps stay under the ignored cache directory. Normal builds and GitHub Actions run `verify`; they do not download or retrain the corpus.
+Only derived rule weights, provenance, and aggregate benchmark results are
+checked in. Corpus archives, extracted mail, and sparse mass-check rows stay in
+the ignored cache. See the training README for the fitting and validation
+details.
 
 ## Development checks
 

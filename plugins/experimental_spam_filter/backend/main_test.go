@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"rolltop/backend/plugins"
 	"rolltop/backend/store"
+	spammodel "rolltop/plugins/experimental_spam_filter/model"
 )
 
 func TestRiskBandsAndContentCoverage(t *testing.T) {
@@ -24,7 +26,10 @@ func TestRiskBandsAndContentCoverage(t *testing.T) {
 	if got := riskBand(0.35); got != bandMedium {
 		t.Fatalf("riskBand at medium boundary = %q", got)
 	}
-	if got := riskBand(0.80); got != bandHigh {
+	if got := riskBand(0.80); got != bandMedium {
+		t.Fatalf("riskBand below high boundary = %q", got)
+	}
+	if got := riskBand(0.90); got != bandHigh {
 		t.Fatalf("riskBand at high boundary = %q", got)
 	}
 
@@ -80,24 +85,6 @@ func TestNeighborEvidenceBlendingRules(t *testing.T) {
 		t.Fatalf("labeled probability = %f, want spam-leaning bounded score", probability)
 	}
 
-	now := time.Now().UTC()
-	readSupport, readEvidence := recentReadScore([]plugins.SimilarMessageResult{
-		{MessageID: 4, Score: 9, MatchedTermCount: 3, WeightedTermCoverage: .7, Date: now.Add(-24 * time.Hour)},
-		{MessageID: 5, Score: 9, MatchedTermCount: 2, WeightedTermCoverage: .9, Date: now.Add(-24 * time.Hour)},
-		{MessageID: 6, Score: 9, MatchedTermCount: 4, WeightedTermCoverage: .2, Date: now.Add(-24 * time.Hour)},
-		{MessageID: 7, Score: 9, MatchedTermCount: 4, WeightedTermCoverage: .9, Date: now.Add(-91 * 24 * time.Hour)},
-	}, now)
-	if len(readEvidence) != 1 {
-		t.Fatalf("recent read evidence = %d, want only qualifying hit", len(readEvidence))
-	}
-	if readSupport <= 0 || readSupport > 1 {
-		t.Fatalf("recent read support = %f, want (0,1]", readSupport)
-	}
-	base := .9
-	reduced := base * (1 - .15*readSupport)
-	if reduced < base*.85 || reduced > base {
-		t.Fatalf("recent-read reduction %f from %f exceeds 15%% cap", reduced, base)
-	}
 }
 
 func TestStorageAndAnnotationsAreTenantScoped(t *testing.T) {
@@ -182,6 +169,47 @@ func TestRecentReadPostFilterRejectsAnyExplicitSpamHit(t *testing.T) {
 	}
 }
 
+func TestClassificationLetsExplicitSpamReachRecentReadVeto(t *testing.T) {
+	ctx := context.Background()
+	st := newSpamTestStore(t)
+	current := createSpamTestMessage(t, ctx, st, "veto-current@example.test", "Weekly update", 1)
+	spam := createSpamTestMessageForUser(t, ctx, st, current.UserID, "Spam copy", 2)
+	if err := setFeedback(ctx, st.DB(), current.UserID, spam.ID, feedbackSpam); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	host := &spamTestHost{
+		st: st,
+		similarities: [][]plugins.SimilarMessageResult{
+			nil,
+			{reputationTestHit(spam.ID, current.FromAddr, "spam-thread", now, 1)},
+		},
+	}
+	input := plugins.MessageClassificationInput{
+		UserID: current.UserID, MessageID: current.ID, Subject: current.Subject,
+		From: current.FromAddr, To: current.ToAddr, BodyText: "weekly camera darkroom photos",
+	}
+	if err := (&spamFilterPlugin{}).ClassifyMessage(ctx, host, input); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.requests) != 2 || host.requests[1].RecentRead == nil {
+		t.Fatalf("similarity requests = %+v, want labeled then recent-read", host.requests)
+	}
+	if len(host.requests[1].ExcludeMessageIDs) != 0 {
+		t.Fatalf("recent-read request pre-excluded spam IDs: %v", host.requests[1].ExcludeMessageIDs)
+	}
+	record, err := getClassification(ctx, st.DB(), current.UserID, current.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Explanation.GenericReadSupport != 0 ||
+		record.Explanation.ExactSenderTemplateSupport != 0 ||
+		record.Explanation.ReputationLogOddsAdjustment != 0 ||
+		len(record.Explanation.RecentReadNeighbors) != 0 {
+		t.Fatalf("spam-vetoed hit became positive recent-read evidence: %+v", record.Explanation)
+	}
+}
+
 func TestFeedbackOnlyAnnotationsAreTenantScoped(t *testing.T) {
 	ctx := context.Background()
 	st := newSpamTestStore(t)
@@ -232,6 +260,49 @@ func TestStatusReconcilesInterruptedBackfill(t *testing.T) {
 	}
 	if record.Status != "cancelled" {
 		t.Fatalf("orphaned backfill status = %q, want cancelled", record.Status)
+	}
+}
+
+func TestStatusReportsEffectiveBayesSourceCountsForTenant(t *testing.T) {
+	ctx := context.Background()
+	st := newSpamTestStore(t)
+	first := createSpamTestMessage(t, ctx, st, "status-bayes-first@example.test", "First", 1)
+	second := createSpamTestMessage(t, ctx, st, "status-bayes-second@example.test", "Second", 2)
+	overridden := spammodel.Message{Subject: "overridden", Body: "automatic spam explicitly corrected to ham"}
+	automaticHam := spammodel.Message{Subject: "wanted", Body: "automatic wanted message"}
+	otherTenant := spammodel.Message{Subject: "private", Body: "other tenant automatic spam"}
+	for _, learned := range []struct {
+		userID      int64
+		source      string
+		label       string
+		message     spammodel.Message
+		fingerprint [32]byte
+	}{
+		{first.UserID, PersonalBayesSourceAutomatic, feedbackSpam, overridden, PersonalBayesFingerprint(overridden)},
+		{first.UserID, PersonalBayesSourceExplicit, feedbackHam, overridden, PersonalBayesFingerprint(overridden)},
+		{first.UserID, PersonalBayesSourceAutomatic, feedbackHam, automaticHam, PersonalBayesFingerprint(automaticHam)},
+		{second.UserID, PersonalBayesSourceAutomatic, feedbackSpam, otherTenant, PersonalBayesFingerprint(otherTenant)},
+	} {
+		if _, err := LearnPersonalBayesFingerprint(ctx, st.DB(), learned.userID, learned.source, learned.label, learned.fingerprint, learned.message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := &spamFilterPlugin{}
+	host := &spamTestHost{st: st, userID: first.UserID, csrf: true}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/status", nil)
+	p.apiStatus(host, st.DB(), first.UserID, response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	var status pluginStatus
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.BayesSpamLearned != 0 || status.BayesHamLearned != 2 ||
+		status.BayesExplicitSpam != 0 || status.BayesExplicitHam != 1 ||
+		status.BayesAutomaticSpam != 0 || status.BayesAutomaticHam != 1 {
+		t.Fatalf("tenant source status = %+v", status)
 	}
 }
 
@@ -318,6 +389,118 @@ func TestFeedbackAPIUsesSessionTenantAndRequiresCSRF(t *testing.T) {
 	if label, err := getFeedback(ctx, st.DB(), second.UserID, second.ID); err != nil || label != "" {
 		t.Fatalf("second user feedback label=%q err=%v", label, err)
 	}
+
+	body = bytes.NewBufferString(`{"label":"spam"}`)
+	request = httptest.NewRequest(http.MethodPost, "/api/plugins/experimental_spam_filter/messages/1/feedback", body)
+	response = httptest.NewRecorder()
+	p.handleAPI(host, apiPath+"/messages/"+strconv.FormatInt(first.ID, 10)+"/feedback", response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("owned feedback status = %d body=%s", response.Code, response.Body.String())
+	}
+	if label, err := getFeedback(ctx, st.DB(), first.UserID, first.ID); err != nil || label != feedbackSpam {
+		t.Fatalf("owned feedback label=%q err=%v", label, err)
+	}
+	var learnedSpam int
+	if err := st.DB().QueryRowContext(ctx, `SELECT spam_messages FROM plugin_experimental_spam_bayes_state WHERE user_id = ?`, first.UserID).Scan(&learnedSpam); err != nil || learnedSpam != 1 {
+		t.Fatalf("personal Bayes spam count=%d err=%v, want 1", learnedSpam, err)
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/plugins/experimental_spam_filter/messages/1/feedback", nil)
+	response = httptest.NewRecorder()
+	p.handleAPI(host, apiPath+"/messages/"+strconv.FormatInt(first.ID, 10)+"/feedback", response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("clear feedback status = %d body=%s", response.Code, response.Body.String())
+	}
+	if label, err := getFeedback(ctx, st.DB(), first.UserID, first.ID); err != nil || label != "" {
+		t.Fatalf("feedback after clear label=%q err=%v", label, err)
+	}
+	if err := st.DB().QueryRowContext(ctx, `SELECT spam_messages FROM plugin_experimental_spam_bayes_state WHERE user_id = ?`, first.UserID).Scan(&learnedSpam); err != nil || learnedSpam != 0 {
+		t.Fatalf("personal Bayes spam count after clear=%d err=%v, want 0", learnedSpam, err)
+	}
+}
+
+func TestFeedbackAPITrainsFromFullRawMessageWhenAvailable(t *testing.T) {
+	ctx := context.Background()
+	st := newSpamTestStore(t)
+	message := createSpamTestMessage(t, ctx, st, "full-feedback@example.test", "Stored subject", 1)
+	host := &rawSpamTestHost{
+		spamTestHost: &spamTestHost{st: st, userID: message.UserID, csrf: true},
+		raw: []byte("From: Raw Sender <raw-sender@example.test>\r\n" +
+			"To: full-feedback@example.test\r\n" +
+			"Subject: Raw subject\r\n" +
+			"MIME-Version: 1.0\r\n" +
+			"Content-Type: text/plain; charset=utf-8\r\n\r\n" +
+			"fullbodytoken appears only in the complete message\r\n"),
+	}
+	body := bytes.NewBufferString(`{"label":"spam"}`)
+	request := httptest.NewRequest(http.MethodPost, "/api/plugins/experimental_spam_filter/messages/1/feedback", body)
+	response := httptest.NewRecorder()
+	(&spamFilterPlugin{}).handleAPI(host, apiPath+"/messages/"+strconv.FormatInt(message.ID, 10)+"/feedback", response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("feedback status = %d body=%s", response.Code, response.Body.String())
+	}
+	if host.calls != 1 || host.fetchUserID != message.UserID || host.fetchMessageID != message.ID {
+		t.Fatalf("raw fetch calls=%d user=%d message=%d", host.calls, host.fetchUserID, host.fetchMessageID)
+	}
+	fullBodyToken := hashPersonalBayesFeature("body:word:fullbodytoken")
+	var spamCount int64
+	if err := st.DB().QueryRowContext(ctx, `SELECT spam_messages
+		FROM plugin_experimental_spam_bayes_tokens
+		WHERE user_id = ? AND token_hash = ?`, message.UserID, fullBodyToken[:]).Scan(&spamCount); err != nil {
+		t.Fatal(err)
+	}
+	if spamCount != 1 {
+		t.Fatalf("full-body token spam count = %d, want 1", spamCount)
+	}
+	previewToken := hashPersonalBayesFeature("body:word:stored")
+	var previewRows int
+	if err := st.DB().QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM plugin_experimental_spam_bayes_tokens
+		WHERE user_id = ? AND token_hash = ?`, message.UserID, previewToken[:]).Scan(&previewRows); err != nil {
+		t.Fatal(err)
+	}
+	if previewRows != 0 {
+		t.Fatalf("preview-only token rows = %d, want 0 when raw MIME is available", previewRows)
+	}
+}
+
+func TestFeedbackAPIFallsBackToStoredPreviewWhenRawMessageIsUnavailable(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      []byte
+		fetchErr error
+	}{
+		{name: "imap error", fetchErr: errors.New("IMAP unavailable")},
+		{name: "malformed MIME", raw: []byte("not-a-header\r\n\r\nbody")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := newSpamTestStore(t)
+			message := createSpamTestMessage(t, ctx, st, "fallback-feedback@example.test", "Fallback subject", 1)
+			host := &rawSpamTestHost{
+				spamTestHost: &spamTestHost{st: st, userID: message.UserID, csrf: true},
+				raw:          test.raw, fetchErr: test.fetchErr,
+			}
+			body := bytes.NewBufferString(`{"label":"spam"}`)
+			request := httptest.NewRequest(http.MethodPost, "/api/plugins/experimental_spam_filter/messages/1/feedback", body)
+			response := httptest.NewRecorder()
+			(&spamFilterPlugin{}).handleAPI(host, apiPath+"/messages/"+strconv.FormatInt(message.ID, 10)+"/feedback", response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("feedback status = %d body=%s", response.Code, response.Body.String())
+			}
+			previewToken := hashPersonalBayesFeature("body:word:stored")
+			var spamCount int64
+			if err := st.DB().QueryRowContext(ctx, `SELECT spam_messages
+				FROM plugin_experimental_spam_bayes_tokens
+				WHERE user_id = ? AND token_hash = ?`, message.UserID, previewToken[:]).Scan(&spamCount); err != nil {
+				t.Fatal(err)
+			}
+			if spamCount != 1 {
+				t.Fatalf("fallback preview token spam count = %d, want 1", spamCount)
+			}
+		})
+	}
 }
 
 func TestBackfillPrioritizesMissingAndStaleClassifications(t *testing.T) {
@@ -350,12 +533,18 @@ func newSpamTestStore(t *testing.T) *store.Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	raw, err := os.ReadFile(filepath.Join("..", "migrations", "user", "001_create_experimental_spam_filter.sql"))
-	if err != nil {
-		t.Fatal(err)
+	migrations, err := filepath.Glob(filepath.Join("..", "migrations", "user", "*.sql"))
+	if err != nil || len(migrations) == 0 {
+		t.Fatalf("list spam-filter migrations: paths=%v err=%v", migrations, err)
 	}
-	if _, err := st.DB().Exec(string(raw)); err != nil {
-		t.Fatal(err)
+	for _, path := range migrations {
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, execErr := st.DB().Exec(string(raw)); execErr != nil {
+			t.Fatalf("apply %s: %v", filepath.Base(path), execErr)
+		}
 	}
 	return st
 }
@@ -409,6 +598,25 @@ type spamTestHost struct {
 	notified     []int64
 }
 
+type rawSpamTestHost struct {
+	*spamTestHost
+	raw            []byte
+	fetchErr       error
+	calls          int
+	fetchUserID    int64
+	fetchMessageID int64
+}
+
+func (h *rawSpamTestHost) FetchRawMessage(_ context.Context, userID, messageID int64) ([]byte, error) {
+	h.calls++
+	h.fetchUserID = userID
+	h.fetchMessageID = messageID
+	if h.fetchErr != nil {
+		return nil, h.fetchErr
+	}
+	return append([]byte(nil), h.raw...), nil
+}
+
 func (h *spamTestHost) Store() any                               { return h.st }
 func (*spamTestHost) MasterKey() []byte                          { return []byte("test") }
 func (*spamTestHost) PluginEnabled(context.Context, string) bool { return true }
@@ -456,3 +664,4 @@ func (h *spamTestHost) NotifyUserChanged(userID int64) { h.notified = append(h.n
 var _ plugins.MessageClassificationHost = (*spamTestHost)(nil)
 var _ plugins.APIHost = (*spamTestHost)(nil)
 var _ plugins.UserChangeHost = (*spamTestHost)(nil)
+var _ plugins.RawMessageFetchHost = (*rawSpamTestHost)(nil)

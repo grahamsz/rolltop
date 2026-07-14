@@ -31,6 +31,50 @@ type cancelingFetcher struct {
 	cancel context.CancelFunc
 }
 
+func TestDiscoverMailboxesPreservesJunkSpecialUseRole(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "junk-discovery@example.test", "Junk Discovery", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := []byte("12345678901234567890123456789012")
+	encrypted, err := mmcrypto.EncryptString(key, "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailAccount := account(user.ID, encrypted)
+	mailAccount.Mailbox = "*"
+	created, err := db.UpsertMailAccount(ctx, mailAccount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &fakeFetcher{
+		mailboxes: []syncer.MailboxInfo{{Name: "Provider Bulk", Attributes: []string{"\\HasNoChildren", "\\Junk"}}},
+		messages:  map[int64][]syncer.FetchedMessage{user.ID: {}},
+	}
+	service := &syncer.Service{Store: db, Blobs: blob.New(dir), Fetcher: fetcher}
+	count, err := service.DiscoverMailboxes(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("discovered %d mailboxes, want 1", count)
+	}
+	mailbox, err := db.GetMailbox(ctx, user.ID, created.ID, "Provider Bulk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mailbox.Role != "junk" || mailbox.Icon != "report" || mailbox.SyncMode != "manual" || !mailbox.IncludeInSearch {
+		t.Fatalf("discovered mailbox = %+v, want junk/report/manual/search-enabled", mailbox)
+	}
+}
+
 func TestNewMailEventsExcludeInitialInboxImport(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

@@ -194,19 +194,69 @@ func (a *MailAccount) applySMTPDefaults() {
 
 // GetOrCreateMailbox returns the local mailbox row for an account/name pair, creating it when discovery finds a new folder.
 func (s *Store) GetOrCreateMailbox(ctx context.Context, userID, accountID int64, name string) (Mailbox, error) {
+	return s.GetOrCreateMailboxWithRole(ctx, userID, accountID, name, "")
+}
+
+// GetOrCreateMailboxWithRole records trusted special-use metadata found during
+// IMAP discovery. It fills only an unassigned role and never overwrites another
+// assigned role. Duplicate special roles are also left untouched so one unusual
+// server response cannot make folder settings ambiguous.
+func (s *Store) GetOrCreateMailboxWithRole(ctx context.Context, userID, accountID int64, name, discoveredRole string) (Mailbox, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = "INBOX"
 	}
 	ts := nowUnix()
 	syncMode := defaultMailboxSyncMode(name)
-	role := defaultMailboxRole(name)
-	icon := defaultMailboxIcon(name, role)
-	showInAllMail := defaultMailboxShowInAllMail(role)
-	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `INSERT INTO mailboxes (user_id, account_id, name, sync_mode, role, icon, show_in_sidebar, show_in_all_mail, include_in_search, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?)
-		ON CONFLICT(user_id, account_id, name) DO NOTHING`, userID, accountID, name, syncMode, role, icon, boolInt(showInAllMail), ts, ts)
+	role := normalizeMailboxRole(discoveredRole)
+	if role == "" {
+		role = defaultMailboxRole(name)
+	}
+	db := s.mustDataDB(ctx, userID)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
+		return Mailbox{}, err
+	}
+	insertRole := role
+	if role != "" {
+		var roleAlreadyAssigned bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+			SELECT 1 FROM mailboxes WHERE user_id = ? AND account_id = ? AND role = ? AND name <> ?
+		)`, userID, accountID, role, name).Scan(&roleAlreadyAssigned); err != nil {
+			_ = tx.Rollback()
+			return Mailbox{}, err
+		}
+		if roleAlreadyAssigned {
+			insertRole = ""
+		}
+	}
+	icon := defaultMailboxIcon(name, insertRole)
+	showInAllMail := defaultMailboxShowInAllMail(insertRole)
+	_, err = tx.ExecContext(ctx, `INSERT INTO mailboxes (user_id, account_id, name, sync_mode, role, icon, show_in_sidebar, show_in_all_mail, include_in_search, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?)
+		ON CONFLICT(user_id, account_id, name) DO NOTHING`, userID, accountID, name, syncMode, insertRole, icon, boolInt(showInAllMail), ts, ts)
+	if err != nil {
+		_ = tx.Rollback()
+		return Mailbox{}, err
+	}
+	if role != "" {
+		roleIcon := defaultMailboxIcon(name, role)
+		_, err = tx.ExecContext(ctx, `UPDATE mailboxes
+			SET role = ?,
+				icon = CASE WHEN icon = 'folder' THEN ? ELSE icon END,
+				show_in_all_mail = CASE WHEN ? IN ('drafts', 'trash', 'junk') THEN 0 ELSE show_in_all_mail END,
+				updated_at = ?
+			WHERE user_id = ? AND account_id = ? AND name = ? AND role = ''
+			AND NOT EXISTS (
+				SELECT 1 FROM mailboxes assigned
+				WHERE assigned.user_id = ? AND assigned.account_id = ? AND assigned.role = ? AND assigned.name <> ?
+			)`, role, roleIcon, role, ts, userID, accountID, name, userID, accountID, role, name)
+		if err != nil {
+			_ = tx.Rollback()
+			return Mailbox{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return Mailbox{}, err
 	}
 	return s.GetMailbox(ctx, userID, accountID, name)
@@ -396,7 +446,7 @@ func (s *Store) UpdateMailboxSettings(ctx context.Context, userID, mailboxID int
 		_ = tx.Rollback()
 		return fmt.Errorf("%w: top-level folders cannot inherit sync mode", ErrInvalidMailboxSettings)
 	}
-	if settings.Role == "inbox" || settings.Role == "sent" || settings.Role == "drafts" || settings.Role == "trash" {
+	if settings.Role == "inbox" || settings.Role == "sent" || settings.Role == "drafts" || settings.Role == "trash" || settings.Role == "junk" {
 		var existingName string
 		err := tx.QueryRowContext(ctx, `SELECT name FROM mailboxes
 			WHERE user_id = ? AND account_id = ? AND role = ? AND id <> ?
@@ -490,6 +540,8 @@ func normalizeMailboxRole(role string) string {
 		return "drafts"
 	case "trash":
 		return "trash"
+	case "junk", "spam":
+		return "junk"
 	default:
 		return ""
 	}
@@ -522,6 +574,8 @@ func defaultMailboxRole(name string) string {
 		return "drafts"
 	case "trash", "deleted", "deleted items", "[gmail]/trash":
 		return "trash"
+	case "junk", "spam", "junk e-mail", "junk email", "[gmail]/spam":
+		return "junk"
 	default:
 		return ""
 	}
@@ -537,6 +591,8 @@ func defaultMailboxIcon(name string, role string) string {
 		return "draft"
 	case "trash":
 		return "delete"
+	case "junk":
+		return "report"
 	}
 	clean := strings.ToLower(strings.TrimSpace(name))
 	switch {
@@ -555,7 +611,7 @@ func defaultMailboxIcon(name string, role string) string {
 
 func defaultMailboxShowInAllMail(role string) bool {
 	switch normalizeMailboxRole(role) {
-	case "drafts", "trash":
+	case "drafts", "trash", "junk":
 		return false
 	default:
 		return true

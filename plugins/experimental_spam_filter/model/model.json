@@ -1,15 +1,19 @@
 {
-  "schema_version": "rolltop-spam-model-metadata-v1",
-  "model_version": "spamassassin-20030228-c779a6970e0f",
-  "binary_format_version": 1,
-  "feature_schema": "rolltop-spam-features-v1",
-  "dimension": 131072,
-  "trainer_version": "rolltop-ftrl-v2",
+  "schema_version": "rolltop-spam-scorecard-metadata-v2",
+  "model_version": "rolltop-rule-scorecard-v1-0e7f26fac061",
+  "model_name": "Rolltop named-rule scorecard",
+  "training_corpus": "Apache SpamAssassin public corpus used for Rolltop rule mass-check and score fitting; not a SpamAssassin model",
+  "binary_format_version": 2,
+  "feature_schema": "rolltop-named-spam-rules-v1",
+  "dimension": 128,
+  "rule_count": 71,
+  "rule_manifest_sha256": "bd625f0385122991d5e2755eb54e9f70abcc163fd5c41e934f1ada5ffa72de07",
+  "trainer_version": "rolltop-named-rule-perceptron-v2",
   "seed": 20260713,
-  "model_sha256": "c779a6970e0ffaaaa500f80b8e63f9bb37e24702d8f6d3bbec365e3796ddc019",
-  "report_sha256": "2bea4a540287b909c14b04ffdc1059f119c38f7fe33d7d490766f84f3b63865e",
+  "model_sha256": "0e7f26fac061b87da7298aa7dfbd1e2cc27fd74fd9e44cb0575125abab5d2109",
+  "report_sha256": "448157b87919f054f76a4c124af6c9258e1ce3a6ab4a8b26ef1b532c231d9dfa",
   "medium_threshold": 0.35,
-  "high_threshold": 0.8,
+  "high_threshold": 0.9,
   "corpus": [
     {
       "name": "20030228_easy_ham.tar.bz2",
@@ -55,19 +59,22 @@
     "test_spam": 223
   },
   "hyperparameters": {
-    "dimension": 131072,
-    "epochs": 4,
-    "alpha": 0.08,
-    "beta": 1,
-    "l1": 0.08,
-    "l2": 0.8
+    "perceptron": {
+      "epochs": 30,
+      "learning_rate": 1,
+      "ham_preference": 0.5,
+      "weight_decay": 0.995
+    },
+    "minimum_rule_support": 5,
+    "maximum_validation_false_positive_rate": 0.02,
+    "calibration": "two-parameter sigmoid fit on validation rule scores"
   },
   "golden_inference": [
     {
       "name": "obvious_spam",
       "message": {
         "subject": "URGENT: claim your FREE cash prize now",
-        "body": "Congratulations winner! Click https://cash-prizes.invalid/claim to receive money today. Limited time offer.",
+        "body": "Congratulations winner! Click https://cash-prizes.invalid/claim to receive prize money today. Act now; this limited time offer expires today.",
         "from": "offers@bulk-mail.invalid",
         "to": [
           "customer@example.com"
@@ -75,37 +82,110 @@
         "mime_type": "text/html",
         "html": true
       },
-      "probability": 0.9989168766531925,
-      "tolerance": 1e-9
+      "probability": 0.99758716405744,
+      "minimum_probability": 0.6,
+      "maximum_probability": 1,
+      "tolerance": 1e-8
     },
     {
       "name": "ordinary_ham",
       "message": {
         "subject": "Notes from Tuesday's engineering meeting",
-        "body": "Hi team, attached are the action items. Please review the database migration before Friday's meeting.",
+        "body": "Hi team, attached are the action items. Please review the database migration before Friday's meeting. Best regards, Alex",
         "from": "alex@example.org",
         "to": [
           "team@example.org"
         ],
         "mime_type": "text/plain"
       },
-      "probability": 0.32534724960299555,
-      "tolerance": 1e-9
+      "probability": 0.1324041505075015,
+      "minimum_probability": 0,
+      "maximum_probability": 0.4,
+      "tolerance": 1e-8
     },
     {
-      "name": "newsletter",
+      "name": "movie_move_ham",
       "message": {
-        "subject": "Your weekly project newsletter",
-        "body": "This week: release notes, community events, and documentation updates. Manage preferences at https://news.example.org/preferences",
-        "from": "newsletter@news.example.org",
+        "subject": "Movie screening moved to Friday",
+        "body": "The community movie screening moved to Friday at 7 PM. Please review the room change before the meeting.",
+        "from": "events@example.org",
         "to": [
-          "reader@example.com"
+          "team@example.org"
+        ],
+        "mime_type": "text/plain"
+      },
+      "probability": 0.1324041505075015,
+      "minimum_probability": 0,
+      "maximum_probability": 0.4,
+      "tolerance": 1e-8
+    },
+    {
+      "name": "aswemove_1_ham",
+      "message": {
+        "subject": "AsWeMove member update",
+        "body": "AsWeMove Thank you for being a member. Your order is being prepared and no action is required. View your receipt at https://account.example.org/orders/123 or manage preferences at https://account.example.org/preferences.",
+        "from": "care@account.example.org",
+        "to": [
+          "member@example.org"
         ],
         "mime_type": "text/html",
         "html": true
       },
-      "probability": 0.0617945219940793,
-      "tolerance": 1e-9
+      "probability": 0.432297654560482,
+      "minimum_probability": 0,
+      "maximum_probability": 0.45,
+      "tolerance": 1e-8
+    },
+    {
+      "name": "aswemove_8_ham",
+      "message": {
+        "subject": "AsWeMove member update",
+        "body": "AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove Thank you for being a member. Your order is being prepared and no action is required. View your receipt at https://account.example.org/orders/123 or manage preferences at https://account.example.org/preferences.",
+        "from": "care@account.example.org",
+        "to": [
+          "member@example.org"
+        ],
+        "mime_type": "text/html",
+        "html": true
+      },
+      "probability": 0.432297654560482,
+      "minimum_probability": 0,
+      "maximum_probability": 0.45,
+      "tolerance": 1e-8
+    },
+    {
+      "name": "aswemove_32_ham",
+      "message": {
+        "subject": "AsWeMove member update",
+        "body": "AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove Thank you for being a member. Your order is being prepared and no action is required. View your receipt at https://account.example.org/orders/123 or manage preferences at https://account.example.org/preferences.",
+        "from": "care@account.example.org",
+        "to": [
+          "member@example.org"
+        ],
+        "mime_type": "text/html",
+        "html": true
+      },
+      "probability": 0.432297654560482,
+      "minimum_probability": 0,
+      "maximum_probability": 0.45,
+      "tolerance": 1e-8
+    },
+    {
+      "name": "aswemove_64_ham",
+      "message": {
+        "subject": "AsWeMove member update",
+        "body": "AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove AsWeMove Thank you for being a member. Your order is being prepared and no action is required. View your receipt at https://account.example.org/orders/123 or manage preferences at https://account.example.org/preferences.",
+        "from": "care@account.example.org",
+        "to": [
+          "member@example.org"
+        ],
+        "mime_type": "text/html",
+        "html": true
+      },
+      "probability": 0.432297654560482,
+      "minimum_probability": 0,
+      "maximum_probability": 0.45,
+      "tolerance": 1e-8
     }
   ]
 }

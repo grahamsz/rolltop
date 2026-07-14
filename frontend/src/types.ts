@@ -48,7 +48,7 @@ export type Mailbox = {
   message_count: number;
   unread_count: number;
   sync_mode: "auto" | "manual" | "never" | string;
-  role: "inbox" | "trash" | "" | string;
+  role: "inbox" | "sent" | "drafts" | "trash" | "junk" | "" | string;
   icon: string;
   show_in_sidebar: boolean;
   show_in_all_mail: boolean;

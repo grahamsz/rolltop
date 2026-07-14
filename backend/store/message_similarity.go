@@ -30,7 +30,9 @@ func (s *Store) MessageSimilarityCandidatesForUser(ctx context.Context, userID i
 		for _, id := range chunk {
 			args = append(args, id)
 		}
-		rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, thread_key, date_unix, from_addr, is_read
+		rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, thread_key,
+			CASE WHEN internal_date_unix > 0 THEN internal_date_unix ELSE created_at END,
+			from_addr, is_read
 			FROM messages WHERE user_id = ? AND id IN (`+sqlPlaceholders(len(chunk))+`)`, args...)
 		if err != nil {
 			return nil, err
@@ -61,8 +63,10 @@ func (s *Store) MessageSimilarityCandidatesForUser(ctx context.Context, userID i
 }
 
 // RecentReadMessageSimilarityCandidatesForUser resolves currently read mail
-// dated on or after since. It intentionally reads SQLite's current is_read flag
-// instead of Bleve's eventually updated copy.
+// received on or after since. It intentionally reads SQLite's current is_read
+// flag instead of Bleve's eventually updated copy. INTERNALDATE is supplied by
+// the IMAP server and is therefore preferable to the sender-controlled Date
+// header; locally recorded creation time is the safe fallback for legacy rows.
 func (s *Store) RecentReadMessageSimilarityCandidatesForUser(ctx context.Context, userID int64, since time.Time, limit int) ([]MessageSimilarityCandidate, error) {
 	if userID <= 0 {
 		return nil, nil
@@ -73,10 +77,13 @@ func (s *Store) RecentReadMessageSimilarityCandidatesForUser(ctx context.Context
 	if limit <= 0 || limit > maxMessageSimilarityCandidates {
 		limit = maxMessageSimilarityCandidates
 	}
-	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, thread_key, date_unix, from_addr, is_read
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id, user_id, thread_key,
+		CASE WHEN internal_date_unix > 0 THEN internal_date_unix ELSE created_at END AS received_unix,
+		from_addr, is_read
 		FROM messages
-		WHERE user_id = ? AND is_read != 0 AND date_unix >= ?
-		ORDER BY date_unix DESC, id DESC
+		WHERE user_id = ? AND is_read != 0
+			AND CASE WHEN internal_date_unix > 0 THEN internal_date_unix ELSE created_at END >= ?
+		ORDER BY received_unix DESC, id DESC
 		LIMIT ?`, userID, since.UTC().Unix(), limit)
 	if err != nil {
 		return nil, err

@@ -140,6 +140,25 @@ func (s *Server) SimilarMessages(ctx context.Context, userID int64, request plug
 
 var _ plugins.MessageSimilarityHost = (*Server)(nil)
 
+// FetchRawMessage exposes the syncer's non-caching raw-message path to backend
+// plugins. Resolve the message here as well as in the syncer so a plugin cannot
+// use a message ID to cross the caller's tenant boundary.
+func (s *Server) FetchRawMessage(ctx context.Context, userID, messageID int64) ([]byte, error) {
+	if s == nil || s.store == nil || s.syncer == nil {
+		return nil, errors.New("raw message fetch is not configured")
+	}
+	if userID <= 0 || messageID <= 0 {
+		return nil, errors.New("user and message are required")
+	}
+	message, err := s.store.GetMessageForUser(ctx, userID, messageID)
+	if err != nil {
+		return nil, err
+	}
+	return s.syncer.FetchRawMessageForMessage(ctx, userID, message)
+}
+
+var _ plugins.RawMessageFetchHost = (*Server)(nil)
+
 func (s *Server) StarMessage(ctx context.Context, userID, messageID int64, starred bool) error {
 	if s == nil || s.syncer == nil {
 		return errors.New("sync service is not configured")

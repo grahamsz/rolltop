@@ -109,16 +109,332 @@ func (f *Fetcher) ListMailboxes(ctx context.Context, account store.MailAccount) 
 			return nil, ctx.Err()
 		default:
 		}
-		if mb == nil || hasAttr(mb.Attributes, imap.NoSelectAttr) {
+		info, ok := mailboxDiscoveryInfo(mb)
+		if !ok {
 			continue
 		}
-		out = append(out, syncer.MailboxInfo{Name: mb.Name})
+		out = append(out, info)
 	}
 	if err := <-done; err != nil {
 		return nil, fmt.Errorf("list mailboxes: %w", err)
 	}
 	return out, nil
 }
+
+func mailboxDiscoveryInfo(mailbox *imap.MailboxInfo) (syncer.MailboxInfo, bool) {
+	if mailbox == nil || hasAttr(mailbox.Attributes, imap.NoSelectAttr) {
+		return syncer.MailboxInfo{}, false
+	}
+	return syncer.MailboxInfo{Name: mailbox.Name, Attributes: append([]string(nil), mailbox.Attributes...)}, true
+}
+
+type trainingCandidateClient interface {
+	Select(name string, readOnly bool) (*imap.MailboxStatus, error)
+	UidSearch(criteria *imap.SearchCriteria) ([]uint32, error)
+	UidFetch(seqset *imap.SeqSet, items []imap.FetchItem, ch chan *imap.Message) error
+}
+
+// SearchTrainingCandidates performs a read-only UID search and fetches only
+// flags, dates, sizes, and envelope fields for the newest bounded matches. It
+// does not fetch a message body or write any local/remote state.
+func (f *Fetcher) SearchTrainingCandidates(ctx context.Context, account store.MailAccount, mailbox string, query syncer.TrainingCandidateQuery) (syncer.TrainingCandidateSearch, error) {
+	if err := ctx.Err(); err != nil {
+		return syncer.TrainingCandidateSearch{}, err
+	}
+	c, err := f.login(account)
+	if err != nil {
+		return syncer.TrainingCandidateSearch{}, err
+	}
+	defer c.Logout()
+	return f.searchTrainingCandidates(ctx, c, mailbox, query)
+}
+
+func (f *Fetcher) searchTrainingCandidates(ctx context.Context, c trainingCandidateClient, mailbox string, query syncer.TrainingCandidateQuery) (syncer.TrainingCandidateSearch, error) {
+	mailbox = strings.TrimSpace(mailbox)
+	if mailbox == "" {
+		return syncer.TrainingCandidateSearch{}, errors.New("search training candidates requires a mailbox name")
+	}
+	if !query.Since.IsZero() && !query.Before.IsZero() && !query.Before.After(query.Since) {
+		return syncer.TrainingCandidateSearch{}, errors.New("training candidate before date must be after since date")
+	}
+	limit := query.Limit
+	if limit <= 0 || limit > syncer.MaxTrainingCandidateCount {
+		limit = syncer.MaxTrainingCandidateCount
+	}
+	selected, err := c.Select(mailbox, true)
+	if err != nil {
+		return syncer.TrainingCandidateSearch{}, fmt.Errorf("select mailbox %q read-only for training search: %w", mailbox, err)
+	}
+	if selected == nil || selected.Messages == 0 {
+		return syncer.TrainingCandidateSearch{}, nil
+	}
+	criteria := trainingCandidateSearchCriteria(query)
+	uids, err := c.UidSearch(criteria)
+	if err != nil {
+		return syncer.TrainingCandidateSearch{}, fmt.Errorf("search training candidates in mailbox %q: %w", mailbox, err)
+	}
+	allUIDs := normalizeUIDList(uids)
+	out := syncer.TrainingCandidateSearch{Matched: len(allUIDs)}
+	uids = newestTrainingUIDs(allUIDs, limit)
+	return f.fetchTrainingMetadata(ctx, c, mailbox, uids, out)
+}
+
+func trainingCandidateSearchCriteria(query syncer.TrainingCandidateQuery) *imap.SearchCriteria {
+	criteria := imap.NewSearchCriteria()
+	criteria.Since = query.Since
+	criteria.Before = query.Before
+	if query.SeenOnly {
+		criteria.WithFlags = append(criteria.WithFlags, imap.SeenFlag)
+	}
+	return criteria
+}
+
+func newestTrainingUIDs(uids []uint32, limit int) []uint32 {
+	uids = normalizeUIDList(uids)
+	if len(uids) > limit {
+		uids = uids[len(uids)-limit:]
+	}
+	out := append([]uint32(nil), uids...)
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+func (f *Fetcher) fetchTrainingMetadata(ctx context.Context, c trainingCandidateClient, mailbox string, uids []uint32, out syncer.TrainingCandidateSearch) (syncer.TrainingCandidateSearch, error) {
+	if len(uids) == 0 {
+		return out, nil
+	}
+	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, imap.FetchInternalDate, imap.FetchRFC822Size, imap.FetchFlags}
+	for i := 0; i < len(uids); i += f.trainingBatchSize() {
+		if err := ctx.Err(); err != nil {
+			return syncer.TrainingCandidateSearch{}, err
+		}
+		end := i + f.trainingBatchSize()
+		if end > len(uids) {
+			end = len(uids)
+		}
+		requested := uids[i:end]
+		seqset := new(imap.SeqSet)
+		seqset.AddNum(requested...)
+		messages := make(chan *imap.Message, len(requested))
+		done := make(chan error, 1)
+		go func() {
+			done <- c.UidFetch(seqset, items, messages)
+		}()
+		byUID := make(map[uint32]syncer.TrainingCandidateMetadata, len(requested))
+		var batchErr error
+		for msg := range messages {
+			if msg == nil || msg.Uid == 0 {
+				continue
+			}
+			metadata := syncer.TrainingCandidateMetadata{
+				Mailbox:      mailbox,
+				UID:          msg.Uid,
+				InternalDate: msg.InternalDate,
+				Size:         int64(msg.Size),
+				Flags:        append([]string(nil), msg.Flags...),
+			}
+			if msg.Envelope != nil {
+				metadata.Date = msg.Envelope.Date
+				metadata.Subject = msg.Envelope.Subject
+				metadata.From = trainingAddresses(msg.Envelope.From)
+				metadata.To = trainingAddresses(msg.Envelope.To)
+				metadata.MessageID = msg.Envelope.MessageId
+			}
+			if _, exists := byUID[msg.Uid]; exists {
+				if batchErr == nil {
+					batchErr = fmt.Errorf("IMAP server returned training UID %d more than once", msg.Uid)
+				}
+				continue
+			}
+			byUID[msg.Uid] = metadata
+		}
+		if err := <-done; err != nil {
+			return syncer.TrainingCandidateSearch{}, fmt.Errorf("fetch training metadata mailbox %q UID batch %s: %w", mailbox, describeBatch(requested), err)
+		}
+		if batchErr != nil {
+			return syncer.TrainingCandidateSearch{}, batchErr
+		}
+		if err := ctx.Err(); err != nil {
+			return syncer.TrainingCandidateSearch{}, err
+		}
+		for _, uid := range requested {
+			metadata, ok := byUID[uid]
+			if !ok {
+				return syncer.TrainingCandidateSearch{}, fmt.Errorf("IMAP server omitted training metadata mailbox %q UID %d", mailbox, uid)
+			}
+			out.Candidates = append(out.Candidates, metadata)
+		}
+	}
+	return out, nil
+}
+
+func trainingAddresses(addresses []*imap.Address) []string {
+	out := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if address == nil {
+			continue
+		}
+		value := strings.TrimSpace(address.Address())
+		if value != "" && value != "@" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+// FetchTrainingCandidates downloads a caller-selected, bounded UID set using a
+// 512 KiB BODY.PEEK partial. The mailbox is selected read-only and the payloads
+// are delivered only to the callback; this method does not persist them.
+func (f *Fetcher) FetchTrainingCandidates(ctx context.Context, account store.MailAccount, mailbox string, uids []uint32, handle func(syncer.TrainingCandidate) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	mailbox = strings.TrimSpace(mailbox)
+	if mailbox == "" {
+		return errors.New("fetch training candidates requires a mailbox name")
+	}
+	if handle == nil {
+		return errors.New("fetch training candidates requires a handler")
+	}
+	var err error
+	uids, err = normalizeTrainingUIDs(uids)
+	if err != nil {
+		return err
+	}
+	if len(uids) == 0 {
+		return nil
+	}
+	c, err := f.login(account)
+	if err != nil {
+		return err
+	}
+	defer c.Logout()
+	return f.fetchTrainingCandidates(ctx, c, mailbox, uids, handle)
+}
+
+func (f *Fetcher) fetchTrainingCandidates(ctx context.Context, c trainingCandidateClient, mailbox string, uids []uint32, handle func(syncer.TrainingCandidate) error) error {
+	if _, err := c.Select(mailbox, true); err != nil {
+		return fmt.Errorf("select mailbox %q read-only for training fetch: %w", mailbox, err)
+	}
+	section := trainingBodySection()
+	items := []imap.FetchItem{imap.FetchUid, imap.FetchInternalDate, imap.FetchRFC822Size, imap.FetchFlags, section.FetchItem()}
+	for i := 0; i < len(uids); i += f.trainingBatchSize() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		end := i + f.trainingBatchSize()
+		if end > len(uids) {
+			end = len(uids)
+		}
+		requested := uids[i:end]
+		seqset := new(imap.SeqSet)
+		seqset.AddNum(requested...)
+		messages := make(chan *imap.Message, len(requested))
+		done := make(chan error, 1)
+		go func() {
+			done <- c.UidFetch(seqset, items, messages)
+		}()
+		byUID := make(map[uint32]syncer.TrainingCandidate, len(requested))
+		var readErr error
+		var batchErr error
+		for msg := range messages {
+			if msg == nil || msg.Uid == 0 {
+				continue
+			}
+			body := msg.GetBody(section)
+			if body == nil {
+				continue
+			}
+			raw, err := io.ReadAll(io.LimitReader(body, syncer.MaxTrainingCandidateBodyBytes+1))
+			if err != nil {
+				if readErr == nil {
+					readErr = fmt.Errorf("read training body mailbox %q UID %d: %w", mailbox, msg.Uid, err)
+				}
+				continue
+			}
+			truncated := len(raw) > syncer.MaxTrainingCandidateBodyBytes || int64(msg.Size) > syncer.MaxTrainingCandidateBodyBytes
+			if len(raw) > syncer.MaxTrainingCandidateBodyBytes {
+				raw = raw[:syncer.MaxTrainingCandidateBodyBytes]
+			}
+			if _, exists := byUID[msg.Uid]; exists {
+				if batchErr == nil {
+					batchErr = fmt.Errorf("IMAP server returned training UID %d more than once", msg.Uid)
+				}
+				continue
+			}
+			byUID[msg.Uid] = syncer.TrainingCandidate{
+				FetchedMessage: syncer.FetchedMessage{
+					Mailbox:      mailbox,
+					UID:          msg.Uid,
+					InternalDate: msg.InternalDate,
+					Size:         int64(msg.Size),
+					Flags:        append([]string(nil), msg.Flags...),
+					Raw:          raw,
+				},
+				Truncated: truncated,
+			}
+		}
+		if err := <-done; err != nil {
+			return fmt.Errorf("fetch training bodies mailbox %q UID batch %s: %w", mailbox, describeBatch(requested), err)
+		}
+		if batchErr != nil {
+			return batchErr
+		}
+		if readErr != nil {
+			return readErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		for _, uid := range requested {
+			candidate, ok := byUID[uid]
+			if !ok {
+				return fmt.Errorf("IMAP server omitted training body mailbox %q UID %d", mailbox, uid)
+			}
+			if err := handle(candidate); err != nil {
+				return fmt.Errorf("handle training candidate mailbox %q UID %d: %w", mailbox, uid, err)
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeTrainingUIDs(uids []uint32) ([]uint32, error) {
+	if len(uids) > syncer.MaxTrainingCandidateCount {
+		return nil, fmt.Errorf("training candidate UID count %d exceeds maximum %d", len(uids), syncer.MaxTrainingCandidateCount)
+	}
+	seen := make(map[uint32]bool, len(uids))
+	out := make([]uint32, 0, len(uids))
+	for _, uid := range uids {
+		if uid == 0 {
+			return nil, errors.New("training candidate UIDs must be nonzero")
+		}
+		if !seen[uid] {
+			seen[uid] = true
+			out = append(out, uid)
+		}
+	}
+	return out, nil
+}
+
+func (f *Fetcher) trainingBatchSize() int {
+	const maxTrainingBatchSize = 20
+	if f != nil && f.BatchSize > 0 && f.BatchSize < maxTrainingBatchSize {
+		return int(f.BatchSize)
+	}
+	if f != nil && f.BatchSize >= maxTrainingBatchSize {
+		return maxTrainingBatchSize
+	}
+	return 10
+}
+
+func trainingBodySection() *imap.BodySectionName {
+	return &imap.BodySectionName{Peek: true, Partial: []int{0, syncer.MaxTrainingCandidateBodyBytes}}
+}
+
+var _ syncer.TrainingCandidateFetcher = (*Fetcher)(nil)
 
 // MailboxStatus uses IMAP STATUS instead of SELECT where possible so folder counts
 // and UIDNEXT can be refreshed cheaply for progress planning and UI hints.

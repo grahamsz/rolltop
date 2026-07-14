@@ -72,12 +72,16 @@ func annotationSummary(record classificationRecord) string {
 	case feedbackHam:
 		return "You marked this message as not spam."
 	default:
-		parts := []string{strings.ToUpper(record.RiskBand[:1]) + record.RiskBand[1:] + " risk from the checked-in corpus model"}
+		parts := []string{strings.ToUpper(record.RiskBand[:1]) + record.RiskBand[1:] + " risk from the checked-in named-rule scorecard"}
 		if record.LabeledNeighborCount > 0 {
 			parts = append(parts, "explicitly labeled similar mail")
 		}
 		if record.RecentReadSupport > 0 {
-			parts = append(parts, "weak recent-read evidence")
+			if record.Explanation.ExactSenderTemplateSupport > 0 {
+				parts = append(parts, "recent exact-sender template evidence")
+			} else {
+				parts = append(parts, "generic recent-read evidence")
+			}
 		}
 		return strings.Join(parts, ", ") + "."
 	}

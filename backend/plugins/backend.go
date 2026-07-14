@@ -128,6 +128,15 @@ type MessageSimilarityHost interface {
 	SimilarMessages(context.Context, int64, SimilarMessagesRequest) ([]SimilarMessageResult, error)
 }
 
+// RawMessageFetchHost is an optional, read-only capability for plugins that
+// need a tenant-owned message's complete RFC822 source. Implementations must
+// resolve both IDs through the user scope and must not persist or cache bytes
+// fetched from the remote mailbox as a side effect of this call.
+type RawMessageFetchHost interface {
+	BackendHost
+	FetchRawMessage(context.Context, int64, int64) ([]byte, error)
+}
+
 // MessageClassificationAttachment is bounded MIME metadata supplied to a
 // classifier without persisting a second attachment body.
 type MessageClassificationAttachment struct {
@@ -139,21 +148,22 @@ type MessageClassificationAttachment struct {
 // MessageClassificationInput is the in-memory, tenant-scoped payload exposed
 // after a newly stored message has committed to the search index.
 type MessageClassificationInput struct {
-	UserID        int64
-	MessageID     int64
-	AccountID     int64
-	MailboxID     int64
-	Date          time.Time
-	From          string
-	To            string
-	CC            string
-	Subject       string
-	BodyText      string
-	BodyTruncated bool
-	HasHTML       bool
-	IsEncrypted   bool
-	IsSigned      bool
-	Attachments   []MessageClassificationAttachment
+	UserID          int64
+	MessageID       int64
+	MessageIDHeader string
+	AccountID       int64
+	MailboxID       int64
+	Date            time.Time
+	From            string
+	To              string
+	CC              string
+	Subject         string
+	BodyText        string
+	BodyTruncated   bool
+	HasHTML         bool
+	IsEncrypted     bool
+	IsSigned        bool
+	Attachments     []MessageClassificationAttachment
 }
 
 // MessageClassificationHost is the read-only host surface supplied to
@@ -396,6 +406,47 @@ type StoredMessageHook interface {
 	ImportStoredMessage(context.Context, StoredMessageHost, StoredMessageContext) error
 }
 
+// MessageMoveContext is a bounded snapshot of a mirrored message immediately
+// after its existing same-account IMAP move succeeds and before the host removes
+// the old local row, search document, and blob. BodyPreview is empty for encrypted
+// messages and must remain bounded by the host.
+type MessageMoveContext struct {
+	UserID                 int64
+	MessageID              int64
+	MessageIDHeader        string
+	ThreadKey              string
+	AccountID              int64
+	SourceMailboxID        int64
+	SourceMailboxName      string
+	SourceMailboxRole      string
+	DestinationMailboxID   int64
+	DestinationMailboxName string
+	DestinationMailboxRole string
+	UID                    uint32
+	Date                   time.Time
+	InternalDate           time.Time
+	From                   string
+	To                     string
+	CC                     string
+	Subject                string
+	BodyPreview            string
+	BodyPreviewTruncated   bool
+	HasHTML                bool
+	IsRead                 bool
+	IsStarred              bool
+	HasAttachments         bool
+	IsEncrypted            bool
+	IsSigned               bool
+}
+
+// MessageMoveObserver receives advisory observations of successful moves that
+// the core already performed. It cannot initiate a move through this interface.
+// The host treats errors as best-effort failures and continues local cleanup.
+type MessageMoveObserver interface {
+	BackendPlugin
+	ObserveMessageMove(context.Context, BackendHost, MessageMoveContext) error
+}
+
 // AttachmentInfo is the host-provided subset of a stored attachment used by
 // plugin action providers.
 type AttachmentInfo struct {
@@ -589,6 +640,9 @@ func backendHookNames(plugin BackendPlugin) []string {
 	}
 	if _, ok := plugin.(StoredMessageHook); ok {
 		names = append(names, "stored-message")
+	}
+	if _, ok := plugin.(MessageMoveObserver); ok {
+		names = append(names, "message-move-observer")
 	}
 	if _, ok := plugin.(MessageClassifier); ok {
 		names = append(names, "message-classifier")

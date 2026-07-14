@@ -164,21 +164,22 @@ func classificationInputFromStored(message store.MessageRecord, attachments []st
 		attachments = nil
 	}
 	input := plugins.MessageClassificationInput{
-		UserID:        message.UserID,
-		MessageID:     message.ID,
-		AccountID:     message.AccountID,
-		MailboxID:     message.MailboxID,
-		Date:          message.Date,
-		From:          message.FromAddr,
-		To:            message.ToAddr,
-		CC:            message.CCAddr,
-		Subject:       message.Subject,
-		BodyText:      bodyText,
-		BodyTruncated: strings.TrimSpace(bodyText) != "",
-		HasHTML:       hasHTML,
-		IsEncrypted:   message.IsEncrypted,
-		IsSigned:      message.IsSigned,
-		Attachments:   make([]plugins.MessageClassificationAttachment, 0, len(attachments)),
+		UserID:          message.UserID,
+		MessageID:       message.ID,
+		MessageIDHeader: message.MessageIDHeader,
+		AccountID:       message.AccountID,
+		MailboxID:       message.MailboxID,
+		Date:            message.Date,
+		From:            message.FromAddr,
+		To:              message.ToAddr,
+		CC:              message.CCAddr,
+		Subject:         message.Subject,
+		BodyText:        bodyText,
+		BodyTruncated:   strings.TrimSpace(bodyText) != "",
+		HasHTML:         hasHTML,
+		IsEncrypted:     message.IsEncrypted,
+		IsSigned:        message.IsSigned,
+		Attachments:     make([]plugins.MessageClassificationAttachment, 0, len(attachments)),
 	}
 	for _, attachment := range attachments {
 		input.Attachments = append(input.Attachments, plugins.MessageClassificationAttachment{

@@ -43,6 +43,7 @@ const (
 	UserSchemaVersion017   = "user-017"
 	UserSchemaVersion018   = "user-018"
 	UserSchemaVersion019   = "user-019"
+	UserSchemaVersion020   = "user-020"
 	UserSchemaVersion021   = "user-021"
 )
 
@@ -114,6 +115,7 @@ func (s *Store) migrate(ctx context.Context, kind schemaKind, progress Migration
 		userWebPushDeliveryCursorMigrationSet(),
 		userSnoozeMigrationSet(),
 		userSwipePreferencesMigrationSet(),
+		userJunkMailboxRoleMigrationSet(),
 		userPendingMoveNotificationMigrationSet(),
 	}
 	switch kind {

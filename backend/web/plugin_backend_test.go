@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,6 +23,23 @@ var (
 	testPGPPluginRoot string
 	testPGPPluginErr  error
 )
+
+type rawMessagePluginFetcher struct {
+	syncer.Fetcher
+	raw     []byte
+	calls   int
+	userID  int64
+	mailbox string
+	uid     uint32
+}
+
+func (f *rawMessagePluginFetcher) FetchMessage(_ context.Context, account store.MailAccount, mailbox string, uid uint32) (syncer.FetchedMessage, error) {
+	f.calls++
+	f.userID = account.UserID
+	f.mailbox = mailbox
+	f.uid = uid
+	return syncer.FetchedMessage{Mailbox: mailbox, UID: uid, Raw: append([]byte(nil), f.raw...)}, nil
+}
 
 func testClientSidePGPBackendPlugins(t *testing.T) ([]plugins.Manifest, *plugins.BackendManager) {
 	t.Helper()
@@ -233,6 +251,79 @@ func TestQueueAccountMailboxSyncRequiresOwnedConfiguredDestination(t *testing.T)
 	}
 	if err := server.QueueAccountMailboxSync(ctx, owner.ID, ownerAccount.ID, otherMailbox.Name); err == nil {
 		t.Fatal("mailbox outside the selected destination account was accepted")
+	}
+}
+
+func TestFetchRawMessageIsTenantScopedAndDoesNotCacheRemoteBytes(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	owner, err := db.CreateUser(ctx, "raw-owner@example.test", "Owner", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateUser(ctx, "raw-other@example.test", "Other", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createMessage := func(user store.User, mailboxName string, uid uint32) store.MessageRecord {
+		t.Helper()
+		account, createErr := db.CreateMailAccount(ctx, store.MailAccount{
+			UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993,
+			Username: user.Email, EncryptedPassword: "encrypted", UseTLS: true,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		mailbox, createErr := db.GetOrCreateMailbox(ctx, user.ID, account.ID, mailboxName)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		blobRecord, createErr := db.CreateBlob(ctx, store.BlobRecord{
+			UserID: user.ID, Kind: "message", Path: fmt.Sprintf("pruned/%d.eml", uid), SHA256: fmt.Sprintf("hash-%d", uid), Size: 32,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		message, createErr := db.CreateMessage(ctx, store.CreateMessage{
+			UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: blobRecord.ID,
+			MessageIDHeader: fmt.Sprintf("<%d@example.test>", uid), Subject: "Remote message",
+			FromAddr: "sender@example.test", ToAddr: user.Email, Date: time.Now().UTC(), InternalDate: time.Now().UTC(),
+			UID: uid, Size: 32, BlobPath: "", BodyText: "stored preview",
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return message
+	}
+	ownedMessage := createMessage(owner, "INBOX", 41)
+	otherMessage := createMessage(other, "Private", 72)
+	raw := []byte("From: sender@example.test\r\nTo: raw-owner@example.test\r\nSubject: Full\r\n\r\ncomplete body")
+	fetcher := &rawMessagePluginFetcher{raw: raw}
+	server := &Server{store: db, syncer: &syncer.Service{Store: db, Fetcher: fetcher}}
+
+	if _, err := server.FetchRawMessage(ctx, owner.ID, otherMessage.ID); !store.IsNotFound(err) {
+		t.Fatalf("cross-tenant raw fetch error = %v, want not found", err)
+	}
+	got, err := server.FetchRawMessage(ctx, owner.ID, ownedMessage.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("raw message = %q, want %q", got, raw)
+	}
+	if fetcher.calls != 1 || fetcher.userID != owner.ID || fetcher.mailbox != "INBOX" || fetcher.uid != ownedMessage.UID {
+		t.Fatalf("fetch calls=%d user=%d mailbox=%q uid=%d", fetcher.calls, fetcher.userID, fetcher.mailbox, fetcher.uid)
+	}
+	after, err := db.GetMessageForUser(ctx, owner.ID, ownedMessage.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.BlobID != ownedMessage.BlobID || after.BlobPath != "" {
+		t.Fatalf("raw fetch mutated blob state: before=%+v after=%+v", ownedMessage, after)
 	}
 }
 

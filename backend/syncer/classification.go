@@ -91,21 +91,22 @@ func messageClassificationInput(msg store.MessageRecord, parsed mailparse.Parsed
 		bodyText = truncateClassificationBody(bodyText, maxQueuedClassificationBodyBytes)
 	}
 	return plugins.MessageClassificationInput{
-		UserID:        msg.UserID,
-		MessageID:     msg.ID,
-		AccountID:     msg.AccountID,
-		MailboxID:     msg.MailboxID,
-		Date:          msg.Date,
-		From:          msg.FromAddr,
-		To:            msg.ToAddr,
-		CC:            msg.CCAddr,
-		Subject:       msg.Subject,
-		BodyText:      bodyText,
-		BodyTruncated: bodyTruncated,
-		HasHTML:       strings.TrimSpace(parsed.HTML) != "",
-		IsEncrypted:   msg.IsEncrypted,
-		IsSigned:      msg.IsSigned,
-		Attachments:   attachments,
+		UserID:          msg.UserID,
+		MessageID:       msg.ID,
+		MessageIDHeader: msg.MessageIDHeader,
+		AccountID:       msg.AccountID,
+		MailboxID:       msg.MailboxID,
+		Date:            msg.Date,
+		From:            msg.FromAddr,
+		To:              msg.ToAddr,
+		CC:              msg.CCAddr,
+		Subject:         msg.Subject,
+		BodyText:        bodyText,
+		BodyTruncated:   bodyTruncated,
+		HasHTML:         strings.TrimSpace(parsed.HTML) != "",
+		IsEncrypted:     msg.IsEncrypted,
+		IsSigned:        msg.IsSigned,
+		Attachments:     attachments,
 	}
 }
 

@@ -20,6 +20,8 @@
 
 .experimental-spam-settings { display: grid; gap: 1rem; }
 .experimental-spam-model-card,
+.experimental-spam-bayes-card,
+.experimental-spam-bootstrap-card,
 .experimental-spam-backfill-card,
 .experimental-spam-privacy-card { display: grid; gap: 1rem; }
 
@@ -30,7 +32,13 @@
   padding: .35rem .65rem;
 }
 .experimental-spam-state.ready { background: color-mix(in srgb, #2f855a 14%, transparent); color: #28734d; }
+.experimental-spam-state.learning { background: color-mix(in srgb, #315fa8 14%, transparent); color: #315fa8; }
 .experimental-spam-state.error { background: color-mix(in srgb, #c53030 14%, transparent); color: #b52626; }
+
+.experimental-spam-bayes-progress-list { display: grid; gap: .75rem; }
+.experimental-spam-bayes-progress { display: grid; gap: .35rem; }
+.experimental-spam-bayes-progress > div:first-child { display: flex; gap: 1rem; justify-content: space-between; }
+.experimental-spam-bayes-progress > div:first-child span { color: var(--muted, #68717d); font-variant-numeric: tabular-nums; }
 
 .experimental-spam-stats {
   display: grid;
@@ -60,6 +68,29 @@
 .experimental-spam-progress { background: rgba(127, 127, 127, .17); border-radius: 999px; height: .45rem; overflow: hidden; }
 .experimental-spam-progress span { background: var(--accent, #c46b44); display: block; height: 100%; transition: width .2s ease; }
 
+.experimental-spam-bootstrap-accounts { display: grid; gap: .75rem; }
+.experimental-spam-bootstrap-accounts fieldset {
+  border: 1px solid rgba(127, 127, 127, .25);
+  border-radius: .75rem;
+  display: grid;
+  gap: .65rem;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  margin: 0;
+  padding: .75rem;
+}
+.experimental-spam-bootstrap-accounts legend { font-weight: 700; padding: 0 .25rem; }
+.experimental-spam-bootstrap-accounts label { display: grid; gap: .3rem; }
+.experimental-spam-bootstrap-accounts select { min-height: 2.5rem; width: 100%; }
+.experimental-spam-bootstrap-actions { display: flex; flex-wrap: wrap; gap: .65rem; }
+.experimental-spam-bootstrap-preview {
+  background: rgba(127, 127, 127, .08);
+  border-radius: .65rem;
+  display: grid;
+  gap: .25rem;
+  padding: .75rem;
+}
+.experimental-spam-bootstrap-preview small { color: var(--muted, #68717d); }
+
 .experimental-spam-detail { display: grid; gap: .85rem; }
 .experimental-spam-detail-body { display: grid; gap: .85rem; }
 .experimental-spam-stale { background: color-mix(in srgb, #c47a20 12%, transparent); border-radius: .6rem; margin: 0; padding: .65rem; }
@@ -74,12 +105,15 @@
 .experimental-spam-evidence-list li { align-items: baseline; display: flex; flex-wrap: wrap; gap: .4rem; justify-content: space-between; }
 .experimental-spam-evidence-list code { overflow-wrap: anywhere; }
 .experimental-spam-evidence-list small { color: var(--muted, #68717d); }
+.experimental-spam-evidence-note { background: rgba(127, 127, 127, .08); border-radius: .6rem; display: grid; gap: .25rem; padding: .65rem; }
+.experimental-spam-evidence-note p { margin: 0; }
 .experimental-spam-detail-meta { color: var(--muted, #68717d); font-size: .75rem; }
 .experimental-spam-feedback-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 
 @media (prefers-color-scheme: dark) {
   .experimental-spam-badge.low,
   .experimental-spam-state.ready { color: #75d6a4; }
+  .experimental-spam-state.learning { color: #91b9ff; }
   .experimental-spam-badge.medium { color: #efb15f; }
   .experimental-spam-badge.high,
   .experimental-spam-state.error { color: #ff8c8c; }

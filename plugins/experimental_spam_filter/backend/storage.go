@@ -145,15 +145,24 @@ func listClassifications(ctx context.Context, db *sql.DB, userID int64, messageI
 }
 
 func setFeedback(ctx context.Context, db *sql.DB, userID, messageID int64, label string) error {
+	return setFeedbackTx(ctx, db, userID, messageID, label)
+}
+
+type spamSQLRunner interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func setFeedbackTx(ctx context.Context, runner spamSQLRunner, userID, messageID int64, label string) error {
 	label = strings.ToLower(strings.TrimSpace(label))
 	if label != feedbackSpam && label != feedbackHam {
 		return errors.New("feedback must be spam or ham")
 	}
-	if err := ensureMessageOwned(ctx, db, userID, messageID); err != nil {
+	if err := ensureMessageOwnedBy(ctx, runner, userID, messageID); err != nil {
 		return err
 	}
 	now := time.Now().UTC().Unix()
-	_, err := db.ExecContext(ctx, `INSERT INTO plugin_experimental_spam_feedback
+	_, err := runner.ExecContext(ctx, `INSERT INTO plugin_experimental_spam_feedback
 		(user_id, message_id, label, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(user_id, message_id) DO UPDATE SET
@@ -163,11 +172,15 @@ func setFeedback(ctx context.Context, db *sql.DB, userID, messageID int64, label
 }
 
 func ensureMessageOwned(ctx context.Context, db *sql.DB, userID, messageID int64) error {
-	if db == nil || userID <= 0 || messageID <= 0 {
+	return ensureMessageOwnedBy(ctx, db, userID, messageID)
+}
+
+func ensureMessageOwnedBy(ctx context.Context, runner spamSQLRunner, userID, messageID int64) error {
+	if runner == nil || userID <= 0 || messageID <= 0 {
 		return store.ErrNotFound
 	}
 	var owned int
-	err := db.QueryRowContext(ctx, `SELECT 1 FROM messages WHERE user_id = ? AND id = ?`, userID, messageID).Scan(&owned)
+	err := runner.QueryRowContext(ctx, `SELECT 1 FROM messages WHERE user_id = ? AND id = ?`, userID, messageID).Scan(&owned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.ErrNotFound
 	}
@@ -203,14 +216,22 @@ func spamLabeledMessageIDs(ctx context.Context, db *sql.DB, userID int64, messag
 }
 
 func clearFeedback(ctx context.Context, db *sql.DB, userID, messageID int64) error {
-	_, err := db.ExecContext(ctx, `DELETE FROM plugin_experimental_spam_feedback
+	return clearFeedbackTx(ctx, db, userID, messageID)
+}
+
+func clearFeedbackTx(ctx context.Context, runner spamSQLRunner, userID, messageID int64) error {
+	_, err := runner.ExecContext(ctx, `DELETE FROM plugin_experimental_spam_feedback
 		WHERE user_id = ? AND message_id = ?`, userID, messageID)
 	return err
 }
 
 func getFeedback(ctx context.Context, db *sql.DB, userID, messageID int64) (string, error) {
+	return getFeedbackTx(ctx, db, userID, messageID)
+}
+
+func getFeedbackTx(ctx context.Context, runner spamSQLRunner, userID, messageID int64) (string, error) {
 	var label string
-	err := db.QueryRowContext(ctx, `SELECT label FROM plugin_experimental_spam_feedback
+	err := runner.QueryRowContext(ctx, `SELECT label FROM plugin_experimental_spam_feedback
 		WHERE user_id = ? AND message_id = ?`, userID, messageID).Scan(&label)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil

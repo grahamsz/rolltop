@@ -463,7 +463,8 @@ const folderRoleChoices = [
   { value: "inbox", label: "Inbox" },
   { value: "sent", label: "Sent" },
   { value: "drafts", label: "Drafts" },
-  { value: "trash", label: "Trash" }
+  { value: "trash", label: "Trash" },
+  { value: "junk", label: "Spam / Junk" }
 ];
 
 const uniqueFolderRoles = new Set(folderRoleChoices.map((choice) => choice.value).filter(Boolean));
@@ -537,7 +538,7 @@ function cloneSwipePreferences(preferences: SwipePreferences): SwipePreferences 
 }
 
 function isSwipeArchiveChoice(mailbox: Mailbox): boolean {
-  return !["inbox", "sent", "drafts", "trash"].includes(mailbox.role);
+  return !["inbox", "sent", "drafts", "trash", "junk"].includes(mailbox.role);
 }
 
 function folderCanInherit(mailbox: Mailbox) {

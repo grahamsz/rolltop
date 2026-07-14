@@ -1,5 +1,5 @@
-// Package model contains Rolltop's native spam feature extractor and compact
-// logistic classifier. It has no network, storage, or sidecar dependencies.
+// Package model contains Rolltop's native named-rule spam scorecard. It has no
+// network, storage, data-derived vocabulary, or sidecar dependencies.
 package model
 
 import (
@@ -16,14 +16,16 @@ import (
 )
 
 const (
-	BinaryFormatVersion = uint16(1)
-	DefaultDimension    = uint32(1 << 17)
-	maxContributions    = 12
+	BinaryFormatVersion    = uint16(2)
+	DefaultDimension       = uint32(128)
+	DefaultMediumThreshold = 0.35
+	DefaultHighThreshold   = 0.90
+	maxContributions       = 12
 )
 
 var (
-	binaryMagic         = [8]byte{'R', 'T', 'S', 'P', 'A', 'M', '1', 0}
-	ErrInvalidDimension = errors.New("spam model dimension must be a non-zero power of two")
+	binaryMagic         = [8]byte{'R', 'T', 'S', 'C', 'O', 'R', 'E', '1'}
+	ErrInvalidDimension = errors.New("spam model dimension must be a power of two large enough for the named-rule table")
 )
 
 type RiskBand string
@@ -35,10 +37,11 @@ const (
 )
 
 type Contribution struct {
-	Feature string  `json:"feature"`
-	Value   float64 `json:"value"`
-	Weight  float64 `json:"weight"`
-	Impact  float64 `json:"impact"`
+	Feature     string  `json:"feature"`
+	Description string  `json:"description,omitempty"`
+	Value       float64 `json:"value"`
+	Weight      float64 `json:"weight"`
+	Impact      float64 `json:"impact"`
 }
 
 type Score struct {
@@ -58,11 +61,15 @@ type Classifier struct {
 	highThreshold   float64
 	weights         []float32
 	modelVersion    string
+	modelName       string
+	trainingCorpus  string
 	featureSchema   string
 }
 
 type artifactMetadata struct {
 	ModelVersion    string  `json:"model_version"`
+	ModelName       string  `json:"model_name"`
+	TrainingCorpus  string  `json:"training_corpus"`
 	FeatureSchema   string  `json:"feature_schema"`
 	Dimension       uint32  `json:"dimension"`
 	ModelSHA256     string  `json:"model_sha256"`
@@ -74,7 +81,7 @@ type artifactMetadata struct {
 // the offline trainer; production callers should use LoadEmbedded.
 func New(weights []float32, bias, calibrationA, calibrationB float64, modelVersion string) (*Classifier, error) {
 	dimension := uint32(len(weights))
-	if dimension == 0 || dimension&(dimension-1) != 0 {
+	if dimension == 0 || dimension&(dimension-1) != 0 || dimension < uint32(RuleCount()) {
 		return nil, ErrInvalidDimension
 	}
 	if !finite(bias) || !finite(calibrationA) || !finite(calibrationB) || calibrationA <= 0 {
@@ -85,8 +92,8 @@ func New(weights []float32, bias, calibrationA, calibrationB float64, modelVersi
 		bias:            bias,
 		calibrationA:    calibrationA,
 		calibrationB:    calibrationB,
-		mediumThreshold: 0.35,
-		highThreshold:   0.80,
+		mediumThreshold: DefaultMediumThreshold,
+		highThreshold:   DefaultHighThreshold,
 		weights:         append([]float32(nil), weights...),
 		modelVersion:    modelVersion,
 		featureSchema:   FeatureSchema,
@@ -95,9 +102,25 @@ func New(weights []float32, bias, calibrationA, calibrationB float64, modelVersi
 
 func (c *Classifier) ModelVersion() string { return c.modelVersion }
 
+func (c *Classifier) ModelName() string { return c.modelName }
+
+func (c *Classifier) TrainingCorpus() string { return c.trainingCorpus }
+
 func (c *Classifier) FeatureSchemaVersion() string { return c.featureSchema }
 
 func (c *Classifier) Dimension() uint32 { return c.dimension }
+
+// SetThresholds configures the display bands stored with a trained artifact.
+// Both are fixed product bands; the validation-selected research operating
+// point is recorded separately in benchmark.json and is not used here.
+func (c *Classifier) SetThresholds(medium, high float64) error {
+	if !finite(medium) || !finite(high) || medium <= 0 || high >= 1 || medium >= high {
+		return errors.New("spam model thresholds are invalid")
+	}
+	c.mediumThreshold = medium
+	c.highThreshold = high
+	return nil
+}
 
 func (c *Classifier) Classify(message Message) (Score, error) {
 	if c == nil || len(c.weights) == 0 {
@@ -109,16 +132,26 @@ func (c *Classifier) Classify(message Message) (Score, error) {
 	}
 	logit := c.bias
 	contributions := make([]Contribution, 0, len(features))
+	rules := RuleDefinitions()
 	for _, feature := range features {
 		weight := float64(c.weights[feature.Index])
 		impact := weight * feature.Value
 		logit += impact
 		if impact != 0 {
+			description := ""
+			label := feature.Name
+			if int(feature.Index) < len(rules) {
+				description = rules[feature.Index].Description
+				if description != "" {
+					label += ": " + description
+				}
+			}
 			contributions = append(contributions, Contribution{
-				Feature: feature.Name,
-				Value:   feature.Value,
-				Weight:  weight,
-				Impact:  impact,
+				Feature:     label,
+				Description: description,
+				Value:       feature.Value,
+				Weight:      weight,
+				Impact:      impact,
 			})
 		}
 	}
@@ -189,7 +222,7 @@ func Load(data []byte) (*Classifier, error) {
 	if version != BinaryFormatVersion {
 		return nil, fmt.Errorf("unsupported spam model format %d", version)
 	}
-	if reserved != 0 || dimension == 0 || dimension&(dimension-1) != 0 {
+	if reserved != 0 || dimension == 0 || dimension&(dimension-1) != 0 || dimension < uint32(RuleCount()) {
 		return nil, errors.New("invalid spam model header")
 	}
 	if reader.Len() != int(dimension)*4 {
@@ -232,7 +265,7 @@ func loadWithMetadata(modelData, metadataData []byte) (*Classifier, error) {
 	if err := json.Unmarshal(metadataData, &metadata); err != nil {
 		return nil, fmt.Errorf("decode spam model metadata: %w", err)
 	}
-	if metadata.ModelVersion == "" || metadata.FeatureSchema != FeatureSchema {
+	if metadata.ModelVersion == "" || metadata.ModelName == "" || metadata.TrainingCorpus == "" || metadata.FeatureSchema != FeatureSchema {
 		return nil, errors.New("spam model metadata is incompatible")
 	}
 	digest := sha256.Sum256(modelData)
@@ -243,9 +276,12 @@ func loadWithMetadata(modelData, metadataData []byte) (*Classifier, error) {
 		return nil, errors.New("spam model metadata has invalid thresholds")
 	}
 	classifier.modelVersion = metadata.ModelVersion
+	classifier.modelName = metadata.ModelName
+	classifier.trainingCorpus = metadata.TrainingCorpus
 	classifier.featureSchema = metadata.FeatureSchema
-	classifier.mediumThreshold = metadata.MediumThreshold
-	classifier.highThreshold = metadata.HighThreshold
+	if err := classifier.SetThresholds(metadata.MediumThreshold, metadata.HighThreshold); err != nil {
+		return nil, err
+	}
 	return classifier, nil
 }
 

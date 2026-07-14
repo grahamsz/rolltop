@@ -18,9 +18,70 @@ import (
 	"rolltop/backend/store"
 )
 
-// MailboxInfo is the minimal mailbox discovery record returned by a Fetcher.
+// MailboxInfo is the mailbox discovery record returned by a Fetcher. Attributes
+// preserve IMAP LIST special-use metadata so discovery can distinguish folders
+// such as Junk even when the remote name is provider-specific.
 type MailboxInfo struct {
-	Name string
+	Name       string
+	Attributes []string
+}
+
+const (
+	// MaxTrainingCandidateCount bounds one read-only IMAP training scan. Callers
+	// can make additional explicit requests, but a single operation cannot make
+	// an unbounded mailbox download.
+	MaxTrainingCandidateCount = 5000
+	// MaxTrainingCandidateBodyBytes is the protocol-level BODY.PEEK partial size
+	// used for personal spam-training candidates.
+	MaxTrainingCandidateBodyBytes = 512 * 1024
+)
+
+// TrainingCandidateQuery describes a bounded, read-only mailbox sample. IMAP
+// evaluates date criteria at day precision; callers that need exact cutoffs
+// should also check the returned InternalDate.
+type TrainingCandidateQuery struct {
+	Since    time.Time
+	Before   time.Time
+	SeenOnly bool
+	Limit    int
+}
+
+// TrainingCandidateMetadata is the header-level information used to preview
+// and filter a training sample before any raw message content is downloaded.
+type TrainingCandidateMetadata struct {
+	Mailbox      string
+	UID          uint32
+	Date         time.Time
+	InternalDate time.Time
+	Size         int64
+	Flags        []string
+	Subject      string
+	From         []string
+	To           []string
+	MessageID    string
+}
+
+// TrainingCandidateSearch reports the full number of remote matches and the
+// newest bounded metadata sample selected by the query limit.
+type TrainingCandidateSearch struct {
+	Matched    int
+	Candidates []TrainingCandidateMetadata
+}
+
+// TrainingCandidate is an ephemeral IMAP message sample. Raw is never larger
+// than MaxTrainingCandidateBodyBytes and is not persisted by the fetcher.
+type TrainingCandidate struct {
+	FetchedMessage
+	Truncated bool
+}
+
+// TrainingCandidateFetcher is an optional read-only capability used by
+// personal classifiers. It intentionally remains separate from Fetcher so
+// ordinary synchronization implementations and test doubles need not support
+// training scans.
+type TrainingCandidateFetcher interface {
+	SearchTrainingCandidates(ctx context.Context, account store.MailAccount, mailbox string, query TrainingCandidateQuery) (TrainingCandidateSearch, error)
+	FetchTrainingCandidates(ctx context.Context, account store.MailAccount, mailbox string, uids []uint32, handle func(TrainingCandidate) error) error
 }
 
 // MailboxStatus mirrors IMAP STATUS counters used for planning and UI progress.
@@ -199,12 +260,12 @@ func (s *Service) DiscoverMailboxes(ctx context.Context, userID int64) (int, err
 		if configured == "" {
 			configured = store.DefaultMailboxPattern
 		}
-		names, err := s.configuredMailboxNames(ctx, account, configured)
+		infos, err := s.configuredMailboxes(ctx, account, configured)
 		if err != nil {
 			return count, err
 		}
-		for _, name := range names {
-			mb, err := s.Store.GetOrCreateMailbox(ctx, userID, account.ID, name)
+		for _, info := range infos {
+			mb, err := s.Store.GetOrCreateMailboxWithRole(ctx, userID, account.ID, info.Name, mailboxSpecialUseRole(info.Attributes))
 			if err != nil {
 				return count, err
 			}

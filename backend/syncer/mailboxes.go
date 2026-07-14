@@ -17,13 +17,13 @@ func (s *Service) mailboxesToSync(ctx context.Context, account store.MailAccount
 	if configured == "" {
 		configured = store.DefaultMailboxPattern
 	}
-	names, err := s.configuredMailboxNames(ctx, account, configured)
+	infos, err := s.configuredMailboxes(ctx, account, configured)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(names))
-	for _, name := range names {
-		mb, err := s.Store.GetOrCreateMailbox(ctx, account.UserID, account.ID, name)
+	out := make([]string, 0, len(infos))
+	for _, info := range infos {
+		mb, err := s.Store.GetOrCreateMailboxWithRole(ctx, account.UserID, account.ID, info.Name, mailboxSpecialUseRole(info.Attributes))
 		if err != nil {
 			return nil, err
 		}
@@ -86,21 +86,21 @@ func prioritizeInbox(mailboxes []string) []string {
 	return out
 }
 
-func (s *Service) configuredMailboxNames(ctx context.Context, account store.MailAccount, configured string) ([]string, error) {
+func (s *Service) configuredMailboxes(ctx context.Context, account store.MailAccount, configured string) ([]MailboxInfo, error) {
 	if configured != "*" {
 		parts := strings.Split(configured, ",")
-		out := make([]string, 0, len(parts))
+		out := make([]MailboxInfo, 0, len(parts))
 		seen := map[string]bool{}
 		for _, part := range parts {
 			name := strings.TrimSpace(part)
 			key := strings.ToLower(name)
 			if name != "" && !seen[key] {
 				seen[key] = true
-				out = append(out, name)
+				out = append(out, MailboxInfo{Name: name})
 			}
 		}
 		if len(out) == 0 {
-			return []string{"INBOX"}, nil
+			return []MailboxInfo{{Name: "INBOX"}}, nil
 		}
 		return out, nil
 	}
@@ -108,18 +108,39 @@ func (s *Service) configuredMailboxNames(ctx context.Context, account store.Mail
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(infos))
+	out := make([]MailboxInfo, 0, len(infos))
 	seen := map[string]bool{}
 	for _, info := range infos {
 		name := strings.TrimSpace(info.Name)
 		key := strings.ToLower(name)
 		if name != "" && !seen[key] {
 			seen[key] = true
-			out = append(out, name)
+			out = append(out, MailboxInfo{Name: name, Attributes: append([]string(nil), info.Attributes...)})
 		}
 	}
 	if len(out) == 0 {
-		return []string{"INBOX"}, nil
+		return []MailboxInfo{{Name: "INBOX"}}, nil
 	}
 	return out, nil
+}
+
+func mailboxSpecialUseRole(attributes []string) string {
+	// Junk wins if a broken server reports multiple special-use attributes: it
+	// is the most safety-sensitive role and must not be treated as Inbox/All Mail.
+	for _, attribute := range attributes {
+		if strings.EqualFold(strings.TrimSpace(attribute), "\\Junk") {
+			return "junk"
+		}
+	}
+	for _, attribute := range attributes {
+		switch strings.ToLower(strings.TrimSpace(attribute)) {
+		case "\\sent":
+			return "sent"
+		case "\\drafts":
+			return "drafts"
+		case "\\trash":
+			return "trash"
+		}
+	}
+	return ""
 }

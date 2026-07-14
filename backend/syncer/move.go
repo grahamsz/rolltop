@@ -8,8 +8,11 @@ import (
 	"log"
 	"strings"
 
+	"rolltop/backend/plugins"
 	"rolltop/backend/store"
 )
+
+type messageMoveNotifier func(context.Context, plugins.MessageMoveContext)
 
 func uniqueMessageIDs(ids []int64) []int64 {
 	seen := map[int64]bool{}
@@ -125,6 +128,10 @@ func (s *Service) runMoveMessages(ctx context.Context, userID int64, ids []int64
 
 // MoveMessage moves one message through IMAP using its account, source mailbox, destination mailbox, and UID.
 func (s *Service) MoveMessage(ctx context.Context, userID, messageID, destMailboxID int64) error {
+	return s.moveMessage(ctx, userID, messageID, destMailboxID, s.observeMessageMove)
+}
+
+func (s *Service) moveMessage(ctx context.Context, userID, messageID, destMailboxID int64, notifyMove messageMoveNotifier) error {
 	if s.Fetcher == nil {
 		return errors.New("sync fetcher is not configured")
 	}
@@ -166,8 +173,91 @@ func (s *Service) MoveMessage(ctx context.Context, userID, messageID, destMailbo
 		}
 		return err
 	}
+	if notifyMove != nil {
+		notifyMove(ctx, messageMoveContext(msg, source, dest))
+	}
 	s.cleanupMovedMessage(ctx, userID, msg)
 	return nil
+}
+
+func messageMoveContext(msg store.MessageRecord, source, destination store.Mailbox) plugins.MessageMoveContext {
+	bodyPreview := ""
+	bodyPreviewTruncated := false
+	if !msg.IsEncrypted {
+		bodyPreview = store.MessageBodyPreview(msg.BodyText, store.DefaultMessageBodyPreviewBytes)
+		bodyPreviewTruncated = len(bodyPreview) < len(msg.BodyText)
+	}
+	return plugins.MessageMoveContext{
+		UserID:                 msg.UserID,
+		MessageID:              msg.ID,
+		MessageIDHeader:        msg.MessageIDHeader,
+		ThreadKey:              msg.ThreadKey,
+		AccountID:              msg.AccountID,
+		SourceMailboxID:        source.ID,
+		SourceMailboxName:      source.Name,
+		SourceMailboxRole:      source.Role,
+		DestinationMailboxID:   destination.ID,
+		DestinationMailboxName: destination.Name,
+		DestinationMailboxRole: destination.Role,
+		UID:                    msg.UID,
+		Date:                   msg.Date,
+		InternalDate:           msg.InternalDate,
+		From:                   msg.FromAddr,
+		To:                     msg.ToAddr,
+		CC:                     msg.CCAddr,
+		Subject:                msg.Subject,
+		BodyPreview:            bodyPreview,
+		BodyPreviewTruncated:   bodyPreviewTruncated,
+		HasHTML:                strings.TrimSpace(msg.BodyHTML) != "",
+		IsRead:                 msg.IsRead,
+		IsStarred:              msg.IsStarred,
+		HasAttachments:         msg.HasAttachments,
+		IsEncrypted:            msg.IsEncrypted,
+		IsSigned:               msg.IsSigned,
+	}
+}
+
+func (s *Service) observeMessageMove(ctx context.Context, event plugins.MessageMoveContext) {
+	backendPlugins, err := s.enabledBackendPlugins(ctx)
+	if err != nil {
+		// Do not include the error text: loader errors can contain environment or
+		// plugin-owned details that do not belong in application logs.
+		log.Printf("message move observer discovery failed user_id=%d message_id=%d error_type=%T", event.UserID, event.MessageID, err)
+		return
+	}
+	dispatchMessageMoveObservers(ctx, syncPluginHost{s: s}, backendPlugins, event)
+}
+
+func dispatchMessageMoveObservers(ctx context.Context, host plugins.BackendHost, backendPlugins []plugins.BackendPlugin, event plugins.MessageMoveContext) {
+	for _, backendPlugin := range backendPlugins {
+		hook, ok := backendPlugin.(plugins.MessageMoveObserver)
+		if !ok {
+			continue
+		}
+		pluginID := hook.ID()
+		err, panicked := callMessageMoveObserver(ctx, hook, host, event)
+		switch {
+		case panicked:
+			// Never log the recovered value; plugin panics can contain message data.
+			log.Printf("message move observer panicked plugin_id=%q user_id=%d message_id=%d account_id=%d source_mailbox_id=%d destination_mailbox_id=%d",
+				pluginID, event.UserID, event.MessageID, event.AccountID, event.SourceMailboxID, event.DestinationMailboxID)
+		case err != nil && !errors.Is(err, plugins.ErrUnsupported):
+			// Error type is sufficient for diagnostics without risking body or
+			// credential material embedded in a plugin-owned error string.
+			log.Printf("message move observer failed plugin_id=%q user_id=%d message_id=%d account_id=%d source_mailbox_id=%d destination_mailbox_id=%d error_type=%T",
+				pluginID, event.UserID, event.MessageID, event.AccountID, event.SourceMailboxID, event.DestinationMailboxID, err)
+		}
+	}
+}
+
+func callMessageMoveObserver(ctx context.Context, hook plugins.MessageMoveObserver, host plugins.BackendHost, event plugins.MessageMoveContext) (err error, panicked bool) {
+	defer func() {
+		if recover() != nil {
+			err = nil
+			panicked = true
+		}
+	}()
+	return hook.ObserveMessageMove(ctx, host, event), false
 }
 
 func (s *Service) cleanupMovedMessage(ctx context.Context, userID int64, msg store.MessageRecord) {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -65,18 +66,36 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 	return function(request)
 }
 
-func TestFTRLTrainingDeterministic(t *testing.T) {
-	samples := []sample{
-		{Spam: true, Message: spammodel.Message{Subject: "free cash prize", Body: "click now winner"}},
-		{Spam: true, Message: spammodel.Message{Subject: "limited offer", Body: "buy cheap pills"}},
-		{Spam: false, Message: spammodel.Message{Subject: "meeting notes", Body: "project review Friday"}},
-		{Spam: false, Message: spammodel.Message{Subject: "family dinner", Body: "see you tomorrow"}},
+func TestNamedRulePerceptronTrainingDeterministic(t *testing.T) {
+	var samples []sample
+	for index := 0; index < 8; index++ {
+		samples = append(samples,
+			sample{ID: fmt.Sprintf("spam-%d", index), Spam: true, Message: spammodel.Message{Subject: "claim your cash prize", Body: "Click here to claim your prize. Act now.", From: "offers@example.test", To: []string{"reader@example.test"}, MIMEType: "text/html", HTML: true}},
+			sample{ID: fmt.Sprintf("ham-%d", index), Spam: false, Message: spammodel.Message{Subject: "meeting notes", Body: "Please review the project plan and action items. Best regards.", From: "alex@example.test", To: []string{"team@example.test"}, MIMEType: "text/plain"}},
+		)
 	}
-	firstWeights, firstBias, err := trainLogistic(samples, 1024)
+	hits, err := massCheckSamples(samples)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondWeights, secondBias, err := trainLogistic(samples, 1024)
+	audits, ranges, err := auditRuleHits(hits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := 0
+	for _, audit := range audits {
+		if audit.Enabled {
+			enabled++
+		}
+	}
+	if enabled == 0 {
+		t.Fatal("expected enabled authored rules")
+	}
+	firstWeights, firstBias, err := trainPerceptron(hits, ranges, DefaultPerceptronConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondWeights, secondBias, err := trainPerceptron(hits, ranges, DefaultPerceptronConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +106,23 @@ func TestFTRLTrainingDeterministic(t *testing.T) {
 		if firstWeights[index] != secondWeights[index] {
 			t.Fatalf("weight %d is not deterministic", index)
 		}
+	}
+}
+
+func TestValidationSelectedOperatingPointDoesNotTuneOnTest(t *testing.T) {
+	validationProbabilities := []float64{.99, .80, .70, .20, .10}
+	validationLabels := []bool{true, true, false, false, false}
+	testProbabilities := []float64{.95, .79, .78, .30, .20}
+	testLabels := []bool{true, true, false, false, false}
+	point, err := validationSelectedOperatingPoint(validationProbabilities, validationLabels, testProbabilities, testLabels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if point.Threshold != .80 {
+		t.Fatalf("validation threshold = %v, want .80", point.Threshold)
+	}
+	if point.TestRecall != .5 || point.TestFalsePositiveRate != 0 {
+		t.Fatalf("held-out metrics = recall %v fpr %v, want .5 and 0", point.TestRecall, point.TestFalsePositiveRate)
 	}
 }
 
@@ -160,11 +196,23 @@ func TestCorpusCacheIgnoredAndArchivesUntracked(t *testing.T) {
 
 func TestCheckedInArtifactsVerifyOffline(t *testing.T) {
 	modelDir := filepath.Join("..", "model")
+	reportPath := filepath.Join(modelDir, "benchmark.json")
 	if err := Verify(ArtifactPaths{
 		Model:    filepath.Join(modelDir, "model.bin"),
 		Metadata: filepath.Join(modelDir, "model.json"),
-		Report:   filepath.Join(modelDir, "benchmark.json"),
+		Report:   reportPath,
 	}, io.Discard); err != nil {
 		t.Fatal(err)
+	}
+	report, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, machineDependentField := range []string{
+		`"runtime":`, `"inference_nanoseconds_per_message"`, `"allocated_bytes_per_message"`,
+	} {
+		if bytes.Contains(report, []byte(machineDependentField)) {
+			t.Fatalf("checksum-bound report contains machine-dependent field %s", machineDependentField)
+		}
 	}
 }
