@@ -51,6 +51,10 @@ const pluginConfig: Record<string, { entry: string; outDir: string }> = {
   mail_mcp: {
     entry: "plugins/mail_mcp/frontend/index.tsx",
     outDir: "plugins/mail_mcp/frontend_dist"
+  },
+  remote_imap_sync: {
+    entry: "plugins/remote_imap_sync/frontend/index.tsx",
+    outDir: "plugins/remote_imap_sync/frontend_dist"
   }
 };
 

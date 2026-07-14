@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -193,14 +194,18 @@ func startupListenAddr() string {
 }
 
 type appRuntime struct {
-	db      *store.Store
-	search  *search.Service
-	handler http.Handler
+	pluginHost io.Closer
+	db         *store.Store
+	search     *search.Service
+	handler    http.Handler
 }
 
 func (a *appRuntime) close() {
 	if a == nil {
 		return
+	}
+	if a.pluginHost != nil {
+		_ = a.pluginHost.Close()
 	}
 	if a.search != nil {
 		_ = a.search.Close()
@@ -411,7 +416,7 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 	}
 
 	cleanup = false
-	return &appRuntime{db: db, search: searchSvc, handler: webServer.Handler()}, nil
+	return &appRuntime{pluginHost: webServer, db: db, search: searchSvc, handler: webServer.Handler()}, nil
 }
 
 func storageRetention(ctx context.Context, db *store.Store, svc *syncer.Service, retention time.Duration) {

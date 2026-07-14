@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 
 	"rolltop/backend/plugins"
 	"rolltop/backend/search"
 )
+
+var errBackendPluginHostClosed = errors.New("backend plugin host is closed")
 
 func (s *Server) Store() any {
 	if s == nil {
@@ -33,6 +36,37 @@ func (s *Server) PluginEnabled(ctx context.Context, pluginID string) bool {
 	return s.pluginEnabled(ctx, pluginID)
 }
 
+// QueueAccountMailboxSync lets an enabled backend plugin refetch a message it
+// has just appended to one of the signed-in user's configured IMAP mailboxes.
+// Resolve both records through tenant-scoped store methods before handing the
+// work to the process-lifetime runner.
+func (s *Server) QueueAccountMailboxSync(ctx context.Context, userID, accountID int64, mailboxName string) error {
+	mailboxName = strings.TrimSpace(mailboxName)
+	if s == nil || s.store == nil || s.syncRunner == nil {
+		return errors.New("mailbox sync is not configured")
+	}
+	if userID <= 0 || accountID <= 0 || mailboxName == "" {
+		return errors.New("user, destination account, and mailbox are required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, err := s.store.GetMailAccountForUser(ctx, userID, accountID); err != nil {
+		return fmt.Errorf("resolve destination IMAP account: %w", err)
+	}
+	mailbox, err := s.store.GetMailbox(ctx, userID, accountID, mailboxName)
+	if err != nil {
+		return fmt.Errorf("resolve destination IMAP mailbox: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !s.syncRunner.QueueAccountMailboxes(userID, accountID, []string{mailbox.Name}) {
+		return errors.New("mailbox sync is stopping")
+	}
+	return nil
+}
+
 func (s *Server) RequireAPIAuth(w http.ResponseWriter, r *http.Request) (plugins.CurrentUser, bool) {
 	cu, ok := s.requireAPIAuth(w, r)
 	if !ok {
@@ -40,6 +74,8 @@ func (s *Server) RequireAPIAuth(w http.ResponseWriter, r *http.Request) (plugins
 	}
 	return plugins.CurrentUser{UserID: cu.User.ID}, true
 }
+
+var _ plugins.AccountMailboxSyncHost = (*Server)(nil)
 
 func (s *Server) LoginUserID(w http.ResponseWriter, r *http.Request, userID int64) error {
 	return s.loginUser(w, r, userID)
@@ -175,12 +211,18 @@ func (s *Server) startBackendPlugin(ctx context.Context, pluginID string) (plugi
 	if pluginID == "" || s == nil {
 		return nil, false, nil
 	}
+	if s.backendPluginsClosed() {
+		return nil, false, errBackendPluginHostClosed
+	}
 	if !s.pluginEnabled(ctx, pluginID) {
 		_ = s.stopBackendPlugin(pluginID)
 		return nil, false, nil
 	}
 	s.backendLifecycleMu.Lock()
 	defer s.backendLifecycleMu.Unlock()
+	if s.backendLifecycleClosed {
+		return nil, false, errBackendPluginHostClosed
+	}
 	if s.startedBackendPlugins == nil {
 		s.startedBackendPlugins = map[string]plugins.BackendPlugin{}
 	}
@@ -215,18 +257,22 @@ func (s *Server) stopBackendPlugin(pluginID string) error {
 		return nil
 	}
 	s.backendLifecycleMu.Lock()
+	defer s.backendLifecycleMu.Unlock()
 	var plugin plugins.BackendPlugin
 	if s.startedBackendPlugins != nil {
 		plugin = s.startedBackendPlugins[pluginID]
 		delete(s.startedBackendPlugins, pluginID)
 	}
-	s.backendLifecycleMu.Unlock()
-	var err error
+	return s.stopBackendPluginInstance(pluginID, plugin)
+}
+
+func (s *Server) stopBackendPluginInstance(pluginID string, plugin plugins.BackendPlugin) error {
+	var stopErr error
 	if plugin != nil {
 		log.Printf("debug backend plugin stopping plugin_id=%s", pluginID)
-		err = plugin.Stop(s)
-		if err != nil {
-			log.Printf("debug backend plugin stop failed plugin_id=%s error=%v", pluginID, err)
+		stopErr = plugin.Stop(s)
+		if stopErr != nil {
+			log.Printf("debug backend plugin stop failed plugin_id=%s error=%v", pluginID, stopErr)
 		}
 	}
 	unregistered := s.protectedAPIRouteRegistry().unregisterPlugin(pluginID)
@@ -234,7 +280,46 @@ func (s *Server) stopBackendPlugin(pluginID string) error {
 	if plugin != nil || unregistered > 0 {
 		log.Printf("debug backend plugin stopped plugin_id=%s routes_unregistered=%d", pluginID, unregistered)
 	}
-	return err
+	return stopErr
+}
+
+// Close stops every lifecycle-managed backend plugin before the application
+// closes search indexes and user databases. It is idempotent and prevents an
+// in-flight auto-start goroutine from installing a plugin after shutdown.
+func (s *Server) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.backendLifecycleMu.Lock()
+	defer s.backendLifecycleMu.Unlock()
+	if s.backendLifecycleClosed {
+		return nil
+	}
+	s.backendLifecycleClosed = true
+	started := s.startedBackendPlugins
+	s.startedBackendPlugins = map[string]plugins.BackendPlugin{}
+
+	ids := make([]string, 0, len(started))
+	for pluginID := range started {
+		ids = append(ids, pluginID)
+	}
+	sort.Strings(ids)
+	var stopErrors []error
+	for _, pluginID := range ids {
+		if err := s.stopBackendPluginInstance(pluginID, started[pluginID]); err != nil {
+			stopErrors = append(stopErrors, fmt.Errorf("stop backend plugin %s: %w", pluginID, err))
+		}
+	}
+	return errors.Join(stopErrors...)
+}
+
+func (s *Server) backendPluginsClosed() bool {
+	if s == nil {
+		return true
+	}
+	s.backendLifecycleMu.Lock()
+	defer s.backendLifecycleMu.Unlock()
+	return s.backendLifecycleClosed
 }
 
 func (s *Server) dispatchProtectedAPIPath(w http.ResponseWriter, r *http.Request, apiPath string) bool {
@@ -276,6 +361,9 @@ func (s *Server) backendPlugin(pluginID string) (plugins.BackendPlugin, bool, er
 func (s *Server) enabledBackendPlugins(ctx context.Context) ([]plugins.BackendPlugin, error) {
 	if s == nil || s.backendPlugins == nil {
 		return nil, nil
+	}
+	if s.backendPluginsClosed() {
+		return nil, errBackendPluginHostClosed
 	}
 	ids := s.backendPlugins.PluginIDs()
 	out := make([]plugins.BackendPlugin, 0, len(ids))

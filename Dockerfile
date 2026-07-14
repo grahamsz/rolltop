@@ -20,7 +20,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w -X rolltop/backend/buildinfo.Version=${ROLLTOP_VERSION} -X rolltop/backend/buildinfo.BuildDate=${ROLLTOP_BUILD_DATE} -X rolltop/backend/buildinfo.Commit=${ROLLTOP_COMMIT}" -o /out/rolltop ./cmd/rolltop
 RUN set -eu; \
-	plugins='attachment_preview bimi_brand_icons gravatar_sender_icons language_search mail_filters oidc one_click_unsubscribe remote_image_blocklist trusted_image_sources client_side_pgp mail_mcp'; \
+	plugins='attachment_preview bimi_brand_icons gravatar_sender_icons language_search mail_filters oidc one_click_unsubscribe remote_image_blocklist remote_imap_sync trusted_image_sources client_side_pgp mail_mcp'; \
 	for plugin in $plugins; do \
 		mkdir -p "/out/plugins/${plugin}/backend"; \
 		CGO_ENABLED=1 GOOS=linux go build -buildmode=plugin -trimpath -ldflags="-s -w" -o "/out/plugins/${plugin}/backend/${plugin}.so" "./plugins/${plugin}/backend"; \

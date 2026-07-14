@@ -37,6 +37,56 @@ type Fetcher struct {
 	BatchSize uint32
 }
 
+// ServerCapabilities contains the authenticated IMAP extensions used by
+// copy-only remote synchronization.
+type ServerCapabilities struct {
+	IDLE    bool
+	UIDPlus bool
+}
+
+type capabilitySupporter interface {
+	Support(string) (bool, error)
+}
+
+// ProbeCapabilities authenticates before checking capabilities because an
+// IMAP server may advertise a different extension set after LOGIN.
+func (f *Fetcher) ProbeCapabilities(ctx context.Context, account store.MailAccount) (ServerCapabilities, error) {
+	if err := ctx.Err(); err != nil {
+		return ServerCapabilities{}, err
+	}
+	if f == nil {
+		return ServerCapabilities{}, errors.New("probe IMAP capabilities requires a fetcher")
+	}
+	c, err := f.login(account)
+	if err != nil {
+		return ServerCapabilities{}, err
+	}
+	defer c.Logout()
+	capabilities, err := probeCapabilities(c)
+	if err != nil {
+		return ServerCapabilities{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ServerCapabilities{}, err
+	}
+	return capabilities, nil
+}
+
+func probeCapabilities(supporter capabilitySupporter) (ServerCapabilities, error) {
+	if supporter == nil {
+		return ServerCapabilities{}, errors.New("probe IMAP capabilities requires a client")
+	}
+	idle, err := supporter.Support("IDLE")
+	if err != nil {
+		return ServerCapabilities{}, fmt.Errorf("check IMAP IDLE support: %w", err)
+	}
+	uidPlus, err := supporter.Support("UIDPLUS")
+	if err != nil {
+		return ServerCapabilities{}, fmt.Errorf("check IMAP UIDPLUS support: %w", err)
+	}
+	return ServerCapabilities{IDLE: idle, UIDPlus: uidPlus}, nil
+}
+
 // ListMailboxes logs in, lists selectable folders, and returns only names. It does
 // not create local rows; sync.Service decides which folders belong to the user DB.
 func (f *Fetcher) ListMailboxes(ctx context.Context, account store.MailAccount) ([]syncer.MailboxInfo, error) {
@@ -185,6 +235,9 @@ func (f *Fetcher) fetchUIDs(ctx context.Context, c *client.Client, mailbox strin
 	if len(uids) == 0 {
 		return nil
 	}
+	if handle == nil {
+		return errors.New("fetch UIDs requires a message handler")
+	}
 	batchSize := f.BatchSize
 	if batchSize == 0 {
 		batchSize = 10
@@ -201,19 +254,17 @@ func (f *Fetcher) fetchUIDs(ctx context.Context, c *client.Client, mailbox strin
 		if end > len(uids) {
 			end = len(uids)
 		}
+		requested := uids[i:end]
 		seqset := new(imap.SeqSet)
-		seqset.AddNum(uids[i:end]...)
+		seqset.AddNum(requested...)
 		messages := make(chan *imap.Message, 20)
 		done := make(chan error, 1)
 		go func() {
 			done <- c.UidFetch(seqset, items, messages)
 		}()
+		fetched := make([]syncer.FetchedMessage, 0, len(requested))
+		var readErr error
 		for msg := range messages {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
 			if msg == nil {
 				continue
 			}
@@ -223,24 +274,76 @@ func (f *Fetcher) fetchUIDs(ctx context.Context, c *client.Client, mailbox strin
 			}
 			raw, err := io.ReadAll(body)
 			if err != nil {
-				return fmt.Errorf("read message body mailbox %q UID %d: %w", mailbox, msg.Uid, err)
+				if readErr == nil {
+					readErr = fmt.Errorf("read message body mailbox %q UID %d: %w", mailbox, msg.Uid, err)
+				}
+				continue
 			}
-			if err := handle(syncer.FetchedMessage{
+			fetched = append(fetched, syncer.FetchedMessage{
 				Mailbox:      mailbox,
 				UID:          msg.Uid,
 				InternalDate: msg.InternalDate,
 				Size:         int64(msg.Size),
 				Flags:        msg.Flags,
 				Raw:          raw,
-			}); err != nil {
-				return fmt.Errorf("store message mailbox %q UID %d: %w", mailbox, msg.Uid, err)
-			}
+			})
 		}
 		if err := <-done; err != nil {
-			return fmt.Errorf("fetch mailbox %q UID batch %s: %w", mailbox, describeBatch(uids[i:end]), err)
+			return fmt.Errorf("fetch mailbox %q UID batch %s: %w", mailbox, describeBatch(requested), err)
+		}
+		if readErr != nil {
+			return readErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ordered, err := orderFetchedUIDBatch(requested, fetched)
+		if err != nil {
+			return fmt.Errorf("fetch mailbox %q UID batch %s: %w", mailbox, describeBatch(requested), err)
+		}
+		for _, message := range ordered {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := handle(message); err != nil {
+				return fmt.Errorf("store message mailbox %q UID %d: %w", mailbox, message.UID, err)
+			}
 		}
 	}
 	return nil
+}
+
+func orderFetchedUIDBatch(requested []uint32, fetched []syncer.FetchedMessage) ([]syncer.FetchedMessage, error) {
+	wanted := make(map[uint32]bool, len(requested))
+	for _, uid := range requested {
+		if uid != 0 {
+			wanted[uid] = true
+		}
+	}
+	byUID := make(map[uint32]syncer.FetchedMessage, len(fetched))
+	for _, message := range fetched {
+		if !wanted[message.UID] {
+			continue
+		}
+		if _, exists := byUID[message.UID]; exists {
+			return nil, fmt.Errorf("IMAP server returned UID %d more than once", message.UID)
+		}
+		byUID[message.UID] = message
+	}
+	ordered := make([]syncer.FetchedMessage, 0, len(requested))
+	missing := make([]uint32, 0)
+	for _, uid := range requested {
+		message, ok := byUID[uid]
+		if !ok {
+			missing = append(missing, uid)
+			continue
+		}
+		ordered = append(ordered, message)
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("IMAP server omitted requested UID batch %s", describeBatch(missing))
+	}
+	return ordered, nil
 }
 
 func normalizeUIDList(uids []uint32) []uint32 {
@@ -571,6 +674,10 @@ func (f *Fetcher) WatchMailbox(ctx context.Context, account store.MailAccount, m
 	if _, err := c.Select(mailbox, true); err != nil {
 		return fmt.Errorf("select mailbox %q read-only for IDLE: %w", mailbox, err)
 	}
+	// IDLE is intentionally long-lived and has its own context/stop handling.
+	// Restore the command timeout before the deferred LOGOUT runs.
+	c.Timeout = 0
+	defer func() { c.Timeout = f.commandTimeout() }()
 	log.Printf("imap idle account_id=%d mailbox=%s: selected read-only", account.ID, mailbox)
 	updates := make(chan client.Update, 10)
 	c.Updates = updates
@@ -671,10 +778,7 @@ func (f *Fetcher) login(account store.MailAccount) (*client.Client, error) {
 		return nil, fmt.Errorf("decrypt IMAP password: %w", err)
 	}
 	addr := net.JoinHostPort(account.Host, fmt.Sprintf("%d", account.Port))
-	timeout := f.Timeout
-	if timeout == 0 {
-		timeout = 60 * time.Second
-	}
+	timeout := f.commandTimeout()
 
 	var c *client.Client
 	if account.UseTLS {
@@ -683,10 +787,18 @@ func (f *Fetcher) login(account store.MailAccount) (*client.Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("connect TLS to IMAP server %s: %w", addr, err)
 		}
+		if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("set IMAP greeting deadline for %s: %w", addr, err)
+		}
 		c, err = client.New(conn)
 		if err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("initialize IMAP client for %s: %w", addr, err)
+		}
+		if err := conn.SetDeadline(time.Time{}); err != nil {
+			_ = c.Terminate()
+			return nil, fmt.Errorf("clear IMAP greeting deadline for %s: %w", addr, err)
 		}
 	} else {
 		c, err = client.DialWithDialer(&net.Dialer{Timeout: timeout}, addr)
@@ -694,11 +806,19 @@ func (f *Fetcher) login(account store.MailAccount) (*client.Client, error) {
 			return nil, fmt.Errorf("connect plain IMAP to server %s: %w", addr, err)
 		}
 	}
+	c.Timeout = timeout
 	if err := c.Login(account.Username, password); err != nil {
 		_ = c.Logout()
 		return nil, fmt.Errorf("login to IMAP server %s: %w", addr, err)
 	}
 	return c, nil
+}
+
+func (f *Fetcher) commandTimeout() time.Duration {
+	if f != nil && f.Timeout > 0 {
+		return f.Timeout
+	}
+	return 60 * time.Second
 }
 
 func hasAttr(attrs []string, target string) bool {

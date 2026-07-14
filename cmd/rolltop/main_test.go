@@ -55,6 +55,26 @@ func TestStartupHTMLShowsFailureMessage(t *testing.T) {
 	}
 }
 
+func TestAppRuntimeCloseStopsPluginHost(t *testing.T) {
+	closer := &runtimeTestCloser{}
+	app := &appRuntime{pluginHost: closer}
+
+	app.close()
+
+	if closer.calls != 1 {
+		t.Fatalf("plugin host Close calls = %d, want 1", closer.calls)
+	}
+}
+
+type runtimeTestCloser struct {
+	calls int
+}
+
+func (c *runtimeTestCloser) Close() error {
+	c.calls++
+	return nil
+}
+
 func TestInboxAutoTargetsIncludesEveryAccountInbox(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))

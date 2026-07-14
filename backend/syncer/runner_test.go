@@ -5,6 +5,7 @@ package syncer
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -47,15 +48,66 @@ func TestRunnerAccountReservationReleasesGlobalPendingRerun(t *testing.T) {
 		t.Fatalf("initial account mailbox reservation failed")
 	}
 	r.markPending(7, []string{"Gmail Forward"})
-	rerun := r.releaseAccountMailboxReservations(7, []string{"Gmail Forward"}, keys)
-	if len(rerun) != 1 || rerun[0] != "Gmail Forward" {
-		t.Fatalf("rerun = %#v", rerun)
+	reruns := r.releaseAccountMailboxReservations(7, 101, []string{"Gmail Forward"}, keys)
+	if len(reruns.global) != 1 || reruns.global[0] != "Gmail Forward" || len(reruns.account) != 0 {
+		t.Fatalf("reruns = %#v", reruns)
 	}
 	if r.mailboxPending[mailboxKey(7, "Gmail Forward")] {
 		t.Fatalf("pending mailbox key was not cleared")
 	}
 	if r.IsAccountMailboxRunning(7, 101, "Gmail Forward") {
 		t.Fatalf("account mailbox reservation was not released")
+	}
+}
+
+func TestRunnerPriorityReservationQueuesAtomicallyBehindAccountJob(t *testing.T) {
+	r := NewRunner(nil)
+	keys, ok := r.reserveAccountMailboxes(7, 101, []string{"INBOX"})
+	if !ok {
+		t.Fatal("initial account mailbox reservation failed")
+	}
+	if _, reserved := r.reserveOrQueueMailboxes(7, []string{"inbox"}); reserved {
+		t.Fatal("priority mailbox reservation overlapped the account job")
+	}
+	reruns := r.releaseAccountMailboxReservations(7, 101, []string{"INBOX"}, keys)
+	if !reflect.DeepEqual(reruns.global, []string{"INBOX"}) {
+		t.Fatalf("global rerun = %#v", reruns.global)
+	}
+}
+
+func TestRunnerAccountReservationReleasesAccountQualifiedPendingRerun(t *testing.T) {
+	r := NewRunner(nil)
+	keys, ok := r.reserveAccountMailboxes(7, 101, []string{"INBOX"})
+	if !ok {
+		t.Fatalf("initial account mailbox reservation failed")
+	}
+	if !r.QueueAccountMailboxes(7, 101, []string{"inbox"}) {
+		t.Fatalf("account mailbox rerun was not queued")
+	}
+	reruns := r.releaseAccountMailboxReservations(7, 101, []string{"INBOX"}, keys)
+	if len(reruns.global) != 0 || len(reruns.account) != 1 || reruns.account[0] != "INBOX" {
+		t.Fatalf("reruns = %#v", reruns)
+	}
+	if r.accountMailboxPending[accountMailboxKey(7, 101, "INBOX")] {
+		t.Fatalf("pending account mailbox key was not cleared")
+	}
+}
+
+func TestRunnerGlobalReleaseCollectsAccountQualifiedPendingRerun(t *testing.T) {
+	r := NewRunner(nil)
+	keys, ok := r.reserveMailboxes(7, []string{"INBOX"})
+	if !ok {
+		t.Fatalf("initial global mailbox reservation failed")
+	}
+	if !r.QueueAccountMailboxes(7, 101, []string{"inbox"}) {
+		t.Fatalf("account mailbox rerun was not queued")
+	}
+	r.mu.Lock()
+	delete(r.mailboxRunning, keys[0])
+	accounts := r.takeAccountPendingForMailboxLocked(7, "INBOX")
+	r.mu.Unlock()
+	if !accounts[101] || len(accounts) != 1 {
+		t.Fatalf("pending accounts = %#v", accounts)
 	}
 }
 

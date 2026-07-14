@@ -1,0 +1,18 @@
+{
+  "id": "remote_imap_sync",
+  "name": "Remote IMAP sync",
+  "description": "Copies mail one way from remote IMAP folders into connected Rolltop accounts with incremental and IDLE sync.",
+  "version": "1.0.0",
+  "enabled_by_default": true,
+  "auto_start": true,
+  "heavy": true,
+  "experimental": true,
+  "backend": {
+    "kind": "go-plugin",
+    "binary": "backend/remote_imap_sync.so"
+  },
+  "frontend": {
+    "module": "frontend_dist/index.js",
+    "css": "frontend_dist/styles.css"
+  }
+}

@@ -2,15 +2,19 @@ package web
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"rolltop/backend/plugins"
 	"rolltop/backend/store"
+	"rolltop/backend/syncer"
 )
 
 var (
@@ -177,6 +181,184 @@ func TestEnabledBackendPluginsSkipsLoadFailuresAndReportsAdminError(t *testing.T
 	if backendError == "" {
 		t.Fatal("backend error was not reported")
 	}
+}
+
+func TestQueueAccountMailboxSyncRequiresOwnedConfiguredDestination(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	owner, err := db.CreateUser(ctx, "owner@example.test", "Owner", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateUser(ctx, "other@example.test", "Other", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerAccount, err := db.CreateMailAccount(ctx, store.MailAccount{
+		UserID: owner.ID, Email: owner.Email, Host: "imap.owner.test", Port: 993,
+		Username: owner.Email, EncryptedPassword: "encrypted", UseTLS: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerMailbox, err := db.GetOrCreateMailbox(ctx, owner.ID, ownerAccount.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAccount, err := db.CreateMailAccount(ctx, store.MailAccount{
+		UserID: other.ID, Email: other.Email, Host: "imap.other.test", Port: 993,
+		Username: other.Email, EncryptedPassword: "encrypted", UseTLS: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherMailbox, err := db.GetOrCreateMailbox(ctx, other.ID, otherAccount.ID, "Private")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runnerCtx, stopRunner := context.WithCancel(context.Background())
+	stopRunner()
+	runner := syncer.NewRunnerWithContext(runnerCtx, &syncer.Service{Store: db})
+	server := &Server{store: db, syncRunner: runner}
+	if err := server.QueueAccountMailboxSync(ctx, owner.ID, ownerAccount.ID, ownerMailbox.Name); err == nil {
+		t.Fatal("stopped mailbox runner accepted new work")
+	}
+	if err := server.QueueAccountMailboxSync(ctx, owner.ID, otherAccount.ID, otherMailbox.Name); err == nil {
+		t.Fatal("cross-user destination account was accepted")
+	}
+	if err := server.QueueAccountMailboxSync(ctx, owner.ID, ownerAccount.ID, otherMailbox.Name); err == nil {
+		t.Fatal("mailbox outside the selected destination account was accepted")
+	}
+}
+
+func TestServerCloseStopsBackendPluginsBeforeStoreClose(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.CreateUser(ctx, "shutdown@example.test", "Shutdown", "hash", false); err != nil {
+		t.Fatal(err)
+	}
+
+	stopFailure := errors.New("stop failed")
+	var stopOrder []string
+	first := &backendLifecycleTestPlugin{id: "a-first", stopOrder: &stopOrder}
+	second := &backendLifecycleTestPlugin{id: "z-second", stopOrder: &stopOrder, stopErr: stopFailure}
+	server := &Server{
+		store:                 db,
+		protectedAPIRoutes:    newProtectedAPIRouteRegistry(),
+		publicAPIRoutes:       newProtectedAPIRouteRegistry(),
+		startedBackendPlugins: map[string]plugins.BackendPlugin{second.id: second, first.id: first},
+	}
+	noop := func(plugins.APIHost, string, http.ResponseWriter, *http.Request) {}
+	if _, err := server.RegisterProtectedAPI(first.id, plugins.ProtectedAPIRoute{Path: "plugins/a-first", Handle: noop}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.RegisterPublicAPI(second.id, plugins.PublicAPIRoute{Path: "plugins/z-second", Handle: noop}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := server.Close(); !errors.Is(err, stopFailure) {
+		t.Fatalf("Close error = %v, want stop failure", err)
+	}
+	if first.stopCalls != 1 || second.stopCalls != 1 {
+		t.Fatalf("stop calls = %d, %d; want one each", first.stopCalls, second.stopCalls)
+	}
+	if !first.storeAvailable || !second.storeAvailable {
+		t.Fatal("plugin Stop ran after its host store was closed")
+	}
+	if len(stopOrder) != 2 || stopOrder[0] != first.id || stopOrder[1] != second.id {
+		t.Fatalf("stop order = %#v", stopOrder)
+	}
+	if _, ok := server.protectedAPIRouteRegistry().match("plugins/a-first"); ok {
+		t.Fatal("protected plugin route remained after Close")
+	}
+	if _, ok := server.publicAPIRouteRegistry().match("plugins/z-second"); ok {
+		t.Fatal("public plugin route remained after Close")
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("second Close error = %v", err)
+	}
+	if first.stopCalls != 1 || second.stopCalls != 1 {
+		t.Fatalf("second Close repeated Stop: %d, %d", first.stopCalls, second.stopCalls)
+	}
+	if _, _, err := server.startBackendPlugin(ctx, first.id); !errors.Is(err, errBackendPluginHostClosed) {
+		t.Fatalf("start after Close error = %v", err)
+	}
+}
+
+func TestServerCloseWaitsForConcurrentPluginStop(t *testing.T) {
+	stopStarted := make(chan struct{})
+	stopRelease := make(chan struct{})
+	plugin := &backendLifecycleTestPlugin{id: "blocking", stopStarted: stopStarted, stopRelease: stopRelease}
+	server := &Server{
+		protectedAPIRoutes:    newProtectedAPIRouteRegistry(),
+		publicAPIRoutes:       newProtectedAPIRouteRegistry(),
+		startedBackendPlugins: map[string]plugins.BackendPlugin{plugin.id: plugin},
+	}
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- server.stopBackendPlugin(plugin.id) }()
+	select {
+	case <-stopStarted:
+	case <-time.After(time.Second):
+		t.Fatal("plugin Stop did not start")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- server.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Server.Close returned before plugin Stop: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(stopRelease)
+	if err := <-stopDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if plugin.stopCalls != 1 {
+		t.Fatalf("plugin Stop calls = %d", plugin.stopCalls)
+	}
+}
+
+type backendLifecycleTestPlugin struct {
+	id             string
+	stopCalls      int
+	stopOrder      *[]string
+	stopErr        error
+	storeAvailable bool
+	stopStarted    chan struct{}
+	stopRelease    <-chan struct{}
+}
+
+func (p *backendLifecycleTestPlugin) ID() string { return p.id }
+
+func (p *backendLifecycleTestPlugin) Start(plugins.BackendStartHost) error { return nil }
+
+func (p *backendLifecycleTestPlugin) Stop(host plugins.BackendStartHost) error {
+	p.stopCalls++
+	if p.stopStarted != nil {
+		close(p.stopStarted)
+	}
+	if p.stopRelease != nil {
+		<-p.stopRelease
+	}
+	if p.stopOrder != nil {
+		*p.stopOrder = append(*p.stopOrder, p.id)
+	}
+	if st, ok := host.Store().(*store.Store); ok && st != nil {
+		_, err := st.CountUsers(context.Background())
+		p.storeAvailable = err == nil
+	}
+	return p.stopErr
 }
 
 type execBuildError struct {

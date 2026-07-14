@@ -18,10 +18,11 @@ type Runner struct {
 	Service *Service
 	ctx     context.Context
 
-	mu             sync.Mutex
-	autoRunning    map[int64]bool
-	mailboxRunning map[string]bool
-	mailboxPending map[string]bool
+	mu                    sync.Mutex
+	autoRunning           map[int64]bool
+	mailboxRunning        map[string]bool
+	mailboxPending        map[string]bool
+	accountMailboxPending map[string]bool
 }
 
 // NewRunner builds a process-lifetime scheduler using a background context. The
@@ -38,11 +39,12 @@ func NewRunnerWithContext(ctx context.Context, service *Service) *Runner {
 		ctx = context.Background()
 	}
 	return &Runner{
-		Service:        service,
-		ctx:            ctx,
-		autoRunning:    map[int64]bool{},
-		mailboxRunning: map[string]bool{},
-		mailboxPending: map[string]bool{},
+		Service:               service,
+		ctx:                   ctx,
+		autoRunning:           map[int64]bool{},
+		mailboxRunning:        map[string]bool{},
+		mailboxPending:        map[string]bool{},
+		accountMailboxPending: map[string]bool{},
 	}
 }
 
@@ -141,6 +143,34 @@ func (r *Runner) StartAccountMailboxes(userID, accountID int64, mailboxes []stri
 	return true
 }
 
+// QueueAccountMailboxes guarantees one account-qualified sync pass. If the
+// destination is already reserved, the active job launches one follow-up pass
+// after releasing it. Backend plugins use this after IMAP APPEND so the new
+// remote message is mirrored without syncing same-named folders on every
+// account.
+func (r *Runner) QueueAccountMailboxes(userID, accountID int64, mailboxes []string) bool {
+	if r.context().Err() != nil {
+		return false
+	}
+	mailboxes = uniqueMailboxes(mailboxes)
+	if len(mailboxes) == 0 || accountID <= 0 {
+		return false
+	}
+	for _, mailbox := range mailboxes {
+		names := []string{mailbox}
+		keys, reserved := r.reserveOrQueueAccountMailboxes(userID, accountID, names)
+		if !reserved {
+			continue
+		}
+		go func(names []string, keys []string) {
+			r.runReservedAccountMailboxes(userID, accountID, names, keys)
+			r.RefreshSenderStats(userID)
+			r.StartAttachmentIndex(userID)
+		}(names, keys)
+	}
+	return true
+}
+
 // StartMailboxMaintenance reserves one account/mailbox and runs local maintenance in the background.
 func (r *Runner) StartMailboxMaintenance(userID int64, mailbox store.Mailbox, label string, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
 	ctx := r.context()
@@ -163,16 +193,16 @@ func (r *Runner) StartMailboxMaintenance(userID int64, mailbox store.Mailbox, la
 	}
 	run, err := r.Service.Store.CreateSyncRun(context.Background(), userID, mailbox.AccountID)
 	if err != nil {
-		r.releaseAccountMailboxReservations(userID, mailboxes, keys)
+		r.startAccountMailboxReruns(userID, mailbox.AccountID, r.releaseAccountMailboxReservations(userID, mailbox.AccountID, mailboxes, keys))
 		return store.SyncRun{}, true, err
 	}
 	progress := store.SyncProgress{MailboxesTotal: 1, CurrentMailbox: mailbox.Name, LatestNewFrom: "rolltop:maintenance", LatestNewSubject: label}
 	if err := r.Service.Store.UpdateSyncRunProgress(context.Background(), userID, run.ID, progress); err != nil {
-		r.releaseAccountMailboxReservations(userID, mailboxes, keys)
+		r.startAccountMailboxReruns(userID, mailbox.AccountID, r.releaseAccountMailboxReservations(userID, mailbox.AccountID, mailboxes, keys))
 		return store.SyncRun{}, true, err
 	}
 	r.Service.notify(userID)
-	go r.runReservedMailboxMaintenance(userID, mailboxes, keys, run.ID, progress, fn)
+	go r.runReservedMailboxMaintenance(userID, mailbox.AccountID, mailboxes, keys, run.ID, progress, fn)
 	return run, true, nil
 }
 
@@ -200,7 +230,7 @@ func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount
 	}
 	run, err := r.Service.Store.CreateSyncRun(context.Background(), userID, account.ID)
 	if err != nil {
-		r.releaseAccountMailboxReservations(userID, names, keys)
+		r.startAccountMailboxReruns(userID, account.ID, r.releaseAccountMailboxReservations(userID, account.ID, names, keys))
 		return store.SyncRun{}, true, err
 	}
 	progress := store.SyncProgress{
@@ -210,15 +240,15 @@ func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount
 		LatestNewSubject: label,
 	}
 	if err := r.Service.Store.UpdateSyncRunProgress(context.Background(), userID, run.ID, progress); err != nil {
-		r.releaseAccountMailboxReservations(userID, names, keys)
+		r.startAccountMailboxReruns(userID, account.ID, r.releaseAccountMailboxReservations(userID, account.ID, names, keys))
 		return store.SyncRun{}, true, err
 	}
 	r.Service.notify(userID)
-	go r.runReservedMailboxMaintenance(userID, names, keys, run.ID, progress, fn)
+	go r.runReservedMailboxMaintenance(userID, account.ID, names, keys, run.ID, progress, fn)
 	return run, true, nil
 }
 
-func (r *Runner) runReservedMailboxMaintenance(userID int64, mailboxes []string, keys []string, runID int64, progress store.SyncProgress, fn func(context.Context, int64, *store.SyncProgress) error) {
+func (r *Runner) runReservedMailboxMaintenance(userID, accountID int64, mailboxes []string, keys []string, runID int64, progress store.SyncProgress, fn func(context.Context, int64, *store.SyncProgress) error) {
 	status := "ok"
 	errText := ""
 	defer func() {
@@ -234,10 +264,7 @@ func (r *Runner) runReservedMailboxMaintenance(userID int64, mailboxes []string,
 			log.Printf("finish mailbox maintenance user_id=%d run_id=%d: %v", userID, runID, err)
 		}
 		r.Service.notify(userID)
-		rerun := r.releaseAccountMailboxReservations(userID, mailboxes, keys)
-		if len(rerun) > 0 && r.context().Err() == nil {
-			r.StartPriorityMailboxes(userID, rerun)
-		}
+		r.startAccountMailboxReruns(userID, accountID, r.releaseAccountMailboxReservations(userID, accountID, mailboxes, keys))
 	}()
 	if err := fn(r.context(), runID, &progress); err != nil {
 		status = "failed"
@@ -274,17 +301,21 @@ func (r *Runner) StartPriorityMailboxes(userID int64, mailboxes []string) bool {
 	if len(mailboxes) == 0 {
 		return false
 	}
-	keys, ok := r.reserveMailboxes(userID, mailboxes)
-	if !ok {
-		r.markPending(userID, mailboxes)
-		return false
+	started := false
+	for _, mailbox := range mailboxes {
+		names := []string{mailbox}
+		keys, reserved := r.reserveOrQueueMailboxes(userID, names)
+		if !reserved {
+			continue
+		}
+		started = true
+		go func(names []string, keys []string) {
+			r.runReservedMailboxes(userID, names, keys)
+			r.RefreshSenderStats(userID)
+			r.StartAttachmentIndex(userID)
+		}(names, keys)
 	}
-	go func() {
-		r.runReservedMailboxes(userID, mailboxes, keys)
-		r.RefreshSenderStats(userID)
-		r.StartAttachmentIndex(userID)
-	}()
-	return true
+	return started
 }
 
 // RefreshSenderStats rebuilds the precomputed best-match sender boosts after
@@ -343,6 +374,47 @@ func (r *Runner) reserveAccountMailboxes(userID, accountID int64, mailboxes []st
 	return keys, true
 }
 
+func (r *Runner) reserveOrQueueMailboxes(userID int64, mailboxes []string) ([]string, bool) {
+	keys := mailboxKeys(userID, mailboxes)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, mailbox := range mailboxes {
+		if !r.mailboxReservedByAnyAccountLocked(userID, mailbox) {
+			continue
+		}
+		for _, key := range keys {
+			r.mailboxPending[key] = true
+		}
+		return nil, false
+	}
+	for _, key := range keys {
+		r.mailboxRunning[key] = true
+	}
+	return keys, true
+}
+
+func (r *Runner) reserveOrQueueAccountMailboxes(userID, accountID int64, mailboxes []string) ([]string, bool) {
+	keys := accountMailboxKeys(userID, accountID, mailboxes)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, mailbox := range mailboxes {
+		if !r.accountMailboxReservedLocked(userID, accountID, mailbox) {
+			continue
+		}
+		if r.accountMailboxPending == nil {
+			r.accountMailboxPending = map[string]bool{}
+		}
+		for _, key := range keys {
+			r.accountMailboxPending[key] = true
+		}
+		return nil, false
+	}
+	for _, key := range keys {
+		r.mailboxRunning[key] = true
+	}
+	return keys, true
+}
+
 func (r *Runner) markPending(userID int64, mailboxes []string) {
 	keys := mailboxKeys(userID, mailboxes)
 	r.mu.Lock()
@@ -358,6 +430,7 @@ func (r *Runner) runReservedMailboxes(userID int64, mailboxes []string, keys []s
 	defer func() {
 		r.mu.Lock()
 		var rerun []string
+		accountReruns := map[int64][]string{}
 		seen := map[string]bool{}
 		for i, key := range keys {
 			delete(r.mailboxRunning, key)
@@ -369,11 +442,23 @@ func (r *Runner) runReservedMailboxes(userID int64, mailboxes []string, keys []s
 					seen[lower] = true
 					rerun = append(rerun, name)
 				}
+				r.takeAccountPendingForMailboxLocked(userID, name)
+				continue
+			}
+			name := mailboxes[i]
+			for accountID := range r.takeAccountPendingForMailboxLocked(userID, name) {
+				accountReruns[accountID] = append(accountReruns[accountID], name)
 			}
 		}
 		r.mu.Unlock()
 		if len(rerun) > 0 && r.context().Err() == nil {
 			r.StartPriorityMailboxes(userID, rerun)
+		}
+		for accountID, names := range accountReruns {
+			if r.context().Err() != nil {
+				break
+			}
+			r.QueueAccountMailboxes(userID, accountID, names)
 		}
 	}()
 	ctx := r.context()
@@ -385,12 +470,23 @@ func (r *Runner) runReservedMailboxes(userID int64, mailboxes []string, keys []s
 	}
 }
 
+func (r *Runner) takeAccountPendingForMailboxLocked(userID int64, mailbox string) map[int64]bool {
+	out := map[int64]bool{}
+	mailbox = strings.ToLower(strings.TrimSpace(mailbox))
+	for key := range r.accountMailboxPending {
+		pendingUserID, accountID, pendingMailbox, ok := parseAccountMailboxKey(key)
+		if !ok || pendingUserID != userID || pendingMailbox != mailbox {
+			continue
+		}
+		delete(r.accountMailboxPending, key)
+		out[accountID] = true
+	}
+	return out
+}
+
 func (r *Runner) runReservedAccountMailboxes(userID, accountID int64, mailboxes []string, keys []string) {
 	defer func() {
-		rerun := r.releaseAccountMailboxReservations(userID, mailboxes, keys)
-		if len(rerun) > 0 && r.context().Err() == nil {
-			r.StartPriorityMailboxes(userID, rerun)
-		}
+		r.startAccountMailboxReruns(userID, accountID, r.releaseAccountMailboxReservations(userID, accountID, mailboxes, keys))
 	}()
 	ctx := r.context()
 	if ctx.Err() != nil {
@@ -401,28 +497,58 @@ func (r *Runner) runReservedAccountMailboxes(userID, accountID int64, mailboxes 
 	}
 }
 
-func (r *Runner) releaseAccountMailboxReservations(userID int64, mailboxes []string, keys []string) []string {
+type accountMailboxReruns struct {
+	global  []string
+	account []string
+}
+
+func (r *Runner) releaseAccountMailboxReservations(userID, accountID int64, mailboxes []string, keys []string) accountMailboxReruns {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, key := range keys {
 		delete(r.mailboxRunning, key)
 	}
-	var rerun []string
-	seen := map[string]bool{}
+	var reruns accountMailboxReruns
+	seenGlobal := map[string]bool{}
+	seenAccount := map[string]bool{}
 	for _, mailbox := range mailboxes {
-		key := mailboxKey(userID, mailbox)
-		if !r.mailboxPending[key] {
-			continue
-		}
-		delete(r.mailboxPending, key)
 		name := strings.TrimSpace(mailbox)
 		lower := strings.ToLower(name)
-		if lower != "" && !seen[lower] {
-			seen[lower] = true
-			rerun = append(rerun, name)
+		if lower == "" {
+			continue
+		}
+		globalKey := mailboxKey(userID, name)
+		accountKey := accountMailboxKey(userID, accountID, name)
+		if r.mailboxPending[globalKey] {
+			delete(r.mailboxPending, globalKey)
+			delete(r.accountMailboxPending, accountKey)
+			if !seenGlobal[lower] {
+				seenGlobal[lower] = true
+				reruns.global = append(reruns.global, name)
+			}
+			continue
+		}
+		if r.accountMailboxPending[accountKey] {
+			delete(r.accountMailboxPending, accountKey)
+			if !seenAccount[lower] {
+				seenAccount[lower] = true
+				reruns.account = append(reruns.account, name)
+			}
 		}
 	}
-	return rerun
+	return reruns
+}
+
+func (r *Runner) startAccountMailboxReruns(userID, accountID int64, reruns accountMailboxReruns) {
+	if r.context().Err() != nil {
+		return
+	}
+	if len(reruns.global) > 0 {
+		r.StartPriorityMailboxes(userID, reruns.global)
+	}
+	if len(reruns.account) > 0 {
+		r.QueueAccountMailboxes(userID, accountID, reruns.account)
+	}
 }
 
 // StartAttachmentIndex runs after message sync so newly fetched raw .eml data can
@@ -561,6 +687,22 @@ func mailboxKeys(userID int64, mailboxes []string) []string {
 
 func accountMailboxKey(userID, accountID int64, mailbox string) string {
 	return fmt.Sprintf("%d:%d:%s", userID, accountID, strings.ToLower(strings.TrimSpace(mailbox)))
+}
+
+func parseAccountMailboxKey(key string) (int64, int64, string, bool) {
+	parts := strings.SplitN(key, ":", 3)
+	if len(parts) != 3 || strings.TrimSpace(parts[2]) == "" {
+		return 0, 0, "", false
+	}
+	userID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || userID <= 0 {
+		return 0, 0, "", false
+	}
+	accountID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || accountID <= 0 {
+		return 0, 0, "", false
+	}
+	return userID, accountID, strings.ToLower(strings.TrimSpace(parts[2])), true
 }
 
 func accountMailboxKeys(userID, accountID int64, mailboxes []string) []string {

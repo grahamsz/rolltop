@@ -78,6 +78,7 @@ type Server struct {
 	protectedAPIRoutes        *protectedAPIRouteRegistry
 	publicAPIRoutes           *protectedAPIRouteRegistry
 	backendLifecycleMu        sync.Mutex
+	backendLifecycleClosed    bool
 	startedBackendPlugins     map[string]plugins.BackendPlugin
 	sessionTTL                time.Duration
 	cookieSecure              bool

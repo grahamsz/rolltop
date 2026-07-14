@@ -1,0 +1,541 @@
+.remote-imap-sync-settings,
+.remote-imap-sync-summary {
+  --remote-sync-live: var(--ok);
+  --remote-sync-active: color-mix(in srgb, #3b8fbd 76%, var(--text));
+  --remote-sync-warning: var(--accent-warm-strong);
+  --remote-sync-error: var(--danger);
+}
+
+.remote-imap-sync-settings {
+  display: grid;
+  gap: 16px;
+}
+
+.remote-imap-sync-settings .panel {
+  margin-bottom: 0;
+}
+
+.remote-imap-sync-page-head .list-head-main > div,
+.remote-imap-sync-routine-title,
+.remote-imap-sync-route,
+.remote-imap-sync-routine-meta,
+.remote-imap-sync-row-actions,
+.remote-imap-sync-test-field,
+.remote-imap-sync-password-saved,
+.remote-imap-sync-enabled-field,
+.remote-imap-sync-summary-error {
+  display: flex;
+  align-items: center;
+}
+
+.remote-imap-sync-page-head .list-head-main > div {
+  gap: 9px;
+}
+
+.remote-imap-sync-list-panel,
+.remote-imap-sync-editor,
+.remote-imap-sync-editor form {
+  display: grid;
+  gap: 16px;
+}
+
+.remote-imap-sync-list-panel .panel-headline h2,
+.remote-imap-sync-editor .panel-headline h2,
+.remote-imap-sync-summary .panel-headline h2 {
+  margin: 0 0 3px;
+}
+
+.remote-imap-sync-routine-list {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+
+.remote-imap-sync-routine {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  gap: 12px 18px;
+  align-items: start;
+  min-height: 92px;
+  padding: 14px 10px 14px 12px;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.remote-imap-sync-routine.live {
+  border-left-color: var(--remote-sync-live);
+}
+
+.remote-imap-sync-routine.active {
+  border-left-color: var(--remote-sync-active);
+  background: color-mix(in srgb, var(--remote-sync-active) 6%, transparent);
+}
+
+.remote-imap-sync-routine.warning {
+  border-left-color: var(--remote-sync-warning);
+}
+
+.remote-imap-sync-routine.error {
+  border-left-color: var(--remote-sync-error);
+  background: color-mix(in srgb, var(--remote-sync-error) 6%, transparent);
+}
+
+.remote-imap-sync-routine-main {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.remote-imap-sync-routine-title {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.remote-imap-sync-routine-title > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.remote-imap-sync-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: capitalize;
+}
+
+.remote-imap-sync-state .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.remote-imap-sync-state.live {
+  border-color: color-mix(in srgb, var(--remote-sync-live) 45%, var(--border));
+  background: color-mix(in srgb, var(--remote-sync-live) 14%, var(--surface));
+  color: var(--remote-sync-live);
+}
+
+.remote-imap-sync-state.active {
+  border-color: color-mix(in srgb, var(--remote-sync-active) 45%, var(--border));
+  background: color-mix(in srgb, var(--remote-sync-active) 14%, var(--surface));
+  color: var(--remote-sync-active);
+}
+
+.remote-imap-sync-state.warning {
+  border-color: color-mix(in srgb, var(--remote-sync-warning) 45%, var(--border));
+  background: color-mix(in srgb, var(--remote-sync-warning) 14%, var(--surface));
+  color: var(--remote-sync-warning);
+}
+
+.remote-imap-sync-state.error {
+  border-color: color-mix(in srgb, var(--remote-sync-error) 45%, var(--border));
+  background: color-mix(in srgb, var(--remote-sync-error) 14%, var(--surface));
+  color: var(--remote-sync-error);
+}
+
+.remote-imap-sync-route {
+  min-width: 0;
+  gap: 7px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.remote-imap-sync-route span {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-imap-sync-route .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.remote-imap-sync-routine-meta {
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.remote-imap-sync-routine-meta span + span::before {
+  content: "";
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  margin: 0 8px 2px 0;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: .55;
+}
+
+.remote-imap-sync-row-actions {
+  justify-content: end;
+  gap: 6px;
+}
+
+.remote-imap-sync-row-actions .icon-button {
+  width: 36px;
+  min-width: 36px;
+  padding: 7px;
+}
+
+.remote-imap-sync-row-actions .danger {
+  color: var(--remote-sync-error);
+}
+
+.remote-imap-sync-progress {
+  display: grid;
+  grid-template-columns: minmax(120px, 260px) auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+}
+
+.remote-imap-sync-progress > div {
+  position: relative;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 75%, transparent);
+}
+
+.remote-imap-sync-progress > div span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--remote-sync-active);
+  transition: width 220ms ease;
+}
+
+.remote-imap-sync-progress > div.indeterminate span {
+  position: absolute;
+  width: 34%;
+  animation: remote-imap-sync-progress 1.1s ease-in-out infinite;
+}
+
+.remote-imap-sync-progress small {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.remote-imap-sync-row-error {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  margin-top: 3px;
+  color: var(--remote-sync-error);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.remote-imap-sync-row-error .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.remote-imap-sync-switch {
+  display: grid;
+  grid-template-columns: 38px;
+  gap: 4px;
+  width: fit-content;
+  margin: 2px 0 0;
+  cursor: pointer;
+}
+
+.remote-imap-sync-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.remote-imap-sync-switch > span {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.remote-imap-sync-switch > span::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 150ms ease, background-color 150ms ease;
+}
+
+.remote-imap-sync-switch input:checked + span {
+  border-color: var(--remote-sync-live);
+  background: color-mix(in srgb, var(--remote-sync-live) 23%, var(--surface));
+}
+
+.remote-imap-sync-switch input:checked + span::after {
+  transform: translateX(16px);
+  background: var(--remote-sync-live);
+}
+
+.remote-imap-sync-switch input:focus-visible + span {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.remote-imap-sync-switch em {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.remote-imap-sync-empty {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 22px 10px;
+  color: var(--muted);
+}
+
+.remote-imap-sync-empty > .icon {
+  width: 28px;
+  height: 28px;
+}
+
+.remote-imap-sync-empty > div {
+  display: grid;
+  gap: 2px;
+}
+
+.remote-imap-sync-empty strong {
+  color: var(--text);
+}
+
+.remote-imap-sync-editor fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 14px 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.remote-imap-sync-editor legend {
+  padding: 0 10px 0 0;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.remote-imap-sync-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 12px 14px;
+  align-items: end;
+}
+
+.remote-imap-sync-form-grid.routine {
+  grid-template-columns: minmax(240px, 1fr) auto;
+}
+
+.remote-imap-sync-form-grid label {
+  min-width: 0;
+  margin: 0;
+}
+
+.remote-imap-sync-form-grid input,
+.remote-imap-sync-form-grid select {
+  width: 100%;
+}
+
+.remote-imap-sync-form-grid input[type="date"] {
+  min-height: 41px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 9px 12px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.remote-imap-sync-form-grid label > small,
+.remote-imap-sync-test-field small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.remote-imap-sync-enabled-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 41px;
+  white-space: nowrap;
+}
+
+.remote-imap-sync-enabled-field input {
+  width: auto;
+}
+
+.remote-imap-sync-test-field {
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 41px;
+}
+
+.remote-imap-sync-test-field small {
+  width: 100%;
+  margin: 0;
+}
+
+.remote-imap-sync-test-field small.available,
+.remote-imap-sync-password-saved {
+  color: var(--remote-sync-live);
+}
+
+.remote-imap-sync-test-field small.unavailable {
+  color: var(--remote-sync-warning);
+}
+
+.remote-imap-sync-password-saved {
+  gap: 4px;
+}
+
+.remote-imap-sync-password-saved .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.remote-imap-sync-field-error {
+  color: var(--remote-sync-error) !important;
+}
+
+.remote-imap-sync-form-actions {
+  justify-content: flex-end;
+  padding-top: 2px;
+}
+
+.remote-imap-sync-summary-error {
+  grid-column: 2;
+  gap: 5px;
+  width: fit-content;
+  color: var(--remote-sync-error);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.remote-imap-sync-summary-error .icon {
+  width: 14px;
+  height: 14px;
+}
+
+@keyframes remote-imap-sync-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(310%); }
+}
+
+@media (max-width: 920px) {
+  .remote-imap-sync-routine {
+    grid-template-columns: 80px minmax(0, 1fr);
+  }
+
+  .remote-imap-sync-row-actions {
+    grid-column: 2;
+    justify-content: start;
+  }
+
+  .remote-imap-sync-form-grid {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .remote-imap-sync-page-head {
+    align-items: flex-start;
+  }
+
+  .remote-imap-sync-page-head > button {
+    min-width: 42px;
+  }
+
+  .remote-imap-sync-routine {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding-left: 10px;
+  }
+
+  .remote-imap-sync-switch,
+  .remote-imap-sync-row-actions {
+    grid-column: 1;
+  }
+
+  .remote-imap-sync-switch {
+    grid-template-columns: 38px auto;
+    align-items: center;
+  }
+
+  .remote-imap-sync-route {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .remote-imap-sync-route span:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .remote-imap-sync-progress {
+    grid-template-columns: 1fr;
+  }
+
+  .remote-imap-sync-form-grid,
+  .remote-imap-sync-form-grid.routine {
+    grid-template-columns: 1fr;
+  }
+
+  .remote-imap-sync-enabled-field {
+    min-height: 28px;
+  }
+
+  .remote-imap-sync-form-actions {
+    justify-content: stretch;
+  }
+
+  .remote-imap-sync-form-actions button {
+    flex: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remote-imap-sync-routine,
+  .remote-imap-sync-progress > div span,
+  .remote-imap-sync-switch > span,
+  .remote-imap-sync-switch > span::after {
+    transition: none;
+  }
+
+  .remote-imap-sync-progress > div.indeterminate span {
+    width: 100%;
+    animation: none;
+  }
+}

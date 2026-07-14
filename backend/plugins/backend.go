@@ -29,6 +29,14 @@ type BackendHost interface {
 	PluginEnabled(context.Context, string) bool
 }
 
+// AccountMailboxSyncHost is an optional host capability for plugins that write
+// a message to a configured IMAP destination. Implementations must validate the
+// account and mailbox against userID before queuing the incremental refetch.
+type AccountMailboxSyncHost interface {
+	BackendHost
+	QueueAccountMailboxSync(context.Context, int64, int64, string) error
+}
+
 // StoredMessageContext is the host-owned subset of a newly mirrored message
 // passed to plugins that need to react after a message row exists.
 type StoredMessageContext struct {
