@@ -3,7 +3,7 @@
   "name": "Remote IMAP sync",
   "description": "Copies mail one way from remote IMAP folders into connected Rolltop accounts with incremental and IDLE sync.",
   "version": "1.0.0",
-  "enabled_by_default": true,
+  "enabled_by_default": false,
   "auto_start": true,
   "heavy": true,
   "experimental": true,

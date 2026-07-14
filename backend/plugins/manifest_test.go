@@ -1,10 +1,35 @@
 package plugins
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestExperimentalMailPluginsAreDisabledByDefault(t *testing.T) {
+	for _, pluginID := range []string{"remote_imap_sync", "experimental_spam_filter"} {
+		t.Run(pluginID, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("..", "..", "plugins", pluginID, "manifest.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var manifest struct {
+				Experimental     bool `json:"experimental"`
+				EnabledByDefault bool `json:"enabled_by_default"`
+			}
+			if err := json.Unmarshal(raw, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			if !manifest.Experimental {
+				t.Fatal("mail plugin must remain marked experimental")
+			}
+			if manifest.EnabledByDefault {
+				t.Fatal("experimental mail plugin must be disabled by default")
+			}
+		})
+	}
+}
 
 func TestLoadManifestsReadsThemeBundles(t *testing.T) {
 	root := t.TempDir()
