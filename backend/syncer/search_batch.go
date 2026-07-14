@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"rolltop/backend/search"
+	"rolltop/backend/store"
 )
 
 const fetchedSearchIndexBatchSize = 25
@@ -66,6 +67,15 @@ func (b *fetchedSearchIndexBatch) Flush(ctx context.Context) error {
 	for _, item := range b.items {
 		message := item.Document.Message
 		if err := b.service.Store.MarkMessageAttachmentIndexed(ctx, message.UserID, message.ID, item.HasVisibleAttachments); err != nil {
+			if store.IsNotFound(err) && b.service.Search != nil {
+				// A move can remove the SQLite row while this batch is waiting for
+				// Bleve's writer. Remove the just-committed stale document rather
+				// than resurrecting a message that no longer belongs to the folder.
+				if deleteErr := b.service.Search.DeleteMessage(ctx, message.UserID, message.ID); deleteErr != nil {
+					return deleteErr
+				}
+				continue
+			}
 			return err
 		}
 	}

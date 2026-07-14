@@ -1126,15 +1126,21 @@ export function SyncRunMini({ run }: { run: SyncRun }) {
         ? Math.min(100, Math.round((run.mailboxes_done / totalFolders) * 100))
         : run.status === "running" ? 100 : 0;
   const isPurge = run.latest_new_from === "rolltop:maintenance" && run.latest_new_subject.trim().toLowerCase().startsWith("purging");
+  const isMove = run.latest_new_from === "rolltop:move";
   const indexedLabel = run.messages_stored > 0 ? `${run.messages_stored.toLocaleString()} indexed` : "Indexing...";
+  const movedLabel = totalMessages > 0
+    ? `${run.messages_seen.toLocaleString()} of ${totalMessages.toLocaleString()} moved`
+    : "Moving...";
   const purgeLabel = totalMessages > 0
     ? `${run.messages_seen.toLocaleString()} of ${totalMessages.toLocaleString()} purged`
     : "Purging...";
   const detail = isPurge
     ? purgeLabel
-    : run.messages_skipped > 0
-      ? `${indexedLabel}, ${run.messages_skipped.toLocaleString()} skipped`
-      : indexedLabel;
+    : isMove
+      ? movedLabel
+      : run.messages_skipped > 0
+        ? `${indexedLabel}, ${run.messages_skipped.toLocaleString()} skipped`
+        : indexedLabel;
   return (
     <div className="sync-run-mini">
       <div className="sync-run-title">

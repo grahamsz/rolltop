@@ -168,6 +168,9 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 
 // IndexPendingAttachmentsForUser indexes attachment text from raw message bodies for pending messages.
 func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int64, limit int) (int, error) {
+	if s.Search == nil {
+		return 0, nil
+	}
 	messages, err := s.Store.ListMessagesNeedingAttachmentIndex(ctx, userID, limit)
 	if err != nil {
 		return 0, err
@@ -214,7 +217,10 @@ func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.M
 		return nil, err
 	}
 	if !mailbox.IncludeInSearch {
-		return nil, s.Search.DeleteMessage(ctx, msg.UserID, msg.ID)
+		if err := s.Search.DeleteMessage(ctx, msg.UserID, msg.ID); err != nil {
+			return nil, err
+		}
+		return nil, s.Store.MarkMessageAttachmentIndexed(ctx, msg.UserID, msg.ID, msg.HasAttachments)
 	}
 	raw, err := s.FetchRawMessageForMessage(ctx, msg.UserID, msg)
 	if err != nil {

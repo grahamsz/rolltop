@@ -23,6 +23,10 @@ type Runner struct {
 	mailboxRunning        map[string]bool
 	mailboxPending        map[string]bool
 	accountMailboxPending map[string]bool
+	foregroundRunning     map[int64]int
+	attachmentPending     map[int64]bool
+	attachmentCancels     map[int64]context.CancelFunc
+	attachmentDone        map[int64]chan struct{}
 }
 
 // NewRunner builds a process-lifetime scheduler using a background context. The
@@ -45,6 +49,10 @@ func NewRunnerWithContext(ctx context.Context, service *Service) *Runner {
 		mailboxRunning:        map[string]bool{},
 		mailboxPending:        map[string]bool{},
 		accountMailboxPending: map[string]bool{},
+		foregroundRunning:     map[int64]int{},
+		attachmentPending:     map[int64]bool{},
+		attachmentCancels:     map[int64]context.CancelFunc{},
+		attachmentDone:        map[int64]chan struct{}{},
 	}
 }
 
@@ -69,6 +77,7 @@ func (r *Runner) Start(userID int64) bool {
 		return false
 	}
 	r.autoRunning[userID] = true
+	r.pauseAttachmentIndexLocked(userID)
 	r.mu.Unlock()
 
 	go func() {
@@ -76,6 +85,7 @@ func (r *Runner) Start(userID int64) bool {
 			r.mu.Lock()
 			delete(r.autoRunning, userID)
 			r.mu.Unlock()
+			r.StartAttachmentIndex(userID)
 		}()
 		mailboxes, err := r.Service.AutoMailboxNames(ctx, userID)
 		if err != nil {
@@ -94,7 +104,6 @@ func (r *Runner) Start(userID int64) bool {
 			}
 		}
 		r.RefreshSenderStats(userID)
-		r.StartAttachmentIndex(userID)
 	}()
 	return true
 }
@@ -194,11 +203,13 @@ func (r *Runner) StartMailboxMaintenance(userID int64, mailbox store.Mailbox, la
 	run, err := r.Service.Store.CreateSyncRun(context.Background(), userID, mailbox.AccountID)
 	if err != nil {
 		r.startAccountMailboxReruns(userID, mailbox.AccountID, r.releaseAccountMailboxReservations(userID, mailbox.AccountID, mailboxes, keys))
+		r.StartAttachmentIndex(userID)
 		return store.SyncRun{}, true, err
 	}
 	progress := store.SyncProgress{MailboxesTotal: 1, CurrentMailbox: mailbox.Name, LatestNewFrom: "rolltop:maintenance", LatestNewSubject: label}
 	if err := r.Service.Store.UpdateSyncRunProgress(context.Background(), userID, run.ID, progress); err != nil {
 		r.startAccountMailboxReruns(userID, mailbox.AccountID, r.releaseAccountMailboxReservations(userID, mailbox.AccountID, mailboxes, keys))
+		r.StartAttachmentIndex(userID)
 		return store.SyncRun{}, true, err
 	}
 	r.Service.notify(userID)
@@ -231,6 +242,7 @@ func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount
 	run, err := r.Service.Store.CreateSyncRun(context.Background(), userID, account.ID)
 	if err != nil {
 		r.startAccountMailboxReruns(userID, account.ID, r.releaseAccountMailboxReservations(userID, account.ID, names, keys))
+		r.StartAttachmentIndex(userID)
 		return store.SyncRun{}, true, err
 	}
 	progress := store.SyncProgress{
@@ -241,6 +253,7 @@ func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount
 	}
 	if err := r.Service.Store.UpdateSyncRunProgress(context.Background(), userID, run.ID, progress); err != nil {
 		r.startAccountMailboxReruns(userID, account.ID, r.releaseAccountMailboxReservations(userID, account.ID, names, keys))
+		r.StartAttachmentIndex(userID)
 		return store.SyncRun{}, true, err
 	}
 	r.Service.notify(userID)
@@ -265,6 +278,7 @@ func (r *Runner) runReservedMailboxMaintenance(userID, accountID int64, mailboxe
 		}
 		r.Service.notify(userID)
 		r.startAccountMailboxReruns(userID, accountID, r.releaseAccountMailboxReservations(userID, accountID, mailboxes, keys))
+		r.StartAttachmentIndex(userID)
 	}()
 	if err := fn(r.context(), runID, &progress); err != nil {
 		status = "failed"
@@ -356,6 +370,7 @@ func (r *Runner) reserveMailboxes(userID int64, mailboxes []string) ([]string, b
 	for _, key := range keys {
 		r.mailboxRunning[key] = true
 	}
+	r.pauseAttachmentIndexLocked(userID)
 	return keys, true
 }
 
@@ -371,6 +386,7 @@ func (r *Runner) reserveAccountMailboxes(userID, accountID int64, mailboxes []st
 	for _, key := range keys {
 		r.mailboxRunning[key] = true
 	}
+	r.pauseAttachmentIndexLocked(userID)
 	return keys, true
 }
 
@@ -390,6 +406,7 @@ func (r *Runner) reserveOrQueueMailboxes(userID int64, mailboxes []string) ([]st
 	for _, key := range keys {
 		r.mailboxRunning[key] = true
 	}
+	r.pauseAttachmentIndexLocked(userID)
 	return keys, true
 }
 
@@ -412,6 +429,7 @@ func (r *Runner) reserveOrQueueAccountMailboxes(userID, accountID int64, mailbox
 	for _, key := range keys {
 		r.mailboxRunning[key] = true
 	}
+	r.pauseAttachmentIndexLocked(userID)
 	return keys, true
 }
 
@@ -551,35 +569,97 @@ func (r *Runner) startAccountMailboxReruns(userID, accountID int64, reruns accou
 	}
 }
 
+const attachmentIndexBatchSize = 25
+
+// BeginForegroundOperation pauses low-priority attachment indexing while a
+// direct user operation, such as an IMAP move, changes local message ownership.
+// The returned function is idempotent and resumes pending work when the user is
+// otherwise idle.
+func (r *Runner) BeginForegroundOperation(ctx context.Context, userID int64) (func(), error) {
+	if r == nil || userID <= 0 {
+		return func() {}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.mu.Lock()
+	r.foregroundRunning[userID]++
+	done := r.attachmentDone[userID]
+	r.pauseAttachmentIndexLocked(userID)
+	r.mu.Unlock()
+
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			r.mu.Lock()
+			if r.foregroundRunning[userID] <= 1 {
+				delete(r.foregroundRunning, userID)
+			} else {
+				r.foregroundRunning[userID]--
+			}
+			r.mu.Unlock()
+			r.StartAttachmentIndex(userID)
+		})
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			finish()
+			return func() {}, ctx.Err()
+		}
+	}
+	return finish, nil
+}
+
 // StartAttachmentIndex runs after message sync so newly fetched raw .eml data can
 // be mined for attachment text and then discarded according to retention rules.
+// It yields to mailbox jobs and explicit user operations, then drains small
+// batches while the user remains idle.
 func (r *Runner) StartAttachmentIndex(userID int64) bool {
-	if r.context().Err() != nil {
+	if r == nil || r.Service == nil || r.Service.Store == nil || userID <= 0 || r.context().Err() != nil {
 		return false
 	}
 	key := mailboxKey(userID, "__attachments__")
 	r.mu.Lock()
-	if r.mailboxRunning[key] {
+	if r.userForegroundRunningLocked(userID) || r.mailboxRunning[key] {
+		r.attachmentPending[userID] = true
 		r.mu.Unlock()
 		return false
 	}
+	ctx, cancel := context.WithCancel(r.context())
+	done := make(chan struct{})
 	r.mailboxRunning[key] = true
+	r.attachmentCancels[userID] = cancel
+	r.attachmentDone[userID] = done
+	delete(r.attachmentPending, userID)
 	r.mu.Unlock()
 
 	go func() {
+		drainMore := false
 		defer func() {
 			r.mu.Lock()
 			delete(r.mailboxRunning, key)
+			delete(r.attachmentCancels, userID)
+			delete(r.attachmentDone, userID)
+			if drainMore {
+				r.attachmentPending[userID] = true
+			}
+			restart := r.attachmentPending[userID] && !r.userForegroundRunningLocked(userID)
 			r.mu.Unlock()
+			close(done)
+			if restart {
+				r.StartAttachmentIndex(userID)
+			}
 		}()
-		ctx := r.context()
-		n, err := r.Service.IndexPendingAttachmentsForUser(ctx, userID, 100)
+		n, err := r.Service.IndexPendingAttachmentsForUser(ctx, userID, attachmentIndexBatchSize)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("attachment index user_id=%d: %v", userID, err)
 			}
 			return
 		}
+		drainMore = n == attachmentIndexBatchSize
 		if n > 0 {
 			log.Printf("attachment index user_id=%d indexed=%d", userID, n)
 		}
@@ -587,12 +667,33 @@ func (r *Runner) StartAttachmentIndex(userID int64) bool {
 	return true
 }
 
+func (r *Runner) pauseAttachmentIndexLocked(userID int64) {
+	if cancel := r.attachmentCancels[userID]; cancel != nil {
+		r.attachmentPending[userID] = true
+		cancel()
+	}
+}
+
+func (r *Runner) userForegroundRunningLocked(userID int64) bool {
+	if r.autoRunning[userID] || r.foregroundRunning[userID] > 0 {
+		return true
+	}
+	prefix := fmt.Sprintf("%d:", userID)
+	attachmentKey := mailboxKey(userID, "__attachments__")
+	for key := range r.mailboxRunning {
+		if key != attachmentKey && strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsRunning reports foreground sync activity for the user, excluding the private
 // attachment-index sentinel so the chrome does not look stuck after mail fetches.
 func (r *Runner) IsRunning(userID int64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.autoRunning[userID] {
+	if r.autoRunning[userID] || r.foregroundRunning[userID] > 0 {
 		return true
 	}
 	prefix := fmt.Sprintf("%d:", userID)

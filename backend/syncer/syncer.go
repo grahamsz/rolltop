@@ -362,11 +362,6 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				return run, err
 			}
 		}
-		if _, err := s.RepairMailboxSearchIndex(ctx, userID, mailbox, run.ID, &progress); err != nil {
-			status = "failed"
-			errText = err.Error()
-			return run, err
-		}
 		classifiers, storedHooks, err := s.postStorePluginHooks(ctx)
 		if err != nil {
 			status = "failed"
@@ -468,6 +463,14 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			return run, err
 		}
 		classificationBatch.Flush(ctx)
+		// Fetch the incremental delta before auditing historical search documents.
+		// A mailbox refresh triggered by a move should surface the relocated message
+		// immediately instead of waiting for an O(mailbox size) repair scan.
+		if _, err := s.RepairMailboxSearchIndex(ctx, userID, mailbox, run.ID, &progress); err != nil {
+			status = "failed"
+			errText = err.Error()
+			return run, err
+		}
 		if s.shouldSyncInlineMetadata(planned) {
 			if err := s.syncMailboxReadFlags(ctx, userID, account, mailbox); err != nil {
 				log.Printf("sync seen flags user_id=%d mailbox=%s: %v", userID, mailboxName, err)

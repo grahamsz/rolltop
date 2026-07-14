@@ -2,7 +2,7 @@
 // surface sync clues, keep selection state stable, and link rows back to their source page.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ChangeEvent, CSSProperties, DragEvent, KeyboardEvent, MouseEvent, ReactNode, TouchEvent } from "react";
+import type { CSSProperties, DragEvent, KeyboardEvent, MouseEvent, ReactNode, TouchEvent } from "react";
 import { Star } from "@phosphor-icons/react";
 import { ApiError, api } from "../../api";
 import type { AddToast, DatePrefs, LocationState } from "../../appTypes";
@@ -966,7 +966,7 @@ function MessageList({
   const [pendingSwipeReadStates, setPendingSwipeReadStates] = useState<Map<number, boolean>>(() => new Map());
   const [swipeState, setSwipeState] = useState<MessageSwipeState | null>(null);
   const [keyboardIndex, setKeyboardIndex] = useState<number | null>(null);
-  const lastSelectedIndex = useRef<number | null>(null);
+  const selectionAnchorID = useRef<number | null>(null);
   const moveOutTimers = useRef<Map<number, number>>(new Map());
   const swipeCompletionTimer = useRef<number | null>(null);
   const pendingSwipeActionIDs = useRef<Set<number>>(new Set());
@@ -1054,6 +1054,9 @@ function MessageList({
       const next = new Set(Array.from(current).filter((id) => ids.has(id)));
       return next.size === current.size ? current : next;
     });
+    if (selectionAnchorID.current !== null && !ids.has(selectionAnchorID.current)) {
+      selectionAnchorID.current = null;
+    }
     if (keyboardIndexRef.current !== null && keyboardIndexRef.current >= visible.length) {
       keyboardIndexRef.current = null;
       setKeyboardIndex(null);
@@ -1091,7 +1094,7 @@ function MessageList({
           else next.add(messageID);
           return next;
         });
-        lastSelectedIndex.current = nextIndex;
+        selectionAnchorID.current = messageID;
       }
     }
     window.addEventListener("keydown", handleListShortcut);
@@ -1120,14 +1123,17 @@ function MessageList({
     }
   }
 
-  function selectMessage(event: ChangeEvent<HTMLInputElement>, index: number, messageID: number) {
+  function selectMessage(event: MouseEvent<HTMLInputElement>, index: number, messageID: number) {
     event.stopPropagation();
     const checked = event.currentTarget.checked;
+    const anchorIndex = event.shiftKey && selectionAnchorID.current !== null
+      ? visible.findIndex((conversation) => conversation.message.id === selectionAnchorID.current)
+      : -1;
     setSelectedIDs((current) => {
       const next = new Set(current);
-      if ((event.nativeEvent as Event & { shiftKey?: boolean }).shiftKey && lastSelectedIndex.current !== null) {
-        const start = Math.min(lastSelectedIndex.current, index);
-        const end = Math.max(lastSelectedIndex.current, index);
+      if (anchorIndex >= 0) {
+        const start = Math.min(anchorIndex, index);
+        const end = Math.max(anchorIndex, index);
         for (const conversation of visible.slice(start, end + 1)) {
           if (checked) next.add(conversation.message.id);
           else next.delete(conversation.message.id);
@@ -1139,12 +1145,17 @@ function MessageList({
       }
       return next;
     });
-    lastSelectedIndex.current = index;
+    if (!event.shiftKey || anchorIndex < 0) selectionAnchorID.current = messageID;
   }
 
   function clearSelection() {
     setSelectedIDs(new Set());
-    lastSelectedIndex.current = null;
+    selectionAnchorID.current = null;
+  }
+
+  function selectAllOnPage() {
+    setSelectedIDs(new Set(visible.map((conversation) => conversation.message.id)));
+    selectionAnchorID.current = null;
   }
 
   async function markSelectedRead(read: boolean) {
@@ -1630,18 +1641,36 @@ function MessageList({
   }
   const arrivalActive = visible.some((conversation) => highlightMessageIDs?.has(conversation.message.id));
   const selectedConversations = visible.filter((conversation) => selectedIDs.has(conversation.message.id));
+  const allOnPageSelected = selectedConversations.length === visible.length;
   const canMarkRead = selectedConversations.some((conversation) => !conversation.is_read);
   const canMarkUnread = selectedConversations.some((conversation) => conversation.is_read);
   return (
     <div className={`message-table ${arrivalActive ? "mail-arrival-shift" : ""}`}>
       {selectedConversations.length > 0 ? (
         <div className="selection-action-bar" role="toolbar" aria-label="Selected message actions" aria-busy={readStateBusy || snoozeBusy || swipeActionBusy}>
-          <div className="selection-action-summary" aria-live="polite">
+          <div className="selection-action-summary">
             <button className="selection-clear" type="button" onClick={clearSelection} title="Clear selection" aria-label="Clear selection">
               <Icon name="close" />
             </button>
-            <strong>{selectedConversations.length.toLocaleString()}</strong>
-            <span>selected</span>
+            <span className="selection-count" aria-live="polite">
+              <strong>{selectedConversations.length.toLocaleString()}</strong>
+              <span>selected</span>
+            </span>
+            {allOnPageSelected ? (
+              <span className="selection-page-status">All {visible.length.toLocaleString()} on this page</span>
+            ) : (
+              <button
+                className="selection-page-button"
+                type="button"
+                onClick={selectAllOnPage}
+                disabled={readStateBusy || snoozeBusy || swipeActionBusy}
+                title={`Select all ${visible.length.toLocaleString()} messages on this page`}
+                aria-label={`Select all ${visible.length.toLocaleString()} messages on this page`}
+              >
+                <Icon name="select_all" />
+                <span>Select all {visible.length.toLocaleString()}</span>
+              </button>
+            )}
           </div>
           <div className="selection-actions">
             <button type="button" disabled={readStateBusy || snoozeBusy || swipeActionBusy || !canMarkRead} onClick={() => void markSelectedRead(true)} title="Mark selected messages read">
@@ -1742,7 +1771,8 @@ function MessageList({
                 checked={selected}
                 disabled={pendingSwipeActionIDs.current.has(msg.id)}
                 aria-label={`Select ${msg.subject || "message"}`}
-                onChange={(event) => selectMessage(event, index, msg.id)}
+                onClick={(event) => selectMessage(event, index, msg.id)}
+                onChange={() => undefined}
               />
             </label>
             <button

@@ -43,7 +43,8 @@
 }
 
 .selection-action-summary,
-.selection-actions {
+.selection-actions,
+.selection-count {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -52,12 +53,24 @@
 .selection-action-summary {
   min-width: 0;
 
-  strong {
+  .selection-count {
+    gap: 4px;
+    white-space: nowrap;
+  }
+
+  .selection-count strong {
+    color: var(--text);
     font-size: 15px;
   }
 
-  span {
+  .selection-count > span,
+  .selection-page-status {
     color: var(--muted);
+  }
+
+  .selection-page-status {
+    white-space: nowrap;
+    font-size: 13px;
   }
 }
 
@@ -79,6 +92,14 @@
   padding: 0;
   border-color: transparent;
   background: transparent;
+}
+
+.selection-action-bar .selection-page-button {
+  white-space: nowrap;
+
+  span {
+    color: inherit;
+  }
 }
 
 .message-table {

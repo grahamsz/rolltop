@@ -213,13 +213,17 @@ func safeSegment(value string) string {
 }
 
 func shouldNotifyNewMail(mailbox store.Mailbox, mailboxLastUIDAtStart uint32, item FetchedMessage) bool {
-	if mailbox.Role != "inbox" && !strings.EqualFold(strings.TrimSpace(mailbox.Name), "INBOX") {
+	if !mailboxReceivesNewMailNotifications(mailbox) {
 		return false
 	}
 	if mailboxLastUIDAtStart == 0 {
 		return !mailbox.StatusCheckedAt.IsZero() && mailbox.RemoteMessageCount == 0 && mailbox.RemoteUIDNext <= 1 && item.UID > 0
 	}
 	return item.UID > mailboxLastUIDAtStart
+}
+
+func mailboxReceivesNewMailNotifications(mailbox store.Mailbox) bool {
+	return mailbox.Role == "inbox" || strings.EqualFold(strings.TrimSpace(mailbox.Name), "INBOX")
 }
 
 func shouldCancelSnoozeForNewMessage(mailbox store.Mailbox, mailboxLastUIDAtStart uint32, item FetchedMessage) bool {

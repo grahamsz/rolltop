@@ -57,7 +57,13 @@ func (s *Service) StartMoveMessages(ctx context.Context, userID int64, messageID
 	if err != nil {
 		return store.SyncRun{}, err
 	}
-	progress := store.SyncProgress{MessagesTotal: len(ids), MailboxesTotal: 1, CurrentMailbox: "Moving to " + dest.Name}
+	progress := store.SyncProgress{
+		MessagesTotal:    len(ids),
+		MailboxesTotal:   1,
+		CurrentMailbox:   "Moving to " + dest.Name,
+		LatestNewFrom:    "rolltop:move",
+		LatestNewSubject: "Moving messages",
+	}
 	if err := s.Store.UpdateSyncRunProgress(ctx, userID, run.ID, progress); err != nil {
 		return store.SyncRun{}, err
 	}
@@ -81,7 +87,9 @@ func (s *Service) runMoveMessages(ctx context.Context, userID int64, ids []int64
 			log.Printf("finish move run user_id=%d run_id=%d: %v", userID, runID, err)
 		}
 		s.notify(userID)
-		if status == "ok" && onDone != nil {
+		// A partial move still needs source/destination refreshes and must release
+		// any foreground scheduler guard owned by the caller.
+		if onDone != nil {
 			onDone()
 		}
 	}()
@@ -142,7 +150,20 @@ func (s *Service) MoveMessage(ctx context.Context, userID, messageID, destMailbo
 	if strings.EqualFold(strings.TrimSpace(source.Name), strings.TrimSpace(dest.Name)) {
 		return nil
 	}
+	var markerID int64
+	if mailboxReceivesNewMailNotifications(dest) {
+		markerID, err = s.Store.CreatePendingMoveNotification(ctx, userID, msg.ID, dest.ID)
+		if err != nil {
+			return err
+		}
+	}
 	if err := s.Fetcher.MoveMessage(ctx, account, source.Name, dest.Name, msg.UID); err != nil {
+		if markerID > 0 {
+			cleanupErr := s.Store.DeletePendingMoveNotification(ctx, userID, markerID)
+			if cleanupErr != nil && !store.IsNotFound(cleanupErr) {
+				return errors.Join(err, cleanupErr)
+			}
+		}
 		return err
 	}
 	s.cleanupMovedMessage(ctx, userID, msg)

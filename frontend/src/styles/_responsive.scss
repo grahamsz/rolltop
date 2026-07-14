@@ -3,6 +3,14 @@
   .swipe-direction-controls {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .selection-action-bar {
+    flex-wrap: wrap;
+  }
+
+  .selection-action-summary {
+    flex: 1 1 100%;
+  }
 }
 
 @media (max-width: 760px) {
@@ -224,7 +232,7 @@
   .selection-actions {
     width: 100%;
     display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
 
     button {

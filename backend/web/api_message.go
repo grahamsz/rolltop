@@ -779,6 +779,15 @@ func (s *Server) apiMoveMessage(w http.ResponseWriter, r *http.Request, id int64
 		s.serverError(w, err)
 		return
 	}
+	finishForeground := func() {}
+	if s.syncRunner != nil {
+		finishForeground, err = s.syncRunner.BeginForegroundOperation(r.Context(), cu.User.ID)
+		if err != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "could not schedule message move")
+			return
+		}
+	}
+	defer finishForeground()
 	if err := s.syncer.MoveMessage(r.Context(), cu.User.ID, id, in.MailboxID); err != nil {
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
@@ -787,9 +796,8 @@ func (s *Server) apiMoveMessage(w http.ResponseWriter, r *http.Request, id int64
 		writeAPIError(w, http.StatusBadGateway, "could not move message")
 		return
 	}
-	if s.syncRunner != nil {
-		s.syncRunner.StartMailboxes(cu.User.ID, refreshMailboxes)
-	}
+	s.startMoveRefresh(cu.User.ID, dest.AccountID, refreshMailboxes)
+	finishForeground()
 	writeJSON(w, map[string]any{"ok": true, "mailbox": dest.Name})
 }
 
@@ -830,6 +838,15 @@ func (s *Server) moveRefreshMailboxNames(ctx context.Context, userID int64, mess
 	}
 	add(dest.Name)
 	return names, nil
+}
+
+func (s *Server) startMoveRefresh(userID, accountID int64, mailboxes []string) {
+	if s.syncRunner == nil {
+		return
+	}
+	if !s.syncRunner.StartAccountMailboxes(userID, accountID, mailboxes) {
+		s.syncRunner.QueueAccountMailboxes(userID, accountID, mailboxes)
+	}
 }
 
 // apiBulkMoveMessages does small batches inline and large batches as background
@@ -876,12 +893,20 @@ func (s *Server) apiBulkMoveMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(in.MessageIDs) > 5 {
-		run, err := s.syncer.StartMoveMessages(r.Context(), cu.User.ID, in.MessageIDs, in.MailboxID, func() {
-			if s.syncRunner != nil {
-				s.syncRunner.StartMailboxes(cu.User.ID, refreshMailboxes)
+		finishForeground := func() {}
+		if s.syncRunner != nil {
+			finishForeground, err = s.syncRunner.BeginForegroundOperation(r.Context(), cu.User.ID)
+			if err != nil {
+				writeAPIError(w, http.StatusServiceUnavailable, "could not schedule bulk move")
+				return
 			}
+		}
+		run, err := s.syncer.StartMoveMessages(r.Context(), cu.User.ID, in.MessageIDs, in.MailboxID, func() {
+			s.startMoveRefresh(cu.User.ID, dest.AccountID, refreshMailboxes)
+			finishForeground()
 		})
 		if err != nil {
+			finishForeground()
 			if store.IsNotFound(err) {
 				http.NotFound(w, r)
 				return
@@ -892,6 +917,15 @@ func (s *Server) apiBulkMoveMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true, "queued": true, "run_id": run.ID, "mailbox": dest.Name})
 		return
 	}
+	finishForeground := func() {}
+	if s.syncRunner != nil {
+		finishForeground, err = s.syncRunner.BeginForegroundOperation(r.Context(), cu.User.ID)
+		if err != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "could not schedule bulk move")
+			return
+		}
+	}
+	defer finishForeground()
 	moved, err := s.syncer.MoveMessages(r.Context(), cu.User.ID, in.MessageIDs, in.MailboxID)
 	if err != nil {
 		if store.IsNotFound(err) {
@@ -901,9 +935,8 @@ func (s *Server) apiBulkMoveMessages(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadGateway, "could not move messages")
 		return
 	}
-	if s.syncRunner != nil {
-		s.syncRunner.StartMailboxes(cu.User.ID, refreshMailboxes)
-	}
+	s.startMoveRefresh(cu.User.ID, dest.AccountID, refreshMailboxes)
+	finishForeground()
 	writeJSON(w, map[string]any{"ok": true, "queued": false, "moved": moved, "mailbox": dest.Name})
 }
 

@@ -31,9 +31,20 @@ func (s *Store) RecordNewMailEvent(ctx context.Context, userID int64, msg Messag
 		return NewMailEvent{}, false, err
 	}
 	defer tx.Rollback()
+	now := nowUnix()
+	suppressed, err := consumePendingMoveNotification(ctx, tx, userID, msg.ID, now)
+	if err != nil {
+		return NewMailEvent{}, false, err
+	}
+	if suppressed {
+		if err := tx.Commit(); err != nil {
+			return NewMailEvent{}, false, err
+		}
+		return NewMailEvent{}, false, nil
+	}
 	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO new_mail_events
 		(user_id, message_id, from_addr, subject, created_at) VALUES (?, ?, ?, ?, ?)`,
-		userID, msg.ID, msg.FromAddr, msg.Subject, nowUnix())
+		userID, msg.ID, msg.FromAddr, msg.Subject, now)
 	if err != nil {
 		return NewMailEvent{}, false, err
 	}

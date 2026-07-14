@@ -191,3 +191,141 @@ func TestRunnerMailboxMaintenanceBlocksSyncUntilFinished(t *testing.T) {
 		t.Fatalf("maintenance run = %+v", saved)
 	}
 }
+
+func TestRunnerAttachmentIndexWaitsForForegroundOperation(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "foreground-index@example.test", "Foreground Index", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRunner(&Service{Store: db})
+	finish, err := r.BeginForegroundOperation(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.IsRunning(user.ID) {
+		t.Fatal("foreground operation was not reported as running")
+	}
+	if r.StartAttachmentIndex(user.ID) {
+		t.Fatal("attachment index started during a foreground operation")
+	}
+	r.mu.Lock()
+	pending := r.attachmentPending[user.ID]
+	attachmentRunning := r.mailboxRunning[mailboxKey(user.ID, "__attachments__")]
+	r.mu.Unlock()
+	if !pending || attachmentRunning {
+		t.Fatalf("attachment state pending=%t running=%t, want true/false", pending, attachmentRunning)
+	}
+
+	finish()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r.mu.Lock()
+		pending = r.attachmentPending[user.ID]
+		attachmentRunning = r.mailboxRunning[mailboxKey(user.ID, "__attachments__")]
+		r.mu.Unlock()
+		if !pending && !attachmentRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("attachment index did not resume and finish: pending=%t running=%t", pending, attachmentRunning)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if r.IsRunning(user.ID) {
+		t.Fatal("foreground operation remained active after release")
+	}
+}
+
+func TestRunnerForegroundWaitsForCanceledAttachmentWorker(t *testing.T) {
+	r := NewRunner(nil)
+	userID := int64(77)
+	workerCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	canceled := make(chan struct{})
+	allowExit := make(chan struct{})
+	key := mailboxKey(userID, "__attachments__")
+	r.mu.Lock()
+	r.mailboxRunning[key] = true
+	r.attachmentCancels[userID] = cancel
+	r.attachmentDone[userID] = done
+	r.mu.Unlock()
+	go func() {
+		<-workerCtx.Done()
+		close(canceled)
+		<-allowExit
+		r.mu.Lock()
+		delete(r.mailboxRunning, key)
+		delete(r.attachmentCancels, userID)
+		delete(r.attachmentDone, userID)
+		r.mu.Unlock()
+		close(done)
+	}()
+
+	type result struct {
+		finish func()
+		err    error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		finish, err := r.BeginForegroundOperation(context.Background(), userID)
+		resultCh <- result{finish: finish, err: err}
+	}()
+	<-canceled
+	select {
+	case <-resultCh:
+		t.Fatal("foreground operation returned before the canceled attachment worker exited")
+	default:
+	}
+	close(allowExit)
+	started := <-resultCh
+	if started.err != nil {
+		t.Fatal(started.err)
+	}
+	started.finish()
+}
+
+func TestRunnerAttachmentIndexWaitsForMailboxReservation(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "mailbox-index@example.test", "Mailbox Index", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRunner(&Service{Store: db})
+	keys, ok := r.reserveAccountMailboxes(user.ID, 55, []string{"INBOX"})
+	if !ok {
+		t.Fatal("mailbox reservation failed")
+	}
+	if r.StartAttachmentIndex(user.ID) {
+		t.Fatal("attachment index started during a mailbox reservation")
+	}
+	r.releaseAccountMailboxReservations(user.ID, 55, []string{"INBOX"}, keys)
+	if !r.StartAttachmentIndex(user.ID) {
+		t.Fatal("attachment index did not start after mailbox release")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r.mu.Lock()
+		running := r.mailboxRunning[mailboxKey(user.ID, "__attachments__")]
+		r.mu.Unlock()
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("attachment index did not finish after mailbox release")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
