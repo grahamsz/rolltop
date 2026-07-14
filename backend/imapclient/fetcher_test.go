@@ -235,6 +235,185 @@ func TestAddSyncMarkerHeaderUsesSourceLineEndings(t *testing.T) {
 	}
 }
 
+func TestAddSyncHeadersRecordsUTCTransferTimeAndPreservesRaw(t *testing.T) {
+	marker := "v1.task.0000000001.0000000002"
+	zone := time.FixedZone("source", -6*60*60)
+	syncedAt := time.Date(2026, time.July, 14, 13, 42, 9, 987654321, zone)
+	raw := []byte("From: sender@example.test\r\nSubject: Test\r\n\r\nbody\r\n")
+	original := append([]byte(nil), raw...)
+
+	marked, err := AddSyncHeaders(raw, marker, syncedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := syncedAt.UTC().Truncate(time.Second).Format(time.RFC3339)
+	wantPrefix := []byte(SyncTimestampHeader + ": " + value + "\r\n" + SyncMarkerHeader + ": " + marker + "\r\n")
+	if !bytes.HasPrefix(marked, wantPrefix) {
+		t.Fatalf("sync headers prefix = %q, want %q", marked[:min(len(marked), len(wantPrefix))], wantPrefix)
+	}
+	if !bytes.Equal(marked[len(wantPrefix):], original) {
+		t.Fatal("sync header insertion changed the original raw message")
+	}
+	if !bytes.Equal(raw, original) {
+		t.Fatal("sync header insertion mutated the caller's raw message")
+	}
+	gotTime, ok := SyncTimestampForMarker(marked, marker)
+	if !ok || !gotTime.Equal(syncedAt.UTC().Truncate(time.Second)) {
+		t.Fatalf("SyncTimestampForMarker() = %s, %t, want %s, true", gotTime, ok, syncedAt.UTC().Truncate(time.Second))
+	}
+}
+
+func TestAddSyncHeadersPreservesFirstTimestampForExistingMarker(t *testing.T) {
+	marker := "v1.task.0000000001.0000000002"
+	firstTime := time.Date(2026, time.July, 14, 19, 42, 9, 0, time.UTC)
+	first, err := AddSyncHeaders([]byte("Subject: Test\r\n\r\nbody"), marker, firstTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := AddSyncHeaders(first, marker, firstTime.Add(8*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(again, first) {
+		t.Fatal("reapplying an existing marker changed its original transfer timestamp")
+	}
+	if got := bytes.Count(again, []byte(SyncMarkerHeader+":")); got != 1 {
+		t.Fatalf("marker header count = %d, want 1", got)
+	}
+	if got := bytes.Count(again, []byte(SyncTimestampHeader+":")); got != 1 {
+		t.Fatalf("timestamp header count = %d, want 1", got)
+	}
+}
+
+func TestAddSyncHeadersDoesNotReuseTimestampWithoutMarker(t *testing.T) {
+	marker := "v1.task.0000000001.0000000002"
+	syncedAt := time.Date(2026, time.July, 14, 19, 42, 9, 0, time.UTC)
+	value := syncedAt.Format(time.RFC3339)
+	raw := []byte(SyncTimestampHeader + ": " + value + "\r\nSubject: Unrelated header\r\n\r\nbody")
+
+	marked, err := AddSyncHeaders(raw, marker, syncedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := []byte(SyncTimestampHeader + ": " + value + "\r\n" + SyncMarkerHeader + ": " + marker + "\r\n")
+	if !bytes.HasPrefix(marked, wantPrefix) {
+		t.Fatalf("sync headers prefix = %q, want %q", marked[:min(len(marked), len(wantPrefix))], wantPrefix)
+	}
+	if got := bytes.Count(marked, []byte(SyncTimestampHeader+":")); got != 2 {
+		t.Fatalf("timestamp header count = %d, want the new and unrelated headers", got)
+	}
+	gotTime, ok := SyncTimestampForMarker(marked, marker)
+	if !ok || !gotTime.Equal(syncedAt) {
+		t.Fatalf("SyncTimestampForMarker() = %s, %t, want %s, true", gotTime, ok, syncedAt)
+	}
+
+	again, err := AddSyncHeaders(marked, marker, syncedAt.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(again, marked) {
+		t.Fatal("reapplying the new marker changed its timestamp")
+	}
+}
+
+func TestAddSyncHeadersRepairsMarkerWithoutValidTimestamp(t *testing.T) {
+	marker := "v1.task.0000000001.0000000002"
+	syncedAt := time.Date(2026, time.July, 14, 19, 42, 9, 0, time.UTC)
+	raw := []byte(SyncMarkerHeader + ": " + marker + "\n" + SyncTimestampHeader + ": not-a-date\nSubject: Legacy\n\nbody")
+
+	marked, err := AddSyncHeaders(raw, marker, syncedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := []byte(SyncTimestampHeader + ": " + syncedAt.Format(time.RFC3339) + "\n")
+	if !bytes.HasPrefix(marked, wantPrefix) {
+		t.Fatalf("repaired LF message = %q", marked)
+	}
+	if got := bytes.Count(marked, []byte(SyncMarkerHeader+":")); got != 1 {
+		t.Fatalf("marker header count = %d, want 1", got)
+	}
+	gotTime, ok := SyncTimestampForMarker(marked, marker)
+	if !ok || !gotTime.Equal(syncedAt) {
+		t.Fatalf("SyncTimestampForMarker() = %s, %t, want %s, true", gotTime, ok, syncedAt)
+	}
+}
+
+func TestAddSyncHeadersRejectsInvalidInputs(t *testing.T) {
+	raw := []byte("Subject: Test\r\n\r\nbody")
+	marker := "v1.task.0000000001.0000000002"
+	for _, syncedAt := range []time.Time{
+		time.Time{},
+		time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(1, time.January, 1, 0, 0, 0, 0, time.FixedZone("+14", 14*60*60)),
+		time.Date(9999, time.December, 31, 23, 59, 59, 0, time.FixedZone("-12", -12*60*60)),
+	} {
+		if _, err := AddSyncHeaders(raw, marker, syncedAt); err == nil {
+			t.Fatalf("AddSyncHeaders accepted invalid timestamp %v", syncedAt)
+		}
+	}
+	if _, err := AddSyncHeaders(raw, "bad\r\nInjected: value", time.Now()); err == nil {
+		t.Fatal("AddSyncHeaders accepted a header-injection marker")
+	}
+}
+
+func TestAddSyncHeadersAcceptsRFC3339UTCYearBoundaries(t *testing.T) {
+	marker := "v1.task.0000000001.0000000002"
+	for _, syncedAt := range []time.Time{
+		time.Date(1, time.January, 1, 14, 0, 1, 0, time.FixedZone("+14", 14*60*60)),
+		time.Date(9999, time.December, 31, 11, 59, 59, 0, time.FixedZone("-12", -12*60*60)),
+	} {
+		marked, err := AddSyncHeaders([]byte("Subject: Boundary\r\n\r\nbody"), marker, syncedAt)
+		if err != nil {
+			t.Fatalf("AddSyncHeaders(%v): %v", syncedAt, err)
+		}
+		got, ok := SyncTimestampForMarker(marked, marker)
+		if !ok || !got.Equal(syncedAt.UTC()) {
+			t.Fatalf("SyncTimestampForMarker() = %s, %t, want %s, true", got, ok, syncedAt.UTC())
+		}
+	}
+}
+
+func TestSyncTimestampForMarkerRequiresExactAdjacentPair(t *testing.T) {
+	marker := "v1.task.0000000001.0000000002"
+	want := time.Date(2026, time.July, 14, 19, 42, 9, 0, time.UTC)
+	raw := []byte(SyncTimestampHeader + ": 2025-01-01T00:00:00Z\r\n" +
+		"Subject: unrelated timestamp\r\n" +
+		strings.ToLower(SyncTimestampHeader) + ": 2026-07-14T13:42:09-06:00\r\n" +
+		strings.ToLower(SyncMarkerHeader) + ": " + marker + "\r\n\r\nbody")
+	got, ok := SyncTimestampForMarker(raw, marker)
+	if !ok || !got.Equal(want) {
+		t.Fatalf("SyncTimestampForMarker() = %s, %t, want %s, true", got, ok, want)
+	}
+}
+
+func TestSyncTimestampForMarkerRejectsSpoofedAndLegacyLayouts(t *testing.T) {
+	marker := "v1.task.0000000001.0000000002"
+	otherMarker := "v1.other.0000000001.0000000002"
+	timestamp := SyncTimestampHeader + ": 2026-07-14T19:42:09Z\r\n"
+	markerLine := SyncMarkerHeader + ": " + marker + "\r\n"
+	otherMarkerLine := SyncMarkerHeader + ": " + otherMarker + "\r\n"
+	for name, raw := range map[string][]byte{
+		"orphan timestamp":       []byte(timestamp + "Subject: Test\r\n\r\nbody"),
+		"legacy marker only":     []byte(markerLine + "Subject: Test\r\n\r\nbody"),
+		"wrong marker pair":      []byte(timestamp + otherMarkerLine + markerLine + "\r\nbody"),
+		"separated pair":         []byte(timestamp + "Subject: gap\r\n" + markerLine + "\r\nbody"),
+		"reversed pair":          []byte(markerLine + timestamp + "\r\nbody"),
+		"malformed timestamp":    []byte(SyncTimestampHeader + ": no\r\n" + markerLine + "\r\nbody"),
+		"out-of-range timestamp": []byte(SyncTimestampHeader + ": 0000-01-01T00:00:00Z\r\n" + markerLine + "\r\nbody"),
+		"body-only pair":         []byte("Subject: Test\r\n\r\n" + timestamp + markerLine),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, ok := SyncTimestampForMarker(raw, marker); ok || !got.IsZero() {
+				t.Fatalf("SyncTimestampForMarker() = %s, %t, want zero, false", got, ok)
+			}
+		})
+	}
+	if got, ok := SyncTimestampForMarker([]byte(timestamp+markerLine+"\r\nbody"), "bad\r\nInjected: value"); ok || !got.IsZero() {
+		t.Fatalf("invalid marker SyncTimestampForMarker() = %s, %t, want zero, false", got, ok)
+	}
+}
+
 func TestHasSyncMarkerForTaskMatchesOnlyValidHeaderMarkers(t *testing.T) {
 	raw := []byte("Subject: Test\r\nX-Rolltop-Sync-ID: v1.task_abc.0000000007.0000000042\r\n\r\nbody\r\n")
 	if !HasSyncMarkerForTask(raw, "task_abc") {
@@ -268,6 +447,24 @@ func TestSafeAppendFlagsKeepsOnlyPortableNonDestructiveFlags(t *testing.T) {
 	want := []string{imap.SeenFlag, imap.AnsweredFlag, imap.FlaggedFlag, imap.DraftFlag}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("SafeAppendFlags() = %#v, want %#v", got, want)
+	}
+}
+
+func TestSyncDestinationSessionUIDValidityIsNilSafeAndPersistent(t *testing.T) {
+	var nilSession *SyncDestinationSession
+	if got := nilSession.UIDValidity(); got != 0 {
+		t.Fatalf("nil session UIDValidity() = %d, want 0", got)
+	}
+
+	session := &SyncDestinationSession{uidValidity: 987654321}
+	if got := session.UIDValidity(); got != 987654321 {
+		t.Fatalf("UIDValidity() = %d, want 987654321", got)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := session.UIDValidity(); got != 987654321 {
+		t.Fatalf("closed session UIDValidity() = %d, want 987654321", got)
 	}
 }
 

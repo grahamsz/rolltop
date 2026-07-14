@@ -23,7 +23,7 @@ import { RemoteImageNotice } from "../../plugins/remoteImageBlocklist/RemoteImag
 import { createPluginSet } from "../../plugins/registry";
 import { senderVisualURL } from "../../plugins/senderVisuals";
 import { TrustImageSourceAction } from "../../plugins/trustedImageSources/TrustImageSourceAction";
-import type { RuntimePlugin } from "../../plugins/runtime";
+import type { RuntimeMessageDetailsPlugin, RuntimePlugin } from "../../plugins/runtime";
 import { threadSecurityPlugin, type ThreadSecurityDecryptedAttachment, type ThreadSecurityGossipKey, type ThreadSecurityOpenResult, type ThreadSecuritySignatureStatus } from "../../plugins/threadSecurity";
 import { SnoozeControl } from "./SnoozeControl";
 
@@ -183,24 +183,36 @@ function messageAnnotationNodes(plugins: readonly RuntimePlugin[], item: ThreadM
     .filter(Boolean);
 }
 
+function messageDetailsNodes(plugins: readonly RuntimePlugin[], item: ThreadMessage, datePrefs: DatePrefs) {
+  const annotations = item.message.annotations || [];
+  return (plugins as readonly RuntimeMessageDetailsPlugin[])
+    .map((plugin, index) => {
+      const node = plugin.renderMessageDetails?.({ message: item.message, annotations, datePrefs });
+      return node ? <Fragment key={`message-details-plugin-${index}`}>{node}</Fragment> : null;
+    })
+    .filter(Boolean);
+}
+
 // MessageDetailsToggle keeps the Gmail-style compact recipient line but exposes
 // full message headers without leaving the conversation view.
 function MessageDetailsToggle({
   summary,
   details,
   indicators,
+  pluginRows,
   highlightQuery,
   highlightTerms
 }: {
   summary: string;
   details: HeaderDetail[];
   indicators?: MessageSecurityIndicators;
+  pluginRows: ReactNode[];
   highlightQuery: string;
   highlightTerms: string[];
 }) {
   const visibleDetails = details.filter((detail) => detail.value.trim() !== "");
   const authenticationResults = reportedAuthenticationResults(indicators);
-  if (visibleDetails.length === 0 && authenticationResults.length === 0) {
+  if (visibleDetails.length === 0 && authenticationResults.length === 0 && pluginRows.length === 0) {
     return (
       <div className="thread-recipients">
         <HighlightedText text={summary} query={highlightQuery} terms={highlightTerms} />
@@ -225,6 +237,7 @@ function MessageDetailsToggle({
             </dd>
           </Fragment>
         ))}
+        {pluginRows}
       </dl>
     </details>
   );
@@ -1768,6 +1781,7 @@ export function ThreadView({
                       summary={item.recipient_line}
                       details={item.header_details || []}
                       indicators={item.security_indicators}
+                      pluginRows={messageDetailsNodes(messageSecurityPlugins, item, datePrefs)}
                       highlightQuery={highlightQuery}
                       highlightTerms={highlightTerms}
                     />

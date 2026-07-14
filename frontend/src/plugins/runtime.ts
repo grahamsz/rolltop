@@ -1,10 +1,25 @@
-import type { FrontendPluginDefinition } from "../types";
+import type { ReactNode } from "react";
+import type { DatePrefs } from "../appTypes";
+import type { FrontendPluginDefinition, Message, MessageAnnotation } from "../types";
 
 export type RuntimePluginModule = {
   default?: unknown;
 };
 
 export type RuntimePlugin = Record<string, unknown>;
+
+/** RuntimeMessageDetailsContext is the stable, read-only input for plugin rows
+ * rendered inside a message's expanded header details. */
+export type RuntimeMessageDetailsContext = {
+  message: Message;
+  annotations: readonly MessageAnnotation[];
+  datePrefs: DatePrefs;
+};
+
+/** RuntimeMessageDetailsPlugin contributes dt/dd rows to the message details list. */
+export type RuntimeMessageDetailsPlugin = RuntimePlugin & {
+  renderMessageDetails?: (context: RuntimeMessageDetailsContext) => ReactNode;
+};
 
 export type RuntimePlugins = {
   all: RuntimePlugin[];

@@ -32,6 +32,8 @@ type remoteIMAPSyncBackend struct {
 	fetcher *imapclient.Fetcher
 }
 
+var _ plugins.MessageAnnotationProvider = (*remoteIMAPSyncBackend)(nil)
+
 // RolltopPlugin is loaded by the runtime Go plugin host.
 func RolltopPlugin() plugins.BackendPlugin {
 	return &remoteIMAPSyncBackend{}

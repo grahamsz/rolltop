@@ -114,12 +114,21 @@ func newBackendFixture(t *testing.T) backendFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	migration, err := os.ReadFile(filepath.Join("..", "migrations", "user", "001_create_remote_imap_sync.sql"))
+	migrationFiles, err := filepath.Glob(filepath.Join("..", "migrations", "user", "*.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, string(migration)); err != nil {
-		t.Fatal(err)
+	if len(migrationFiles) == 0 {
+		t.Fatal("remote IMAP sync user migrations were not found")
+	}
+	for _, migrationFile := range migrationFiles {
+		migration, err := os.ReadFile(migrationFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, string(migration)); err != nil {
+			t.Fatalf("apply %s: %v", filepath.Base(migrationFile), err)
+		}
 	}
 	return backendFixture{
 		store: st, db: db, owner: owner, other: other,

@@ -419,15 +419,23 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 				return err
 			}
 		} else {
-			appended, err := writer.AppendMessageWithSyncMarker(w.ctx, message.Raw, marker,
+			syncedAt := time.Now().UTC().Truncate(time.Second)
+			appended, err := writer.AppendMessageWithSyncMarkerAt(w.ctx, message.Raw, marker, syncedAt,
 				message.InternalDate, message.Flags)
 			if err != nil {
 				return err
 			}
 			transferred++
 			copiedAny = true
-			if err := recordHandledMessage(w.ctx, db, item, search.UIDValidity, message.UID,
-				fingerprint, marker, appended.UID, "transferred"); err != nil {
+			if headerTime, ok := imapclient.SyncTimestampForMarker(appended.Raw, marker); ok {
+				syncedAt = headerTime
+			}
+			destinationSHA256 := ""
+			if len(appended.Raw) > 0 {
+				destinationSHA256 = messageFingerprint(appended.Raw)
+			}
+			if err := recordHandledMessageAt(w.ctx, db, item, search.UIDValidity, message.UID,
+				fingerprint, marker, appended.UID, "transferred", syncedAt, writer.UIDValidity(), destinationSHA256); err != nil {
 				return err
 			}
 			if transferred == 1 || transferred%25 == 0 {

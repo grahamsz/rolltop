@@ -10,6 +10,8 @@ Copies messages one way from a remote IMAP folder into a folder on an existing R
 - Initial and periodic runs are incremental. Enabled routines also use IMAP IDLE when the source supports it.
 - Messages are appended to the destination without deleting, moving, or changing messages on the source server.
 - A transfer ledger makes reconnects and retries idempotent.
+- New copies include `X-Rolltop-Sync-ID` and `X-Rolltop-Synced-At` headers. The timestamp is UTC RFC3339 and records the first transfer Rolltop confirms on the destination.
+- The message's **More details** view shows the localized sync date from Rolltop's tenant-scoped provenance record rather than trusting sender-controlled headers.
 
 ## Build
 

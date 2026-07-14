@@ -5,10 +5,14 @@ import type { FormEvent } from "react";
 import type { Toast } from "../../../frontend/src/appTypes";
 import { Icon } from "../../../frontend/src/components/Icon";
 import { displayDateTime } from "../../../frontend/src/lib/format";
+import type { RuntimeMessageDetailsContext } from "../../../frontend/src/plugins/runtime";
 import type { Mailbox, User } from "../../../frontend/src/types";
 import "./styles.css";
 
 const apiBase = "/api/plugins/remote_imap_sync";
+const pluginID = "remote_imap_sync";
+const syncAnnotationKind = "remote-imap-sync";
+const rfc3339Pattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 type SettingsContext = {
   csrf: string;
@@ -162,6 +166,28 @@ type DiscoverResponse = {
     uidplus?: boolean;
   };
 };
+
+function validSyncTimestamp(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const timestamp = value.trim();
+  if (!rfc3339Pattern.test(timestamp)) return "";
+  const parsed = new Date(timestamp);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+}
+
+function RemoteIMAPSyncMessageDetails({ annotations, datePrefs }: RuntimeMessageDetailsContext) {
+  const syncedAt = annotations
+    .filter((annotation) => annotation.plugin_id === pluginID && annotation.kind === syncAnnotationKind)
+    .map((annotation) => validSyncTimestamp(annotation.metadata?.synced_at))
+    .find(Boolean);
+  if (!syncedAt) return null;
+  return (
+    <>
+      <dt>synced by Rolltop</dt>
+      <dd><time dateTime={syncedAt}>{displayDateTime(syncedAt, datePrefs)}</time></dd>
+    </>
+  );
+}
 
 function numberOr(value: number | undefined, fallback = 0) {
   return Number.isFinite(value) ? Number(value) : fallback;
@@ -987,5 +1013,6 @@ export default {
       render: (context: SettingsContext) => <RemoteIMAPSyncSettings {...context} />
     }
   ],
-  renderAccountSettingsSummary: (context: SettingsContext) => <RemoteIMAPSyncSummary navigate={context.navigate} />
+  renderAccountSettingsSummary: (context: SettingsContext) => <RemoteIMAPSyncSummary navigate={context.navigate} />,
+  renderMessageDetails: (context: RuntimeMessageDetailsContext) => <RemoteIMAPSyncMessageDetails {...context} />
 };

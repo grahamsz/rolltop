@@ -22,6 +22,11 @@ import (
 // destination server. The value is deterministic for one task and source UID.
 const SyncMarkerHeader = "X-Rolltop-Sync-ID"
 
+// SyncTimestampHeader records when Rolltop first appended the copied message.
+// It is informational; callers must not treat an unverified inbound header as
+// trusted provenance.
+const SyncTimestampHeader = "X-Rolltop-Synced-At"
+
 // MailboxUIDSearch is a stable source-mailbox snapshot plus the UIDs selected
 // for a copy pass.
 type MailboxUIDSearch struct {
@@ -34,9 +39,10 @@ type MailboxUIDSearch struct {
 // for a copy run. Its methods must be called sequentially; go-imap does not
 // permit overlapping commands on one client connection.
 type SyncDestinationSession struct {
-	fetcher *Fetcher
-	client  *client.Client
-	mailbox string
+	fetcher     *Fetcher
+	client      *client.Client
+	mailbox     string
+	uidValidity uint32
 }
 
 // OpenSyncDestinationSession logs in and selects one destination mailbox once,
@@ -56,7 +62,8 @@ func (f *Fetcher) OpenSyncDestinationSession(ctx context.Context, account store.
 	if err != nil {
 		return nil, err
 	}
-	if _, err := c.Select(mailbox, true); err != nil {
+	selected, err := c.Select(mailbox, true)
+	if err != nil {
 		_ = c.Logout()
 		return nil, fmt.Errorf("select mailbox %q read-only for sync destination: %w", mailbox, err)
 	}
@@ -64,7 +71,21 @@ func (f *Fetcher) OpenSyncDestinationSession(ctx context.Context, account store.
 		_ = c.Logout()
 		return nil, err
 	}
-	return &SyncDestinationSession{fetcher: f, client: c, mailbox: mailbox}, nil
+	var uidValidity uint32
+	if selected != nil {
+		uidValidity = selected.UidValidity
+	}
+	return &SyncDestinationSession{fetcher: f, client: c, mailbox: mailbox, uidValidity: uidValidity}, nil
+}
+
+// UIDValidity returns the destination mailbox epoch captured by SELECT. It is
+// immutable session metadata and remains available after Close. Zero means the
+// server did not report an epoch or the receiver is nil.
+func (s *SyncDestinationSession) UIDValidity() uint32 {
+	if s == nil {
+		return 0
+	}
+	return s.uidValidity
 }
 
 // Close logs out of the held destination connection. It is safe to call more
@@ -200,6 +221,51 @@ func AddSyncMarkerHeader(raw []byte, marker string) ([]byte, error) {
 	return out, nil
 }
 
+// AddSyncHeaders adds the stable idempotency marker and a UTC RFC3339 transfer
+// timestamp without reserializing the original message. Once the marker has a
+// valid timestamp, reapplying it preserves that first recorded transfer time.
+func AddSyncHeaders(raw []byte, marker string, syncedAt time.Time) ([]byte, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("sync marker requires a raw message")
+	}
+	marker, err := validateSyncMarker(marker)
+	if err != nil {
+		return nil, err
+	}
+	if syncedAt.IsZero() {
+		return nil, errors.New("sync timestamp must be a valid nonzero time")
+	}
+	syncedAt = syncedAt.UTC().Truncate(time.Second)
+	if syncedAt.Year() < 1 || syncedAt.Year() > 9999 {
+		return nil, errors.New("sync timestamp must be representable as RFC3339")
+	}
+	value := syncedAt.Format(time.RFC3339)
+	markerPresent := hasSyncMarkerHeader(raw, marker)
+	if markerPresent {
+		if _, found := SyncTimestampForMarker(raw, marker); found {
+			return append([]byte(nil), raw...), nil
+		}
+	} else {
+		raw, err = AddSyncMarkerHeader(raw, marker)
+		if err != nil {
+			return nil, err
+		}
+	}
+	lineEnding := []byte("\r\n")
+	if firstLF := bytes.IndexByte(raw, '\n'); firstLF >= 0 && (firstLF == 0 || raw[firstLF-1] != '\r') {
+		lineEnding = []byte("\n")
+	}
+	prefix := make([]byte, 0, len(SyncTimestampHeader)+2+len(value)+len(lineEnding))
+	prefix = append(prefix, SyncTimestampHeader...)
+	prefix = append(prefix, ':', ' ')
+	prefix = append(prefix, value...)
+	prefix = append(prefix, lineEnding...)
+	out := make([]byte, 0, len(prefix)+len(raw))
+	out = append(out, prefix...)
+	out = append(out, raw...)
+	return out, nil
+}
+
 func validateSyncMarker(marker string) (string, error) {
 	marker = strings.TrimSpace(marker)
 	if marker == "" {
@@ -218,6 +284,10 @@ func validateSyncMarker(marker string) (string, error) {
 }
 
 func hasSyncMarkerHeader(raw []byte, marker string) bool {
+	return hasHeaderValue(raw, SyncMarkerHeader, marker)
+}
+
+func hasHeaderValue(raw []byte, headerName, expected string) bool {
 	headerEnd := len(raw)
 	if i := bytes.Index(raw, []byte("\r\n\r\n")); i >= 0 {
 		headerEnd = i
@@ -227,14 +297,57 @@ func hasSyncMarkerHeader(raw []byte, marker string) bool {
 	for _, line := range bytes.Split(raw[:headerEnd], []byte{'\n'}) {
 		line = bytes.TrimSuffix(line, []byte{'\r'})
 		name, value, ok := bytes.Cut(line, []byte{':'})
-		if !ok || !strings.EqualFold(strings.TrimSpace(string(name)), SyncMarkerHeader) {
+		if !ok || !strings.EqualFold(strings.TrimSpace(string(name)), headerName) {
 			continue
 		}
-		if strings.TrimSpace(string(value)) == marker {
+		if strings.TrimSpace(string(value)) == expected {
 			return true
 		}
 	}
 	return false
+}
+
+// SyncTimestampForMarker returns the transfer time only when the exact marker
+// immediately follows it, matching the pair emitted by AddSyncHeaders. Binding
+// the fields prevents an unrelated inbound timestamp from becoming trusted
+// journal data during append recovery.
+func SyncTimestampForMarker(raw []byte, marker string) (time.Time, bool) {
+	marker, err := validateSyncMarker(marker)
+	if err != nil {
+		return time.Time{}, false
+	}
+	headerEnd := len(raw)
+	if i := bytes.Index(raw, []byte("\r\n\r\n")); i >= 0 {
+		headerEnd = i
+	} else if i := bytes.Index(raw, []byte("\n\n")); i >= 0 {
+		headerEnd = i
+	}
+	lines := bytes.Split(raw[:headerEnd], []byte{'\n'})
+	for i := 0; i+1 < len(lines); i++ {
+		name, value, ok := splitHeaderLine(lines[i])
+		if !ok || !strings.EqualFold(strings.TrimSpace(string(name)), SyncTimestampHeader) {
+			continue
+		}
+		markerName, markerValue, markerOK := splitHeaderLine(lines[i+1])
+		if !markerOK || !strings.EqualFold(strings.TrimSpace(string(markerName)), SyncMarkerHeader) ||
+			strings.TrimSpace(string(markerValue)) != marker {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(string(value)))
+		if err != nil {
+			continue
+		}
+		parsed = parsed.UTC()
+		if parsed.Year() >= 1 && parsed.Year() <= 9999 {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func splitHeaderLine(line []byte) ([]byte, []byte, bool) {
+	line = bytes.TrimSuffix(line, []byte{'\r'})
+	return bytes.Cut(line, []byte{':'})
 }
 
 // HasSyncMarkerForTask reports whether a message was previously appended by
@@ -329,6 +442,13 @@ func (s *SyncDestinationSession) FindMessageBySyncMarker(ctx context.Context, ma
 // AppendMessageWithSyncMarker idempotently appends one raw message through the
 // held destination connection, using a marker search before and after APPEND.
 func (s *SyncDestinationSession) AppendMessageWithSyncMarker(ctx context.Context, raw []byte, marker string, date time.Time, flags []string) (syncer.FetchedMessage, error) {
+	return s.AppendMessageWithSyncMarkerAt(ctx, raw, marker, time.Now().UTC(), date, flags)
+}
+
+// AppendMessageWithSyncMarkerAt is AppendMessageWithSyncMarker with an explicit
+// transfer timestamp, allowing the caller's durable journal to record the same
+// instant that is written into the raw message.
+func (s *SyncDestinationSession) AppendMessageWithSyncMarkerAt(ctx context.Context, raw []byte, marker string, syncedAt, date time.Time, flags []string) (syncer.FetchedMessage, error) {
 	if err := s.ready(ctx); err != nil {
 		return syncer.FetchedMessage{}, err
 	}
@@ -341,7 +461,7 @@ func (s *SyncDestinationSession) AppendMessageWithSyncMarker(ctx context.Context
 	} else if found {
 		return existing, nil
 	}
-	markedRaw, err := AddSyncMarkerHeader(raw, marker)
+	markedRaw, err := AddSyncHeaders(raw, marker, syncedAt)
 	if err != nil {
 		return syncer.FetchedMessage{}, err
 	}

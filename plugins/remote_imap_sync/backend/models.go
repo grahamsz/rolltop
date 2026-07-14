@@ -246,10 +246,18 @@ func messageAlreadyHandled(ctx context.Context, db *sql.DB, userID, routineID in
 }
 
 func recordHandledMessage(ctx context.Context, db *sql.DB, item routine, uidValidity, uid uint32, fingerprint, marker string, destinationUID uint32, status string) error {
+	return recordHandledMessageAt(ctx, db, item, uidValidity, uid, fingerprint, marker, destinationUID, status, time.Time{}, 0, "")
+}
+
+func recordHandledMessageAt(ctx context.Context, db *sql.DB, item routine, uidValidity, uid uint32, fingerprint, marker string, destinationUID uint32, status string, copiedAt time.Time, destinationUIDValidity uint32, destinationSHA256 string) error {
 	if status != "transferred" && status != "skipped" {
 		return fmt.Errorf("invalid handled-message status %q", status)
 	}
 	now := time.Now().UTC().Unix()
+	copiedUnix := now
+	if !copiedAt.IsZero() {
+		copiedUnix = copiedAt.UTC().Truncate(time.Second).Unix()
+	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -259,13 +267,26 @@ func recordHandledMessage(ctx context.Context, db *sql.DB, item routine, uidVali
 		(user_id, routine_id, source_uidvalidity, source_uid, source_fingerprint, marker,
 		 destination_uid, status, copied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT DO NOTHING`,
-		item.UserID, item.ID, uidValidity, uid, fingerprint, marker, destinationUID, status, now)
+		item.UserID, item.ID, uidValidity, uid, fingerprint, marker, destinationUID, status, copiedUnix)
 	if err != nil {
 		return err
 	}
 	inserted, err := result.RowsAffected()
 	if err != nil {
 		return err
+	}
+	if status == "transferred" && copiedUnix > 0 && destinationUIDValidity > 0 && destinationUID > 0 && validDestinationSHA256(destinationSHA256) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO plugin_remote_imap_sync_provenance
+			(user_id, destination_account_id, destination_mailbox_id, destination_uidvalidity, destination_uid, destination_sha256, synced_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (user_id, destination_account_id, destination_mailbox_id, destination_uidvalidity, destination_uid)
+			DO UPDATE SET synced_at = CASE
+				WHEN excluded.destination_sha256 = plugin_remote_imap_sync_provenance.destination_sha256
+				 AND excluded.synced_at < plugin_remote_imap_sync_provenance.synced_at THEN excluded.synced_at
+				ELSE plugin_remote_imap_sync_provenance.synced_at
+			END`, item.UserID, item.DestinationAccountID, item.DestinationMailboxID, destinationUIDValidity, destinationUID, destinationSHA256, copiedUnix); err != nil {
+			return err
+		}
 	}
 	transferred, skipped := 0, 0
 	if inserted > 0 && status == "transferred" {
@@ -289,6 +310,18 @@ func recordHandledMessage(ctx context.Context, db *sql.DB, item routine, uidVali
 		return sql.ErrNoRows
 	}
 	return tx.Commit()
+}
+
+func validDestinationSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if (value[i] < '0' || value[i] > '9') && (value[i] < 'a' || value[i] > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func beginRoutineRun(ctx context.Context, db *sql.DB, item routine) error {
