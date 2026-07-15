@@ -81,8 +81,17 @@ func open(path string, dataDir string, split bool, schema schemaKind, progress M
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
+	if schema == schemaUser {
+		// Every tenant has its own SQLite file, but core sync and backend plugins
+		// share that file. SQLite still has only one writer, so keep one pooled
+		// connection per tenant and let database/sql queue work fairly instead of
+		// letting sustained import traffic starve settings and mailbox sync writes.
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+	} else {
+		db.SetMaxOpenConns(8)
+		db.SetMaxIdleConns(4)
+	}
 	s := &Store{
 		db:                db,
 		dataDir:           dataDir,

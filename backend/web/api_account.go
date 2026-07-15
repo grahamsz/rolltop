@@ -61,7 +61,7 @@ func (s *Server) apiAccount(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
-	identities, err := s.store.ListMailIdentitiesForUser(r.Context(), cu.User.ID)
+	identities, err := s.store.ListCachedMailIdentitiesForUser(r.Context(), cu.User.ID)
 	if err != nil {
 		s.serverError(w, err)
 		return

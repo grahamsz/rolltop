@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	reconcileInterval = 30 * time.Second
-	pollInterval      = 15 * time.Minute
+	reconcileInterval     = 30 * time.Second
+	pollInterval          = 15 * time.Minute
+	runProgressWriteEvery = 25
 )
 
 type workerKey struct {
@@ -345,7 +346,21 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 	if err != nil {
 		return err
 	}
+	var scanned, transferred, skipped int64
+	var currentUID uint32
+	var persistedScanned int64
+	persistProgress := func(ctx context.Context) error {
+		if !runProgressNeedsFlush(scanned, persistedScanned) {
+			return nil
+		}
+		if err := updateRunProgress(ctx, db, item.UserID, runID, scanned, transferred, skipped, currentUID); err != nil {
+			return err
+		}
+		persistedScanned = scanned
+		return nil
+	}
 	fail := func(runErr error) error {
+		_ = persistProgress(context.Background())
 		if errors.Is(runErr, context.Canceled) || w.ctx.Err() != nil {
 			_ = finishRun(context.Background(), db, item.UserID, runID, "canceled", "")
 			return runErr
@@ -389,7 +404,7 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 			return fail(err)
 		}
 		if err := finishRun(w.ctx, db, item.UserID, runID, "completed", ""); err != nil {
-			return err
+			return fail(err)
 		}
 		return completeRoutineRun(w.ctx, db, item)
 	}
@@ -399,10 +414,10 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 		return fail(err)
 	}
 	defer writer.Close()
-	var scanned, transferred, skipped int64
 	var copiedAny bool
 	err = w.fetcher.FetchUIDs(w.ctx, sourceAccount(item), item.SourceMailbox, search.UIDs, func(message syncer.FetchedMessage) error {
 		scanned++
+		currentUID = message.UID
 		fingerprint := messageFingerprint(message.Raw)
 		handled, err := sourceMessageAlreadyHandled(w.ctx, db, item, search.UIDValidity, message, fingerprint)
 		if err != nil {
@@ -442,7 +457,10 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 				w.queueDestinationRefresh(item, destinationAccount, destinationMailbox)
 			}
 		}
-		return updateRunProgress(w.ctx, db, item.UserID, runID, scanned, transferred, skipped, message.UID)
+		if shouldWriteRunProgress(scanned) {
+			return persistProgress(w.ctx)
+		}
+		return nil
 	})
 	if err != nil {
 		return fail(err)
@@ -450,16 +468,32 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 	if err := w.ctx.Err(); err != nil {
 		return fail(err)
 	}
+	if runProgressNeedsFlush(scanned, persistedScanned) {
+		if err := persistProgress(w.ctx); err != nil {
+			return fail(err)
+		}
+	}
 	if copiedAny {
 		w.queueDestinationRefresh(item, destinationAccount, destinationMailbox)
 	}
 	if err := finishRun(w.ctx, db, item.UserID, runID, "completed", ""); err != nil {
-		return err
+		return fail(err)
 	}
 	if err := completeRoutineRun(w.ctx, db, item); err != nil {
 		return err
 	}
 	return nil
+}
+
+func shouldWriteRunProgress(scanned int64) bool {
+	if scanned <= 0 {
+		return false
+	}
+	return scanned == 1 || scanned%runProgressWriteEvery == 0
+}
+
+func runProgressNeedsFlush(scanned, persistedScanned int64) bool {
+	return scanned > 0 && scanned > persistedScanned
 }
 
 func sourceMessageAlreadyHandled(ctx context.Context, db *sql.DB, item routine, uidValidity uint32, message syncer.FetchedMessage, fingerprint string) (bool, error) {
