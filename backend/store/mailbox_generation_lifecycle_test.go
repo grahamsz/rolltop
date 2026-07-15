@@ -26,7 +26,7 @@ func TestMailboxGenerationUpgradeLifecycleSurvivesRestartWithoutMessageState(t *
 	if _, err := db.DB().ExecContext(ctx, `UPDATE messages SET uid_validity = 0 WHERE user_id = ? AND id = ?`, user.ID, message.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, 9001); err != nil || !reset {
+	if _, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, account.ID, mailbox.ID, 9001, 2); err != nil || !reset {
 		t.Fatalf("reset=%v err=%v, want true/nil", reset, err)
 	}
 
@@ -59,7 +59,7 @@ func TestMailboxGenerationBlobCleanupRetriesFilesystemFailure(t *testing.T) {
 	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, mailbox.ID, 1, 0, 2, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, 2); err != nil || !reset {
+	if _, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, account.ID, mailbox.ID, 2, 2); err != nil || !reset {
 		t.Fatalf("reset=%v err=%v, want true/nil", reset, err)
 	}
 	queued := listMailboxGenerationBlobCleanupForTest(t, db, user.ID, account.ID, mailbox.ID)
@@ -108,7 +108,7 @@ func TestMailboxGenerationBlobCleanupProtectsReusedBlob(t *testing.T) {
 	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, mailbox.ID, 1, 0, 2, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, 2); err != nil || !reset {
+	if _, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, account.ID, mailbox.ID, 2, 2); err != nil || !reset {
 		t.Fatalf("reset=%v err=%v, want true/nil", reset, err)
 	}
 	queued := listMailboxGenerationBlobCleanupForTest(t, db, user.ID, account.ID, mailbox.ID)
@@ -154,7 +154,7 @@ func TestMailboxGenerationBlobCleanupFinishesAfterMetadataLoss(t *testing.T) {
 	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, mailbox.ID, 1, 0, 2, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, 2); err != nil || !reset {
+	if _, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, account.ID, mailbox.ID, 2, 2); err != nil || !reset {
 		t.Fatalf("reset=%v err=%v, want true/nil", reset, err)
 	}
 	queued := listMailboxGenerationBlobCleanupForTest(t, db, user.ID, account.ID, mailbox.ID)

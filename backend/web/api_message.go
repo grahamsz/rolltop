@@ -985,8 +985,20 @@ func (s *Server) apiBulkCopyMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(in.MessageIDs) > 5 {
-		run, err := s.syncer.StartCopyMessages(r.Context(), cu.User.ID, in.MessageIDs, in.MailboxID, refreshDest)
+		finishForeground := func() {}
+		if s.syncRunner != nil {
+			finishForeground, err = s.syncRunner.BeginForegroundOperation(r.Context(), cu.User.ID)
+			if err != nil {
+				writeAPIError(w, http.StatusServiceUnavailable, "could not schedule bulk copy")
+				return
+			}
+		}
+		run, err := s.syncer.StartCopyMessages(r.Context(), cu.User.ID, in.MessageIDs, in.MailboxID, func() {
+			defer finishForeground()
+			refreshDest()
+		})
 		if err != nil {
+			finishForeground()
 			if store.IsNotFound(err) {
 				writeAPIError(w, http.StatusBadRequest, "copy source or destination is no longer available")
 				return
@@ -997,6 +1009,15 @@ func (s *Server) apiBulkCopyMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true, "queued": true, "run_id": run.ID, "mailbox": dest.Name})
 		return
 	}
+	finishForeground := func() {}
+	if s.syncRunner != nil {
+		finishForeground, err = s.syncRunner.BeginForegroundOperation(r.Context(), cu.User.ID)
+		if err != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "could not schedule bulk copy")
+			return
+		}
+	}
+	defer finishForeground()
 	copied, err := s.syncer.CopyMessages(r.Context(), cu.User.ID, in.MessageIDs, in.MailboxID)
 	if err != nil {
 		if store.IsNotFound(err) {
@@ -1007,6 +1028,7 @@ func (s *Server) apiBulkCopyMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	refreshDest()
+	finishForeground()
 	writeJSON(w, map[string]any{"ok": true, "queued": false, "copied": copied, "mailbox": dest.Name})
 }
 

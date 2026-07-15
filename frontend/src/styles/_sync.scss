@@ -26,6 +26,31 @@
   }
 }
 
+.mailbox-recovery-empty {
+  min-height: 156px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-content: center;
+  align-items: start;
+  gap: 12px;
+  padding: 28px 24px;
+
+  > .icon {
+    color: var(--accent-warm-strong);
+  }
+
+  &.running > .icon {
+    color: var(--accent-strong);
+    animation: spin .8s linear infinite;
+  }
+
+  .folder-sync-copy span {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+}
+
 .search-maintenance-notice {
   margin-top: 10px;
 

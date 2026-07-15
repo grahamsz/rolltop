@@ -8,6 +8,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"rolltop/backend/store"
 )
 
 const (
@@ -103,28 +105,91 @@ func (r *Runner) RecoverPendingInboxArrivals() error {
 }
 
 func (r *Runner) queuePendingMailboxGenerationRebuilds(ctx context.Context) (int, error) {
+	epochSnapshot := r.generationRecoveryEpochSnapshot()
 	rebuilds, err := r.Service.Store.ListPendingMailboxGenerationRebuilds(ctx)
 	if err != nil {
 		return 0, err
 	}
+	pendingUsers := make(map[int64]bool, len(rebuilds))
+	pendingAccounts := make(map[int64]map[int64]bool, len(rebuilds))
 	for _, rebuild := range rebuilds {
+		pendingUsers[rebuild.UserID] = true
+		if pendingAccounts[rebuild.UserID] == nil {
+			pendingAccounts[rebuild.UserID] = map[int64]bool{}
+		}
+		pendingAccounts[rebuild.UserID][rebuild.AccountID] = true
+	}
+	r.reconcileGenerationRecoveryUsers(pendingUsers, pendingAccounts, epochSnapshot)
+	for _, replay := range r.takeReadyGenerationRecoveryAccountReplays() {
+		r.QueueAccountMailboxes(replay.userID, replay.request.accountID, []string{replay.request.mailbox})
+	}
+	// Preserve Inbox-first ordering within each account, but rotate the account
+	// attempted for each tenant so one failing server cannot monopolize recovery.
+	for _, rebuild := range r.nextMailboxGenerationRecoveryAttempts(rebuilds) {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
 		if r.queueRebuildMailbox != nil {
 			r.queueRebuildMailbox(rebuild)
+			r.markMailboxGenerationRecoveryAttempt(rebuild)
 			continue
 		}
-		r.QueueAccountMailboxes(rebuild.UserID, rebuild.AccountID, []string{rebuild.MailboxName})
+		if r.startPendingMailboxGenerationRebuild(rebuild) {
+			r.markMailboxGenerationRecoveryAttempt(rebuild)
+		}
 	}
 	return len(rebuilds), nil
 }
 
+func (r *Runner) startPendingMailboxGenerationRebuild(rebuild store.PendingMailboxGenerationRebuild) bool {
+	keys, reserved := r.reserveGenerationRecoveryMailbox(rebuild)
+	if !reserved {
+		return false
+	}
+	go func() {
+		succeeded := false
+		defer func() {
+			r.releaseGenerationRecoveryMailbox(rebuild.UserID, keys)
+			if r.context().Err() != nil {
+				return
+			}
+			if succeeded {
+				r.refreshGenerationRecoveryGateForUser(r.context(), rebuild.UserID)
+				return
+			}
+			// The recovery loop already polls durable markers. Do not turn a
+			// persistent IMAP failure into an unbounded immediate retry loop.
+			r.startMailboxGenerationRebuildRecovery()
+		}()
+		if _, err := r.Service.SyncUserAccountMailboxes(r.context(), rebuild.UserID, rebuild.AccountID,
+			[]string{rebuild.MailboxName}); err != nil {
+			log.Printf("recover mailbox generation user_id=%d account_id=%d mailbox=%s: %v",
+				rebuild.UserID, rebuild.AccountID, rebuild.MailboxName, err)
+			return
+		}
+		succeeded = true
+	}()
+	return true
+}
+
 func (r *Runner) startMailboxGenerationRebuildRecovery() {
+	r.startMailboxGenerationRebuildRecoveryLoop(false)
+}
+
+func (r *Runner) startMailboxGenerationRebuildRecoveryLoop(wakeNow bool) {
 	if r == nil || r.Service == nil || r.Service.Store == nil || r.context().Err() != nil {
 		return
 	}
 	r.mu.Lock()
+	if r.rebuildRecoveryWake == nil {
+		r.rebuildRecoveryWake = make(chan struct{}, 1)
+	}
+	if wakeNow {
+		select {
+		case r.rebuildRecoveryWake <- struct{}{}:
+		default:
+		}
+	}
 	if r.rebuildRecoveryRunning {
 		r.mu.Unlock()
 		return
@@ -134,37 +199,80 @@ func (r *Runner) startMailboxGenerationRebuildRecovery() {
 	if interval <= 0 {
 		interval = mailboxGenerationRebuildRecoveryInterval
 	}
+	wake := r.rebuildRecoveryWake
 	r.mu.Unlock()
 
-	go func() {
-		defer func() {
-			r.mu.Lock()
-			r.rebuildRecoveryRunning = false
-			r.mu.Unlock()
-		}()
+	go func(wake <-chan struct{}) {
 		timer := time.NewTimer(interval)
 		defer timer.Stop()
+		scanImmediately := false
 		for {
-			select {
-			case <-r.context().Done():
-				return
-			case <-timer.C:
+			if scanImmediately {
+				scanImmediately = false
+			} else {
+				select {
+				case <-r.context().Done():
+					r.finishMailboxGenerationRebuildRecoveryLoop()
+					return
+				case <-timer.C:
+				case <-wake:
+				}
 			}
 			remaining, err := r.queuePendingMailboxGenerationRebuilds(r.context())
 			if err != nil {
 				if r.context().Err() != nil {
+					r.finishMailboxGenerationRebuildRecoveryLoop()
 					return
 				}
 				log.Printf("recover mailbox generation rebuilds: %v", err)
-				timer.Reset(interval)
+				resetRecoveryTimer(timer, interval)
 				continue
 			}
 			if remaining == 0 {
-				return
+				if r.rebuildRecoveryBeforeStop != nil {
+					r.rebuildRecoveryBeforeStop()
+				}
+				r.mu.Lock()
+				select {
+				case <-wake:
+					r.mu.Unlock()
+					resetRecoveryTimer(timer, interval)
+					scanImmediately = true
+					continue
+				default:
+					if len(r.generationRecoveryUsers) > 0 || len(r.generationRecoveryRuns) > 0 {
+						r.mu.Unlock()
+						resetRecoveryTimer(timer, interval)
+						continue
+					}
+					r.rebuildRecoveryRunning = false
+					r.mu.Unlock()
+					return
+				}
 			}
-			timer.Reset(interval)
+			resetRecoveryTimer(timer, interval)
 		}
-	}()
+	}(wake)
+}
+
+func (r *Runner) wakeMailboxGenerationRebuildRecovery() {
+	r.startMailboxGenerationRebuildRecoveryLoop(true)
+}
+
+func (r *Runner) finishMailboxGenerationRebuildRecoveryLoop() {
+	r.mu.Lock()
+	r.rebuildRecoveryRunning = false
+	r.mu.Unlock()
+}
+
+func resetRecoveryTimer(timer *time.Timer, interval time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(interval)
 }
 
 func (r *Runner) finalizePendingInboxArrivals(ctx context.Context, userID, accountID int64, now time.Time) (int, time.Time, error) {

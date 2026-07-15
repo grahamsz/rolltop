@@ -133,9 +133,26 @@ func TestGenerationRebuildResumesWithoutRepairNotificationOrSnoozeCancellation(t
 		mailboxes:            []syncer.MailboxInfo{{Name: "INBOX"}},
 		uidValidityByMailbox: map[string]uint32{"inbox": 2},
 	}
+	tailChecked := false
+	resumeFetcher.seenUIDsHook = func() {
+		if tailChecked {
+			return
+		}
+		pending, err := db.MailboxGenerationRebuildPending(ctx, user.ID, accountRecord.ID, mailbox.ID, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !pending {
+			t.Fatal("generation marker cleared before post-fetch metadata reconciliation")
+		}
+		tailChecked = true
+	}
 	service = &syncer.Service{Store: db, Blobs: blob.New(dir), Search: searchService, Fetcher: resumeFetcher}
 	if _, err := service.SyncUserMailboxes(ctx, user.ID, []string{"INBOX"}); err != nil {
 		t.Fatal(err)
+	}
+	if !tailChecked {
+		t.Fatal("post-fetch metadata reconciliation did not run")
 	}
 	if len(resumeFetcher.fetchUIDCalls) != 0 {
 		t.Fatalf("resume used sparse requested repair calls=%v", resumeFetcher.fetchUIDCalls)

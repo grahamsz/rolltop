@@ -19,19 +19,35 @@ type Runner struct {
 	Service *Service
 	ctx     context.Context
 
-	mu                      sync.Mutex
-	autoRunning             map[int64]bool
-	mailboxRunning          map[string]bool
-	mailboxPending          map[string]bool
-	accountMailboxPending   map[string]bool
-	foregroundRunning       map[int64]int
-	attachmentPending       map[int64]bool
-	attachmentCancels       map[int64]context.CancelFunc
-	attachmentDone          map[int64]chan struct{}
-	arrivalScheduler        *inboxArrivalScheduler
-	rebuildRecoveryRunning  bool
-	rebuildRecoveryInterval time.Duration
-	queueRebuildMailbox     func(store.PendingMailboxGenerationRebuild)
+	mu                         sync.Mutex
+	autoRunning                map[int64]bool
+	mailboxRunning             map[string]bool
+	mailboxPending             map[string]bool
+	accountMailboxPending      map[string]bool
+	foregroundRunning          map[int64]int
+	attachmentPending          map[int64]bool
+	attachmentCancels          map[int64]context.CancelFunc
+	attachmentDone             map[int64]chan struct{}
+	senderStatsPending         map[int64]bool
+	generationRecoveryUsers    map[int64]bool
+	generationRecoveryRuns     map[int64]bool
+	generationRecoveryReplay   map[int64]bool
+	generationRecoveryEpoch    map[int64]uint64
+	generationRecoveryAccounts map[int64]map[int64]bool
+	generationRecoveryKnown    map[int64]bool
+	generationRecoveryCursor   map[int64]int64
+	generationRecoveryAuto     map[int64]bool
+	generationRecoveryBoxes    map[int64]map[string]string
+	generationRecoveryAccts    map[int64]map[string]deferredAccountMailbox
+	arrivalScheduler           *inboxArrivalScheduler
+	rebuildRecoveryRunning     bool
+	rebuildRecoveryInterval    time.Duration
+	rebuildRecoveryWake        chan struct{}
+	rebuildRecoveryBeforeStop  func()
+	queueRebuildMailbox        func(store.PendingMailboxGenerationRebuild)
+	replayGenerationRecovery   func(generationRecoveryReplay)
+	refreshSenderStatsForUser  func(context.Context, int64) error
+	indexAttachmentsForUser    func(context.Context, int64, int) (int, error)
 }
 
 // NewRunner builds a process-lifetime scheduler using a background context. The
@@ -48,20 +64,33 @@ func NewRunnerWithContext(ctx context.Context, service *Service) *Runner {
 		ctx = context.Background()
 	}
 	runner := &Runner{
-		Service:               service,
-		ctx:                   ctx,
-		autoRunning:           map[int64]bool{},
-		mailboxRunning:        map[string]bool{},
-		mailboxPending:        map[string]bool{},
-		accountMailboxPending: map[string]bool{},
-		foregroundRunning:     map[int64]int{},
-		attachmentPending:     map[int64]bool{},
-		attachmentCancels:     map[int64]context.CancelFunc{},
-		attachmentDone:        map[int64]chan struct{}{},
+		Service:                    service,
+		ctx:                        ctx,
+		autoRunning:                map[int64]bool{},
+		mailboxRunning:             map[string]bool{},
+		mailboxPending:             map[string]bool{},
+		accountMailboxPending:      map[string]bool{},
+		foregroundRunning:          map[int64]int{},
+		attachmentPending:          map[int64]bool{},
+		attachmentCancels:          map[int64]context.CancelFunc{},
+		attachmentDone:             map[int64]chan struct{}{},
+		senderStatsPending:         map[int64]bool{},
+		generationRecoveryUsers:    map[int64]bool{},
+		generationRecoveryRuns:     map[int64]bool{},
+		generationRecoveryReplay:   map[int64]bool{},
+		generationRecoveryEpoch:    map[int64]uint64{},
+		generationRecoveryAccounts: map[int64]map[int64]bool{},
+		generationRecoveryKnown:    map[int64]bool{},
+		generationRecoveryCursor:   map[int64]int64{},
+		generationRecoveryAuto:     map[int64]bool{},
+		generationRecoveryBoxes:    map[int64]map[string]string{},
+		generationRecoveryAccts:    map[int64]map[string]deferredAccountMailbox{},
+		rebuildRecoveryWake:        make(chan struct{}, 1),
 	}
 	runner.arrivalScheduler = newInboxArrivalScheduler(ctx, runner.finalizePendingInboxArrivals, runner.notifyInboxArrivals)
 	if service != nil {
 		service.ScheduleInboxArrival = runner.ScheduleInboxArrival
+		service.MailboxGenerationRecoveryStarted = runner.SignalMailboxGenerationRecovery
 	}
 	return runner
 }
@@ -82,6 +111,11 @@ func (r *Runner) Start(userID int64) bool {
 		return false
 	}
 	r.mu.Lock()
+	if r.generationRecoveryGatedLocked(userID) {
+		r.deferGenerationRecoveryAutoLocked(userID)
+		r.mu.Unlock()
+		return false
+	}
 	if r.autoRunning[userID] {
 		r.mu.Unlock()
 		return false
@@ -95,6 +129,8 @@ func (r *Runner) Start(userID int64) bool {
 			r.mu.Lock()
 			delete(r.autoRunning, userID)
 			r.mu.Unlock()
+			r.refreshGenerationRecoveryGateForUser(r.context(), userID)
+			r.RefreshSenderStats(userID)
 			r.StartAttachmentIndex(userID)
 		}()
 		mailboxes, err := r.Service.AutoMailboxNames(ctx, userID)
@@ -113,7 +149,6 @@ func (r *Runner) Start(userID int64) bool {
 				log.Printf("sync user_id=%d mailbox=%s skipped: already running", userID, mailbox)
 			}
 		}
-		r.RefreshSenderStats(userID)
 	}()
 	return true
 }
@@ -134,6 +169,7 @@ func (r *Runner) StartMailboxes(userID int64, mailboxes []string) bool {
 	}
 	go func() {
 		r.runReservedMailboxes(userID, mailboxes, keys)
+		r.refreshGenerationRecoveryGateForUser(r.context(), userID)
 		r.RefreshSenderStats(userID)
 		r.StartAttachmentIndex(userID)
 	}()
@@ -156,6 +192,7 @@ func (r *Runner) StartAccountMailboxes(userID, accountID int64, mailboxes []stri
 	}
 	go func() {
 		r.runReservedAccountMailboxes(userID, accountID, mailboxes, keys)
+		r.refreshGenerationRecoveryGateForUser(r.context(), userID)
 		r.RefreshSenderStats(userID)
 		r.StartAttachmentIndex(userID)
 	}()
@@ -183,6 +220,7 @@ func (r *Runner) QueueAccountMailboxes(userID, accountID int64, mailboxes []stri
 		}
 		go func(names []string, keys []string) {
 			r.runReservedAccountMailboxes(userID, accountID, names, keys)
+			r.refreshGenerationRecoveryGateForUser(r.context(), userID)
 			r.RefreshSenderStats(userID)
 			r.StartAttachmentIndex(userID)
 		}(names, keys)
@@ -206,19 +244,19 @@ func (r *Runner) StartMailboxMaintenance(userID int64, mailbox store.Mailbox, la
 	if userID <= 0 || mailbox.AccountID <= 0 || len(mailboxes) == 0 {
 		return store.SyncRun{}, false, fmt.Errorf("mailbox is required")
 	}
-	keys, ok := r.reserveAccountMailboxes(userID, mailbox.AccountID, mailboxes)
+	keys, ok := r.reserveAccountMailboxesForMaintenance(userID, mailbox.AccountID, mailboxes)
 	if !ok {
 		return store.SyncRun{}, false, nil
 	}
 	run, err := r.Service.Store.CreateSyncRun(context.Background(), userID, mailbox.AccountID)
 	if err != nil {
-		r.startAccountMailboxReruns(userID, mailbox.AccountID, r.releaseAccountMailboxReservations(userID, mailbox.AccountID, mailboxes, keys))
+		r.releaseMailboxMaintenanceReservation(userID, mailbox.AccountID, mailboxes, keys)
 		r.StartAttachmentIndex(userID)
 		return store.SyncRun{}, true, err
 	}
 	progress := store.SyncProgress{MailboxesTotal: 1, CurrentMailbox: mailbox.Name, LatestNewFrom: "rolltop:maintenance", LatestNewSubject: label}
 	if err := r.Service.Store.UpdateSyncRunProgress(context.Background(), userID, run.ID, progress); err != nil {
-		r.startAccountMailboxReruns(userID, mailbox.AccountID, r.releaseAccountMailboxReservations(userID, mailbox.AccountID, mailboxes, keys))
+		r.releaseMailboxMaintenanceReservation(userID, mailbox.AccountID, mailboxes, keys)
 		r.StartAttachmentIndex(userID)
 		return store.SyncRun{}, true, err
 	}
@@ -245,13 +283,13 @@ func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount
 	if len(names) == 0 {
 		names = []string{"__account__"}
 	}
-	keys, ok := r.reserveAccountMailboxes(userID, account.ID, names)
+	keys, ok := r.reserveAccountMailboxesForMaintenance(userID, account.ID, names)
 	if !ok {
 		return store.SyncRun{}, false, nil
 	}
 	run, err := r.Service.Store.CreateSyncRun(context.Background(), userID, account.ID)
 	if err != nil {
-		r.startAccountMailboxReruns(userID, account.ID, r.releaseAccountMailboxReservations(userID, account.ID, names, keys))
+		r.releaseMailboxMaintenanceReservation(userID, account.ID, names, keys)
 		r.StartAttachmentIndex(userID)
 		return store.SyncRun{}, true, err
 	}
@@ -262,7 +300,7 @@ func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount
 		LatestNewSubject: label,
 	}
 	if err := r.Service.Store.UpdateSyncRunProgress(context.Background(), userID, run.ID, progress); err != nil {
-		r.startAccountMailboxReruns(userID, account.ID, r.releaseAccountMailboxReservations(userID, account.ID, names, keys))
+		r.releaseMailboxMaintenanceReservation(userID, account.ID, names, keys)
 		r.StartAttachmentIndex(userID)
 		return store.SyncRun{}, true, err
 	}
@@ -287,7 +325,7 @@ func (r *Runner) runReservedMailboxMaintenance(userID, accountID int64, mailboxe
 			log.Printf("finish mailbox maintenance user_id=%d run_id=%d: %v", userID, runID, err)
 		}
 		r.Service.notify(userID)
-		r.startAccountMailboxReruns(userID, accountID, r.releaseAccountMailboxReservations(userID, accountID, mailboxes, keys))
+		r.releaseMailboxMaintenanceReservation(userID, accountID, mailboxes, keys)
 		r.StartAttachmentIndex(userID)
 	}()
 	if err := fn(r.context(), runID, &progress); err != nil {
@@ -295,6 +333,12 @@ func (r *Runner) runReservedMailboxMaintenance(userID, accountID int64, mailboxe
 		errText = err.Error()
 		log.Printf("mailbox maintenance user_id=%d mailboxes=%s: %v", userID, strings.Join(mailboxes, ","), err)
 	}
+}
+
+func (r *Runner) releaseMailboxMaintenanceReservation(userID, accountID int64, mailboxes, keys []string) {
+	reruns := r.releaseAccountMailboxReservations(userID, accountID, mailboxes, keys)
+	r.refreshGenerationRecoveryGateForUser(r.context(), userID)
+	r.startAccountMailboxReruns(userID, accountID, reruns)
 }
 
 func mailboxNamesForReservation(mailboxes []store.Mailbox) []string {
@@ -335,6 +379,7 @@ func (r *Runner) StartPriorityMailboxes(userID int64, mailboxes []string) bool {
 		started = true
 		go func(names []string, keys []string) {
 			r.runReservedMailboxes(userID, names, keys)
+			r.refreshGenerationRecoveryGateForUser(r.context(), userID)
 			r.RefreshSenderStats(userID)
 			r.StartAttachmentIndex(userID)
 		}(names, keys)
@@ -348,9 +393,34 @@ func (r *Runner) RefreshSenderStats(userID int64) {
 	if r == nil || r.Service == nil || r.Service.Store == nil || userID <= 0 {
 		return
 	}
-	if err := r.Service.Store.RefreshReadSenderStatsForUser(context.Background(), userID); err != nil {
+	if r.deferSenderStatsForGenerationRecovery(userID) {
+		return
+	}
+	err := r.refreshReadSenderStatsForUser(context.Background(), userID)
+	r.mu.Lock()
+	if err != nil {
+		r.senderStatsPending[userID] = true
+	} else {
+		delete(r.senderStatsPending, userID)
+	}
+	r.mu.Unlock()
+	if err != nil {
 		log.Printf("refresh sender stats user_id=%d: %v", userID, err)
 	}
+}
+
+func (r *Runner) refreshReadSenderStatsForUser(ctx context.Context, userID int64) error {
+	if r.refreshSenderStatsForUser != nil {
+		return r.refreshSenderStatsForUser(ctx, userID)
+	}
+	return r.Service.Store.RefreshReadSenderStatsForUser(ctx, userID)
+}
+
+func (r *Runner) indexPendingAttachmentsForUser(ctx context.Context, userID int64, limit int) (int, error) {
+	if r.indexAttachmentsForUser != nil {
+		return r.indexAttachmentsForUser(ctx, userID, limit)
+	}
+	return r.Service.IndexPendingAttachmentsForUser(ctx, userID, limit)
 }
 
 func (r *Runner) runMailboxes(userID int64, mailboxes []string) bool {
@@ -372,6 +442,10 @@ func (r *Runner) reserveMailboxes(userID int64, mailboxes []string) ([]string, b
 	keys := mailboxKeys(userID, mailboxes)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.generationRecoveryGatedLocked(userID) {
+		r.deferGenerationRecoveryMailboxesLocked(userID, mailboxes)
+		return nil, false
+	}
 	for _, mailbox := range mailboxes {
 		if r.mailboxReservedByAnyAccountLocked(userID, mailbox) {
 			return nil, false
@@ -388,6 +462,29 @@ func (r *Runner) reserveAccountMailboxes(userID, accountID int64, mailboxes []st
 	keys := accountMailboxKeys(userID, accountID, mailboxes)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.generationRecoveryAccountGatedLocked(userID, accountID) {
+		r.deferGenerationRecoveryAccountMailboxesLocked(userID, accountID, mailboxes)
+		return nil, false
+	}
+	for _, mailbox := range mailboxes {
+		if r.accountMailboxReservedLocked(userID, accountID, mailbox) {
+			return nil, false
+		}
+	}
+	for _, key := range keys {
+		r.mailboxRunning[key] = true
+	}
+	r.pauseAttachmentIndexLocked(userID)
+	return keys, true
+}
+
+func (r *Runner) reserveAccountMailboxesForMaintenance(userID, accountID int64, mailboxes []string) ([]string, bool) {
+	keys := accountMailboxKeys(userID, accountID, mailboxes)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.generationRecoveryGatedLocked(userID) {
+		return nil, false
+	}
 	for _, mailbox := range mailboxes {
 		if r.accountMailboxReservedLocked(userID, accountID, mailbox) {
 			return nil, false
@@ -404,6 +501,10 @@ func (r *Runner) reserveOrQueueMailboxes(userID int64, mailboxes []string) ([]st
 	keys := mailboxKeys(userID, mailboxes)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.generationRecoveryGatedLocked(userID) {
+		r.deferGenerationRecoveryMailboxesLocked(userID, mailboxes)
+		return nil, false
+	}
 	for _, mailbox := range mailboxes {
 		if !r.mailboxReservedByAnyAccountLocked(userID, mailbox) {
 			continue
@@ -424,6 +525,10 @@ func (r *Runner) reserveOrQueueAccountMailboxes(userID, accountID int64, mailbox
 	keys := accountMailboxKeys(userID, accountID, mailboxes)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.generationRecoveryAccountGatedLocked(userID, accountID) {
+		r.deferGenerationRecoveryAccountMailboxesLocked(userID, accountID, mailboxes)
+		return nil, false
+	}
 	for _, mailbox := range mailboxes {
 		if !r.accountMailboxReservedLocked(userID, accountID, mailbox) {
 			continue
@@ -608,6 +713,8 @@ func (r *Runner) BeginForegroundOperation(ctx context.Context, userID int64) (fu
 				r.foregroundRunning[userID]--
 			}
 			r.mu.Unlock()
+			r.refreshGenerationRecoveryGateForUser(r.context(), userID)
+			r.wakeMailboxGenerationRebuildRecovery()
 			r.StartAttachmentIndex(userID)
 		})
 	}
@@ -617,6 +724,25 @@ func (r *Runner) BeginForegroundOperation(ctx context.Context, userID int64) (fu
 		case <-ctx.Done():
 			finish()
 			return func() {}, ctx.Err()
+		}
+	}
+	for {
+		r.mu.Lock()
+		recoveryRunning := r.generationRecoveryRuns[userID]
+		replayRunning := r.generationRecoveryReplay[userID] && r.generationRecoveryReplayWorkRunningLocked(userID)
+		r.mu.Unlock()
+		if !recoveryRunning && !replayRunning {
+			break
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			finish()
+			return func() {}, ctx.Err()
+		case <-timer.C:
 		}
 	}
 	return finish, nil
@@ -647,23 +773,27 @@ func (r *Runner) StartAttachmentIndex(userID int64) bool {
 
 	go func() {
 		drainMore := false
+		indexFailed := false
 		defer func() {
 			r.mu.Lock()
 			delete(r.mailboxRunning, key)
 			delete(r.attachmentCancels, userID)
 			delete(r.attachmentDone, userID)
-			if drainMore {
+			if drainMore || indexFailed {
 				r.attachmentPending[userID] = true
 			}
-			restart := r.attachmentPending[userID] && !r.userForegroundRunningLocked(userID)
+			restart := r.attachmentPending[userID] && !indexFailed && !r.userForegroundRunningLocked(userID)
 			r.mu.Unlock()
 			close(done)
+			r.refreshGenerationRecoveryGateForUser(r.context(), userID)
+			r.wakeMailboxGenerationRebuildRecovery()
 			if restart {
 				r.StartAttachmentIndex(userID)
 			}
 		}()
-		n, err := r.Service.IndexPendingAttachmentsForUser(ctx, userID, attachmentIndexBatchSize)
+		n, err := r.indexPendingAttachmentsForUser(ctx, userID, attachmentIndexBatchSize)
 		if err != nil {
+			indexFailed = true
 			if ctx.Err() == nil {
 				log.Printf("attachment index user_id=%d: %v", userID, err)
 			}
@@ -685,7 +815,7 @@ func (r *Runner) pauseAttachmentIndexLocked(userID int64) {
 }
 
 func (r *Runner) userForegroundRunningLocked(userID int64) bool {
-	if r.autoRunning[userID] || r.foregroundRunning[userID] > 0 {
+	if r.generationRecoveryGatedLocked(userID) || r.autoRunning[userID] || r.foregroundRunning[userID] > 0 {
 		return true
 	}
 	prefix := fmt.Sprintf("%d:", userID)

@@ -123,6 +123,17 @@ export function MailView({
   const listTransitionSpeed: SlideSpeed = cachedTransitionPage ? "fast" : listPending ? "slow" : "fast";
   const activeRun = mailboxActiveRun(mailbox, activeSyncRuns, latestSyncRun);
   const effectiveMode = mailbox ? effectiveMailboxSyncMode(mailbox, mailboxes) : "auto";
+  const accountActiveRun = activeRun || (mailbox ? activeSyncRuns.find((run) =>
+    run.status === "running" && run.account_id === mailbox.account_id
+  ) || null : null);
+  const showRecoveryEmptyState = Boolean(
+    mailbox &&
+    displayConversations.length === 0 &&
+    mailbox.remote_message_count > 0 &&
+    typeof mailbox.local_message_count === "number" &&
+    mailbox.local_message_count < mailbox.remote_message_count &&
+    (effectiveMode === "auto" || Boolean(accountActiveRun))
+  );
   const syncAlreadyRunning = syncBusy || (mailbox ? Boolean(activeRun) : activeSyncRuns.length > 0);
 
   async function refreshByPull() {
@@ -356,6 +367,9 @@ export function MailView({
                 onStarredChange={updateStarred}
                 onReadStatesChange={updateReadStates}
                 onMessagesMoved={removeMovedConversations}
+                emptyState={showRecoveryEmptyState && mailbox ? (
+                  <MailboxRecoveryEmptyState mailbox={mailbox} activeRun={accountActiveRun} />
+                ) : undefined}
               />
             )}
           </SlidingMessageListStage>
@@ -530,6 +544,64 @@ function FolderSyncNotice({
           {buttonLabel}
         </button>
       ) : null}
+    </section>
+  );
+}
+
+function MailboxRecoveryEmptyState({
+  mailbox,
+  activeRun
+}: {
+  mailbox: Mailbox;
+  activeRun: SyncRun | null;
+}) {
+  const localCount = Math.max(0, mailbox.local_message_count || 0);
+  const remoteCount = Math.max(0, mailbox.remote_message_count || 0);
+  const runMailbox = activeRun?.current_mailbox.trim() || "";
+  const runMatchesMailbox = Boolean(activeRun) && runMailbox.toLowerCase() === mailbox.name.trim().toLowerCase();
+  const total = Math.max(0, activeRun?.messages_total || 0);
+  const seen = Math.max(0, activeRun?.messages_seen || 0);
+  const progress = total > 0 ? Math.min(100, Math.round((seen / total) * 100)) : 0;
+  const title = runMatchesMailbox
+    ? "Loading this folder"
+    : activeRun
+      ? "Account sync is still running"
+      : "This folder has not finished loading";
+  const activity = activeRun
+    ? total > 0
+      ? `${runMatchesMailbox ? "Folder sync" : `Syncing ${runMailbox || "this account"}`}: ${Math.min(seen, total).toLocaleString()} of ${total.toLocaleString()} checked.`
+      : runMatchesMailbox
+        ? "Checking this folder for messages now."
+        : `Currently syncing ${runMailbox || "this account"}.`
+    : "Waiting for this folder's next synchronization.";
+
+  return (
+    <section
+      className={`mailbox-recovery-empty${activeRun ? " running" : ""}`}
+      role="status"
+      aria-live="polite"
+      aria-busy={Boolean(activeRun)}
+    >
+      <Icon name={activeRun ? "sync" : "report"} />
+      <div className="folder-sync-copy">
+        <strong>{title}</strong>
+        <span>
+          The mail server reports {remoteCount.toLocaleString()} messages; {localCount.toLocaleString()} are available in Rolltop so far.
+        </span>
+        <span>{activity}</span>
+        {activeRun && total > 0 ? (
+          <div
+            className="folder-sync-progress"
+            role="progressbar"
+            aria-label={`${runMailbox || mailbox.name} sync progress`}
+            aria-valuemin={0}
+            aria-valuemax={total}
+            aria-valuenow={Math.min(seen, total)}
+          >
+            <div style={{ width: `${progress}%` }} />
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -935,7 +1007,8 @@ function MessageList({
   onStarredChange,
   onReadStatesChange,
   onMessagesMoved,
-  snoozedView = false
+  snoozedView = false,
+  emptyState
 }: {
   csrf: string;
   conversations: Conversation[];
@@ -955,6 +1028,7 @@ function MessageList({
   onReadStatesChange: (states: ConversationReadState[]) => void;
   onMessagesMoved: (messageIDs: number[]) => void;
   snoozedView?: boolean;
+  emptyState?: ReactNode;
 }) {
   const [selectedIDs, setSelectedIDs] = useState<Set<number>>(() => new Set());
   const [dismissedIDs, setDismissedIDs] = useState<Set<number>>(() => new Set());
@@ -1637,7 +1711,7 @@ function MessageList({
   }
 
   if (visible.length === 0) {
-    return <div className="panel muted">No messages here.</div>;
+    return emptyState ?? <div className="panel muted">No messages here.</div>;
   }
   const arrivalActive = visible.some((conversation) => highlightMessageIDs?.has(conversation.message.id));
   const selectedConversations = visible.filter((conversation) => selectedIDs.has(conversation.message.id));

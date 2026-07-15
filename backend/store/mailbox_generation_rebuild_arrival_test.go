@@ -53,7 +53,7 @@ func TestPendingInboxArrivalSurvivesGenerationResetAndRestart(t *testing.T) {
 		t.Fatalf("initial classification=%q, want pending", decision.Arrival.Classification)
 	}
 
-	stale, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, 7002)
+	stale, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, account.ID, mailbox.ID, 7002, 71)
 	if err != nil || !reset || len(stale) != 1 {
 		t.Fatalf("generation reset stale=%d reset=%v err=%v", len(stale), reset, err)
 	}
@@ -240,7 +240,7 @@ func TestPendingInboxArrivalRebuildFailsClosedForAmbiguousDuplicate(t *testing.T
 			t.Fatalf("duplicate %d classification=%q, want pending", i, decision.Arrival.Classification)
 		}
 	}
-	if _, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, 8002); err != nil || !reset {
+	if _, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, account.ID, mailbox.ID, 8002, 2); err != nil || !reset {
 		t.Fatalf("generation reset reset=%v err=%v", reset, err)
 	}
 	mailbox, err = db.GetMailboxForUser(ctx, user.ID, mailbox.ID)
@@ -320,7 +320,7 @@ func TestPendingInboxArrivalCanonicalRebuildUsesRefetchedFingerprint(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, 8102); err != nil || !reset {
+	if _, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, account.ID, mailbox.ID, 8102, 8); err != nil || !reset {
 		t.Fatalf("generation reset reset=%v err=%v", reset, err)
 	}
 	mailbox, err = db.GetMailboxForUser(ctx, user.ID, mailbox.ID)
@@ -354,6 +354,196 @@ func TestPendingInboxArrivalCanonicalRebuildUsesRefetchedFingerprint(t *testing.
 	created, err := db.FinalizeDueInboxArrivals(ctx, user.ID, account.ID, decision.Arrival.AvailableAt)
 	if err != nil || created != 1 {
 		t.Fatalf("canonical restored arrival finalization created=%d err=%v, want one", created, err)
+	}
+}
+
+func TestPostFloorCurrentGenerationInboxArrivalFinalizesDuringRebuild(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	createInbox := func(email string) (User, MailAccount, Mailbox) {
+		t.Helper()
+		user, err := db.CreateUser(ctx, email, "Arrival gate", "hash", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		account, err := db.CreateMailAccount(ctx, MailAccount{
+			UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993,
+			Username: user.Email, EncryptedPassword: "secret", UseTLS: true, Mailbox: "INBOX",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mailbox, err := db.GetOrCreateMailboxWithRole(ctx, user.ID, account.ID, "INBOX", "inbox")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, mailbox.ID, 0, 0, 41, 9202); err != nil {
+			t.Fatal(err)
+		}
+		mailbox, err = db.GetMailboxForUser(ctx, user.ID, mailbox.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return user, account, mailbox
+	}
+
+	owner, account, mailbox := createInbox("arrival-gate-owner@example.test")
+	if _, err := db.DB().ExecContext(ctx, `INSERT INTO mailbox_generation_rebuilds
+		(user_id, account_id, mailbox_id, target_uid_validity, arrival_uid_floor, created_at, updated_at)
+		VALUES (?, ?, ?, 9202, 41, 1, 1)`, owner.ID, account.ID, mailbox.ID); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Truncate(time.Second)
+	createPending := func(user User, account MailAccount, mailbox Mailbox, uid uint32, uidValidity int64, suffix string) PendingInboxArrival {
+		t.Helper()
+		raw := []byte(fmt.Sprintf("Message-ID: <%s@example.test>\r\nFrom: Sender <sender@example.test>\r\nSubject: %s\r\n\r\nbody\r\n", suffix, suffix))
+		message, fingerprint := createGenerationArrivalMessage(t, ctx, db, user.ID, account.ID,
+			mailbox, uid, uidValidity, fmt.Sprintf("<%s@example.test>", suffix), raw, base, suffix)
+		decision, err := db.HoldOrClassifyInboxArrival(ctx, user.ID, 0, message, fingerprint, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision.Arrival.Classification != ArrivalPending {
+			t.Fatalf("%s classification=%q, want pending", suffix, decision.Arrival.Classification)
+		}
+		return decision.Arrival
+	}
+
+	preFloor := createPending(owner, account, mailbox, 40, 9202, "pre-floor")
+	postFloor := createPending(owner, account, mailbox, 41, 9202, "post-floor")
+	wrongGeneration := createPending(owner, account, mailbox, 42, 9202, "wrong-generation")
+	if _, err := db.DB().ExecContext(ctx, `UPDATE messages SET uid_validity = 9203
+		WHERE user_id = ? AND id = ?`, owner.ID, wrongGeneration.MessageID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A marker target alone is insufficient: the mailbox must still identify
+	// that target as its current generation at finalization time.
+	if _, err := db.DB().ExecContext(ctx, `UPDATE mailboxes SET uidvalidity = 9203
+		WHERE user_id = ? AND account_id = ? AND id = ?`, owner.ID, account.ID, mailbox.ID); err != nil {
+		t.Fatal(err)
+	}
+	due, err := db.ListDueInboxArrivals(ctx, owner.ID, account.ID, postFloor.AvailableAt, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("stale current generation exposed arrivals=%+v", due)
+	}
+	if _, err := db.DB().ExecContext(ctx, `UPDATE mailboxes SET uidvalidity = 9202
+		WHERE user_id = ? AND account_id = ? AND id = ?`, owner.ID, account.ID, mailbox.ID); err != nil {
+		t.Fatal(err)
+	}
+	sourceMailbox, err := db.GetOrCreateMailboxWithRole(ctx, owner.ID, account.ID, "Archive", "archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxRemoteStatus(ctx, owner.ID, sourceMailbox.ID, 0, 0, 1, 9301); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB().ExecContext(ctx, `INSERT INTO mailbox_generation_rebuilds
+		(user_id, account_id, mailbox_id, target_uid_validity, arrival_uid_floor, created_at, updated_at)
+		VALUES (?, ?, ?, 9301, 1, 1, 1)`, owner.ID, account.ID, sourceMailbox.ID); err != nil {
+		t.Fatal(err)
+	}
+	due, err = db.ListDueInboxArrivals(ctx, owner.ID, account.ID, postFloor.AvailableAt, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("unrestored source mailbox exposed Inbox arrivals=%+v", due)
+	}
+	if _, err := db.DB().ExecContext(ctx, `DELETE FROM mailbox_generation_rebuilds
+		WHERE user_id = ? AND account_id = ? AND mailbox_id = ?`, owner.ID, account.ID, mailbox.ID); err != nil {
+		t.Fatal(err)
+	}
+	due, err = db.ListDueInboxArrivals(ctx, owner.ID, account.ID, postFloor.AvailableAt, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("source marker exposed arrivals after Inbox marker cleared=%+v", due)
+	}
+	if _, err := db.DB().ExecContext(ctx, `INSERT INTO mailbox_generation_rebuilds
+		(user_id, account_id, mailbox_id, target_uid_validity, arrival_uid_floor, created_at, updated_at)
+		VALUES (?, ?, ?, 9202, 41, 1, 1)`, owner.ID, account.ID, mailbox.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB().ExecContext(ctx, `DELETE FROM mailbox_generation_rebuilds
+		WHERE user_id = ? AND account_id = ? AND mailbox_id = ?`, owner.ID, account.ID, sourceMailbox.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	due, err = db.ListDueInboxArrivals(ctx, owner.ID, account.ID, postFloor.AvailableAt, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 || due[0].ID != postFloor.ID {
+		t.Fatalf("eligible arrivals=%+v, want only post-floor arrival %d", due, postFloor.ID)
+	}
+	nextDue, err := db.NextPendingInboxArrivalDue(ctx, owner.ID, account.ID)
+	if err != nil || !nextDue.Equal(postFloor.AvailableAt) {
+		t.Fatalf("next eligible due=%v err=%v, want %v/nil", nextDue, err, postFloor.AvailableAt)
+	}
+	schedules, err := db.ListPendingInboxArrivalSchedules(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerScheduled := false
+	for _, schedule := range schedules {
+		if schedule.UserID == owner.ID && schedule.AccountID == account.ID {
+			ownerScheduled = true
+		}
+	}
+	if !ownerScheduled {
+		t.Fatal("post-floor current-generation arrival was absent from startup schedules")
+	}
+
+	created, err := db.FinalizeDueInboxArrivals(ctx, owner.ID, account.ID, postFloor.AvailableAt)
+	if err != nil || created != 1 {
+		t.Fatalf("first finalization created=%d err=%v, want 1/nil", created, err)
+	}
+	created, err = db.FinalizeDueInboxArrivals(ctx, owner.ID, account.ID, postFloor.AvailableAt)
+	if err != nil || created != 0 {
+		t.Fatalf("idempotent finalization created=%d err=%v, want 0/nil", created, err)
+	}
+	events, count, _, err := db.NewMailEventsAfter(ctx, owner.ID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || len(events) != 1 || events[0].MessageID != postFloor.MessageID {
+		t.Fatalf("owner events=%+v count=%d, want only post-floor message %d", events, count, postFloor.MessageID)
+	}
+	for _, blocked := range []PendingInboxArrival{preFloor, wrongGeneration} {
+		var classification string
+		if err := db.DB().QueryRowContext(ctx, `SELECT classification FROM pending_inbox_arrivals
+			WHERE user_id = ? AND id = ?`, owner.ID, blocked.ID).Scan(&classification); err != nil {
+			t.Fatal(err)
+		}
+		if classification != string(ArrivalPending) {
+			t.Fatalf("blocked arrival %d classification=%q, want pending", blocked.ID, classification)
+		}
+	}
+	if exists, err := db.MailboxGenerationRebuildExists(ctx, owner.ID, account.ID, mailbox.ID); err != nil || !exists {
+		t.Fatalf("arrival finalization removed rebuild marker exists=%t err=%v", exists, err)
+	}
+
+	// The owner's marker must not suppress an unrelated tenant's ordinary Inbox
+	// arrival, even when it has the same UID and UIDVALIDITY.
+	other, otherAccount, otherMailbox := createInbox("arrival-gate-other@example.test")
+	otherArrival := createPending(other, otherAccount, otherMailbox, 41, 9202, "other-tenant")
+	created, err = db.FinalizeDueInboxArrivals(ctx, other.ID, otherAccount.ID, otherArrival.AvailableAt)
+	if err != nil || created != 1 {
+		t.Fatalf("other tenant finalization created=%d err=%v, want 1/nil", created, err)
+	}
+	_, otherCount, _, err := db.NewMailEventsAfter(ctx, other.ID, 0, 10)
+	if err != nil || otherCount != 1 {
+		t.Fatalf("other tenant events=%d err=%v, want 1/nil", otherCount, err)
 	}
 }
 

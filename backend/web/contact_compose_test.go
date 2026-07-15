@@ -4,8 +4,10 @@ package web
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,11 +25,15 @@ AQIDBAUGBwg=
 -----END PGP PUBLIC KEY BLOCK-----`
 
 type captureSender struct {
-	msg   smtpclient.Message
-	count int
+	msg    smtpclient.Message
+	count  int
+	onSend func()
 }
 
 func (s *captureSender) Send(_ context.Context, _ store.MailAccount, msg smtpclient.Message) ([]byte, error) {
+	if s.onSend != nil {
+		s.onSend()
+	}
 	s.msg = msg
 	s.count++
 	raw, _, err := smtpclient.BuildRaw(msg)
@@ -48,9 +54,31 @@ type captureAppendFetcher struct {
 	nextUID     uint32
 	uidValidity uint32
 	flags       []string
+	onAppend    func()
+}
+
+type blockingMailboxStatusFetcher struct {
+	*captureAppendFetcher
+	status  syncer.MailboxStatus
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (f *blockingMailboxStatusFetcher) MailboxStatus(ctx context.Context, _ store.MailAccount, _ string) (syncer.MailboxStatus, error) {
+	f.once.Do(func() { close(f.started) })
+	select {
+	case <-f.release:
+		return f.status, nil
+	case <-ctx.Done():
+		return syncer.MailboxStatus{}, ctx.Err()
+	}
 }
 
 func (f *captureAppendFetcher) AppendMessage(_ context.Context, _ store.MailAccount, mailbox string, raw []byte, _ string, date time.Time) (syncer.FetchedMessage, error) {
+	if f.onAppend != nil {
+		f.onAppend()
+	}
 	if f.nextUID == 0 {
 		f.nextUID = 1
 	}
@@ -60,6 +88,9 @@ func (f *captureAppendFetcher) AppendMessage(_ context.Context, _ store.MailAcco
 }
 
 func (f *captureAppendFetcher) AppendMessageWithFlags(_ context.Context, _ store.MailAccount, mailbox string, raw []byte, _ string, date time.Time, flags []string) (syncer.FetchedMessage, error) {
+	if f.onAppend != nil {
+		f.onAppend()
+	}
 	if f.nextUID == 0 {
 		f.nextUID = 1
 	}
@@ -121,6 +152,106 @@ func TestSendComposeRequiresSentRoleBeforeSMTP(t *testing.T) {
 	}
 }
 
+func TestSendComposeHoldsForegroundDuringSMTP(t *testing.T) {
+	ctx := context.Background()
+	server, user, fromID, sender, _ := setupAutocryptComposeTest(t, ctx, false)
+	runner := syncer.NewRunner(server.syncer)
+	server.syncRunner = runner
+
+	heldForeground := false
+	sender.onSend = func() {
+		heldForeground = runner.IsRunning(user.ID)
+	}
+	if _, err := server.sendCompose(ctx, currentUser{User: user}, composeForm{
+		To:             "recipient@example.test",
+		Subject:        "Reserved delivery",
+		Body:           "body",
+		FromIdentityID: fromID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !heldForeground {
+		t.Fatal("SMTP send ran without a foreground reservation")
+	}
+	if runner.IsRunning(user.ID) {
+		t.Fatal("compose foreground reservation remained active after send")
+	}
+}
+
+func TestSendComposeDoesNotSendWhenForegroundReservationIsCanceled(t *testing.T) {
+	ctx := context.Background()
+	server, user, fromID, sender, _ := setupAutocryptComposeTest(t, ctx, false)
+	accounts, err := server.store.ListMailAccountsForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("mail account count = %d, want 1", len(accounts))
+	}
+	sentMailbox, err := server.store.GetMailbox(ctx, user.ID, accounts[0].ID, "Sent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const targetUIDValidity = 901
+	now := time.Now().Unix()
+	if _, err := server.store.DB().ExecContext(ctx, `INSERT INTO mailbox_generation_rebuilds
+		(user_id, account_id, mailbox_id, target_uid_validity, arrival_uid_floor, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		user.ID, accounts[0].ID, sentMailbox.ID, targetUIDValidity, 1, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	recoveryStarted := make(chan struct{})
+	releaseRecovery := make(chan struct{})
+	fetcher := &blockingMailboxStatusFetcher{
+		captureAppendFetcher: &captureAppendFetcher{nextUID: 2, uidValidity: targetUIDValidity},
+		status:               syncer.MailboxStatus{UIDNext: 2, UIDValidity: targetUIDValidity},
+		started:              recoveryStarted,
+		release:              releaseRecovery,
+	}
+	service := &syncer.Service{Store: server.store, Blobs: server.blobs, Fetcher: fetcher}
+	runnerCtx, stopRunner := context.WithCancel(context.Background())
+	defer stopRunner()
+	runner := syncer.NewRunnerWithContext(runnerCtx, service)
+	server.syncer = service
+	server.syncRunner = runner
+	if err := runner.RecoverPendingInboxArrivals(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-recoveryStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("mailbox generation recovery did not start")
+	}
+
+	sendCtx, cancelSend := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancelSend()
+	_, err = server.sendCompose(sendCtx, currentUser{User: user}, composeForm{
+		To:             "recipient@example.test",
+		Subject:        "Canceled reservation",
+		Body:           "body",
+		FromIdentityID: fromID,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("sendCompose error = %v, want deadline exceeded", err)
+	}
+	if !strings.Contains(err.Error(), "message was not sent") {
+		t.Fatalf("sendCompose error = %q, want explicit not-sent status", err)
+	}
+	if sender.count != 0 {
+		t.Fatalf("SMTP send count = %d, want 0", sender.count)
+	}
+
+	close(releaseRecovery)
+	deadline := time.Now().Add(2 * time.Second)
+	for runner.IsRunning(user.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("mailbox generation recovery did not release")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestSaveComposeDraftAppendsToDraftsMailbox(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -153,8 +284,11 @@ func TestSaveComposeDraftAppendsToDraftsMailbox(t *testing.T) {
 	if err := db.UpdateMailboxLastUID(ctx, user.ID, drafts.ID, 50); err != nil {
 		t.Fatal(err)
 	}
-	const draftsUIDValidity = 333
-	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, drafts.ID, 0, 0, 51, draftsUIDValidity); err != nil {
+	const (
+		staleDraftsUIDValidity = 222
+		draftsUIDValidity      = 333
+	)
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, drafts.ID, 0, 0, 51, staleDraftsUIDValidity); err != nil {
 		t.Fatal(err)
 	}
 	contact, err := db.CreateContact(ctx, user.ID, store.Contact{
@@ -168,7 +302,22 @@ func TestSaveComposeDraftAppendsToDraftsMailbox(t *testing.T) {
 	}
 	fetcher := &captureAppendFetcher{nextUID: 73, uidValidity: draftsUIDValidity}
 	blobStore := blob.New(dir)
-	server := &Server{store: db, blobs: blobStore, syncer: &syncer.Service{Store: db, Blobs: blobStore, Fetcher: fetcher}}
+	service := &syncer.Service{Store: db, Blobs: blobStore, Fetcher: fetcher}
+	// The runner only supplies the foreground reservation in this unit test.
+	// Keeping recovery on the service callback avoids launching a background
+	// rebuild with this deliberately append-only fetcher.
+	runner := syncer.NewRunner(nil)
+	appendHeldForeground := false
+	recoverySignaledDuringForeground := false
+	fetcher.onAppend = func() {
+		appendHeldForeground = runner.IsRunning(user.ID)
+	}
+	// Observe the exact reset signal point without starting an asynchronous
+	// recovery worker against this intentionally minimal compose fetcher.
+	service.MailboxGenerationRecoveryStarted = func(userID int64) {
+		recoverySignaledDuringForeground = runner.IsRunning(userID)
+	}
+	server := &Server{store: db, blobs: blobStore, syncer: service, syncRunner: runner}
 	draft, err := server.saveComposeDraft(ctx, currentUser{User: user}, composeForm{
 		To:             "recipient@example.test",
 		Bcc:            "hidden@example.test",
@@ -189,8 +338,8 @@ func TestSaveComposeDraftAppendsToDraftsMailbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if drafts.LastUID != 50 {
-		t.Fatalf("draft append advanced last_uid to %d, want unchanged checkpoint 50", drafts.LastUID)
+	if drafts.LastUID != 0 {
+		t.Fatalf("draft generation reset last_uid=%d, want 0", drafts.LastUID)
 	}
 	draftUIDValidity, err := db.GetMessageUIDValidityForUser(ctx, user.ID, draft.ID)
 	if err != nil {
@@ -198,6 +347,16 @@ func TestSaveComposeDraftAppendsToDraftsMailbox(t *testing.T) {
 	}
 	if draftUIDValidity != draftsUIDValidity {
 		t.Fatalf("draft uid_validity = %d, want APPEND generation %d", draftUIDValidity, draftsUIDValidity)
+	}
+	arrivalUIDFloor, err := db.MailboxGenerationRebuildArrivalUIDFloor(ctx, user.ID, account.ID, drafts.ID, draftsUIDValidity)
+	if err != nil || arrivalUIDFloor != 74 {
+		t.Fatalf("draft rebuild arrival floor=%d err=%v, want 74/nil", arrivalUIDFloor, err)
+	}
+	if !appendHeldForeground || !recoverySignaledDuringForeground {
+		t.Fatalf("compose foreground append=%t reset_signal=%t, want both true", appendHeldForeground, recoverySignaledDuringForeground)
+	}
+	if runner.IsRunning(user.ID) {
+		t.Fatal("compose foreground reservation remained active after draft save")
 	}
 	form := server.draftComposeFormForMessage(ctx, currentUser{User: user}, draft)
 	if form.Bcc != "<hidden@example.test>" {

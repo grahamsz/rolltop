@@ -95,7 +95,7 @@ func TestLegacyUIDValidityRebuildPreservesDurableMessageStateAcrossRestart(t *te
 		WHERE user_id = ? AND id = ?`, user.ID, message.ID); err != nil {
 		t.Fatal(err)
 	}
-	stale, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, 9001)
+	stale, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, account.ID, mailbox.ID, 9001, 42)
 	if err != nil || !reset || len(stale) != 1 {
 		t.Fatalf("generation reset stale=%d reset=%v err=%v", len(stale), reset, err)
 	}
@@ -252,7 +252,7 @@ func TestMailboxGenerationRebuildContinuesAfterPartialRefetchRestart(t *testing.
 		WHERE user_id = ? AND mailbox_id = ?`, user.ID, mailbox.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, 7001); err != nil || !reset {
+	if _, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, account.ID, mailbox.ID, 7001, 3); err != nil || !reset {
 		t.Fatalf("generation reset reset=%v err=%v", reset, err)
 	}
 	if err := db.Close(); err != nil {

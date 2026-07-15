@@ -72,7 +72,10 @@ func (s *Service) runCopyMessages(ctx context.Context, userID int64, ids []int64
 			log.Printf("finish copy run user_id=%d run_id=%d: %v", userID, runID, err)
 		}
 		s.notify(userID)
-		if status == "ok" && onDone != nil {
+		// Partial and failed copies still need their caller to release scheduler
+		// reservations and refresh any destination UIDs that were appended before
+		// the failure.
+		if onDone != nil {
 			onDone()
 		}
 	}()
@@ -338,7 +341,12 @@ func (s *Service) completeCopiedMessageLocally(ctx context.Context, userID int64
 		// APPEND's post-write SELECT is authoritative. Clear stale rows before
 		// storing its UID so UID reuse across mailbox generations cannot update
 		// an old message in place.
-		if _, err := s.ResetMailboxGenerationIfNeeded(ctx, userID, destAccount, dest, fetched.UIDValidity); err != nil {
+		arrivalUIDFloor, err := ArrivalUIDFloorAfterConfirmedUID(fetched.UID)
+		if err != nil {
+			return err
+		}
+		if _, err := s.ResetMailboxGenerationIfNeeded(ctx, userID, destAccount, dest,
+			fetched.UIDValidity, arrivalUIDFloor); err != nil {
 			return err
 		}
 		refreshedDestination, err := s.Store.GetMailboxForUser(ctx, userID, dest.ID)

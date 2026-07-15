@@ -12,6 +12,7 @@ var ErrDuplicateMailboxRole = errors.New("mailbox role already assigned")
 var ErrInvalidMailboxSettings = errors.New("invalid mailbox settings")
 var ErrInvalidSwipePreferences = errors.New("invalid swipe preferences")
 var ErrMailboxGenerationChanged = errors.New("mailbox generation changed")
+var ErrMailboxGenerationArrivalUIDFloorRequired = errors.New("mailbox generation reset requires an arrival UID floor")
 
 // IsNotFound normalizes sql.ErrNoRows checks across store and web packages.
 func IsNotFound(err error) bool {

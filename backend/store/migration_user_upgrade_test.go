@@ -527,6 +527,7 @@ func currentUserMigrationSetsForUpgradeTest() []migrationSet {
 		userMailboxGenerationArrivalJournalMigrationSet(),
 		userTransferDispatchRecoveryMigrationSet(),
 		userBlobCleanupQueueMigrationSet(),
+		userMailboxGenerationArrivalFloorMigrationSet(),
 	)
 }
 

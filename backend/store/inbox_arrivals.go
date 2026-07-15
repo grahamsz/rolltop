@@ -228,10 +228,8 @@ func (s *Store) finalizeDueInboxArrivalsOnce(ctx context.Context, userID, accoun
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT id, message_id FROM pending_inbox_arrivals arrival
 		WHERE arrival.user_id = ? AND arrival.account_id = ?
-		AND arrival.classification = 'pending' AND arrival.available_at <= ?
-		AND NOT EXISTS (SELECT 1 FROM mailbox_generation_rebuilds rebuild
-			WHERE rebuild.user_id = arrival.user_id AND rebuild.account_id = arrival.account_id
-				AND rebuild.mailbox_id = arrival.mailbox_id)
+		AND arrival.classification = 'pending' AND arrival.available_at <= ?`+
+		pendingInboxArrivalRebuildEligibility+`
 		ORDER BY available_at, id LIMIT ?`, userID, accountID, nowUnixValue, maxDueInboxArrivalBatch)
 	if err != nil {
 		return 0, err
@@ -326,11 +324,9 @@ func (s *Store) ListDueInboxArrivals(ctx context.Context, userID, accountID int6
 		return nil, err
 	}
 	rows, err := db.QueryContext(ctx, pendingInboxArrivalSelect+`
-		WHERE user_id = ? AND account_id = ? AND classification = 'pending' AND available_at <= ?
-		AND NOT EXISTS (SELECT 1 FROM mailbox_generation_rebuilds rebuild
-			WHERE rebuild.user_id = pending_inbox_arrivals.user_id
-				AND rebuild.account_id = pending_inbox_arrivals.account_id
-				AND rebuild.mailbox_id = pending_inbox_arrivals.mailbox_id)
+		WHERE arrival.user_id = ? AND arrival.account_id = ?
+			AND arrival.classification = 'pending' AND arrival.available_at <= ?`+
+		pendingInboxArrivalRebuildEligibility+`
 		ORDER BY available_at, id LIMIT ?`, userID, accountID, now.UTC().Unix(), limit)
 	if err != nil {
 		return nil, err
@@ -378,10 +374,8 @@ func (s *Store) ListPendingInboxArrivalSchedules(ctx context.Context) ([]Pending
 		return out, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT arrival.user_id, arrival.account_id, MIN(arrival.available_at)
-		FROM pending_inbox_arrivals arrival WHERE arrival.classification = 'pending'
-		AND NOT EXISTS (SELECT 1 FROM mailbox_generation_rebuilds rebuild
-			WHERE rebuild.user_id = arrival.user_id AND rebuild.account_id = arrival.account_id
-				AND rebuild.mailbox_id = arrival.mailbox_id)
+		FROM pending_inbox_arrivals arrival WHERE arrival.classification = 'pending'`+
+		pendingInboxArrivalRebuildEligibility+`
 		GROUP BY arrival.user_id, arrival.account_id
 		ORDER BY MIN(arrival.available_at), arrival.user_id, arrival.account_id`)
 	if err != nil {
@@ -413,10 +407,8 @@ func (s *Store) NextPendingInboxArrivalDue(ctx context.Context, userID, accountI
 	}
 	var due sql.NullInt64
 	err = db.QueryRowContext(ctx, `SELECT MIN(arrival.available_at) FROM pending_inbox_arrivals arrival
-		WHERE arrival.user_id = ? AND arrival.account_id = ? AND arrival.classification = 'pending'
-		AND NOT EXISTS (SELECT 1 FROM mailbox_generation_rebuilds rebuild
-			WHERE rebuild.user_id = arrival.user_id AND rebuild.account_id = arrival.account_id
-				AND rebuild.mailbox_id = arrival.mailbox_id)`, userID, accountID).Scan(&due)
+		WHERE arrival.user_id = ? AND arrival.account_id = ? AND arrival.classification = 'pending'`+
+		pendingInboxArrivalRebuildEligibility, userID, accountID).Scan(&due)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -559,13 +551,54 @@ func (s *Store) ListPotentialMoveSources(ctx context.Context, userID, arrivalMes
 	return out, nil
 }
 
-const pendingInboxArrivalSelect = `SELECT id, user_id, account_id, mailbox_id, message_id,
-	COALESCE(sync_run_id, 0), classification, raw_sha256, canonical_sha256, message_id_hash,
-	internal_date_unix, message_size, available_at, finalized_at FROM pending_inbox_arrivals `
+const pendingInboxArrivalSelect = `SELECT arrival.id, arrival.user_id, arrival.account_id,
+	arrival.mailbox_id, arrival.message_id, COALESCE(arrival.sync_run_id, 0),
+	arrival.classification, arrival.raw_sha256, arrival.canonical_sha256,
+	arrival.message_id_hash, arrival.internal_date_unix, arrival.message_size,
+	arrival.available_at, arrival.finalized_at FROM pending_inbox_arrivals arrival `
+
+// A rebuild normally gates restored historical arrivals. Only a live Inbox row
+// proven to belong to the marker's exact current generation and durable
+// post-reset UID range may become notification-eligible before the marker is
+// removed.
+const pendingInboxArrivalRebuildEligibility = `
+	AND (
+		NOT EXISTS (
+			SELECT 1 FROM mailbox_generation_rebuilds rebuild
+			WHERE rebuild.user_id = arrival.user_id
+				AND rebuild.account_id = arrival.account_id
+		)
+		OR EXISTS (
+			SELECT 1
+			FROM mailbox_generation_rebuilds rebuild
+			JOIN messages message ON message.user_id = arrival.user_id
+				AND message.account_id = arrival.account_id
+				AND message.mailbox_id = arrival.mailbox_id
+				AND message.id = arrival.message_id
+			JOIN mailboxes mailbox ON mailbox.user_id = arrival.user_id
+				AND mailbox.account_id = arrival.account_id
+				AND mailbox.id = arrival.mailbox_id
+			WHERE rebuild.user_id = arrival.user_id
+				AND rebuild.account_id = arrival.account_id
+				AND rebuild.mailbox_id = arrival.mailbox_id
+				AND rebuild.arrival_uid_floor > 0
+				AND mailbox.uidvalidity = rebuild.target_uid_validity
+				AND message.uid_validity = rebuild.target_uid_validity
+				AND message.uid >= rebuild.arrival_uid_floor
+				AND (lower(trim(COALESCE(mailbox.role, ''))) = 'inbox'
+					OR lower(trim(mailbox.name)) = 'inbox')
+				AND NOT EXISTS (
+					SELECT 1 FROM mailbox_generation_rebuilds source_rebuild
+					WHERE source_rebuild.user_id = arrival.user_id
+						AND source_rebuild.account_id = arrival.account_id
+						AND source_rebuild.mailbox_id <> arrival.mailbox_id
+				)
+		)
+	)`
 
 func pendingInboxArrivalForMessageTx(ctx context.Context, tx *sql.Tx, userID, messageID int64) (PendingInboxArrival, error) {
 	return scanPendingInboxArrival(tx.QueryRowContext(ctx, pendingInboxArrivalSelect+
-		`WHERE user_id = ? AND message_id = ?`, userID, messageID))
+		`WHERE arrival.user_id = ? AND arrival.message_id = ?`, userID, messageID))
 }
 
 func scanPendingInboxArrival(row scanDest) (PendingInboxArrival, error) {

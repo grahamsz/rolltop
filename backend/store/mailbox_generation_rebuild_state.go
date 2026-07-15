@@ -12,14 +12,22 @@ import (
 // snapshotMailboxGenerationStateTx copies non-derived state before message rows
 // are deleted. The journal is keyed by content fingerprints rather than a UID
 // alone because UIDs may be reused after UIDVALIDITY changes.
-func snapshotMailboxGenerationStateTx(ctx context.Context, tx *sql.Tx, userID, accountID, mailboxID, targetUIDValidity int64, now int64) error {
+func snapshotMailboxGenerationStateTx(ctx context.Context, tx *sql.Tx, userID, accountID, mailboxID,
+	targetUIDValidity, arrivalUIDFloor, now int64,
+) error {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO mailbox_generation_rebuilds
-		(user_id, account_id, mailbox_id, target_uid_validity, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		(user_id, account_id, mailbox_id, target_uid_validity, arrival_uid_floor, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id, account_id, mailbox_id) DO UPDATE SET
+			arrival_uid_floor = CASE
+				WHEN mailbox_generation_rebuilds.target_uid_validity = excluded.target_uid_validity
+					AND mailbox_generation_rebuilds.arrival_uid_floor > 0
+				THEN mailbox_generation_rebuilds.arrival_uid_floor
+				ELSE excluded.arrival_uid_floor
+			END,
 			target_uid_validity = excluded.target_uid_validity,
 			updated_at = excluded.updated_at`,
-		userID, accountID, mailboxID, targetUIDValidity, now, now); err != nil {
+		userID, accountID, mailboxID, targetUIDValidity, arrivalUIDFloor, now, now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE mailbox_generation_rebuild_messages
@@ -430,6 +438,106 @@ func (s *Store) MailboxGenerationRebuildPending(ctx context.Context, userID, acc
 	return exists != 0, err
 }
 
+// MailboxGenerationRebuildArrivalUIDFloor returns the first UID that was not
+// present when this exact mailbox generation rebuild began. Zero means the
+// boundary has not yet been established.
+func (s *Store) MailboxGenerationRebuildArrivalUIDFloor(ctx context.Context, userID, accountID, mailboxID int64, targetUIDValidity uint32) (uint32, error) {
+	if userID <= 0 || accountID <= 0 || mailboxID <= 0 || targetUIDValidity == 0 {
+		return 0, errors.New("invalid mailbox generation rebuild scope")
+	}
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	var floor uint32
+	err = db.QueryRowContext(ctx, `SELECT arrival_uid_floor FROM mailbox_generation_rebuilds
+		WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND target_uid_validity = ?`,
+		userID, accountID, mailboxID, targetUIDValidity).Scan(&floor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return floor, err
+}
+
+// InitializeMailboxGenerationRebuildArrivalUIDFloor records a boundary for a
+// legacy zero-floor marker exactly once and returns the durable value. A retry
+// cannot move the boundary forward and silently reclassify intervening mail.
+func (s *Store) InitializeMailboxGenerationRebuildArrivalUIDFloor(ctx context.Context, userID, accountID, mailboxID int64,
+	targetUIDValidity, arrivalUIDFloor uint32,
+) (uint32, error) {
+	if userID <= 0 || accountID <= 0 || mailboxID <= 0 || targetUIDValidity == 0 || arrivalUIDFloor == 0 {
+		return 0, errors.New("invalid mailbox generation rebuild arrival floor scope")
+	}
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE mailbox_generation_rebuilds
+		SET arrival_uid_floor = ?, updated_at = ?
+		WHERE user_id = ? AND account_id = ? AND mailbox_id = ?
+			AND target_uid_validity = ? AND arrival_uid_floor = 0`,
+		arrivalUIDFloor, nowUnix(), userID, accountID, mailboxID, targetUIDValidity); err != nil {
+		return 0, err
+	}
+	var floor uint32
+	if err := tx.QueryRowContext(ctx, `SELECT arrival_uid_floor FROM mailbox_generation_rebuilds
+		WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND target_uid_validity = ?`,
+		userID, accountID, mailboxID, targetUIDValidity).Scan(&floor); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return floor, nil
+}
+
+// ListMailboxGenerationArrivalCandidates returns only rows already stored in
+// the exact current mailbox generation at or beyond its durable arrival floor.
+func (s *Store) ListMailboxGenerationArrivalCandidates(ctx context.Context, userID, accountID, mailboxID int64,
+	targetUIDValidity, arrivalUIDFloor uint32,
+) ([]MessageRecord, error) {
+	if userID <= 0 || accountID <= 0 || mailboxID <= 0 || targetUIDValidity == 0 || arrivalUIDFloor == 0 {
+		return nil, errors.New("invalid mailbox generation arrival candidate scope")
+	}
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT message.id, message.user_id, message.account_id,
+		message.mailbox_id, message.blob_id, message.message_id_header, message.in_reply_to,
+		message.references_header, message.thread_key, message.subject, message.language_code,
+		message.from_addr, message.to_addr, message.cc_addr, message.date_unix,
+		message.internal_date_unix, message.uid, message.size, message.blob_path,
+		message.body_text, message.body_html, message.is_read, message.read_sync_pending,
+		message.is_starred, message.star_sync_pending, message.has_attachments,
+		message.is_encrypted, message.is_signed, message.attachment_indexed_at,
+		message.created_at, message.updated_at
+		FROM messages message
+		JOIN mailboxes mailbox ON mailbox.user_id = message.user_id
+			AND mailbox.account_id = message.account_id AND mailbox.id = message.mailbox_id
+		JOIN mailbox_generation_rebuilds rebuild ON rebuild.user_id = message.user_id
+			AND rebuild.account_id = message.account_id AND rebuild.mailbox_id = message.mailbox_id
+		WHERE message.user_id = ? AND message.account_id = ? AND message.mailbox_id = ?
+			AND message.uid_validity = ? AND message.uid >= ?
+			AND mailbox.uidvalidity = ? AND rebuild.target_uid_validity = ?
+			AND rebuild.arrival_uid_floor = ?
+		ORDER BY message.uid, message.id`, userID, accountID, mailboxID,
+		targetUIDValidity, arrivalUIDFloor, targetUIDValidity, targetUIDValidity, arrivalUIDFloor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMessages(rows)
+}
+
 // MailboxGenerationRebuildExists reports whether this exact tenant mailbox has
 // a crash-resumable marker, regardless of its target generation.
 func (s *Store) MailboxGenerationRebuildExists(ctx context.Context, userID, accountID, mailboxID int64) (bool, error) {
@@ -448,6 +556,23 @@ func (s *Store) MailboxGenerationRebuildExists(ctx context.Context, userID, acco
 	return exists != 0, err
 }
 
+// HasPendingMailboxGenerationRebuildsForUser reports whether any mailbox for
+// one tenant is still rebuilding its local generation.
+func (s *Store) HasPendingMailboxGenerationRebuildsForUser(ctx context.Context, userID int64) (bool, error) {
+	if userID <= 0 {
+		return false, errors.New("invalid mailbox generation rebuild user scope")
+	}
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	var exists int
+	err = db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM mailbox_generation_rebuilds WHERE user_id = ?
+	)`, userID).Scan(&exists)
+	return exists != 0, err
+}
+
 // PendingMailboxGenerationRebuild identifies one tenant mailbox that must
 // resume its generation-bound refetch before held arrivals become eligible.
 type PendingMailboxGenerationRebuild struct {
@@ -456,6 +581,7 @@ type PendingMailboxGenerationRebuild struct {
 	MailboxID         int64
 	MailboxName       string
 	TargetUIDValidity uint32
+	inboxPriority     int
 }
 
 // ListPendingMailboxGenerationRebuilds supports crash recovery without
@@ -487,6 +613,9 @@ func (s *Store) ListPendingMailboxGenerationRebuilds(ctx context.Context) ([]Pen
 			if out[i].UserID != out[j].UserID {
 				return out[i].UserID < out[j].UserID
 			}
+			if out[i].inboxPriority != out[j].inboxPriority {
+				return out[i].inboxPriority < out[j].inboxPriority
+			}
 			if out[i].AccountID != out[j].AccountID {
 				return out[i].AccountID < out[j].AccountID
 			}
@@ -495,11 +624,14 @@ func (s *Store) ListPendingMailboxGenerationRebuilds(ctx context.Context) ([]Pen
 		return out, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT rebuild.user_id, rebuild.account_id,
-		rebuild.mailbox_id, mailbox.name, rebuild.target_uid_validity
+		rebuild.mailbox_id, mailbox.name, rebuild.target_uid_validity,
+		CASE WHEN lower(trim(mailbox.role)) = 'inbox' OR lower(trim(mailbox.name)) = 'inbox' THEN 0 ELSE 1 END
 		FROM mailbox_generation_rebuilds rebuild
 		JOIN mailboxes mailbox ON mailbox.user_id = rebuild.user_id
 			AND mailbox.account_id = rebuild.account_id AND mailbox.id = rebuild.mailbox_id
-		ORDER BY rebuild.user_id, rebuild.account_id, rebuild.mailbox_id`)
+		ORDER BY rebuild.user_id,
+			CASE WHEN lower(trim(mailbox.role)) = 'inbox' OR lower(trim(mailbox.name)) = 'inbox' THEN 0 ELSE 1 END,
+			rebuild.account_id, rebuild.mailbox_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -508,7 +640,7 @@ func (s *Store) ListPendingMailboxGenerationRebuilds(ctx context.Context) ([]Pen
 	for rows.Next() {
 		var item PendingMailboxGenerationRebuild
 		if err := rows.Scan(&item.UserID, &item.AccountID, &item.MailboxID,
-			&item.MailboxName, &item.TargetUIDValidity); err != nil {
+			&item.MailboxName, &item.TargetUIDValidity, &item.inboxPriority); err != nil {
 			return nil, err
 		}
 		out = append(out, item)

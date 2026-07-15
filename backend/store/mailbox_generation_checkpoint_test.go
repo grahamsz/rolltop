@@ -37,7 +37,8 @@ func TestGenerationBoundCheckpointRejectsResetAndReusedUID(t *testing.T) {
 
 	// Interleave a reset after the existence check but before checkpoint
 	// advancement, then reuse the same UID in the new generation.
-	stale, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, newGeneration)
+	stale, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, account.ID, mailbox.ID,
+		newGeneration, reusedUID+1)
 	if err != nil || !reset || len(stale) != 1 || stale[0].ID != oldMessage.ID {
 		t.Fatalf("reset=%t stale=%+v err=%v", reset, stale, err)
 	}

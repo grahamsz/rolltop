@@ -871,6 +871,11 @@ func TestCopyMessageUsesFreshUIDValidityAndConsumesInboxTransfer(t *testing.T) {
 	if storedUIDValidity != 222 {
 		t.Fatalf("stored uid_validity=%d, want 222", storedUIDValidity)
 	}
+	arrivalUIDFloor, err := fixture.store.MailboxGenerationRebuildArrivalUIDFloor(context.Background(),
+		fixture.userID, fixture.account.ID, fixture.source.ID, 222)
+	if err != nil || arrivalUIDFloor != 74 {
+		t.Fatalf("inbox copy rebuild arrival floor=%d err=%v, want 74/nil", arrivalUIDFloor, err)
+	}
 	var classification string
 	if err := fixture.store.DB().QueryRow(`SELECT classification FROM pending_inbox_arrivals
 		WHERE user_id = ? AND mailbox_id = ? AND message_id IN (
@@ -975,6 +980,11 @@ func TestCopyMessageResetsDestinationBeforeReusedUID(t *testing.T) {
 	}
 	if destination.UIDValidity != freshUIDValidity || destination.LastUID != 0 {
 		t.Fatalf("destination uidvalidity=%d last_uid=%d, want %d/0", destination.UIDValidity, destination.LastUID, freshUIDValidity)
+	}
+	arrivalUIDFloor, err := fixture.store.MailboxGenerationRebuildArrivalUIDFloor(context.Background(),
+		fixture.userID, fixture.account.ID, fixture.destination.ID, freshUIDValidity)
+	if err != nil || arrivalUIDFloor != reusedUID+1 {
+		t.Fatalf("destination rebuild arrival floor=%d err=%v, want %d/nil", arrivalUIDFloor, err, reusedUID+1)
 	}
 	if _, err := fixture.store.GetMessageForUser(context.Background(), fixture.userID, stale.ID); !store.IsNotFound(err) {
 		t.Fatalf("stale destination row survived generation reset: %v", err)

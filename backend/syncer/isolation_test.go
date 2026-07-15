@@ -26,6 +26,7 @@ type fakeFetcher struct {
 	fetchAfterUIDs       []uint32
 	fetchUIDCalls        [][]uint32
 	appendDate           time.Time
+	seenUIDsHook         func()
 }
 
 type cancelingFetcher struct {
@@ -459,6 +460,9 @@ func (f *fakeFetcher) SetSeenWithUIDValidity(ctx context.Context, account store.
 }
 
 func (f *fakeFetcher) SeenUIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error) {
+	if f.seenUIDsHook != nil {
+		f.seenUIDsHook()
+	}
 	var uids []uint32
 	for _, msg := range f.messages[account.UserID] {
 		if msg.Mailbox != mailbox {

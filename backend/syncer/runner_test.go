@@ -4,8 +4,10 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -90,6 +92,67 @@ func TestRunnerAccountReservationReleasesAccountQualifiedPendingRerun(t *testing
 	}
 	if r.accountMailboxPending[accountMailboxKey(7, 101, "INBOX")] {
 		t.Fatalf("pending account mailbox key was not cleared")
+	}
+}
+
+func TestGenerationRecoveryReplayCoalescesGlobalAndAccountMailboxRequests(t *testing.T) {
+	runner := NewRunner(nil)
+	replay := runner.coalesceGenerationRecoveryReplay(generationRecoveryReplay{
+		userID:    7,
+		mailboxes: []string{"INBOX"},
+		accountMailboxes: []deferredAccountMailbox{
+			{accountID: 101, mailbox: "inbox"},
+			{accountID: 101, mailbox: "Archive"},
+			{accountID: 202, mailbox: "Archive"},
+		},
+	})
+	if !reflect.DeepEqual(replay.mailboxes, []string{"INBOX"}) {
+		t.Fatalf("global replay mailboxes=%v", replay.mailboxes)
+	}
+	wantAccounts := []deferredAccountMailbox{
+		{accountID: 101, mailbox: "Archive"},
+		{accountID: 202, mailbox: "Archive"},
+	}
+	if !reflect.DeepEqual(replay.accountMailboxes, wantAccounts) {
+		t.Fatalf("account replay mailboxes=%v, want %v", replay.accountMailboxes, wantAccounts)
+	}
+}
+
+func TestGenerationRecoveryReplaySortsInboxFirstAcrossGlobalAndAccountWork(t *testing.T) {
+	runner := NewRunner(nil)
+	replay := runner.coalesceGenerationRecoveryReplay(generationRecoveryReplay{
+		userID:    7,
+		mailboxes: []string{"History", "INBOX", "Archive"},
+		accountMailboxes: []deferredAccountMailbox{
+			{accountID: 101, mailbox: "History"},
+			{accountID: 202, mailbox: "inbox"},
+			{accountID: 101, mailbox: "INBOX"},
+			{accountID: 101, mailbox: "Archive"},
+		},
+	})
+	if !reflect.DeepEqual(replay.mailboxes, []string{"INBOX", "Archive", "History"}) {
+		t.Fatalf("global replay order=%v", replay.mailboxes)
+	}
+	// Global INBOX covers every account, so only non-Inbox account-qualified
+	// requests remain after coalescing.
+	if len(replay.accountMailboxes) != 0 {
+		t.Fatalf("account replay order=%v, want global requests to cover every account", replay.accountMailboxes)
+	}
+
+	replay = runner.coalesceGenerationRecoveryReplay(generationRecoveryReplay{
+		userID:    7,
+		mailboxes: []string{"History"},
+		accountMailboxes: []deferredAccountMailbox{
+			{accountID: 101, mailbox: "Archive"},
+			{accountID: 202, mailbox: "INBOX"},
+			{accountID: 101, mailbox: "inbox"},
+		},
+	})
+	if got := leadingGenerationRecoveryInboxes(replay.mailboxes); got != 0 {
+		t.Fatalf("global leading Inbox count=%d", got)
+	}
+	if got := leadingGenerationRecoveryAccountInboxes(replay.accountMailboxes); got != 2 {
+		t.Fatalf("account leading Inbox count=%d, want 2 before global History", got)
 	}
 }
 
@@ -192,6 +255,65 @@ func TestRunnerMailboxMaintenanceBlocksSyncUntilFinished(t *testing.T) {
 	}
 }
 
+func TestGenerationRecoveryGateWaitsForActiveMailboxMaintenance(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "recovery-maintenance@example.test", "Recovery Maintenance", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, store.MailAccount{
+		UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993,
+		Username: user.Email, EncryptedPassword: "encrypted", UseTLS: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunnerWithContext(ctx, &Service{Store: db})
+	r.replayGenerationRecovery = func(generationRecoveryReplay) {}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	_, ok, err := r.StartMailboxMaintenance(user.ID, mailbox, "Maintenance", func(ctx context.Context, _ int64, _ *store.SyncProgress) error {
+		close(started)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	if err != nil || !ok {
+		t.Fatalf("start maintenance ok=%t err=%v", ok, err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance did not start")
+	}
+	r.SignalMailboxGenerationRecovery(user.ID)
+	time.Sleep(20 * time.Millisecond)
+	if !r.MailboxGenerationRecoveryActive(user.ID) {
+		t.Fatal("recovery gate cleared while mailbox maintenance was active")
+	}
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for r.MailboxGenerationRecoveryActive(user.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("recovery gate did not clear after mailbox maintenance released")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestRunnerAttachmentIndexWaitsForForegroundOperation(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
@@ -289,6 +411,220 @@ func TestRunnerForegroundWaitsForCanceledAttachmentWorker(t *testing.T) {
 		t.Fatal(started.err)
 	}
 	started.finish()
+}
+
+func TestRunnerForegroundWaitsForActiveGenerationRecoveryReplay(t *testing.T) {
+	r := NewRunnerWithContext(context.Background(), nil)
+	userID := int64(78)
+	replayKey := accountMailboxKey(userID, 301, "INBOX")
+	r.mu.Lock()
+	r.generationRecoveryReplay[userID] = true
+	r.mailboxRunning[replayKey] = true
+	r.mu.Unlock()
+
+	type result struct {
+		finish func()
+		err    error
+	}
+	started := make(chan result, 1)
+	go func() {
+		finish, err := r.BeginForegroundOperation(context.Background(), userID)
+		started <- result{finish: finish, err: err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case result := <-started:
+		t.Fatalf("foreground operation overlapped replay reservation: %v", result.err)
+	default:
+	}
+	r.mu.Lock()
+	delete(r.mailboxRunning, replayKey)
+	r.mu.Unlock()
+	startedResult := <-started
+	if startedResult.err != nil {
+		t.Fatal(startedResult.err)
+	}
+	if _, ok := r.reserveGenerationRecoveryReplayAccountMailboxes(userID, 301, []string{"INBOX"}); ok {
+		t.Fatal("replay resumed while the foreground operation remained active")
+	}
+	startedResult.finish()
+	keys, ok := r.reserveGenerationRecoveryReplayAccountMailboxes(userID, 301, []string{"INBOX"})
+	if !ok {
+		t.Fatal("replay did not become ready after the foreground operation finished")
+	}
+	r.mu.Lock()
+	for _, key := range keys {
+		delete(r.mailboxRunning, key)
+	}
+	delete(r.generationRecoveryReplay, userID)
+	r.mu.Unlock()
+}
+
+func TestRunnerForegroundWaitsForActiveGenerationRecoveryRun(t *testing.T) {
+	r := NewRunnerWithContext(context.Background(), nil)
+	userID := int64(79)
+	r.mu.Lock()
+	r.generationRecoveryRuns[userID] = true
+	r.mu.Unlock()
+
+	type result struct {
+		finish func()
+		err    error
+	}
+	started := make(chan result, 1)
+	go func() {
+		finish, err := r.BeginForegroundOperation(context.Background(), userID)
+		started <- result{finish: finish, err: err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case result := <-started:
+		t.Fatalf("foreground operation overlapped generation recovery: %v", result.err)
+	default:
+	}
+	r.mu.Lock()
+	delete(r.generationRecoveryRuns, userID)
+	r.mu.Unlock()
+	startedResult := <-started
+	if startedResult.err != nil {
+		t.Fatal(startedResult.err)
+	}
+	startedResult.finish()
+	r.mu.Lock()
+	foreground := r.foregroundRunning[userID]
+	r.mu.Unlock()
+	if foreground != 0 {
+		t.Fatalf("foreground reservation count after finish=%d, want 0", foreground)
+	}
+}
+
+func TestRunnerCanceledForegroundWaitReleasesReservation(t *testing.T) {
+	r := NewRunnerWithContext(context.Background(), nil)
+	userID := int64(80)
+	r.mu.Lock()
+	r.generationRecoveryRuns[userID] = true
+	r.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := r.BeginForegroundOperation(ctx, userID)
+		result <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled foreground wait error=%v, want context canceled", err)
+	}
+	r.mu.Lock()
+	foreground := r.foregroundRunning[userID]
+	delete(r.generationRecoveryRuns, userID)
+	r.mu.Unlock()
+	if foreground != 0 {
+		t.Fatalf("canceled foreground reservation count=%d, want 0", foreground)
+	}
+}
+
+func TestGenerationRecoveryMaintenanceRetainsPendingBitsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(context.Background(), "replay-maintenance@example.test", "Replay Maintenance", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunnerWithContext(ctx, &Service{Store: db})
+	r.mu.Lock()
+	r.generationRecoveryReplay[user.ID] = true
+	r.senderStatsPending[user.ID] = true
+	claimedSender := r.claimGenerationRecoverySenderStatsLocked(user.ID)
+	r.attachmentPending[user.ID] = true
+	attachmentCtx, attachmentDone, claimedAttachments := r.claimGenerationRecoveryAttachmentBatchLocked(user.ID)
+	r.mu.Unlock()
+	if !claimedSender || !claimedAttachments {
+		t.Fatalf("maintenance claims sender=%t attachments=%t", claimedSender, claimedAttachments)
+	}
+	cancel()
+	if err := r.refreshSenderStatsDuringGenerationRecoveryReplay(user.ID); err == nil {
+		t.Fatal("sender stats unexpectedly succeeded with a canceled replay context")
+	}
+	if err := r.indexAttachmentsDuringGenerationRecoveryReplay(user.ID, attachmentCtx, attachmentDone); err == nil {
+		t.Fatal("attachment batch unexpectedly succeeded with a canceled replay context")
+	}
+	r.mu.Lock()
+	senderPending := r.senderStatsPending[user.ID]
+	attachmentPending := r.attachmentPending[user.ID]
+	senderRunning := r.mailboxRunning[mailboxKey(user.ID, "__recovery_sender_stats__")]
+	attachmentRunning := r.mailboxRunning[mailboxKey(user.ID, "__attachments__")]
+	r.mu.Unlock()
+	if !senderPending || !attachmentPending || senderRunning || attachmentRunning {
+		t.Fatalf("canceled maintenance sender_pending=%t attachment_pending=%t sender_running=%t attachment_running=%t",
+			senderPending, attachmentPending, senderRunning, attachmentRunning)
+	}
+}
+
+func TestGenerationRecoveryPermanentMaintenanceErrorsFailOpen(t *testing.T) {
+	for _, phase := range []string{"sender", "attachments"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			user, err := db.CreateUser(ctx, "replay-fail-open-"+phase+"@example.test", "Fail Open", "hash", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := NewRunnerWithContext(ctx, &Service{Store: db})
+			permanentErr := errors.New("permanent derived maintenance failure")
+			var calls atomic.Int64
+			if phase == "sender" {
+				r.refreshSenderStatsForUser = func(context.Context, int64) error {
+					calls.Add(1)
+					return permanentErr
+				}
+			} else {
+				r.indexAttachmentsForUser = func(context.Context, int64, int) (int, error) {
+					calls.Add(1)
+					return 0, permanentErr
+				}
+			}
+			r.mu.Lock()
+			r.generationRecoveryReplay[user.ID] = true
+			if phase == "sender" {
+				r.senderStatsPending[user.ID] = true
+			} else {
+				r.attachmentPending[user.ID] = true
+			}
+			r.mu.Unlock()
+			go r.runGenerationRecoveryReplay(generationRecoveryReplay{userID: user.ID})
+
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				r.mu.Lock()
+				pending := r.senderStatsPending[user.ID]
+				if phase == "attachments" {
+					pending = r.attachmentPending[user.ID]
+				}
+				workerDone := r.attachmentDone[user.ID] == nil
+				callCount := calls.Load()
+				r.mu.Unlock()
+				if !r.MailboxGenerationRecoveryActive(user.ID) && pending && workerDone && callCount >= 2 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("permanent %s failure did not fail open: active=%t pending=%t worker_done=%t calls=%d",
+						phase, r.MailboxGenerationRecoveryActive(user.ID), pending, workerDone, callCount)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		})
+	}
 }
 
 func TestRunnerAttachmentIndexWaitsForMailboxReservation(t *testing.T) {

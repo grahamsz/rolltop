@@ -481,6 +481,11 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 			msg.References = referencesForReply(reply)
 		}
 	}
+	finishForeground, err := s.beginComposeForegroundOperation(ctx, cu.User.ID)
+	if err != nil {
+		return store.MessageRecord{}, fmt.Errorf("message was not sent because delivery could not be scheduled safely: %w", err)
+	}
+	defer finishForeground()
 	raw, err := s.sender.Send(ctx, smtpEnvelopeForIdentity(identity, smtpAccount), msg)
 	if err != nil {
 		return store.MessageRecord{}, err
@@ -490,6 +495,16 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 		return store.MessageRecord{}, fmt.Errorf("message sent through SMTP, but could not save it to %s: %w", sentMailbox.Name, err)
 	}
 	return s.storeSentMessage(ctx, cu.User.ID, imapAccount, sentMailbox, msg, form, fetched)
+}
+
+func (s *Server) beginComposeForegroundOperation(ctx context.Context, userID int64) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return func() {}, err
+	}
+	if s.syncRunner == nil {
+		return func() {}, nil
+	}
+	return s.syncRunner.BeginForegroundOperation(ctx, userID)
 }
 
 func (s *Server) composePublicKeyAttachment(ctx context.Context, userID int64, identity composeIdentity) (smtpclient.Attachment, error) {

@@ -1250,6 +1250,11 @@ func (s *Server) saveComposeDraft(ctx context.Context, cu currentUser, form comp
 	if err != nil {
 		return store.MessageRecord{}, err
 	}
+	finishForeground, err := s.beginComposeForegroundOperation(ctx, cu.User.ID)
+	if err != nil {
+		return store.MessageRecord{}, fmt.Errorf("could not schedule saving the draft to %s: %w", draftsMailbox.Name, err)
+	}
+	defer finishForeground()
 	fetched, err := s.appendDraftMessage(ctx, imapAccount, draftsMailbox, raw, msg.MessageID, msg.Date)
 	if err != nil {
 		return store.MessageRecord{}, fmt.Errorf("could not save draft to %s: %w", draftsMailbox.Name, err)
@@ -1333,10 +1338,14 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		if s.syncer == nil {
 			return store.MessageRecord{}, fmt.Errorf("IMAP sync is not configured")
 		}
-		if _, err := s.syncer.ResetMailboxGenerationIfNeeded(ctx, userID, account, mailbox, fetched.UIDValidity); err != nil {
+		arrivalUIDFloor, err := syncer.ArrivalUIDFloorAfterConfirmedUID(fetched.UID)
+		if err != nil {
 			return store.MessageRecord{}, err
 		}
-		var err error
+		if _, err := s.syncer.ResetMailboxGenerationIfNeeded(ctx, userID, account, mailbox,
+			fetched.UIDValidity, arrivalUIDFloor); err != nil {
+			return store.MessageRecord{}, err
+		}
 		mailbox, err = s.store.GetMailboxForUser(ctx, userID, mailbox.ID)
 		if err != nil {
 			return store.MessageRecord{}, err

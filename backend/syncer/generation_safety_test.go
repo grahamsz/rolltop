@@ -5,9 +5,83 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"rolltop/backend/store"
 )
+
+type generationRecoveryBatchFetcher struct {
+	*statusSelectRaceFetcher
+	batches [][]uint32
+}
+
+func (f *generationRecoveryBatchFetcher) FetchUIDsWithUIDValidity(
+	ctx context.Context,
+	_ store.MailAccount,
+	mailbox string,
+	uids []uint32,
+	expectedUIDValidity uint32,
+	handle func(FetchedMessage) error,
+) error {
+	f.batches = append(f.batches, append([]uint32(nil), uids...))
+	for _, uid := range uids {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := handle(FetchedMessage{Mailbox: mailbox, UID: uid, UIDValidity: expectedUIDValidity}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TestLargeGenerationSnapshotRefreshesBetweenBatchesAndAtEnd(t *testing.T) {
+	fetcher := &generationRecoveryBatchFetcher{statusSelectRaceFetcher: &statusSelectRaceFetcher{
+		moveTestFetcher:  fixturelessMoveFetcher(),
+		selectedValidity: 41,
+	}}
+	service := &Service{Fetcher: fetcher}
+	now := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+	service.generationRecoveryNow = func() time.Time {
+		now = now.Add(mailboxGenerationRecoveryRefreshInterval + time.Second)
+		return now
+	}
+	uids := make([]uint32, 1001)
+	for i := range uids {
+		uids[i] = uint32(i + 1)
+	}
+	var handled []uint32
+	var refreshes []bool
+	err := service.fetchMailboxGenerationSnapshotInBatches(context.Background(), store.MailAccount{},
+		store.Mailbox{Name: "INBOX"}, 0, 41,
+		MailboxUIDSnapshot{UIDs: uids, UIDValidity: 41, UIDNext: 1002},
+		func(item FetchedMessage) error {
+			handled = append(handled, item.UID)
+			return nil
+		}, func(final bool) error {
+			refreshes = append(refreshes, final)
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fetcher.batches) != 3 || len(fetcher.batches[0]) != 500 ||
+		len(fetcher.batches[1]) != 500 || len(fetcher.batches[2]) != 1 {
+		t.Fatalf("recovery batches=%v, want sizes 500/500/1", fetcher.batches)
+	}
+	if len(handled) != len(uids) || handled[0] != 1 || handled[len(handled)-1] != 1001 {
+		t.Fatalf("handled UIDs count=%d first=%d last=%d", len(handled), handled[0], handled[len(handled)-1])
+	}
+	wantRefreshes := []bool{false, false, true}
+	if len(refreshes) != len(wantRefreshes) {
+		t.Fatalf("refreshes=%v, want %v", refreshes, wantRefreshes)
+	}
+	for i := range wantRefreshes {
+		if refreshes[i] != wantRefreshes[i] {
+			t.Fatalf("refreshes=%v, want %v", refreshes, wantRefreshes)
+		}
+	}
+}
 
 type statusSelectRaceFetcher struct {
 	*moveTestFetcher
@@ -210,4 +284,16 @@ func TestCopiedMessageFlagWriteUsesAppendGeneration(t *testing.T) {
 
 func fixturelessMoveFetcher() *moveTestFetcher {
 	return &moveTestFetcher{}
+}
+
+func TestArrivalUIDFloorAfterConfirmedUIDIsExclusiveAndOverflowSafe(t *testing.T) {
+	floor, err := ArrivalUIDFloorAfterConfirmedUID(73)
+	if err != nil || floor != 74 {
+		t.Fatalf("arrival floor=%d err=%v, want 74/nil", floor, err)
+	}
+	for _, uid := range []uint32{0, ^uint32(0)} {
+		if floor, err := ArrivalUIDFloorAfterConfirmedUID(uid); err == nil || floor != 0 {
+			t.Fatalf("invalid UID %d floor=%d err=%v, want 0/error", uid, floor, err)
+		}
+	}
 }

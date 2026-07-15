@@ -215,7 +215,7 @@ func TestCreateMessageRejectsStalePositiveMailboxGeneration(t *testing.T) {
 	}
 	// Simulate IMAP SELECT observing generation 100, followed by a concurrent
 	// reset to generation 200 before the selected message reaches SQLite.
-	if _, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, 200); err != nil || !reset {
+	if _, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, account.ID, mailbox.ID, 200, 1); err != nil || !reset {
 		t.Fatalf("generation reset = %v, reset=%v", err, reset)
 	}
 	_, err = db.CreateMessage(ctx, CreateMessage{

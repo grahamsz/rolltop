@@ -470,19 +470,58 @@ func deleteSnoozeReminderEventsForThread(ctx context.Context, db snoozeEventExec
 
 func cancelSnoozeForNewMessage(ctx context.Context, db snoozeEventExecer, userID int64, msg MessageRecord) (bool, error) {
 	threadKey := SnoozeThreadKey(msg)
+	changed := false
 	result, err := db.ExecContext(ctx, `DELETE FROM message_snoozes
 		WHERE user_id = ? AND thread_key = ?`, userID, threadKey)
 	if err != nil {
 		return false, err
 	}
 	rows, err := result.RowsAffected()
-	if err != nil || rows == 0 {
+	if err != nil {
 		return false, err
 	}
-	if err := deleteSnoozeReminderEventsForThread(ctx, db, userID, threadKey); err != nil {
+	changed = rows > 0
+
+	result, err = db.ExecContext(ctx, `DELETE FROM snooze_reminder_events
+		WHERE user_id = ? AND message_id IN (
+			SELECT id FROM messages
+			WHERE user_id = ? AND COALESCE(NULLIF(thread_key, ''), 'id:' || id) = ?
+		)`, userID, userID, threadKey)
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	rows, err = result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	changed = changed || rows > 0
+
+	result, err = db.ExecContext(ctx, `DELETE FROM mailbox_generation_rebuild_snooze_events
+		WHERE user_id = ? AND rebuild_message_id IN (
+			SELECT id FROM mailbox_generation_rebuild_messages
+			WHERE user_id = ? AND snooze_thread_key = ?
+		)`, userID, userID, threadKey)
+	if err != nil {
+		return false, err
+	}
+	rows, err = result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	changed = changed || rows > 0
+
+	result, err = db.ExecContext(ctx, `UPDATE mailbox_generation_rebuild_messages
+		SET has_snooze = 0, updated_at = ?
+		WHERE user_id = ? AND snooze_thread_key = ? AND has_snooze <> 0`,
+		nowUnix(), userID, threadKey)
+	if err != nil {
+		return false, err
+	}
+	rows, err = result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return changed || rows > 0, nil
 }
 
 func scanMessageSnooze(row scanDest) (MessageSnooze, error) {

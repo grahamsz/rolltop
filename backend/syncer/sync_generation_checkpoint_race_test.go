@@ -62,7 +62,7 @@ func TestSyncDoesNotAdvanceCheckpointAcrossConcurrentGenerationReset(t *testing.
 		if scheduledUserID != user.ID || scheduledAccountID != accountRecord.ID {
 			t.Fatalf("arrival schedule scope=%d/%d, want %d/%d", scheduledUserID, scheduledAccountID, user.ID, accountRecord.ID)
 		}
-		if _, reset, resetErr := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, accountRecord.ID, mailbox.ID, 2); resetErr != nil || !reset {
+		if _, reset, resetErr := db.ResetMailboxForRemoteGeneration(ctx, user.ID, accountRecord.ID, mailbox.ID, 2, 6); resetErr != nil || !reset {
 			t.Fatalf("concurrent reset=%t err=%v", reset, resetErr)
 		}
 		replacementBlob, createErr := db.CreateBlob(ctx, store.BlobRecord{

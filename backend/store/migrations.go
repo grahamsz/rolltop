@@ -49,6 +49,7 @@ const (
 	UserSchemaVersion023   = "user-023"
 	UserSchemaVersion024   = "user-024"
 	UserSchemaVersion025   = "user-025"
+	UserSchemaVersion026   = "user-026"
 )
 
 // MigrationProgress is emitted while Store.OpenServerWithProgress and
@@ -125,6 +126,7 @@ func (s *Store) migrate(ctx context.Context, kind schemaKind, progress Migration
 		userMailboxGenerationArrivalJournalMigrationSet(),
 		userTransferDispatchRecoveryMigrationSet(),
 		userBlobCleanupQueueMigrationSet(),
+		userMailboxGenerationArrivalFloorMigrationSet(),
 	}
 	switch kind {
 	case schemaSystem:

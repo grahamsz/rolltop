@@ -79,7 +79,7 @@ func TestGenerationRebuildReschedulesRestoredPendingInboxArrival(t *testing.T) {
 	if err := db.UpdateMailboxSyncMode(ctx, user.ID, mailbox.ID, "never"); err != nil {
 		t.Fatal(err)
 	}
-	if _, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, accountRecord.ID, mailbox.ID, 2); err != nil || !reset {
+	if _, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, accountRecord.ID, mailbox.ID, 2, 8); err != nil || !reset {
 		t.Fatalf("crash-state generation reset reset=%v err=%v", reset, err)
 	}
 	schedules, err := db.ListPendingInboxArrivalSchedules(ctx)

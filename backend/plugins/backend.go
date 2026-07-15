@@ -37,6 +37,15 @@ type AccountMailboxSyncHost interface {
 	QueueAccountMailboxSync(context.Context, int64, int64, string) error
 }
 
+// MailboxGenerationRecoveryHost is an optional, process-local scheduling gate
+// for plugins that mirror mail into Rolltop-managed IMAP destinations. The
+// durable store marker remains the startup fallback; this capability covers
+// the interval after the marker clears while deferred core work is replayed.
+type MailboxGenerationRecoveryHost interface {
+	BackendHost
+	MailboxGenerationRecoveryActive(int64) bool
+}
+
 // StoredMessageContext is the host-owned subset of a newly mirrored message
 // passed to plugins that need to react after a message row exists.
 type StoredMessageContext struct {

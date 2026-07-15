@@ -8,11 +8,14 @@ import (
 	"errors"
 )
 
-// ResetMailboxForRemoteUIDValidity discards local rows and the incremental UID
-// checkpoint when they cannot be proven to belong to remoteUIDValidity. It
-// intentionally creates no expunge fingerprints: a mailbox epoch reset is not
-// evidence that any particular message was moved.
-func (s *Store) ResetMailboxForRemoteUIDValidity(ctx context.Context, userID, accountID, mailboxID int64, remoteUIDValidity uint32) ([]MessageRecord, bool, error) {
+// ResetMailboxForRemoteGeneration discards local rows and the incremental UID
+// checkpoint when they cannot be proven to belong to remoteUIDValidity. A reset
+// requires the first UID that was not present at the reset boundary; zero is
+// accepted only when the call is a same-generation no-op. The boundary is
+// committed atomically with the rebuild marker and local-row reset.
+func (s *Store) ResetMailboxForRemoteGeneration(ctx context.Context, userID, accountID, mailboxID int64,
+	remoteUIDValidity, arrivalUIDFloor uint32,
+) ([]MessageRecord, bool, error) {
 	if userID <= 0 || accountID <= 0 || mailboxID <= 0 || remoteUIDValidity == 0 {
 		return nil, false, errors.New("invalid mailbox generation reset scope")
 	}
@@ -59,15 +62,29 @@ func (s *Store) ResetMailboxForRemoteUIDValidity(ctx context.Context, userID, ac
 		}
 		return nil, false, nil
 	}
+	if arrivalUIDFloor == 0 {
+		return nil, false, ErrMailboxGenerationArrivalUIDFloorRequired
+	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
-		date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
-		FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ?`, userID, accountID, mailboxID)
+	// Reset callers only need tenant-scoped document identifiers for derived
+	// cleanup and auditing. Loading every cached body here can make the reset
+	// transaction hold SQLite's writer lock for minutes on a large mailbox.
+	rows, err := tx.QueryContext(ctx, `SELECT id, user_id FROM messages
+		WHERE user_id = ? AND account_id = ? AND mailbox_id = ?
+		ORDER BY id`, userID, accountID, mailboxID)
 	if err != nil {
 		return nil, false, err
 	}
-	stale, err := scanMessages(rows)
-	if err != nil {
+	stale := make([]MessageRecord, 0, messageCount)
+	for rows.Next() {
+		var message MessageRecord
+		if err := rows.Scan(&message.ID, &message.UserID); err != nil {
+			_ = rows.Close()
+			return nil, false, err
+		}
+		stale = append(stale, message)
+	}
+	if err := rows.Err(); err != nil {
 		_ = rows.Close()
 		return nil, false, err
 	}
@@ -75,7 +92,8 @@ func (s *Store) ResetMailboxForRemoteUIDValidity(ctx context.Context, userID, ac
 		return nil, false, err
 	}
 	now := nowUnix()
-	if err := snapshotMailboxGenerationStateTx(ctx, tx, userID, accountID, mailboxID, remoteGeneration, now); err != nil {
+	if err := snapshotMailboxGenerationStateTx(ctx, tx, userID, accountID, mailboxID,
+		remoteGeneration, int64(arrivalUIDFloor), now); err != nil {
 		return nil, false, err
 	}
 	if err := queueMailboxGenerationBlobCleanupTx(ctx, tx, userID, accountID, mailboxID, remoteGeneration, now); err != nil {

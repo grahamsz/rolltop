@@ -77,6 +77,13 @@ func (s *Server) QueueAccountMailboxSync(ctx context.Context, userID, accountID 
 	return nil
 }
 
+// MailboxGenerationRecoveryActive exposes only the tenant-scoped in-memory
+// core sync gate. Plugins combine it with durable generation markers so a
+// restart and the post-rebuild replay interval are both covered.
+func (s *Server) MailboxGenerationRecoveryActive(userID int64) bool {
+	return s != nil && s.syncRunner != nil && s.syncRunner.MailboxGenerationRecoveryActive(userID)
+}
+
 func (s *Server) RequireAPIAuth(w http.ResponseWriter, r *http.Request) (plugins.CurrentUser, bool) {
 	cu, ok := s.requireAPIAuth(w, r)
 	if !ok {
@@ -86,6 +93,7 @@ func (s *Server) RequireAPIAuth(w http.ResponseWriter, r *http.Request) (plugins
 }
 
 var _ plugins.AccountMailboxSyncHost = (*Server)(nil)
+var _ plugins.MailboxGenerationRecoveryHost = (*Server)(nil)
 
 func (s *Server) LoginUserID(w http.ResponseWriter, r *http.Request, userID int64) error {
 	return s.loginUser(w, r, userID)

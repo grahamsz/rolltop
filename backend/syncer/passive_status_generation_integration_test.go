@@ -56,7 +56,7 @@ func TestPassiveStatusCannotReplaceActiveRebuildGeneration(t *testing.T) {
 	if err := db.UpdateMailboxLastUID(ctx, user.ID, mailbox.ID, 1); err != nil {
 		t.Fatal(err)
 	}
-	if stale, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, accountRecord.ID, mailbox.ID, 2); err != nil || !reset || len(stale) != 0 {
+	if stale, reset, err := db.ResetMailboxForRemoteGeneration(ctx, user.ID, accountRecord.ID, mailbox.ID, 2, 8); err != nil || !reset || len(stale) != 0 {
 		t.Fatalf("empty reset stale=%v reset=%t err=%v", stale, reset, err)
 	}
 	pending, err := db.MailboxGenerationRebuildPending(ctx, user.ID, accountRecord.ID, mailbox.ID, 2)
@@ -143,7 +143,7 @@ func TestPassiveStatusCannotRegressConcurrentGenerationReset(t *testing.T) {
 	}
 	fetcher := &resetDuringMailboxStatusFetcher{fakeFetcher: base}
 	fetcher.beforeStatus = func() {
-		if _, reset, resetErr := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, accountRecord.ID, mailbox.ID, 2); resetErr != nil || reset {
+		if _, reset, resetErr := db.ResetMailboxForRemoteGeneration(ctx, user.ID, accountRecord.ID, mailbox.ID, 2, 0); resetErr != nil || reset {
 			t.Fatalf("concurrent initialization reset=%t err=%v", reset, resetErr)
 		}
 	}
@@ -161,7 +161,7 @@ func TestPassiveStatusCannotRegressConcurrentGenerationReset(t *testing.T) {
 
 	base.uidValidityByMailbox["inbox"] = 2
 	fetcher.beforeStatus = func() {
-		if _, reset, resetErr := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, accountRecord.ID, mailbox.ID, 3); resetErr != nil || !reset {
+		if _, reset, resetErr := db.ResetMailboxForRemoteGeneration(ctx, user.ID, accountRecord.ID, mailbox.ID, 3, 1); resetErr != nil || !reset {
 			t.Fatalf("concurrent established reset=%t err=%v", reset, resetErr)
 		}
 	}
