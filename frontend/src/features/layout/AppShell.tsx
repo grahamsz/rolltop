@@ -31,6 +31,7 @@ export function AppShell({
   buildVersion,
   buildDate,
   buildLabel,
+  buildCommit,
   accountNeedsPassword,
   accountNotice,
   enabledPlugins,
@@ -408,6 +409,7 @@ export function AppShell({
           buildVersion={buildVersion}
           buildDate={buildDate}
           buildLabel={buildLabel}
+          buildCommit={buildCommit}
           currentPath={location.path}
           navigate={navigate}
           openCompose={openCompose}
@@ -756,6 +758,7 @@ function Sidebar({
   buildVersion,
   buildDate,
   buildLabel,
+  buildCommit,
   currentPath,
   navigate,
   openCompose,
@@ -776,6 +779,7 @@ function Sidebar({
   buildVersion: string;
   buildDate: string;
   buildLabel: string;
+  buildCommit: string;
   currentPath: string;
   navigate: (url: string) => void;
   openCompose: (query?: string) => void;
@@ -791,6 +795,11 @@ function Sidebar({
   const uptimeLabel = useServerUptimeLabel(serverStartedAt, serverUptimeSeconds);
   const releaseLabel = buildDisplayLabel(buildVersion, buildDate, buildLabel);
   const uptimeParts = [uptimeLabel ? `Up ${uptimeLabel}` : "", releaseLabel].filter(Boolean);
+  const shortCommit = buildCommit.trim().slice(0, 8);
+  const uptimeTitle = [
+    serverStartedAt ? `Started ${new Date(serverStartedAt).toLocaleString()}` : "Server uptime",
+    shortCommit ? `Commit ${shortCommit}` : ""
+  ].filter(Boolean).join(" · ");
   const activeMailbox = mailRoute(currentPath).mailboxID;
   const allMailActive = (currentPath === "/mail" || currentPath.startsWith("/mail/")) && !activeMailbox;
   const snoozedActive = currentPath === "/snoozes";
@@ -1005,7 +1014,7 @@ function Sidebar({
       </div>
       <SidebarSync csrf={csrf} latest={latestSyncRun} activeRuns={activeSyncRuns} running={syncRunning} refreshChrome={refreshChrome} />
       {uptimeParts.length > 0 ? (
-        <div className="sidebar-uptime" title={serverStartedAt ? `Started ${new Date(serverStartedAt).toLocaleString()}` : "Server uptime"}>
+        <div className="sidebar-uptime" title={uptimeTitle}>
           {uptimeParts.join(" · ")}
         </div>
       ) : null}

@@ -26,11 +26,12 @@ var (
 
 type rawMessagePluginFetcher struct {
 	syncer.Fetcher
-	raw     []byte
-	calls   int
-	userID  int64
-	mailbox string
-	uid     uint32
+	raw         []byte
+	uidValidity uint32
+	calls       int
+	userID      int64
+	mailbox     string
+	uid         uint32
 }
 
 func (f *rawMessagePluginFetcher) FetchMessage(_ context.Context, account store.MailAccount, mailbox string, uid uint32) (syncer.FetchedMessage, error) {
@@ -38,7 +39,7 @@ func (f *rawMessagePluginFetcher) FetchMessage(_ context.Context, account store.
 	f.userID = account.UserID
 	f.mailbox = mailbox
 	f.uid = uid
-	return syncer.FetchedMessage{Mailbox: mailbox, UID: uid, Raw: append([]byte(nil), f.raw...)}, nil
+	return syncer.FetchedMessage{Mailbox: mailbox, UID: uid, UIDValidity: f.uidValidity, Raw: append([]byte(nil), f.raw...)}, nil
 }
 
 func testClientSidePGPBackendPlugins(t *testing.T) ([]plugins.Manifest, *plugins.BackendManager) {
@@ -255,6 +256,7 @@ func TestQueueAccountMailboxSyncRequiresOwnedConfiguredDestination(t *testing.T)
 }
 
 func TestFetchRawMessageIsTenantScopedAndDoesNotCacheRemoteBytes(t *testing.T) {
+	const uidValidity = 444
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
@@ -282,6 +284,9 @@ func TestFetchRawMessageIsTenantScopedAndDoesNotCacheRemoteBytes(t *testing.T) {
 		if createErr != nil {
 			t.Fatal(createErr)
 		}
+		if createErr := db.UpdateMailboxRemoteStatus(ctx, user.ID, mailbox.ID, 1, 0, uid+1, uidValidity); createErr != nil {
+			t.Fatal(createErr)
+		}
 		blobRecord, createErr := db.CreateBlob(ctx, store.BlobRecord{
 			UserID: user.ID, Kind: "message", Path: fmt.Sprintf("pruned/%d.eml", uid), SHA256: fmt.Sprintf("hash-%d", uid), Size: 32,
 		})
@@ -292,7 +297,7 @@ func TestFetchRawMessageIsTenantScopedAndDoesNotCacheRemoteBytes(t *testing.T) {
 			UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: blobRecord.ID,
 			MessageIDHeader: fmt.Sprintf("<%d@example.test>", uid), Subject: "Remote message",
 			FromAddr: "sender@example.test", ToAddr: user.Email, Date: time.Now().UTC(), InternalDate: time.Now().UTC(),
-			UID: uid, Size: 32, BlobPath: "", BodyText: "stored preview",
+			UID: uid, UIDValidity: uidValidity, Size: 32, BlobPath: "", BodyText: "stored preview",
 		})
 		if createErr != nil {
 			t.Fatal(createErr)
@@ -302,7 +307,7 @@ func TestFetchRawMessageIsTenantScopedAndDoesNotCacheRemoteBytes(t *testing.T) {
 	ownedMessage := createMessage(owner, "INBOX", 41)
 	otherMessage := createMessage(other, "Private", 72)
 	raw := []byte("From: sender@example.test\r\nTo: raw-owner@example.test\r\nSubject: Full\r\n\r\ncomplete body")
-	fetcher := &rawMessagePluginFetcher{raw: raw}
+	fetcher := &rawMessagePluginFetcher{raw: raw, uidValidity: uidValidity}
 	server := &Server{store: db, syncer: &syncer.Service{Store: db, Fetcher: fetcher}}
 
 	if _, err := server.FetchRawMessage(ctx, owner.ID, otherMessage.ID); !store.IsNotFound(err) {

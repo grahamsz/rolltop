@@ -83,6 +83,7 @@ export type AppShellProps = {
   buildVersion: string;
   buildDate: string;
   buildLabel: string;
+  buildCommit: string;
   location: LocationState;
   navigate: Navigate;
   onMoveMessages: (messageIDs: number[], mailbox: MoveTarget, action?: MessageTransferAction) => void;

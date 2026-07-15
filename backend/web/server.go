@@ -67,6 +67,7 @@ type Server struct {
 	search                    *search.Service
 	syncer                    *syncer.Service
 	syncRunner                *syncer.Runner
+	ownedSyncRunnerCancel     context.CancelFunc
 	sender                    mailSender
 	masterKey                 []byte
 	dataDir                   string
@@ -238,8 +239,11 @@ func New(opts Options) (*Server, error) {
 	if opts.SessionTTL == 0 {
 		opts.SessionTTL = 30 * 24 * time.Hour
 	}
+	var ownedSyncRunnerCancel context.CancelFunc
 	if opts.SyncRunner == nil && opts.Syncer != nil {
-		opts.SyncRunner = syncer.NewRunner(opts.Syncer)
+		var runnerContext context.Context
+		runnerContext, ownedSyncRunnerCancel = context.WithCancel(context.Background())
+		opts.SyncRunner = syncer.NewRunnerWithContext(runnerContext, opts.Syncer)
 	}
 	if opts.Sender == nil && len(opts.MasterKey) == 32 {
 		opts.Sender = &smtpclient.Sender{MasterKey: opts.MasterKey}
@@ -272,6 +276,7 @@ func New(opts Options) (*Server, error) {
 		search:                opts.Search,
 		syncer:                opts.Syncer,
 		syncRunner:            opts.SyncRunner,
+		ownedSyncRunnerCancel: ownedSyncRunnerCancel,
 		sender:                opts.Sender,
 		masterKey:             opts.MasterKey,
 		dataDir:               opts.DataDir,
@@ -306,6 +311,21 @@ func New(opts Options) (*Server, error) {
 	}
 	if opts.Syncer != nil {
 		opts.Syncer.Notify = srv.notifyUserChanged
+		opts.Syncer.NotifyRestoredState = srv.notifySnoozeStateChanged
+	}
+	if opts.SyncRunner != nil {
+		if err := opts.SyncRunner.RecoverPendingBlobCleanups(); err != nil {
+			if ownedSyncRunnerCancel != nil {
+				ownedSyncRunnerCancel()
+			}
+			return nil, fmt.Errorf("recover pending blob cleanups: %w", err)
+		}
+		if err := opts.SyncRunner.RecoverPendingInboxArrivals(); err != nil {
+			if ownedSyncRunnerCancel != nil {
+				ownedSyncRunnerCancel()
+			}
+			return nil, fmt.Errorf("recover pending Inbox arrivals: %w", err)
+		}
 	}
 	srv.startAutoStartBackendPlugins(context.Background())
 	srv.warmAllMailFirstPages(context.Background())

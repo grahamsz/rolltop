@@ -464,6 +464,7 @@ export type Bootstrap = {
   build_version?: string;
   build_date?: string;
   build_label?: string;
+  build_commit?: string;
   public_site_url?: string;
 };
 
@@ -486,6 +487,7 @@ export type ChromeEvent = {
   build_version?: string;
   build_date?: string;
   build_label?: string;
+  build_commit?: string;
   public_site_url?: string;
 };
 

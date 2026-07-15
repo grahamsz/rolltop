@@ -141,9 +141,19 @@ func (s *Service) fetchRawMessageForMessage(ctx context.Context, userID int64, m
 	if mailbox.AccountID != msg.AccountID {
 		return nil, store.MailAccount{}, store.Mailbox{}, errors.New("message mailbox does not belong to message account")
 	}
+	messageUIDValidity, err := s.Store.GetMessageUIDValidityForUser(ctx, userID, msg.ID)
+	if err != nil {
+		return nil, store.MailAccount{}, store.Mailbox{}, err
+	}
+	if messageUIDValidity <= 0 || mailbox.UIDValidity <= 0 || messageUIDValidity != mailbox.UIDValidity {
+		return nil, store.MailAccount{}, store.Mailbox{}, errors.New("message source mailbox generation changed; refresh before fetching raw content")
+	}
 	item, err := s.Fetcher.FetchMessage(ctx, account, mailbox.Name, msg.UID)
 	if err != nil {
 		return nil, store.MailAccount{}, store.Mailbox{}, err
+	}
+	if item.UIDValidity == 0 || int64(item.UIDValidity) != messageUIDValidity {
+		return nil, store.MailAccount{}, store.Mailbox{}, errors.New("IMAP message source mailbox generation changed; refresh before fetching raw content")
 	}
 	if len(item.Raw) == 0 {
 		return nil, store.MailAccount{}, store.Mailbox{}, fmt.Errorf("IMAP returned empty raw message mailbox %q UID %d", mailbox.Name, msg.UID)

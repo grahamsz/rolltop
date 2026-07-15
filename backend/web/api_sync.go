@@ -111,6 +111,7 @@ func (s *Server) syncEventPayload(ctx context.Context, userID int64) (map[string
 		"build_version":         info.Version,
 		"build_date":            info.BuildDate,
 		"build_label":           info.Label,
+		"build_commit":          info.Commit,
 		"public_site_url":       info.PublicSiteURL,
 		"storage_retained":      true,
 	}, nil

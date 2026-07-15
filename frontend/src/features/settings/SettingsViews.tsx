@@ -464,7 +464,8 @@ const folderRoleChoices = [
   { value: "sent", label: "Sent" },
   { value: "drafts", label: "Drafts" },
   { value: "trash", label: "Trash" },
-  { value: "junk", label: "Spam / Junk" }
+  { value: "junk", label: "Spam / Junk" },
+  { value: "all", label: "All Mail / Archive" }
 ];
 
 const uniqueFolderRoles = new Set(folderRoleChoices.map((choice) => choice.value).filter(Boolean));

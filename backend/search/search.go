@@ -551,20 +551,82 @@ func buildMessageDocument(msg store.MessageRecord, attachments []AttachmentDoc) 
 
 // DeleteMessage removes one tenant-scoped message document from the appropriate Bleve index.
 func (s *Service) DeleteMessage(ctx context.Context, userID, messageID int64) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
+	return s.DeleteMessages(ctx, userID, []int64{messageID})
+}
+
+// DeleteMessages removes tenant-scoped message documents in bounded Bleve batches.
+// Production indexes are separated per user; combined test indexes additionally
+// filter each candidate batch by the indexed user_id before deleting documents.
+func (s *Service) DeleteMessages(ctx context.Context, userID int64, messageIDs []int64) error {
+	if userID <= 0 || len(messageIDs) == 0 {
+		return nil
+	}
+	unique := make([]int64, 0, len(messageIDs))
+	seen := make(map[int64]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return nil
 	}
 	index, err := s.indexForUser(userID)
 	if err != nil {
 		return err
 	}
-	writer := s.writerForUser(userID)
-	writer.Lock()
-	err = index.Delete(strconv.FormatInt(messageID, 10))
-	writer.Unlock()
-	return err
+	const batchSize = 500
+	for start := 0; start < len(unique); start += batchSize {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		end := start + batchSize
+		if end > len(unique) {
+			end = len(unique)
+		}
+		deleteIDs := make([]string, 0, end-start)
+		for _, id := range unique[start:end] {
+			deleteIDs = append(deleteIDs, strconv.FormatInt(id, 10))
+		}
+		writer := s.writerForUser(userID)
+		writer.Lock()
+		if !s.perUser {
+			userQuery := bleve.NewTermQuery(strconv.FormatInt(userID, 10))
+			userQuery.SetField("user_id")
+			docQuery := bleve.NewDocIDQuery(deleteIDs)
+			request := bleve.NewSearchRequestOptions(bleve.NewConjunctionQuery(userQuery, docQuery), len(deleteIDs), 0, false)
+			result, searchErr := index.Search(request)
+			if searchErr != nil {
+				writer.Unlock()
+				return searchErr
+			}
+			deleteIDs = deleteIDs[:0]
+			for _, hit := range result.Hits {
+				deleteIDs = append(deleteIDs, hit.ID)
+			}
+		}
+		if len(deleteIDs) == 0 {
+			writer.Unlock()
+			continue
+		}
+		batch := index.NewBatch()
+		for _, id := range deleteIDs {
+			batch.Delete(id)
+		}
+		err = index.Batch(batch)
+		writer.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CountMailboxMessages counts indexed documents for a mailbox so settings can show search-index progress.

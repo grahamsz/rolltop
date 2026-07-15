@@ -102,13 +102,17 @@ type MailboxPlan struct {
 
 // FetchedMessage is a raw message body plus IMAP metadata streamed from Fetcher to Service.
 type FetchedMessage struct {
-	Mailbox      string
-	UID          uint32
-	Date         time.Time
-	InternalDate time.Time
-	Size         int64
-	Flags        []string
-	Raw          []byte
+	Mailbox     string
+	UID         uint32
+	UIDValidity uint32
+	// AppendUIDAuthoritative is true only when UID and UIDValidity came from
+	// the server's UIDPLUS APPENDUID response for this append operation.
+	AppendUIDAuthoritative bool
+	Date                   time.Time
+	InternalDate           time.Time
+	Size                   int64
+	Flags                  []string
+	Raw                    []byte
 }
 
 // Fetcher is the narrow IMAP boundary used by sync. Keeping this interface here
@@ -143,10 +147,12 @@ type Service struct {
 	Fetcher Fetcher
 	Sender  MailSender
 
-	BlobRetention time.Duration
-	Notify        func(userID int64)
-	PluginDir     string
-	MasterKey     []byte
+	BlobRetention        time.Duration
+	Notify               func(userID int64)
+	ScheduleInboxArrival func(userID, accountID int64, due time.Time)
+	NotifyRestoredState  func(userID int64)
+	PluginDir            string
+	MasterKey            []byte
 
 	pluginOnce     sync.Once
 	pluginLoadErr  error
@@ -313,6 +319,12 @@ func (s *Service) syncUser(ctx context.Context, userID int64, requestedMailboxes
 	if s.Fetcher == nil {
 		return store.SyncRun{}, errors.New("sync fetcher is not configured")
 	}
+	completedCleanups, failedCleanups, cleanupErr := s.drainPendingBlobCleanupsForUser(ctx, userID, genericBlobCleanupOpportunisticLimit)
+	if cleanupErr != nil {
+		log.Printf("generic blob cleanup user_id=%d: %v", userID, cleanupErr)
+	} else if failedCleanups > 0 {
+		log.Printf("generic blob cleanup user_id=%d completed=%d failed=%d", userID, completedCleanups, failedCleanups)
+	}
 	accounts, err := s.Store.ListMailAccountsForUser(ctx, userID)
 	if err != nil {
 		return store.SyncRun{}, err
@@ -405,8 +417,54 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			errText = err.Error()
 			return run, err
 		}
-		s.recordMailboxStatus(ctx, userID, mailbox, planned.Status)
-		repairedPlan, repaired, err := s.repairRequestedIncompleteMailbox(ctx, userID, account, mailbox, planned, requestedSet[strings.ToLower(mailboxName)], run.ID, &progress)
+		generationReset, err := s.ResetMailboxGenerationIfNeeded(ctx, userID, account, mailbox, planned.Status.UIDValidity)
+		if err != nil {
+			status = "failed"
+			errText = err.Error()
+			return run, err
+		}
+		if generationReset {
+			previousPending := planned.Pending
+			planned.LastUID = 0
+			planned.Pending = 0
+			if planned.Status.UIDNext > 0 {
+				planned.Pending = int(planned.Status.UIDNext - 1)
+			}
+			progress.MessagesTotal += planned.Pending - previousPending
+			if progress.MessagesTotal < progress.MessagesSeen {
+				progress.MessagesTotal = progress.MessagesSeen
+			}
+			mailboxLastUIDAtStart = 0
+			lastUIDs[mailboxName] = 0
+			mailbox.LastUID = 0
+			log.Printf("reset mailbox generation user_id=%d account_id=%d mailbox=%s uidvalidity=%d", userID, account.ID, mailboxName, planned.Status.UIDValidity)
+		}
+		generationRebuildPending := false
+		if planned.Status.UIDValidity > 0 {
+			generationRebuildPending, err = s.Store.MailboxGenerationRebuildPending(ctx, userID, account.ID, mailbox.ID, planned.Status.UIDValidity)
+			if err != nil {
+				status = "failed"
+				errText = err.Error()
+				return run, err
+			}
+		}
+		rebuildInProgress := generationReset || generationRebuildPending
+		if planned.Status.UIDValidity == 0 {
+			status = "failed"
+			errText = "mailbox sync requires a known UIDVALIDITY"
+			return run, errors.New(errText)
+		}
+		if err := s.Store.UpdateMailboxRemoteStatusForGeneration(ctx, userID, account.ID, mailbox.ID,
+			int(planned.Status.Messages), int(planned.Status.Unseen), planned.Status.UIDNext, planned.Status.UIDValidity); err != nil {
+			status = "failed"
+			errText = err.Error()
+			return run, err
+		}
+		if planned.Status.UIDValidity > 0 {
+			mailbox.UIDValidity = int64(planned.Status.UIDValidity)
+		}
+		repairedPlan, repaired, err := s.repairRequestedIncompleteMailbox(ctx, userID, account, mailbox, planned,
+			requestedSet[strings.ToLower(mailboxName)] && !rebuildInProgress, run.ID, &progress)
 		if err != nil {
 			status = "failed"
 			errText = err.Error()
@@ -431,7 +489,14 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		}
 		searchBatch := newFetchedSearchIndexBatch(s)
 		classificationBatch := newMessageClassificationBatch(s, classifiers)
-		err = s.Fetcher.FetchMailbox(ctx, account, mailboxName, mailboxLastUIDAtStart, func(item FetchedMessage) error {
+		if rebuildInProgress {
+			if _, ok := s.Fetcher.(UIDValidityMailboxFetcher); !ok {
+				status = "failed"
+				errText = "mailbox generation rebuild requires a generation-bound fetcher"
+				return run, errors.New(errText)
+			}
+		}
+		err = s.fetchMailboxForGeneration(ctx, account, mailboxName, mailboxLastUIDAtStart, planned.Status.UIDValidity, func(item FetchedMessage) error {
 			if item.Mailbox == "" {
 				item.Mailbox = mailboxName
 			}
@@ -449,26 +514,35 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				progress.MessagesSkipped++
 				return s.updateSyncProgress(ctx, userID, run.ID, progress)
 			}
-			exists, err := s.Store.MessageExistsByUID(ctx, userID, account.ID, mailbox.ID, item.UID)
+			exists, err := s.Store.MessageExistsByUIDForGeneration(ctx, userID, account.ID, mailbox.ID,
+				item.UID, item.UIDValidity)
 			if err != nil {
 				return err
 			}
 			if exists {
-				if shouldNotifyNewMail(mailbox, mailboxLastUIDAtStart, item) {
+				if !rebuildInProgress && shouldNotifyNewMail(mailbox, mailboxLastUIDAtStart, item) {
 					msg, err := s.Store.GetMessageByUID(ctx, userID, account.ID, mailbox.ID, item.UID)
 					if err != nil {
 						return err
 					}
-					if err := s.recordNewMailEvent(ctx, userID, msg, &progress); err != nil {
+					storedUIDValidity, err := s.Store.GetMessageUIDValidityForUser(ctx, userID, msg.ID)
+					if err != nil {
+						return err
+					}
+					if storedUIDValidity != int64(item.UIDValidity) {
+						return store.ErrMailboxGenerationChanged
+					}
+					if err := s.recordInboxArrival(ctx, userID, run.ID, msg, item, &progress); err != nil {
 						return err
 					}
 				}
 				progress.MessagesSkipped++
 				if item.UID > lastUIDs[mailboxName] {
-					lastUIDs[mailboxName] = item.UID
-					if err := s.Store.UpdateMailboxLastUID(ctx, userID, mailbox.ID, item.UID); err != nil {
+					if err := s.Store.UpdateMailboxLastUIDForGeneration(ctx, userID, account.ID, mailbox.ID,
+						item.UID, item.UIDValidity); err != nil {
 						return err
 					}
+					lastUIDs[mailboxName] = item.UID
 				}
 				return s.updateSyncProgress(ctx, userID, run.ID, progress)
 			}
@@ -494,22 +568,23 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			}
 			s.warmRemoteImagesForStoredMessage(msg, mailbox, parsed.HTML)
 			progress.MessagesStored++
-			notifyNewMail := shouldNotifyNewMail(mailbox, mailboxLastUIDAtStart, item)
-			if !notifyNewMail && shouldCancelSnoozeForNewMessage(mailbox, mailboxLastUIDAtStart, item) {
+			notifyNewMail := !rebuildInProgress && shouldNotifyNewMail(mailbox, mailboxLastUIDAtStart, item)
+			if !rebuildInProgress && !notifyNewMail && shouldCancelSnoozeForNewMessage(mailbox, mailboxLastUIDAtStart, item) {
 				if _, err := s.Store.CancelSnoozeForNewMessage(ctx, userID, msg); err != nil {
 					return err
 				}
 			}
 			if notifyNewMail {
-				if err := s.recordNewMailEvent(ctx, userID, msg, &progress); err != nil {
+				if err := s.recordInboxArrival(ctx, userID, run.ID, msg, item, &progress); err != nil {
 					return err
 				}
 			}
 			if item.UID > lastUIDs[mailboxName] {
-				lastUIDs[mailboxName] = item.UID
-				if err := s.Store.UpdateMailboxLastUID(ctx, userID, mailbox.ID, item.UID); err != nil {
+				if err := s.Store.UpdateMailboxLastUIDForGeneration(ctx, userID, account.ID, mailbox.ID,
+					item.UID, item.UIDValidity); err != nil {
 					return err
 				}
+				lastUIDs[mailboxName] = item.UID
 			}
 			return s.updateSyncProgress(ctx, userID, run.ID, progress)
 		})
@@ -517,6 +592,27 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			status = "failed"
 			errText = err.Error()
 			return run, err
+		}
+		if planned.Status.UIDValidity > 0 {
+			if err := s.Store.FinalizeMailboxGenerationRebuild(ctx, userID, account.ID, mailbox.ID, planned.Status.UIDValidity); err != nil {
+				status = "failed"
+				errText = err.Error()
+				return run, err
+			}
+			if generationRebuildPending && s.ScheduleInboxArrival != nil {
+				restoredArrivalDue, dueErr := s.Store.NextPendingInboxArrivalDue(ctx, userID, account.ID)
+				if dueErr != nil && !store.IsNotFound(dueErr) {
+					status = "failed"
+					errText = dueErr.Error()
+					return run, dueErr
+				}
+				if dueErr == nil {
+					s.ScheduleInboxArrival(userID, account.ID, restoredArrivalDue)
+				}
+			}
+			if generationRebuildPending && s.NotifyRestoredState != nil {
+				s.NotifyRestoredState(userID)
+			}
 		}
 		if err := searchBatch.Flush(ctx); err != nil {
 			status = "failed"
@@ -585,9 +681,39 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 	if remoteCount > 0 && len(localUIDs) >= remoteCount && plan.Pending == 0 {
 		return plan, false, nil
 	}
-	remoteUIDs, err := s.Fetcher.UIDs(ctx, account, mailbox.Name)
-	if err != nil {
-		return plan, false, err
+	var remoteUIDs []uint32
+	var snapshotUIDValidity uint32
+	expectedUIDValidity := plan.Status.UIDValidity
+	if expectedUIDValidity == 0 && mailbox.UIDValidity > 0 && mailbox.UIDValidity <= int64(^uint32(0)) {
+		expectedUIDValidity = uint32(mailbox.UIDValidity)
+	}
+	if snapshotFetcher, ok := s.Fetcher.(MailboxUIDSnapshotFetcher); ok {
+		snapshot, err := snapshotFetcher.SnapshotMailboxUIDs(ctx, account, mailbox.Name)
+		if err != nil {
+			return plan, false, err
+		}
+		if snapshot.UIDValidity == 0 || snapshot.UIDNext == 0 {
+			return plan, false, errors.New("mailbox repair snapshot is missing UIDVALIDITY or UIDNEXT")
+		}
+		if plan.Status.UIDValidity == 0 || snapshot.UIDValidity != plan.Status.UIDValidity || mailbox.UIDValidity <= 0 || int64(snapshot.UIDValidity) != mailbox.UIDValidity {
+			return plan, false, errors.New("mailbox generation changed while preparing sparse repair")
+		}
+		for _, uid := range snapshot.UIDs {
+			if uid == 0 || uid >= snapshot.UIDNext {
+				return plan, false, errors.New("mailbox repair snapshot contains a UID outside its UIDNEXT boundary")
+			}
+		}
+		remoteUIDs = snapshot.UIDs
+		snapshotUIDValidity = snapshot.UIDValidity
+		expectedUIDValidity = snapshot.UIDValidity
+	} else {
+		// Legacy fake/plugin fetchers do not expose a same-session generation
+		// snapshot. Production imapclient.Fetcher always uses the branch above.
+		var err error
+		remoteUIDs, err = s.Fetcher.UIDs(ctx, account, mailbox.Name)
+		if err != nil {
+			return plan, false, err
+		}
 	}
 	missing := missingRemoteUIDs(remoteUIDs, localUIDs)
 	highestRemoteUID := maxUID(remoteUIDs)
@@ -604,7 +730,8 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 	}
 	if len(missing) == 0 {
 		if highestRemoteUID > plan.LastUID {
-			if err := s.Store.UpdateMailboxLastUID(ctx, userID, mailbox.ID, highestRemoteUID); err != nil {
+			if err := s.Store.UpdateMailboxLastUIDForGeneration(ctx, userID, account.ID, mailbox.ID,
+				highestRemoteUID, expectedUIDValidity); err != nil {
 				return plan, false, err
 			}
 			plan.LastUID = highestRemoteUID
@@ -635,7 +762,8 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 			progress.CurrentMailbox = item.Mailbox
 			progress.CurrentUID = item.UID
 		}
-		exists, err := s.Store.MessageExistsByUID(ctx, userID, account.ID, mailbox.ID, item.UID)
+		exists, err := s.Store.MessageExistsByUIDForGeneration(ctx, userID, account.ID, mailbox.ID,
+			item.UID, expectedUIDValidity)
 		if err != nil {
 			return err
 		}
@@ -646,7 +774,7 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 					if err != nil {
 						return err
 					}
-					if err := s.recordNewMailEvent(ctx, userID, msg, progress); err != nil {
+					if err := s.recordInboxArrival(ctx, userID, runID, msg, item, progress); err != nil {
 						return err
 					}
 				}
@@ -685,7 +813,7 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 		if progress != nil {
 			progress.MessagesStored++
 			if notifyNewMail {
-				if err := s.recordNewMailEvent(ctx, userID, msg, progress); err != nil {
+				if err := s.recordInboxArrival(ctx, userID, runID, msg, item, progress); err != nil {
 					return err
 				}
 			}
@@ -695,7 +823,11 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 		}
 		return nil
 	}
-	if batchFetcher, ok := s.Fetcher.(uidBatchFetcher); ok {
+	if snapshotUIDValidity > 0 {
+		if err := s.fetchUIDsForGeneration(ctx, account, mailbox.Name, missing, snapshotUIDValidity, handle); err != nil {
+			return plan, false, err
+		}
+	} else if batchFetcher, ok := s.Fetcher.(uidBatchFetcher); ok {
 		if err := batchFetcher.FetchUIDs(ctx, account, mailbox.Name, missing, handle); err != nil {
 			return plan, false, err
 		}
@@ -715,7 +847,8 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 	}
 	classificationBatch.Flush(ctx)
 	if highestRemoteUID > plan.LastUID {
-		if err := s.Store.UpdateMailboxLastUID(ctx, userID, mailbox.ID, highestRemoteUID); err != nil {
+		if err := s.Store.UpdateMailboxLastUIDForGeneration(ctx, userID, account.ID, mailbox.ID,
+			highestRemoteUID, expectedUIDValidity); err != nil {
 			return plan, false, err
 		}
 		plan.LastUID = highestRemoteUID
@@ -786,25 +919,34 @@ func (s *Service) updateSyncProgress(ctx context.Context, userID, runID int64, p
 	return nil
 }
 
-func (s *Service) recordNewMailEvent(ctx context.Context, userID int64, msg store.MessageRecord, progress *store.SyncProgress) error {
-	_, created, err := s.Store.RecordNewMailEvent(ctx, userID, msg)
-	if err != nil || !created {
-		return err
-	}
-	progress.NewMessages++
-	progress.LatestNewFrom = msg.FromAddr
-	progress.LatestNewSubject = msg.Subject
-	progress.LatestNewMessageID = msg.ID
-	return nil
-}
-
 // recordMailboxStatus keeps remote counters separate from local/indexed counters
 // so the UI can tell "known remotely" from "mirrored locally".
 func (s *Service) recordMailboxStatus(ctx context.Context, userID int64, mailbox store.Mailbox, status MailboxStatus) {
 	if status.UIDNext == 0 && status.Messages == 0 && status.Unseen == 0 && status.UIDValidity == 0 {
 		return
 	}
-	if err := s.Store.UpdateMailboxRemoteStatus(ctx, userID, mailbox.ID, int(status.Messages), int(status.Unseen), status.UIDNext, status.UIDValidity); err != nil {
+	if status.UIDValidity == 0 {
+		return
+	}
+	var err error
+	switch {
+	case mailbox.UIDValidity == 0:
+		err = s.Store.InitializeMailboxRemoteStatus(ctx, userID, mailbox.AccountID, mailbox.ID,
+			int(status.Messages), int(status.Unseen), status.UIDNext, status.UIDValidity)
+	case mailbox.UIDValidity == int64(status.UIDValidity):
+		err = s.Store.UpdateMailboxRemoteStatusForGeneration(ctx, userID, mailbox.AccountID, mailbox.ID,
+			int(status.Messages), int(status.Unseen), status.UIDNext, status.UIDValidity)
+	default:
+		log.Printf("skip mailbox status from unproven generation user_id=%d account_id=%d mailbox=%s cached_uidvalidity=%d remote_uidvalidity=%d",
+			userID, mailbox.AccountID, mailbox.Name, mailbox.UIDValidity, status.UIDValidity)
+		return
+	}
+	if errors.Is(err, store.ErrMailboxGenerationChanged) {
+		log.Printf("skip mailbox status after concurrent generation change user_id=%d account_id=%d mailbox=%s remote_uidvalidity=%d",
+			userID, mailbox.AccountID, mailbox.Name, status.UIDValidity)
+		return
+	}
+	if err != nil {
 		log.Printf("store mailbox status user_id=%d mailbox=%s: %v", userID, mailbox.Name, err)
 	}
 }

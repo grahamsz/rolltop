@@ -319,7 +319,7 @@ export default function App() {
       return;
     }
     if (androidNativeAvailable() && loadedBuildIdentityRef.current !== identity) reloadForFreshShell();
-  }, [bootstrap?.build_version, bootstrap?.build_date, bootstrap?.build_label, reloadForFreshShell]);
+  }, [bootstrap?.build_version, bootstrap?.build_date, bootstrap?.build_label, bootstrap?.build_commit, reloadForFreshShell]);
 
   useEffect(() => {
     const savedTheme = bootstrap?.user?.theme;
@@ -659,6 +659,7 @@ export default function App() {
           build_version: chrome.build_version || current.build_version,
           build_date: chrome.build_date || current.build_date,
           build_label: chrome.build_label || current.build_label,
+          build_commit: chrome.build_commit ?? current.build_commit,
           public_site_url: chrome.public_site_url || current.public_site_url,
           mail_generation: chrome.mail_generation ?? current.mail_generation,
           swipe_preferences: chrome.swipe_preferences || current.swipe_preferences
@@ -809,6 +810,7 @@ export default function App() {
         buildVersion={bootstrap.build_version || ""}
         buildDate={bootstrap.build_date || ""}
         buildLabel={bootstrap.build_label || ""}
+        buildCommit={bootstrap.build_commit || ""}
         location={location}
         navigate={navigate}
         onMoveMessages={moveMessages}

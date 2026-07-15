@@ -72,9 +72,16 @@ type SyncProgress struct {
 // UpdateSyncRunProgress stores the latest mailbox/message progress snapshot for a sync run.
 func (s *Store) UpdateSyncRunProgress(ctx context.Context, userID, id int64, p SyncProgress) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE sync_runs
-		SET updated_at = ?, messages_seen = ?, messages_stored = ?, messages_skipped = ?, new_messages = ?, latest_new_from = ?, latest_new_subject = ?, latest_new_message_id = ?, messages_total = ?, mailboxes_done = ?, mailboxes_total = ?, current_mailbox = ?, current_uid = ?
+		SET updated_at = ?, messages_seen = ?, messages_stored = ?, messages_skipped = ?,
+			latest_new_from = CASE WHEN ? >= new_messages THEN ? ELSE latest_new_from END,
+			latest_new_subject = CASE WHEN ? >= new_messages THEN ? ELSE latest_new_subject END,
+			latest_new_message_id = CASE WHEN ? >= new_messages THEN ? ELSE latest_new_message_id END,
+			new_messages = MAX(new_messages, ?), messages_total = ?, mailboxes_done = ?, mailboxes_total = ?, current_mailbox = ?, current_uid = ?
 		WHERE user_id = ? AND id = ?`,
-		nowUnix(), p.MessagesSeen, p.MessagesStored, p.MessagesSkipped, p.NewMessages, p.LatestNewFrom, p.LatestNewSubject, p.LatestNewMessageID, p.MessagesTotal, p.MailboxesDone, p.MailboxesTotal, p.CurrentMailbox, p.CurrentUID, userID, id)
+		nowUnix(), p.MessagesSeen, p.MessagesStored, p.MessagesSkipped,
+		p.NewMessages, p.LatestNewFrom, p.NewMessages, p.LatestNewSubject,
+		p.NewMessages, p.LatestNewMessageID, p.NewMessages, p.MessagesTotal,
+		p.MailboxesDone, p.MailboxesTotal, p.CurrentMailbox, p.CurrentUID, userID, id)
 	return err
 }
 
@@ -85,10 +92,16 @@ func (s *Store) FinishSyncRun(ctx context.Context, userID, id int64, status stri
 	}
 	now := nowUnix()
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE sync_runs
-		SET status = ?, finished_at = ?, updated_at = ?, messages_seen = ?, messages_stored = ?, messages_skipped = ?, new_messages = ?, latest_new_from = ?, latest_new_subject = ?, latest_new_message_id = ?, messages_total = ?,
+		SET status = ?, finished_at = ?, updated_at = ?, messages_seen = ?, messages_stored = ?, messages_skipped = ?,
+			latest_new_from = CASE WHEN ? >= new_messages THEN ? ELSE latest_new_from END,
+			latest_new_subject = CASE WHEN ? >= new_messages THEN ? ELSE latest_new_subject END,
+			latest_new_message_id = CASE WHEN ? >= new_messages THEN ? ELSE latest_new_message_id END,
+			new_messages = MAX(new_messages, ?), messages_total = ?,
 			mailboxes_done = ?, mailboxes_total = ?, current_mailbox = ?, current_uid = ?, error = ?
 		WHERE user_id = ? AND id = ? AND NOT (status = 'interrupted' AND finished_at != 0)`,
-		status, now, now, p.MessagesSeen, p.MessagesStored, p.MessagesSkipped, p.NewMessages, p.LatestNewFrom, p.LatestNewSubject, p.LatestNewMessageID, p.MessagesTotal, p.MailboxesDone, p.MailboxesTotal,
+		status, now, now, p.MessagesSeen, p.MessagesStored, p.MessagesSkipped,
+		p.NewMessages, p.LatestNewFrom, p.NewMessages, p.LatestNewSubject,
+		p.NewMessages, p.LatestNewMessageID, p.NewMessages, p.MessagesTotal, p.MailboxesDone, p.MailboxesTotal,
 		p.CurrentMailbox, p.CurrentUID, errText, userID, id)
 	return err
 }

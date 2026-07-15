@@ -61,7 +61,13 @@ func (s *Service) requestedMailboxes(ctx context.Context, account store.MailAcco
 			return nil, err
 		}
 		if effective == "never" {
-			continue
+			rebuildPending, err := s.Store.MailboxGenerationRebuildExists(ctx, account.UserID, account.ID, mb.ID)
+			if err != nil {
+				return nil, err
+			}
+			if !rebuildPending {
+				continue
+			}
 		}
 		out = append(out, mb.Name)
 	}
@@ -134,6 +140,8 @@ func mailboxSpecialUseRole(attributes []string) string {
 	}
 	for _, attribute := range attributes {
 		switch strings.ToLower(strings.TrimSpace(attribute)) {
+		case "\\all":
+			return "all"
 		case "\\sent":
 			return "sent"
 		case "\\drafts":

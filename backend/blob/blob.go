@@ -127,6 +127,13 @@ func (s *Store) DeleteUserBlob(userID int64, rel string) error {
 	return err
 }
 
+// OwnsUserBlobPath reports whether a relative path is inside the requested
+// user's blob directory. Legacy malformed metadata may be discarded without
+// ever passing such a path to filesystem deletion.
+func (s *Store) OwnsUserBlobPath(userID int64, rel string) bool {
+	return userBlobPathAllowed(userID, filepath.Clean(rel))
+}
+
 func userBlobPathAllowed(userID int64, clean string) bool {
 	if filepath.IsAbs(clean) || clean == "." || strings.Contains(clean, "..") {
 		return false

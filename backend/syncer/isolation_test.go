@@ -19,11 +19,13 @@ import (
 )
 
 type fakeFetcher struct {
-	messages      map[int64][]syncer.FetchedMessage
-	mailboxes     []syncer.MailboxInfo
-	calls         []int64
-	fetchUIDCalls [][]uint32
-	appendDate    time.Time
+	messages             map[int64][]syncer.FetchedMessage
+	mailboxes            []syncer.MailboxInfo
+	uidValidityByMailbox map[string]uint32
+	calls                []int64
+	fetchAfterUIDs       []uint32
+	fetchUIDCalls        [][]uint32
+	appendDate           time.Time
 }
 
 type cancelingFetcher struct {
@@ -290,6 +292,11 @@ func (f *cancelingFetcher) FetchMailbox(ctx context.Context, account store.MailA
 	return ctx.Err()
 }
 
+func (f *cancelingFetcher) FetchMailboxWithUIDValidity(ctx context.Context, account store.MailAccount, mailbox string, afterUID, expectedUIDValidity uint32, handle func(syncer.FetchedMessage) error) error {
+	f.cancel()
+	return ctx.Err()
+}
+
 func (f *fakeFetcher) ListMailboxes(ctx context.Context, account store.MailAccount) ([]syncer.MailboxInfo, error) {
 	if len(f.mailboxes) > 0 {
 		return append([]syncer.MailboxInfo(nil), f.mailboxes...), nil
@@ -309,7 +316,11 @@ func (f *fakeFetcher) MailboxStatus(ctx context.Context, account store.MailAccou
 			highest = msg.UID
 		}
 	}
-	return syncer.MailboxStatus{Messages: count, UIDNext: highest + 1}, nil
+	uidValidity := uint32(1)
+	if configured, ok := f.uidValidityByMailbox[strings.ToLower(strings.TrimSpace(mailbox))]; ok {
+		uidValidity = configured
+	}
+	return syncer.MailboxStatus{Messages: count, UIDNext: highest + 1, UIDValidity: uidValidity}, nil
 }
 
 func (f *fakeFetcher) UIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error) {
@@ -324,6 +335,7 @@ func (f *fakeFetcher) UIDs(ctx context.Context, account store.MailAccount, mailb
 
 func (f *fakeFetcher) FetchMailbox(ctx context.Context, account store.MailAccount, mailbox string, afterUID uint32, handle func(syncer.FetchedMessage) error) error {
 	f.calls = append(f.calls, account.UserID)
+	f.fetchAfterUIDs = append(f.fetchAfterUIDs, afterUID)
 	for _, msg := range f.messages[account.UserID] {
 		if msg.Mailbox == mailbox && msg.UID > afterUID {
 			if err := handle(msg); err != nil {
@@ -332,6 +344,42 @@ func (f *fakeFetcher) FetchMailbox(ctx context.Context, account store.MailAccoun
 		}
 	}
 	return nil
+}
+
+func (f *fakeFetcher) FetchMailboxWithUIDValidity(ctx context.Context, account store.MailAccount, mailbox string, afterUID, expectedUIDValidity uint32, handle func(syncer.FetchedMessage) error) error {
+	if expectedUIDValidity != f.mailboxUIDValidity(mailbox) {
+		return errors.New("unexpected mailbox UIDVALIDITY")
+	}
+	return f.FetchMailbox(ctx, account, mailbox, afterUID, func(msg syncer.FetchedMessage) error {
+		msg.UIDValidity = expectedUIDValidity
+		return handle(msg)
+	})
+}
+
+func (f *fakeFetcher) SnapshotMailboxAppendBoundary(ctx context.Context, account store.MailAccount, mailbox string) (syncer.MailboxAppendBoundary, error) {
+	status, err := f.MailboxStatus(ctx, account, mailbox)
+	if err != nil {
+		return syncer.MailboxAppendBoundary{}, err
+	}
+	return syncer.MailboxAppendBoundary{UIDValidity: status.UIDValidity, UIDNext: status.UIDNext}, nil
+}
+
+func (f *fakeFetcher) SnapshotExactMessageMatches(ctx context.Context, account store.MailAccount, mailbox, messageID string, raw []byte, minimumUID uint32) (syncer.ExactMessageMatchSnapshot, error) {
+	status, err := f.MailboxStatus(ctx, account, mailbox)
+	if err != nil {
+		return syncer.ExactMessageMatchSnapshot{}, err
+	}
+	snapshot := syncer.ExactMessageMatchSnapshot{UIDValidity: status.UIDValidity, UIDNext: status.UIDNext}
+	want := store.CanonicalMessageSHA256(raw)
+	for _, message := range f.messages[account.UserID] {
+		if message.Mailbox == mailbox && (strings.TrimSpace(messageID) != "" || message.UID >= minimumUID) {
+			snapshot.CandidateUIDs = append(snapshot.CandidateUIDs, message.UID)
+			if store.CanonicalMessageSHA256(message.Raw) == want {
+				snapshot.MatchingUIDs = append(snapshot.MatchingUIDs, message.UID)
+			}
+		}
+	}
+	return snapshot, nil
 }
 
 func (f *fakeFetcher) FetchUIDs(ctx context.Context, account store.MailAccount, mailbox string, uids []uint32, handle func(syncer.FetchedMessage) error) error {
@@ -350,9 +398,25 @@ func (f *fakeFetcher) FetchUIDs(ctx context.Context, account store.MailAccount, 
 	return nil
 }
 
+func (f *fakeFetcher) FetchUIDsWithUIDValidity(ctx context.Context, account store.MailAccount, mailbox string, uids []uint32, expectedUIDValidity uint32, handle func(syncer.FetchedMessage) error) error {
+	if expectedUIDValidity != f.mailboxUIDValidity(mailbox) {
+		return errors.New("unexpected mailbox UIDVALIDITY")
+	}
+	return f.FetchUIDs(ctx, account, mailbox, uids, func(msg syncer.FetchedMessage) error {
+		msg.UIDValidity = expectedUIDValidity
+		return handle(msg)
+	})
+}
+
 func (f *fakeFetcher) FetchMessage(ctx context.Context, account store.MailAccount, mailbox string, uid uint32) (syncer.FetchedMessage, error) {
 	for _, msg := range f.messages[account.UserID] {
 		if msg.Mailbox == mailbox && msg.UID == uid {
+			if msg.UIDValidity == 0 {
+				msg.UIDValidity = 1
+				if configured, ok := f.uidValidityByMailbox[strings.ToLower(strings.TrimSpace(mailbox))]; ok {
+					msg.UIDValidity = configured
+				}
+			}
 			return msg, nil
 		}
 	}
@@ -370,13 +434,28 @@ func (f *fakeFetcher) AppendMessage(ctx context.Context, account store.MailAccou
 	if !f.appendDate.IsZero() {
 		internalDate = f.appendDate
 	}
-	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: highest + 1, InternalDate: internalDate, Size: int64(len(raw)), Flags: []string{"\\Seen"}, Raw: raw}
+	uidValidity := uint32(1)
+	if configured, ok := f.uidValidityByMailbox[strings.ToLower(strings.TrimSpace(mailbox))]; ok {
+		uidValidity = configured
+	}
+	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: highest + 1, UIDValidity: uidValidity, AppendUIDAuthoritative: true, InternalDate: internalDate, Size: int64(len(raw)), Flags: []string{"\\Seen"}, Raw: raw}
 	f.messages[account.UserID] = append(f.messages[account.UserID], msg)
 	return msg, nil
 }
 
 func (f *fakeFetcher) SetSeen(ctx context.Context, account store.MailAccount, mailbox string, uid uint32, seen bool) error {
 	return nil
+}
+
+func (f *fakeFetcher) SetSeenWithUIDValidity(ctx context.Context, account store.MailAccount, mailbox string, uid uint32, seen bool, expectedUIDValidity uint32) (bool, error) {
+	uidValidity := uint32(1)
+	if configured, ok := f.uidValidityByMailbox[strings.ToLower(strings.TrimSpace(mailbox))]; ok {
+		uidValidity = configured
+	}
+	if expectedUIDValidity != uidValidity {
+		return false, nil
+	}
+	return true, f.SetSeen(ctx, account, mailbox, uid, seen)
 }
 
 func (f *fakeFetcher) SeenUIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error) {
@@ -395,8 +474,27 @@ func (f *fakeFetcher) SeenUIDs(ctx context.Context, account store.MailAccount, m
 	return uids, nil
 }
 
+func (f *fakeFetcher) SeenUIDsWithUIDValidity(ctx context.Context, account store.MailAccount, mailbox string, expectedUIDValidity uint32) ([]uint32, bool, error) {
+	if expectedUIDValidity != f.mailboxUIDValidity(mailbox) {
+		return nil, false, nil
+	}
+	uids, err := f.SeenUIDs(ctx, account, mailbox)
+	return uids, true, err
+}
+
 func (f *fakeFetcher) SetFlagged(ctx context.Context, account store.MailAccount, mailbox string, uid uint32, flagged bool) error {
 	return nil
+}
+
+func (f *fakeFetcher) SetFlaggedWithUIDValidity(ctx context.Context, account store.MailAccount, mailbox string, uid uint32, flagged bool, expectedUIDValidity uint32) (bool, error) {
+	uidValidity := uint32(1)
+	if configured, ok := f.uidValidityByMailbox[strings.ToLower(strings.TrimSpace(mailbox))]; ok {
+		uidValidity = configured
+	}
+	if expectedUIDValidity != uidValidity {
+		return false, nil
+	}
+	return true, f.SetFlagged(ctx, account, mailbox, uid, flagged)
 }
 
 func (f *fakeFetcher) FlaggedUIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error) {
@@ -415,8 +513,30 @@ func (f *fakeFetcher) FlaggedUIDs(ctx context.Context, account store.MailAccount
 	return uids, nil
 }
 
+func (f *fakeFetcher) FlaggedUIDsWithUIDValidity(ctx context.Context, account store.MailAccount, mailbox string, expectedUIDValidity uint32) ([]uint32, bool, error) {
+	if expectedUIDValidity != f.mailboxUIDValidity(mailbox) {
+		return nil, false, nil
+	}
+	uids, err := f.FlaggedUIDs(ctx, account, mailbox)
+	return uids, true, err
+}
+
+func (f *fakeFetcher) mailboxUIDValidity(mailbox string) uint32 {
+	if configured, ok := f.uidValidityByMailbox[strings.ToLower(strings.TrimSpace(mailbox))]; ok {
+		return configured
+	}
+	return 1
+}
+
 func (f *fakeFetcher) MoveMessage(ctx context.Context, account store.MailAccount, sourceMailbox string, destMailbox string, uid uint32) error {
 	return nil
+}
+
+func (f *fakeFetcher) MoveMessageWithReceipt(ctx context.Context, account store.MailAccount, sourceMailbox string, destMailbox string, uid uint32, expectedSourceUIDValidity uint32) (*syncer.MoveReceipt, error) {
+	if expectedSourceUIDValidity != 1 {
+		return nil, errors.New("unexpected source UIDVALIDITY")
+	}
+	return nil, nil
 }
 
 func TestFakeSyncTenantIsolation(t *testing.T) {
@@ -626,7 +746,7 @@ func TestRequestedMailboxSyncRepairsIncompleteCheckpoint(t *testing.T) {
 	}
 }
 
-func TestRepairMailboxSearchIndexIndexesMissingIDsWhenCountsMatch(t *testing.T) {
+func TestRepairMailboxSearchIndexPrunesStaleAndIndexesMissingIDsWhenCountsMatch(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
@@ -685,8 +805,16 @@ func TestRepairMailboxSearchIndexIndexesMissingIDsWhenCountsMatch(t *testing.T) 
 	stale.ID = msg.ID + 999
 	stale.Subject = "Stale counted document"
 	stale.MessageIDHeader = "<stale-counted@example.test>"
-	stale.BodyText = store.MessageBodyPreview("unrelated stale body", store.DefaultMessageBodyPreviewBytes)
+	stale.BodyText = store.MessageBodyPreview("staleorphanneedle", store.DefaultMessageBodyPreviewBytes)
 	if err := searchSvc.IndexMessage(ctx, stale, nil); err != nil {
+		t.Fatal(err)
+	}
+	otherUserStale := stale
+	otherUserStale.ID++
+	otherUserStale.UserID += 1000
+	otherUserStale.Subject = "Other tenant indexed document"
+	otherUserStale.BodyText = store.MessageBodyPreview("othertenantneedle", store.DefaultMessageBodyPreviewBytes)
+	if err := searchSvc.IndexMessage(ctx, otherUserStale, nil); err != nil {
 		t.Fatal(err)
 	}
 	count, err := searchSvc.CountMailboxMessages(ctx, user.ID, boxes[0].ID)
@@ -736,6 +864,65 @@ func TestRepairMailboxSearchIndexIndexesMissingIDsWhenCountsMatch(t *testing.T) 
 	}
 	if len(ids) != 1 || ids[0] != msg.ID {
 		t.Fatalf("needleonly ids = %v, want %d", ids, msg.ID)
+	}
+	ids, err = searchSvc.Search(ctx, user.ID, "staleorphanneedle", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("stale mailbox document survived repair: %v", ids)
+	}
+	ids, err = searchSvc.Search(ctx, otherUserStale.UserID, "othertenantneedle", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != otherUserStale.ID {
+		t.Fatalf("repair touched another tenant's document: %v", ids)
+	}
+
+	staleOnly := stale
+	staleOnly.ID += 2
+	staleOnly.Subject = "Stale only document"
+	staleOnly.BodyText = store.MessageBodyPreview("staleonlyneedle", store.DefaultMessageBodyPreviewBytes)
+	if err := searchSvc.IndexMessage(ctx, staleOnly, nil); err != nil {
+		t.Fatal(err)
+	}
+	indexed, err = service.RepairMailboxSearchIndex(ctx, user.ID, mailbox, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexed != 0 {
+		t.Fatalf("stale-only repair indexed = %d, want 0", indexed)
+	}
+	ids, err = searchSvc.Search(ctx, user.ID, "staleonlyneedle", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("stale-only mailbox document survived repair: %v", ids)
+	}
+
+	mailbox.IncludeInSearch = false
+	indexed, err = service.RepairMailboxSearchIndex(ctx, user.ID, mailbox, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexed != 0 {
+		t.Fatalf("disabled-mailbox repair indexed = %d, want 0", indexed)
+	}
+	indexedMailboxIDs, err := searchSvc.MailboxMessageIDs(ctx, user.ID, mailbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(indexedMailboxIDs) != 0 {
+		t.Fatalf("disabled mailbox retained indexed documents: %#v", indexedMailboxIDs)
+	}
+	ids, err = searchSvc.Search(ctx, otherUserStale.UserID, "othertenantneedle", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != otherUserStale.ID {
+		t.Fatalf("disabled-mailbox repair touched another tenant's document: %v", ids)
 	}
 }
 
@@ -1086,6 +1273,9 @@ func TestOnDemandFetchCachesRawBlobButPlainFetchDoesNot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, mailbox.ID, 1, 0, 78, 1); err != nil {
+		t.Fatal(err)
+	}
 	remoteBlob, err := db.CreateBlob(ctx, store.BlobRecord{UserID: user.ID, Kind: "message-remote", Path: "remote/cache.eml", SHA256: "remote", Size: 0})
 	if err != nil {
 		t.Fatal(err)
@@ -1100,6 +1290,7 @@ func TestOnDemandFetchCachesRawBlobButPlainFetchDoesNot(t *testing.T) {
 		Date:         time.Date(2014, 10, 2, 12, 0, 0, 0, time.UTC),
 		InternalDate: time.Date(2014, 10, 2, 12, 0, 0, 0, time.UTC),
 		UID:          77,
+		UIDValidity:  1,
 		BodyText:     store.MessageBodyPreview("cached body", store.DefaultMessageBodyPreviewBytes),
 	})
 	if err != nil {
@@ -1173,6 +1364,12 @@ func TestCopyMessageAcrossAccountsAppendsAndStoresDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, sourceMailbox.ID, 1, 1, 43, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, destMailbox.ID, 0, 0, 1, 1); err != nil {
+		t.Fatal(err)
+	}
 	remoteBlob, err := db.CreateBlob(ctx, store.BlobRecord{UserID: user.ID, Kind: "message-remote", Path: "remote/source.eml", SHA256: "remote", Size: 0})
 	if err != nil {
 		t.Fatal(err)
@@ -1189,6 +1386,7 @@ func TestCopyMessageAcrossAccountsAppendsAndStoresDestination(t *testing.T) {
 		Date:            time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
 		InternalDate:    time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
 		UID:             42,
+		UIDValidity:     1,
 		BodyText:        store.MessageBodyPreview("spam body", store.DefaultMessageBodyPreviewBytes),
 		IsRead:          false,
 		IsStarred:       true,
@@ -1225,6 +1423,21 @@ func TestCopyMessageAcrossAccountsAppendsAndStoresDestination(t *testing.T) {
 	if copiedMessage.IsRead || !copiedMessage.IsStarred {
 		t.Fatalf("copied flags read=%v starred=%v, want unread/starred", copiedMessage.IsRead, copiedMessage.IsStarred)
 	}
+	var transferSourceAccountID, transferDestinationAccountID int64
+	var transferDestinationUID uint32
+	var transferState, transferCanonicalSHA string
+	if err := db.DB().QueryRowContext(ctx, `SELECT source_account_id, destination_account_id,
+		destination_uid, state, canonical_sha256 FROM message_transfers
+		WHERE user_id = ? ORDER BY id DESC LIMIT 1`, user.ID).Scan(&transferSourceAccountID,
+		&transferDestinationAccountID, &transferDestinationUID, &transferState, &transferCanonicalSHA); err != nil {
+		t.Fatal(err)
+	}
+	if transferSourceAccountID != sourceAccount.ID || transferDestinationAccountID != destAccount.ID ||
+		transferDestinationUID != copiedMessage.UID || transferState != "consumed" ||
+		transferCanonicalSHA != store.CanonicalMessageSHA256(sourceRaw) {
+		t.Fatalf("copy transfer source_account=%d destination_account=%d uid=%d state=%q canonical=%q",
+			transferSourceAccountID, transferDestinationAccountID, transferDestinationUID, transferState, transferCanonicalSHA)
+	}
 }
 
 func TestCopyMessagesPreservesSourceDateWhenDestinationUsesAppendDate(t *testing.T) {
@@ -1260,6 +1473,12 @@ func TestCopyMessagesPreservesSourceDateWhenDestinationUsesAppendDate(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, sourceMailbox.ID, 2, 0, 12, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, destMailbox.ID, 0, 0, 1, 1); err != nil {
+		t.Fatal(err)
+	}
 	oldDate := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
 	newDate := time.Date(2026, 1, 3, 9, 0, 0, 0, time.UTC)
 	appendDate := time.Date(2026, 5, 27, 9, 0, 0, 0, time.UTC)
@@ -1283,6 +1502,7 @@ func TestCopyMessagesPreservesSourceDateWhenDestinationUsesAppendDate(t *testing
 		Date:         oldDate,
 		InternalDate: oldDate,
 		UID:          10,
+		UIDValidity:  1,
 		BodyText:     store.MessageBodyPreview("old body", store.DefaultMessageBodyPreviewBytes),
 		IsRead:       true,
 	})
@@ -1299,6 +1519,7 @@ func TestCopyMessagesPreservesSourceDateWhenDestinationUsesAppendDate(t *testing
 		Date:         newDate,
 		InternalDate: newDate,
 		UID:          11,
+		UIDValidity:  1,
 		BodyText:     store.MessageBodyPreview("new body", store.DefaultMessageBodyPreviewBytes),
 		IsRead:       true,
 	})

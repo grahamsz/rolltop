@@ -23,6 +23,8 @@ type moveTestCall struct {
 	uid         uint32
 }
 
+const moveTestSourceUIDValidity uint32 = 700
+
 type moveTestFetcher struct {
 	moveErr   error
 	moveCalls []moveTestCall
@@ -56,12 +58,20 @@ func (f *moveTestFetcher) SetSeen(context.Context, store.MailAccount, string, ui
 	return errors.New("unexpected SetSeen call")
 }
 
+func (f *moveTestFetcher) SetSeenWithUIDValidity(context.Context, store.MailAccount, string, uint32, bool, uint32) (bool, error) {
+	return true, nil
+}
+
 func (f *moveTestFetcher) SeenUIDs(context.Context, store.MailAccount, string) ([]uint32, error) {
 	return nil, errors.New("unexpected SeenUIDs call")
 }
 
 func (f *moveTestFetcher) SetFlagged(context.Context, store.MailAccount, string, uint32, bool) error {
 	return errors.New("unexpected SetFlagged call")
+}
+
+func (f *moveTestFetcher) SetFlaggedWithUIDValidity(context.Context, store.MailAccount, string, uint32, bool, uint32) (bool, error) {
+	return true, nil
 }
 
 func (f *moveTestFetcher) FlaggedUIDs(context.Context, store.MailAccount, string) ([]uint32, error) {
@@ -71,6 +81,11 @@ func (f *moveTestFetcher) FlaggedUIDs(context.Context, store.MailAccount, string
 func (f *moveTestFetcher) MoveMessage(_ context.Context, account store.MailAccount, source, destination string, uid uint32) error {
 	f.moveCalls = append(f.moveCalls, moveTestCall{account: account, source: source, destination: destination, uid: uid})
 	return f.moveErr
+}
+
+func (f *moveTestFetcher) MoveMessageWithReceipt(_ context.Context, account store.MailAccount, source, destination string, uid uint32, _ uint32) (*MoveReceipt, error) {
+	f.moveCalls = append(f.moveCalls, moveTestCall{account: account, source: source, destination: destination, uid: uid})
+	return nil, f.moveErr
 }
 
 type moveTestFixture struct {
@@ -111,6 +126,20 @@ func newMoveTestFixture(t *testing.T) moveTestFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, source.ID, 1, 0, 43, moveTestSourceUIDValidity); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, destination.ID, 0, 0, 1, 701); err != nil {
+		t.Fatal(err)
+	}
+	source, err = db.GetMailboxForUser(ctx, user.ID, source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err = db.GetMailboxForUser(ctx, user.ID, destination.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	blob, err := db.CreateBlob(ctx, store.BlobRecord{
 		UserID: user.ID, Kind: "message-remote", Path: "users/move-hook/message.eml", SHA256: "test", Size: 10,
 	})
@@ -122,7 +151,7 @@ func newMoveTestFixture(t *testing.T) moveTestFixture {
 		UserID: user.ID, AccountID: account.ID, MailboxID: source.ID, BlobID: blob.ID,
 		MessageIDHeader: "<move-hook@example.test>", ThreadKey: "thread:move-hook", Subject: "Manual spam move",
 		FromAddr: "sender@example.test", ToAddr: "move-hook@example.test", CCAddr: "copy@example.test",
-		Date: date, InternalDate: date.Add(time.Minute), UID: 42, Size: 9000,
+		Date: date, InternalDate: date.Add(time.Minute), UID: 42, UIDValidity: int64(moveTestSourceUIDValidity), Size: 9000,
 		BodyText: strings.Repeat("b", store.DefaultMessageBodyPreviewBytes+64), BodyHTML: "<p>body</p>",
 		IsRead: true, IsStarred: true, HasAttachments: true, IsSigned: true,
 	})
@@ -182,6 +211,66 @@ func TestMoveMessageNotifiesAfterRemoteSuccessBeforeCleanup(t *testing.T) {
 	}
 	if _, err := fixture.store.GetMessageForUser(ctx, fixture.userID, fixture.message.ID); !store.IsNotFound(err) {
 		t.Fatalf("moved local message still exists: %v", err)
+	}
+}
+
+func TestMoveMessageRejectsUntrustedLocalSourceGenerationBeforeDispatch(t *testing.T) {
+	for name, mutate := range map[string]func(t *testing.T, fixture moveTestFixture){
+		"missing message generation": func(t *testing.T, fixture moveTestFixture) {
+			if _, err := fixture.store.DB().Exec(`UPDATE messages SET uid_validity = 0 WHERE user_id = ? AND id = ?`, fixture.userID, fixture.message.ID); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"mailbox generation reset": func(t *testing.T, fixture moveTestFixture) {
+			if err := fixture.store.UpdateMailboxRemoteStatus(context.Background(), fixture.userID,
+				fixture.source.ID, 1, 0, 43, uint32(fixture.source.UIDValidity+1)); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newMoveTestFixture(t)
+			mutate(t, fixture)
+
+			err := fixture.service.MoveMessage(context.Background(), fixture.userID, fixture.message.ID, fixture.destination.ID)
+			if err == nil || !strings.Contains(err.Error(), "generation changed") {
+				t.Fatalf("MoveMessage error = %v, want source generation rejection", err)
+			}
+			if len(fixture.fetcher.moveCalls) != 0 {
+				t.Fatalf("unsafe source dispatched %d MOVE commands", len(fixture.fetcher.moveCalls))
+			}
+			var transfers int
+			if err := fixture.store.DB().QueryRow(`SELECT COUNT(*) FROM message_transfers WHERE user_id = ?`, fixture.userID).Scan(&transfers); err != nil {
+				t.Fatal(err)
+			}
+			if transfers != 0 {
+				t.Fatalf("unsafe source staged %d transfer rows", transfers)
+			}
+		})
+	}
+}
+
+type legacyMoveOnlyFetcher struct {
+	Fetcher
+	moveCalls int
+}
+
+func (f *legacyMoveOnlyFetcher) MoveMessage(context.Context, store.MailAccount, string, string, uint32) error {
+	f.moveCalls++
+	return nil
+}
+
+func TestMoveMessageRejectsLegacyFetcherWithoutGenerationProof(t *testing.T) {
+	fixture := newMoveTestFixture(t)
+	legacy := &legacyMoveOnlyFetcher{Fetcher: fixture.fetcher}
+	fixture.service.Fetcher = legacy
+
+	err := fixture.service.MoveMessage(context.Background(), fixture.userID, fixture.message.ID, fixture.destination.ID)
+	if err == nil || !strings.Contains(err.Error(), "cannot prove") {
+		t.Fatalf("MoveMessage error = %v, want generation-proof rejection", err)
+	}
+	if legacy.moveCalls != 0 {
+		t.Fatalf("legacy fetcher dispatched %d MOVE commands", legacy.moveCalls)
 	}
 }
 

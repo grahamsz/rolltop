@@ -37,6 +37,7 @@ func (s *Server) bootstrapPayload(w http.ResponseWriter, r *http.Request) (map[s
 		"build_version":         info.Version,
 		"build_date":            info.BuildDate,
 		"build_label":           info.Label,
+		"build_commit":          info.Commit,
 		"public_site_url":       info.PublicSiteURL,
 		"available_themes":      s.availableThemes(r.Context()),
 		"frontend_plugins":      s.frontendPlugins(r.Context()),

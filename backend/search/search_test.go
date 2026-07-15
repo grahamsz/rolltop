@@ -182,6 +182,41 @@ func TestPurgeMailboxSearchIndexIsTenantAndMailboxScoped(t *testing.T) {
 	}
 }
 
+func TestDeleteMessagesIsTenantScopedInCombinedIndex(t *testing.T) {
+	ctx := context.Background()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	for _, msg := range []store.MessageRecord{
+		{ID: 1, UserID: 1, MailboxID: 10, Subject: "delete owner", Date: time.Now()},
+		{ID: 2, UserID: 2, MailboxID: 20, Subject: "keep other tenant", Date: time.Now()},
+	} {
+		if err := svc.IndexMessage(ctx, msg, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := svc.DeleteMessages(ctx, 1, []int64{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	ownerIDs, err := svc.MessageIDsIndexed(ctx, 1, []int64{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownerIDs[1] {
+		t.Fatal("owner document survived tenant-scoped batch delete")
+	}
+	otherIDs, err := svc.MessageIDsIndexed(ctx, 2, []int64{2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !otherIDs[2] {
+		t.Fatal("tenant-scoped batch delete removed another user's document")
+	}
+}
+
 func TestSearchRecentStillAppliesTerms(t *testing.T) {
 	ctx := context.Background()
 	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))

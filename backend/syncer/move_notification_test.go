@@ -24,6 +24,10 @@ func (f *failingNotificationMoveFetcher) MoveMessage(context.Context, store.Mail
 	return errors.New("expected remote move failure")
 }
 
+func (f *failingNotificationMoveFetcher) MoveMessageWithReceipt(context.Context, store.MailAccount, string, string, uint32, uint32) (*syncer.MoveReceipt, error) {
+	return nil, errors.New("expected remote move failure")
+}
+
 func TestMoveFromSpamToInboxDoesNotCreateNewMailEvent(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

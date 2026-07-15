@@ -11,9 +11,26 @@ import (
 )
 
 func (s *Service) syncMailboxReadFlags(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox) error {
-	seenUIDs, err := s.Fetcher.SeenUIDs(ctx, account, mailbox.Name)
-	if err != nil {
-		return err
+	var seenUIDs []uint32
+	if flagFetcher, ok := s.Fetcher.(UIDValidityFlagReader); ok {
+		if mailbox.UIDValidity <= 0 {
+			return nil
+		}
+		var matched bool
+		var err error
+		seenUIDs, matched, err = flagFetcher.SeenUIDsWithUIDValidity(ctx, account, mailbox.Name, uint32(mailbox.UIDValidity))
+		if err != nil {
+			return err
+		}
+		if !matched {
+			return nil
+		}
+	} else {
+		var err error
+		seenUIDs, err = s.Fetcher.SeenUIDs(ctx, account, mailbox.Name)
+		if err != nil {
+			return err
+		}
 	}
 	changedIDs, err := s.Store.UpdateMailboxReadFlags(ctx, userID, account.ID, mailbox.ID, seenUIDs)
 	if err != nil {
@@ -32,9 +49,26 @@ func (s *Service) syncMailboxReadFlags(ctx context.Context, userID int64, accoun
 }
 
 func (s *Service) syncMailboxStarFlags(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox) error {
-	flaggedUIDs, err := s.Fetcher.FlaggedUIDs(ctx, account, mailbox.Name)
-	if err != nil {
-		return err
+	var flaggedUIDs []uint32
+	if flagFetcher, ok := s.Fetcher.(UIDValidityFlagReader); ok {
+		if mailbox.UIDValidity <= 0 {
+			return nil
+		}
+		var matched bool
+		var err error
+		flaggedUIDs, matched, err = flagFetcher.FlaggedUIDsWithUIDValidity(ctx, account, mailbox.Name, uint32(mailbox.UIDValidity))
+		if err != nil {
+			return err
+		}
+		if !matched {
+			return nil
+		}
+	} else {
+		var err error
+		flaggedUIDs, err = s.Fetcher.FlaggedUIDs(ctx, account, mailbox.Name)
+		if err != nil {
+			return err
+		}
 	}
 	changedIDs, err := s.Store.UpdateMailboxStarFlags(ctx, userID, account.ID, mailbox.ID, flaggedUIDs)
 	if err != nil {
@@ -80,8 +114,26 @@ func (s *Service) SyncReadStateForMessage(ctx context.Context, userID, messageID
 	if err != nil {
 		return err
 	}
-	if err := s.Fetcher.SetSeen(ctx, account, mailbox.Name, msg.UID, msg.IsRead); err != nil {
+	expectedUIDValidity, err := s.Store.GetMessageUIDValidityForUser(ctx, userID, msg.ID)
+	if err != nil {
 		return err
+	}
+	if expectedUIDValidity <= 0 || mailbox.UIDValidity <= 0 || expectedUIDValidity != mailbox.UIDValidity {
+		// Leave the mutation pending. The next mailbox sync will reset or refresh
+		// the stale generation without issuing STORE against a reused UID.
+		return nil
+	}
+	flagFetcher, ok := s.Fetcher.(UIDValidityFlagFetcher)
+	if !ok {
+		return errors.New("IMAP fetcher cannot prove mailbox generation for read-state sync")
+	}
+	applied, err := flagFetcher.SetSeenWithUIDValidity(ctx, account, mailbox.Name, msg.UID,
+		msg.IsRead, uint32(expectedUIDValidity))
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return nil
 	}
 	if err := s.Store.ClearReadSyncPending(ctx, userID, msg.ID); err != nil {
 		return err
@@ -136,8 +188,24 @@ func (s *Service) SyncStarStateForMessage(ctx context.Context, userID, messageID
 	if err != nil {
 		return err
 	}
-	if err := s.Fetcher.SetFlagged(ctx, account, mailbox.Name, msg.UID, msg.IsStarred); err != nil {
+	expectedUIDValidity, err := s.Store.GetMessageUIDValidityForUser(ctx, userID, msg.ID)
+	if err != nil {
 		return err
+	}
+	if expectedUIDValidity <= 0 || mailbox.UIDValidity <= 0 || expectedUIDValidity != mailbox.UIDValidity {
+		return nil
+	}
+	flagFetcher, ok := s.Fetcher.(UIDValidityFlagFetcher)
+	if !ok {
+		return errors.New("IMAP fetcher cannot prove mailbox generation for star-state sync")
+	}
+	applied, err := flagFetcher.SetFlaggedWithUIDValidity(ctx, account, mailbox.Name, msg.UID,
+		msg.IsStarred, uint32(expectedUIDValidity))
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return nil
 	}
 	if err := s.Store.ClearStarSyncPending(ctx, userID, msg.ID); err != nil {
 		return err

@@ -12,11 +12,14 @@ import (
 	"log"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
+	"github.com/emersion/go-imap/commands"
+	"github.com/emersion/go-imap/responses"
 
 	mmcrypto "rolltop/backend/crypto"
 	"rolltop/backend/store"
@@ -697,8 +700,12 @@ func (f *Fetcher) FetchMessage(ctx context.Context, account store.MailAccount, m
 		return syncer.FetchedMessage{}, err
 	}
 	defer c.Logout()
-	if _, err := c.Select(mailbox, true); err != nil {
+	selected, err := c.Select(mailbox, true)
+	if err != nil {
 		return syncer.FetchedMessage{}, fmt.Errorf("select mailbox %q read-only: %w", mailbox, err)
+	}
+	if selected == nil || selected.UidValidity == 0 {
+		return syncer.FetchedMessage{}, fmt.Errorf("select mailbox %q returned no UIDVALIDITY", mailbox)
 	}
 	section := rawBodySection()
 	items := []imap.FetchItem{imap.FetchUid, imap.FetchInternalDate, imap.FetchRFC822Size, imap.FetchFlags, section.FetchItem()}
@@ -731,6 +738,7 @@ func (f *Fetcher) FetchMessage(ctx context.Context, account store.MailAccount, m
 		out = syncer.FetchedMessage{
 			Mailbox:      mailbox,
 			UID:          msg.Uid,
+			UIDValidity:  selected.UidValidity,
 			InternalDate: msg.InternalDate,
 			Size:         int64(msg.Size),
 			Flags:        msg.Flags,
@@ -755,10 +763,9 @@ func rawBodySection() *imap.BodySectionName {
 }
 
 // AppendMessage copies an already-sent RFC822 message into a remote mailbox and
-// returns the server-assigned UID plus canonical raw body. IMAP APPEND itself does
-// not expose a UID unless UIDPLUS is available, so this confirms the saved copy by
-// searching for the Message-ID and falls back to the mailbox UIDNEXT movement when
-// the server cannot search that header reliably.
+// returns the server-assigned UID plus canonical raw body. UIDPLUS APPENDUID is
+// authoritative; older servers are correlated by comparing the fetched RFC822
+// bytes rather than trusting Message-ID or UIDNEXT alone.
 func (f *Fetcher) AppendMessage(ctx context.Context, account store.MailAccount, mailbox string, raw []byte, messageID string, date time.Time) (syncer.FetchedMessage, error) {
 	return f.AppendMessageWithFlags(ctx, account, mailbox, raw, messageID, date, []string{imap.SeenFlag})
 }
@@ -782,29 +789,192 @@ func (f *Fetcher) AppendMessageWithFlags(ctx context.Context, account store.Mail
 	}
 	defer c.Logout()
 
-	var beforeUIDNext uint32
-	if status, err := c.Status(mailbox, []imap.StatusItem{imap.StatusUidNext}); err == nil && status != nil {
+	var beforeUIDNext, beforeUIDValidity uint32
+	if status, err := c.Status(mailbox, []imap.StatusItem{imap.StatusUidNext, imap.StatusUidValidity}); err == nil && status != nil {
 		beforeUIDNext = status.UidNext
+		beforeUIDValidity = status.UidValidity
 	}
-	if err := c.Append(mailbox, flags, date, bytes.NewReader(raw)); err != nil {
+	receipt, err := executeAppend(c, mailbox, flags, date, bytes.NewReader(raw))
+	if err != nil {
 		return syncer.FetchedMessage{}, fmt.Errorf("append message to mailbox %q: %w", mailbox, err)
 	}
 	mbox, err := c.Select(mailbox, true)
 	if err != nil {
-		return syncer.FetchedMessage{}, fmt.Errorf("select mailbox %q after append: %w", mailbox, err)
+		return syncer.FetchedMessage{}, syncer.AppendApplied(fmt.Errorf("select mailbox %q after append: %w", mailbox, err))
 	}
-	if id := strings.TrimSpace(messageID); id != "" {
+	if receipt != nil {
+		if mbox == nil || mbox.UidValidity == 0 || mbox.UidValidity != receipt.UIDValidity {
+			selectedUIDValidity := uint32(0)
+			if mbox != nil {
+				selectedUIDValidity = mbox.UidValidity
+			}
+			return syncer.FetchedMessage{}, syncer.AppendApplied(fmt.Errorf(
+				"append mailbox %q returned APPENDUID validity %d, selected validity %d",
+				mailbox, receipt.UIDValidity, selectedUIDValidity))
+		}
+		fetched, fetchErr := f.fetchOneUID(ctx, c, mailbox, receipt.UID)
+		if fetchErr != nil {
+			return syncer.FetchedMessage{}, syncer.AppendApplied(fetchErr)
+		}
+		fetched.UIDValidity = receipt.UIDValidity
+		fetched.AppendUIDAuthoritative = true
+		return fetched, nil
+	}
+	if mbox != nil && beforeUIDValidity > 0 && mbox.UidValidity > 0 && beforeUIDValidity != mbox.UidValidity {
+		return syncer.FetchedMessage{}, syncer.AppendApplied(fmt.Errorf(
+			"mailbox %q UIDVALIDITY changed from %d to %d while confirming append",
+			mailbox, beforeUIDValidity, mbox.UidValidity))
+	}
+	if id := strings.TrimSpace(messageID); id != "" && beforeUIDNext > 0 {
 		criteria := imap.NewSearchCriteria()
 		criteria.Header.Set("Message-ID", id)
 		uids, err := c.UidSearch(criteria)
 		if err == nil && len(uids) > 0 {
-			return f.fetchOneUID(ctx, c, mailbox, highestUID(uids))
+			postUIDNext := uint32(0)
+			if mbox != nil {
+				postUIDNext = mbox.UidNext
+			}
+			uids = appendCandidateUIDs(uids, beforeUIDNext, postUIDNext)
+			fetched, matched, fetchErr := f.fetchMatchingAppendCandidate(ctx, c, mailbox, uids, raw)
+			if fetchErr != nil {
+				return syncer.FetchedMessage{}, syncer.AppendApplied(fetchErr)
+			}
+			if matched && mbox != nil {
+				fetched.UIDValidity = mbox.UidValidity
+			}
+			if matched {
+				return fetched, nil
+			}
 		}
 	}
-	if mbox != nil && mbox.UidNext > beforeUIDNext && mbox.UidNext > 1 {
-		return f.fetchOneUID(ctx, c, mailbox, mbox.UidNext-1)
+	postUIDNext := uint32(0)
+	if mbox != nil {
+		postUIDNext = mbox.UidNext
 	}
-	return syncer.FetchedMessage{}, fmt.Errorf("sent message was appended to mailbox %q, but its UID could not be confirmed", mailbox)
+	if candidateUID, ok := appendUIDNextCandidate(beforeUIDNext, postUIDNext); ok {
+		fetched, fetchErr := f.fetchOneUID(ctx, c, mailbox, candidateUID)
+		if fetchErr != nil {
+			return syncer.FetchedMessage{}, syncer.AppendApplied(fetchErr)
+		}
+		if appendRawMatches(raw, fetched.Raw) {
+			fetched.UIDValidity = mbox.UidValidity
+			return fetched, nil
+		}
+	}
+	return syncer.FetchedMessage{}, syncer.AppendApplied(fmt.Errorf("sent message was appended to mailbox %q, but its UID could not be confirmed", mailbox))
+}
+
+type appendExecutor interface {
+	Execute(imap.Commander, responses.Handler) (*imap.StatusResp, error)
+}
+
+const appendUIDResponseCode imap.StatusRespCode = "APPENDUID"
+
+type appendReceipt struct {
+	UIDValidity uint32
+	UID         uint32
+}
+
+// executeAppend preserves the distinction the high-level client.Append API
+// drops: a tagged NO/BAD is definitive, while a transport failure before the
+// tagged response leaves the remote outcome unknown. A successful UIDPLUS
+// response also carries the exact destination mailbox generation and UID.
+func executeAppend(c appendExecutor, mailbox string, flags []string, date time.Time, message imap.Literal) (*appendReceipt, error) {
+	status, err := c.Execute(&commands.Append{
+		Mailbox: mailbox,
+		Flags:   flags,
+		Date:    date,
+		Message: message,
+	}, nil)
+	if err != nil {
+		return nil, syncer.AppendOutcomeUnknown(err)
+	}
+	if status == nil {
+		return nil, syncer.AppendOutcomeUnknown(errors.New("IMAP connection closed before APPEND completed"))
+	}
+	if err := status.Err(); err != nil {
+		return nil, err
+	}
+	return parseAppendReceipt(status), nil
+}
+
+func parseAppendReceipt(status *imap.StatusResp) *appendReceipt {
+	if status == nil || !strings.EqualFold(string(status.Code), string(appendUIDResponseCode)) || len(status.Arguments) != 2 {
+		return nil
+	}
+	uidValidityValue, ok := responseAtom(status.Arguments[0])
+	if !ok {
+		return nil
+	}
+	uidValidity, err := strconv.ParseUint(uidValidityValue, 10, 32)
+	if err != nil || uidValidity == 0 {
+		return nil
+	}
+	uidValue, ok := responseAtom(status.Arguments[1])
+	if !ok {
+		return nil
+	}
+	uid, ok := singleStaticUID(uidValue)
+	if !ok {
+		return nil
+	}
+	return &appendReceipt{UIDValidity: uint32(uidValidity), UID: uid}
+}
+
+// Only UIDs allocated between the pre-APPEND STATUS and post-APPEND SELECT can
+// belong to this operation. Without both bounds, Message-ID matches may be old.
+func appendCandidateUIDs(uids []uint32, beforeUIDNext, afterUIDNext uint32) []uint32 {
+	if beforeUIDNext == 0 || afterUIDNext <= beforeUIDNext {
+		return nil
+	}
+	out := make([]uint32, 0, len(uids))
+	for _, uid := range uids {
+		if uid >= beforeUIDNext && uid < afterUIDNext {
+			out = append(out, uid)
+		}
+	}
+	return out
+}
+
+func appendUIDNextCandidate(beforeUIDNext, afterUIDNext uint32) (uint32, bool) {
+	if beforeUIDNext == 0 || afterUIDNext <= beforeUIDNext || afterUIDNext <= 1 {
+		return 0, false
+	}
+	return afterUIDNext - 1, true
+}
+
+func (f *Fetcher) fetchMatchingAppendCandidate(ctx context.Context, c *client.Client, mailbox string, uids []uint32, raw []byte) (syncer.FetchedMessage, bool, error) {
+	if len(uids) == 0 {
+		return syncer.FetchedMessage{}, false, nil
+	}
+	candidates := make([]syncer.FetchedMessage, 0, len(uids))
+	if err := f.fetchUIDs(ctx, c, mailbox, uids, func(message syncer.FetchedMessage) error {
+		candidates = append(candidates, message)
+		return nil
+	}); err != nil {
+		return syncer.FetchedMessage{}, false, err
+	}
+	matched, ok := matchAppendedMessage(raw, candidates)
+	return matched, ok, nil
+}
+
+func matchAppendedMessage(raw []byte, candidates []syncer.FetchedMessage) (syncer.FetchedMessage, bool) {
+	var matched syncer.FetchedMessage
+	found := false
+	for _, candidate := range candidates {
+		if !appendRawMatches(raw, candidate.Raw) {
+			continue
+		}
+		if !found || candidate.UID > matched.UID {
+			matched = candidate
+			found = true
+		}
+	}
+	return matched, found
+}
+
+func appendRawMatches(appended, fetched []byte) bool {
+	return bytes.Equal(appended, fetched) || store.CanonicalMessageSHA256(appended) == store.CanonicalMessageSHA256(fetched)
 }
 
 func (f *Fetcher) fetchOneUID(ctx context.Context, c *client.Client, mailbox string, uid uint32) (syncer.FetchedMessage, error) {
@@ -822,16 +992,6 @@ func (f *Fetcher) fetchOneUID(ctx context.Context, c *client.Client, mailbox str
 		return syncer.FetchedMessage{}, fmt.Errorf("message not found mailbox %q UID %d after append", mailbox, uid)
 	}
 	return out, nil
-}
-
-func highestUID(uids []uint32) uint32 {
-	var highest uint32
-	for _, uid := range uids {
-		if uid > highest {
-			highest = uid
-		}
-	}
-	return highest
 }
 
 // SetSeen is the one remote read-state mutation Rolltop intentionally allows:
@@ -943,37 +1103,7 @@ func (f *Fetcher) FlaggedUIDs(ctx context.Context, account store.MailAccount, ma
 
 // MoveMessage uses IMAP MOVE for one UID and refuses to emulate move with copy/delete when the server lacks support.
 func (f *Fetcher) MoveMessage(ctx context.Context, account store.MailAccount, sourceMailbox string, destMailbox string, uid uint32) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-	sourceMailbox = strings.TrimSpace(sourceMailbox)
-	destMailbox = strings.TrimSpace(destMailbox)
-	if sourceMailbox == "" || destMailbox == "" || uid == 0 {
-		return fmt.Errorf("move message requires source mailbox, destination mailbox, and UID")
-	}
-	c, err := f.login(account)
-	if err != nil {
-		return err
-	}
-	defer c.Logout()
-	if _, err := c.Select(sourceMailbox, false); err != nil {
-		return fmt.Errorf("select mailbox %q read-write for move: %w", sourceMailbox, err)
-	}
-	ok, err := c.Support("MOVE")
-	if err != nil {
-		return fmt.Errorf("check IMAP MOVE support: %w", err)
-	}
-	if !ok {
-		return fmt.Errorf("IMAP server does not support MOVE; rolltop will not emulate move with copy/delete")
-	}
-	seqset := new(imap.SeqSet)
-	seqset.AddNum(uid)
-	if err := c.UidMove(seqset, destMailbox); err != nil {
-		return fmt.Errorf("move mailbox %q UID %d to %q: %w", sourceMailbox, uid, destMailbox, err)
-	}
-	return nil
+	return errors.New("generation-safe IMAP move requires an expected source UIDVALIDITY")
 }
 
 // WatchMailbox keeps an IMAP IDLE session open for one folder and invokes onChange

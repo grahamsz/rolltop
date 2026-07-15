@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"rolltop/backend/store"
 )
@@ -18,15 +19,19 @@ type Runner struct {
 	Service *Service
 	ctx     context.Context
 
-	mu                    sync.Mutex
-	autoRunning           map[int64]bool
-	mailboxRunning        map[string]bool
-	mailboxPending        map[string]bool
-	accountMailboxPending map[string]bool
-	foregroundRunning     map[int64]int
-	attachmentPending     map[int64]bool
-	attachmentCancels     map[int64]context.CancelFunc
-	attachmentDone        map[int64]chan struct{}
+	mu                      sync.Mutex
+	autoRunning             map[int64]bool
+	mailboxRunning          map[string]bool
+	mailboxPending          map[string]bool
+	accountMailboxPending   map[string]bool
+	foregroundRunning       map[int64]int
+	attachmentPending       map[int64]bool
+	attachmentCancels       map[int64]context.CancelFunc
+	attachmentDone          map[int64]chan struct{}
+	arrivalScheduler        *inboxArrivalScheduler
+	rebuildRecoveryRunning  bool
+	rebuildRecoveryInterval time.Duration
+	queueRebuildMailbox     func(store.PendingMailboxGenerationRebuild)
 }
 
 // NewRunner builds a process-lifetime scheduler using a background context. The
@@ -42,7 +47,7 @@ func NewRunnerWithContext(ctx context.Context, service *Service) *Runner {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return &Runner{
+	runner := &Runner{
 		Service:               service,
 		ctx:                   ctx,
 		autoRunning:           map[int64]bool{},
@@ -54,6 +59,11 @@ func NewRunnerWithContext(ctx context.Context, service *Service) *Runner {
 		attachmentCancels:     map[int64]context.CancelFunc{},
 		attachmentDone:        map[int64]chan struct{}{},
 	}
+	runner.arrivalScheduler = newInboxArrivalScheduler(ctx, runner.finalizePendingInboxArrivals, runner.notifyInboxArrivals)
+	if service != nil {
+		service.ScheduleInboxArrival = runner.ScheduleInboxArrival
+	}
+	return runner
 }
 
 func (r *Runner) context() context.Context {

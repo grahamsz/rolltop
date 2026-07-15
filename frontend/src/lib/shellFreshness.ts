@@ -1,11 +1,13 @@
 import type { Bootstrap, ChromeEvent } from "../types";
 
-type BuildIdentitySource = Pick<Bootstrap | ChromeEvent, "build_version" | "build_date" | "build_label">;
+type BuildIdentitySource = Pick<Bootstrap | ChromeEvent, "build_version" | "build_date" | "build_label" | "build_commit">;
 
 export function serverBuildIdentity(source: BuildIdentitySource | null | undefined): string {
   if (!source) return "";
   const version = source.build_version?.trim() || "";
   const release = source.build_date?.trim() || source.build_label?.trim() || "";
+  const commit = source.build_commit?.trim() || "";
+  if (commit) return `${version}:${release}:${commit}`;
   return release ? `${version}:${release}` : "";
 }
 

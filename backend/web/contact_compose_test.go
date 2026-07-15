@@ -45,15 +45,16 @@ func captureExtraHeader(msg smtpclient.Message, name string) string {
 
 type captureAppendFetcher struct {
 	syncer.Fetcher
-	nextUID uint32
-	flags   []string
+	nextUID     uint32
+	uidValidity uint32
+	flags       []string
 }
 
 func (f *captureAppendFetcher) AppendMessage(_ context.Context, _ store.MailAccount, mailbox string, raw []byte, _ string, date time.Time) (syncer.FetchedMessage, error) {
 	if f.nextUID == 0 {
 		f.nextUID = 1
 	}
-	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: f.nextUID, InternalDate: date, Size: int64(len(raw)), Flags: []string{"\\Seen"}, Raw: raw}
+	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: f.nextUID, UIDValidity: f.uidValidity, InternalDate: date, Size: int64(len(raw)), Flags: []string{"\\Seen"}, Raw: raw}
 	f.nextUID++
 	return msg, nil
 }
@@ -63,7 +64,7 @@ func (f *captureAppendFetcher) AppendMessageWithFlags(_ context.Context, _ store
 		f.nextUID = 1
 	}
 	f.flags = append([]string(nil), flags...)
-	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: f.nextUID, InternalDate: date, Size: int64(len(raw)), Flags: flags, Raw: raw}
+	msg := syncer.FetchedMessage{Mailbox: mailbox, UID: f.nextUID, UIDValidity: f.uidValidity, InternalDate: date, Size: int64(len(raw)), Flags: flags, Raw: raw}
 	f.nextUID++
 	return msg, nil
 }
@@ -145,7 +146,15 @@ func TestSaveComposeDraftAppendsToDraftsMailbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Drafts"); err != nil {
+	drafts, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Drafts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxLastUID(ctx, user.ID, drafts.ID, 50); err != nil {
+		t.Fatal(err)
+	}
+	const draftsUIDValidity = 333
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, drafts.ID, 0, 0, 51, draftsUIDValidity); err != nil {
 		t.Fatal(err)
 	}
 	contact, err := db.CreateContact(ctx, user.ID, store.Contact{
@@ -157,8 +166,9 @@ func TestSaveComposeDraftAppendsToDraftsMailbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fetcher := &captureAppendFetcher{}
-	server := &Server{store: db, blobs: blob.New(dir), syncer: &syncer.Service{Fetcher: fetcher}}
+	fetcher := &captureAppendFetcher{nextUID: 73, uidValidity: draftsUIDValidity}
+	blobStore := blob.New(dir)
+	server := &Server{store: db, blobs: blobStore, syncer: &syncer.Service{Store: db, Blobs: blobStore, Fetcher: fetcher}}
 	draft, err := server.saveComposeDraft(ctx, currentUser{User: user}, composeForm{
 		To:             "recipient@example.test",
 		Bcc:            "hidden@example.test",
@@ -174,6 +184,20 @@ func TestSaveComposeDraftAppendsToDraftsMailbox(t *testing.T) {
 	}
 	if strings.Join(fetcher.flags, ",") != "\\Draft" {
 		t.Fatalf("append flags = %v, want Draft", fetcher.flags)
+	}
+	drafts, err = db.GetMailboxForUser(ctx, user.ID, drafts.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drafts.LastUID != 50 {
+		t.Fatalf("draft append advanced last_uid to %d, want unchanged checkpoint 50", drafts.LastUID)
+	}
+	draftUIDValidity, err := db.GetMessageUIDValidityForUser(ctx, user.ID, draft.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draftUIDValidity != draftsUIDValidity {
+		t.Fatalf("draft uid_validity = %d, want APPEND generation %d", draftUIDValidity, draftsUIDValidity)
 	}
 	form := server.draftComposeFormForMessage(ctx, currentUser{User: user}, draft)
 	if form.Bcc != "<hidden@example.test>" {

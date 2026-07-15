@@ -4,7 +4,6 @@ package syncer
 
 import (
 	"context"
-	"log"
 	"strings"
 	"time"
 
@@ -229,19 +228,10 @@ func (s *Service) cleanupPurgedMessageBlobs(ctx context.Context, userID int64, m
 	if len(messages) == 0 {
 		return nil
 	}
-	blobIDs := make([]int64, 0, len(messages))
 	for _, msg := range messages {
-		if strings.TrimSpace(msg.BlobPath) != "" && s.Blobs != nil {
-			if err := s.Blobs.DeleteUserBlob(userID, msg.BlobPath); err != nil {
-				log.Printf("delete purged message blob user_id=%d message_id=%d: %v", userID, msg.ID, err)
-			}
+		if _, err := s.deleteUnreferencedBlob(ctx, userID, msg.BlobID, msg.BlobPath); err != nil {
+			return err
 		}
-		if msg.BlobID > 0 {
-			blobIDs = append(blobIDs, msg.BlobID)
-		}
-	}
-	if err := s.Store.DeleteBlobsForUser(ctx, userID, blobIDs); err != nil {
-		return err
 	}
 	return nil
 }
@@ -250,18 +240,12 @@ func (s *Service) cleanupPurgedBlobRecords(ctx context.Context, userID int64, re
 	if len(refs) == 0 {
 		return nil
 	}
-	ids := make([]int64, 0, len(refs))
 	for _, ref := range refs {
-		if strings.TrimSpace(ref.Path) != "" && s.Blobs != nil {
-			if err := s.Blobs.DeleteUserBlob(userID, ref.Path); err != nil {
-				log.Printf("delete purged blob user_id=%d blob_id=%d: %v", userID, ref.ID, err)
-			}
-		}
-		if ref.ID > 0 {
-			ids = append(ids, ref.ID)
+		if _, err := s.deleteUnreferencedBlob(ctx, userID, ref.ID, ref.Path); err != nil {
+			return err
 		}
 	}
-	return s.Store.DeleteBlobsForUser(ctx, userID, ids)
+	return nil
 }
 
 func accountPurgeLabel(account store.MailAccount) string {

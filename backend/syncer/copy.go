@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"time"
 
 	"rolltop/backend/store"
 )
@@ -134,10 +135,189 @@ func (s *Service) CopyMessage(ctx context.Context, userID, messageID, destMailbo
 	if date.IsZero() {
 		date = msg.Date
 	}
-	fetched, err := s.Fetcher.AppendMessage(ctx, destAccount, dest.Name, raw, msg.MessageIDHeader, date)
+	fingerprint := store.MessageArrivalFingerprint(raw, msg.MessageIDHeader, date, msg.Size)
+	transfer, err := s.Store.StageMessageTransfer(ctx, userID, msg.ID, dest.ID, "copy", fingerprint.CanonicalSHA256)
 	if err != nil {
 		return err
 	}
+	if transfer.State == "consumed" {
+		return nil
+	}
+	if transfer.State == "succeeded" {
+		if mailboxReceivesNewMailNotifications(dest) {
+			return nil
+		}
+		destinationUID, destinationUIDValidity, resolveErr := s.resolveSucceededCopyDestination(ctx,
+			destAccount, dest, msg, raw, transfer)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		return s.fetchAndCompleteSucceededCopy(ctx, userID, msg, destAccount, dest, raw, date,
+			transfer.ID, destinationUID, destinationUIDValidity)
+	}
+	boundaryFetcher, hasBoundaryFetcher := s.Fetcher.(MailboxAppendBoundaryFetcher)
+	matchFetcher, hasMatchFetcher := s.Fetcher.(ExactMessageMatchFetcher)
+	if !hasBoundaryFetcher || !hasMatchFetcher {
+		return errors.New("IMAP fetcher cannot safely reconcile interrupted copies")
+	}
+	if transfer.DestinationSnapshotUIDValidity == 0 && transfer.DispatchedAt.IsZero() {
+		boundary, boundaryErr := boundaryFetcher.SnapshotMailboxAppendBoundary(ctx, destAccount, dest.Name)
+		if boundaryErr != nil {
+			return boundaryErr
+		}
+		transfer, err = s.Store.SetMessageTransferDestinationSnapshot(ctx, userID, transfer.ID,
+			int64(boundary.UIDValidity), boundary.UIDNext)
+		if err != nil {
+			return err
+		}
+	}
+	if transfer.DestinationSnapshotUIDValidity <= 0 || transfer.DestinationSnapshotUIDValidity > int64(^uint32(0)) ||
+		transfer.DestinationSnapshotUIDNext == 0 {
+		return errors.New("message copy is awaiting reconciliation without a safe destination boundary")
+	}
+	if !transfer.DispatchedAt.IsZero() {
+		if !messageTransferCanReconcile(transfer) {
+			return errors.New("message copy is already awaiting remote reconciliation")
+		}
+		matches, matchErr := matchFetcher.SnapshotExactMessageMatches(ctx, destAccount, dest.Name,
+			msg.MessageIDHeader, raw, transfer.DestinationSnapshotUIDNext)
+		if matchErr != nil {
+			return errors.Join(errors.New("reconcile interrupted message copy"), matchErr)
+		}
+		if matches.UIDValidity != uint32(transfer.DestinationSnapshotUIDValidity) {
+			return errors.New("message copy remains pending because the destination mailbox generation changed")
+		}
+		if matches.UIDNext == 0 {
+			return errors.New("message copy remains pending because exact destination evidence has no UIDNEXT")
+		}
+		var before, after []uint32
+		for _, uid := range matches.MatchingUIDs {
+			if uid < transfer.DestinationSnapshotUIDNext {
+				before = append(before, uid)
+			} else {
+				after = append(after, uid)
+			}
+		}
+		if len(before) > 0 || len(after) > 1 {
+			return errors.New("message copy remains pending because exact destination matches are ambiguous")
+		}
+		if len(after) == 1 {
+			if err := s.Store.MarkMessageTransferSucceeded(ctx, userID, transfer.ID, after[0], int64(matches.UIDValidity)); err != nil {
+				return err
+			}
+			return s.fetchAndCompleteSucceededCopy(ctx, userID, msg, destAccount, dest, raw, date,
+				transfer.ID, after[0], matches.UIDValidity)
+		}
+		for _, uid := range matches.CandidateUIDs {
+			if uid >= transfer.DestinationSnapshotUIDNext {
+				return errors.New("message copy remains pending because a post-dispatch candidate is not an exact raw match")
+			}
+		}
+		reopened, reopenErr := s.Store.ReopenMessageTransferDispatchAfterProof(ctx, userID, transfer.ID,
+			messageTransferClaim(transfer), processMessageTransferOwner)
+		if reopenErr != nil {
+			return reopenErr
+		}
+		if !reopened {
+			return errors.New("message copy is already awaiting remote reconciliation")
+		}
+	}
+	claim, claimed, err := s.Store.ClaimMessageTransferDispatchForOwner(ctx, userID, transfer.ID, processMessageTransferOwner)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return errors.New("message copy is already awaiting remote reconciliation")
+	}
+	fetched, err := s.Fetcher.AppendMessage(ctx, destAccount, dest.Name, raw, msg.MessageIDHeader, date)
+	if err != nil {
+		var markErr error
+		if IsAppendApplied(err) {
+			markErr = s.Store.MarkMessageTransferSucceeded(ctx, userID, transfer.ID, 0, 0)
+		} else if IsAppendOutcomeUnknown(err) {
+			markErr = s.Store.FinishMessageTransferDispatch(ctx, userID, transfer.ID, claim)
+		} else {
+			markErr = s.Store.MarkMessageTransferFailed(ctx, userID, transfer.ID)
+		}
+		if markErr != nil {
+			return errors.Join(err, markErr)
+		}
+		return err
+	}
+	var destinationUID uint32
+	var destinationUIDValidity int64
+	if fetched.AppendUIDAuthoritative {
+		destinationUID = fetched.UID
+		destinationUIDValidity = int64(fetched.UIDValidity)
+	}
+	if err := s.Store.MarkMessageTransferSucceeded(ctx, userID, transfer.ID, destinationUID, destinationUIDValidity); err != nil {
+		finishErr := s.Store.FinishMessageTransferDispatch(context.WithoutCancel(ctx), userID, transfer.ID, claim)
+		if errors.Is(finishErr, store.ErrNotFound) {
+			finishErr = nil
+		}
+		return errors.Join(err, finishErr)
+	}
+	return s.completeCopiedMessageLocally(ctx, userID, msg, destAccount, dest, fetched, raw, date, transfer.ID)
+}
+
+func (s *Service) fetchAndCompleteSucceededCopy(ctx context.Context, userID int64, source store.MessageRecord, account store.MailAccount, destination store.Mailbox, raw []byte, date time.Time, transferID int64, destinationUID, destinationUIDValidity uint32) error {
+	fetched, err := s.Fetcher.FetchMessage(ctx, account, destination.Name, destinationUID)
+	if err != nil {
+		return errors.Join(errors.New("complete local state for copied message"), err)
+	}
+	if fetched.UID == 0 {
+		fetched.UID = destinationUID
+	}
+	if fetched.UIDValidity == 0 {
+		fetched.UIDValidity = destinationUIDValidity
+	}
+	if fetched.UID != destinationUID || fetched.UIDValidity != destinationUIDValidity {
+		return errors.New("copied message destination generation changed before local completion")
+	}
+	return s.completeCopiedMessageLocally(ctx, userID, source, account, destination, fetched, raw, date, transferID)
+}
+
+func (s *Service) resolveSucceededCopyDestination(ctx context.Context, account store.MailAccount, destination store.Mailbox, source store.MessageRecord, raw []byte, transfer store.MessageTransfer) (uint32, uint32, error) {
+	if transfer.DestinationUID > 0 && transfer.DestinationUIDValidity > 0 &&
+		transfer.DestinationUIDValidity <= int64(^uint32(0)) {
+		return transfer.DestinationUID, uint32(transfer.DestinationUIDValidity), nil
+	}
+	if transfer.DestinationSnapshotUIDValidity <= 0 ||
+		transfer.DestinationSnapshotUIDValidity > int64(^uint32(0)) ||
+		transfer.DestinationSnapshotUIDNext == 0 {
+		return 0, 0, errors.New("completed message copy has no safe destination boundary")
+	}
+	matchFetcher, ok := s.Fetcher.(ExactMessageMatchFetcher)
+	if !ok {
+		return 0, 0, errors.New("IMAP fetcher cannot complete a copied message locally")
+	}
+	matches, err := matchFetcher.SnapshotExactMessageMatches(ctx, account, destination.Name,
+		source.MessageIDHeader, raw, transfer.DestinationSnapshotUIDNext)
+	if err != nil {
+		return 0, 0, errors.Join(errors.New("resolve completed message copy"), err)
+	}
+	if matches.UIDValidity != uint32(transfer.DestinationSnapshotUIDValidity) {
+		return 0, 0, errors.New("completed message copy destination generation changed")
+	}
+	var before, after []uint32
+	for _, uid := range matches.MatchingUIDs {
+		if uid < transfer.DestinationSnapshotUIDNext {
+			before = append(before, uid)
+		} else {
+			after = append(after, uid)
+		}
+	}
+	if len(before) > 0 || len(after) != 1 {
+		return 0, 0, errors.New("completed message copy exact destination matches are ambiguous")
+	}
+	if err := s.Store.MarkMessageTransferSucceeded(ctx, source.UserID, transfer.ID,
+		after[0], int64(matches.UIDValidity)); err != nil {
+		return 0, 0, err
+	}
+	return after[0], matches.UIDValidity, nil
+}
+
+func (s *Service) completeCopiedMessageLocally(ctx context.Context, userID int64, msg store.MessageRecord, destAccount store.MailAccount, dest store.Mailbox, fetched FetchedMessage, raw []byte, date time.Time, transferID int64) error {
 	if fetched.UID == 0 {
 		return errors.New("copied IMAP message is missing a UID")
 	}
@@ -154,6 +334,19 @@ func (s *Service) CopyMessage(ctx context.Context, userID, messageID, destMailbo
 	if len(fetched.Raw) == 0 {
 		fetched.Raw = raw
 	}
+	if fetched.UIDValidity > 0 {
+		// APPEND's post-write SELECT is authoritative. Clear stale rows before
+		// storing its UID so UID reuse across mailbox generations cannot update
+		// an old message in place.
+		if _, err := s.ResetMailboxGenerationIfNeeded(ctx, userID, destAccount, dest, fetched.UIDValidity); err != nil {
+			return err
+		}
+		refreshedDestination, err := s.Store.GetMailboxForUser(ctx, userID, dest.ID)
+		if err != nil {
+			return err
+		}
+		dest = refreshedDestination
+	}
 	if err := s.applyCopiedMessageFlags(ctx, destAccount, dest, fetched.UID, msg, &fetched); err != nil {
 		return err
 	}
@@ -168,7 +361,11 @@ func (s *Service) CopyMessage(ctx context.Context, userID, messageID, destMailbo
 	if err := searchBatch.Flush(ctx); err != nil {
 		return err
 	}
-	if err := s.Store.UpdateMailboxLastUID(ctx, userID, dest.ID, copied.UID); err != nil {
+	if mailboxReceivesNewMailNotifications(dest) {
+		if err := s.recordInboxArrival(ctx, userID, 0, copied, fetched, nil); err != nil {
+			return err
+		}
+	} else if err := s.Store.TerminalizeMessageTransferWithoutArrival(ctx, userID, transferID); err != nil {
 		return err
 	}
 	// A copied message is a new local row and should receive the same advisory
@@ -185,15 +382,35 @@ func (s *Service) CopyMessage(ctx context.Context, userID, messageID, destMailbo
 }
 
 func (s *Service) applyCopiedMessageFlags(ctx context.Context, account store.MailAccount, mailbox store.Mailbox, uid uint32, source store.MessageRecord, fetched *FetchedMessage) error {
-	if !source.IsRead && hasSeen(fetched.Flags) {
-		if err := s.Fetcher.SetSeen(ctx, account, mailbox.Name, uid, false); err != nil {
+	needsSeenUpdate := !source.IsRead && hasSeen(fetched.Flags)
+	needsFlaggedUpdate := source.IsStarred && !hasFlagged(fetched.Flags)
+	if !needsSeenUpdate && !needsFlaggedUpdate {
+		return nil
+	}
+	if fetched.UIDValidity == 0 {
+		return errors.New("copied message flag update is missing destination UIDVALIDITY")
+	}
+	flagFetcher, ok := s.Fetcher.(UIDValidityFlagFetcher)
+	if !ok {
+		return errors.New("IMAP fetcher cannot prove mailbox generation for copied message flags")
+	}
+	if needsSeenUpdate {
+		applied, err := flagFetcher.SetSeenWithUIDValidity(ctx, account, mailbox.Name, uid, false, fetched.UIDValidity)
+		if err != nil {
 			return err
+		}
+		if !applied {
+			return errors.New("copied message mailbox generation changed before Seen update")
 		}
 		fetched.Flags = withoutIMAPFlag(fetched.Flags, "\\Seen")
 	}
-	if source.IsStarred && !hasFlagged(fetched.Flags) {
-		if err := s.Fetcher.SetFlagged(ctx, account, mailbox.Name, uid, true); err != nil {
+	if needsFlaggedUpdate {
+		applied, err := flagFetcher.SetFlaggedWithUIDValidity(ctx, account, mailbox.Name, uid, true, fetched.UIDValidity)
+		if err != nil {
 			return err
+		}
+		if !applied {
+			return errors.New("copied message mailbox generation changed before Flagged update")
 		}
 		fetched.Flags = append(fetched.Flags, "\\Flagged")
 	}

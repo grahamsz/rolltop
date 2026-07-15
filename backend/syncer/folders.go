@@ -55,7 +55,7 @@ func (s *Service) CreateRemoteFolder(ctx context.Context, userID, accountID int6
 		return store.Mailbox{}, err
 	}
 	if status, err := s.Fetcher.MailboxStatus(ctx, account, name); err == nil {
-		_ = s.Store.UpdateMailboxRemoteStatus(ctx, userID, mb.ID, int(status.Messages), int(status.Unseen), status.UIDNext, status.UIDValidity)
+		s.recordMailboxStatus(ctx, userID, mb, status)
 		mb, _ = s.Store.GetMailboxForUser(ctx, userID, mb.ID)
 	}
 	s.notify(userID)

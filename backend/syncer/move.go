@@ -157,27 +157,97 @@ func (s *Service) moveMessage(ctx context.Context, userID, messageID, destMailbo
 	if strings.EqualFold(strings.TrimSpace(source.Name), strings.TrimSpace(dest.Name)) {
 		return nil
 	}
-	var markerID int64
-	if mailboxReceivesNewMailNotifications(dest) {
-		markerID, err = s.Store.CreatePendingMoveNotification(ctx, userID, msg.ID, dest.ID)
-		if err != nil {
-			return err
+	messageUIDValidity, err := s.Store.GetMessageUIDValidityForUser(ctx, userID, msg.ID)
+	if err != nil {
+		return err
+	}
+	if messageUIDValidity <= 0 || messageUIDValidity > int64(^uint32(0)) || source.UIDValidity <= 0 || messageUIDValidity != source.UIDValidity {
+		return errors.New("message source mailbox generation changed; refresh before moving")
+	}
+	receiptFetcher, ok := s.Fetcher.(MoveReceiptFetcher)
+	if !ok {
+		return errors.New("IMAP fetcher cannot prove the source mailbox generation for move")
+	}
+	transfer, err := s.Store.StageMessageTransfer(ctx, userID, msg.ID, dest.ID, "move", "")
+	if err != nil {
+		return err
+	}
+	if transfer.DestinationMailboxID != dest.ID {
+		return errors.New("message move is already targeting another mailbox")
+	}
+	if transfer.State == "succeeded" || transfer.State == "consumed" {
+		return s.completeMovedMessageLocally(ctx, userID, msg, dest, transfer.ID)
+	}
+	if !transfer.DispatchedAt.IsZero() {
+		if !messageTransferCanReconcile(transfer) {
+			return errors.New("message move is already awaiting remote reconciliation")
+		}
+		checker, ok := s.Fetcher.(UIDValidityExistenceFetcher)
+		if !ok {
+			return errors.New("IMAP fetcher cannot reconcile an interrupted move")
+		}
+		exists, selectedUIDValidity, checkErr := checker.UIDExistsWithValidity(ctx, account, source.Name, msg.UID)
+		if checkErr != nil {
+			return errors.Join(errors.New("reconcile interrupted message move"), checkErr)
+		}
+		if selectedUIDValidity != uint32(messageUIDValidity) {
+			return errors.New("message move remains pending because the source mailbox generation changed")
+		}
+		if !exists {
+			if err := s.Store.MarkMessageTransferSucceeded(ctx, userID, transfer.ID, 0, 0); err != nil {
+				return err
+			}
+			if notifyMove != nil {
+				notifyMove(ctx, messageMoveContext(msg, source, dest))
+			}
+			return s.completeMovedMessageLocally(ctx, userID, msg, dest, transfer.ID)
+		}
+		reopened, reopenErr := s.Store.ReopenMessageTransferDispatchAfterProof(ctx, userID, transfer.ID,
+			messageTransferClaim(transfer), processMessageTransferOwner)
+		if reopenErr != nil {
+			return reopenErr
+		}
+		if !reopened {
+			return errors.New("message move is already awaiting remote reconciliation")
 		}
 	}
-	if err := s.Fetcher.MoveMessage(ctx, account, source.Name, dest.Name, msg.UID); err != nil {
-		if markerID > 0 {
-			cleanupErr := s.Store.DeletePendingMoveNotification(ctx, userID, markerID)
-			if cleanupErr != nil && !store.IsNotFound(cleanupErr) {
-				return errors.Join(err, cleanupErr)
+	claim, claimed, err := s.Store.ClaimMessageTransferDispatchForOwner(ctx, userID, transfer.ID, processMessageTransferOwner)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return errors.New("message move is already awaiting remote reconciliation")
+	}
+	var receipt *MoveReceipt
+	receipt, err = receiptFetcher.MoveMessageWithReceipt(ctx, account, source.Name, dest.Name,
+		msg.UID, uint32(messageUIDValidity))
+	if err != nil {
+		if !IsMoveOutcomeUnknown(err) {
+			if markErr := s.Store.MarkMessageTransferFailed(ctx, userID, transfer.ID); markErr != nil {
+				return errors.Join(err, markErr)
 			}
+		} else if finishErr := s.Store.FinishMessageTransferDispatch(ctx, userID, transfer.ID, claim); finishErr != nil {
+			return errors.Join(err, finishErr)
 		}
 		return err
+	}
+	var destinationUID uint32
+	var destinationUIDValidity int64
+	if receipt != nil {
+		destinationUID = receipt.DestinationUID
+		destinationUIDValidity = int64(receipt.DestinationUIDValidity)
+	}
+	if err := s.Store.MarkMessageTransferSucceeded(ctx, userID, transfer.ID, destinationUID, destinationUIDValidity); err != nil {
+		finishErr := s.Store.FinishMessageTransferDispatch(context.WithoutCancel(ctx), userID, transfer.ID, claim)
+		if errors.Is(finishErr, store.ErrNotFound) {
+			finishErr = nil
+		}
+		return errors.Join(err, finishErr)
 	}
 	if notifyMove != nil {
 		notifyMove(ctx, messageMoveContext(msg, source, dest))
 	}
-	s.cleanupMovedMessage(ctx, userID, msg)
-	return nil
+	return s.completeMovedMessageLocally(ctx, userID, msg, dest, transfer.ID)
 }
 
 func messageMoveContext(msg store.MessageRecord, source, destination store.Mailbox) plugins.MessageMoveContext {
@@ -260,23 +330,28 @@ func callMessageMoveObserver(ctx context.Context, hook plugins.MessageMoveObserv
 	return hook.ObserveMessageMove(ctx, host, event), false
 }
 
-func (s *Service) cleanupMovedMessage(ctx context.Context, userID int64, msg store.MessageRecord) {
+func (s *Service) completeMovedMessageLocally(ctx context.Context, userID int64, msg store.MessageRecord, destination store.Mailbox, transferID int64) error {
+	if !mailboxReceivesNewMailNotifications(destination) {
+		if err := s.Store.TerminalizeMessageTransferWithoutArrival(ctx, userID, transferID); err != nil {
+			return err
+		}
+	}
+	return s.cleanupMovedMessage(ctx, userID, msg)
+}
+
+func (s *Service) cleanupMovedMessage(ctx context.Context, userID int64, msg store.MessageRecord) error {
 	if err := s.Store.DeleteMessageForUser(ctx, userID, msg.ID); err != nil && !store.IsNotFound(err) {
 		log.Printf("cleanup moved message user_id=%d message_id=%d: %v", userID, msg.ID, err)
-		return
+		return err
 	}
 	if s.Search != nil {
 		if err := s.Search.DeleteMessage(ctx, msg.UserID, msg.ID); err != nil {
 			log.Printf("cleanup moved search document user_id=%d message_id=%d: %v", userID, msg.ID, err)
 		}
 	}
-	if strings.TrimSpace(msg.BlobPath) != "" && s.Blobs != nil {
-		if err := s.Blobs.DeleteUserBlob(userID, msg.BlobPath); err != nil {
-			log.Printf("cleanup moved blob user_id=%d message_id=%d: %v", userID, msg.ID, err)
-		}
-	}
-	if err := s.Store.DeleteBlobForUser(ctx, userID, msg.BlobID); err != nil && !store.IsNotFound(err) {
+	if _, err := s.deleteUnreferencedBlob(ctx, userID, msg.BlobID, msg.BlobPath); err != nil {
 		log.Printf("cleanup moved blob record user_id=%d message_id=%d: %v", userID, msg.ID, err)
 	}
 	s.notify(userID)
+	return nil
 }

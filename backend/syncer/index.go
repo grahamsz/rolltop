@@ -4,6 +4,7 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"rolltop/backend/mailparse"
@@ -44,6 +45,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 	if date.IsZero() {
 		date = item.InternalDate
 	}
+	fingerprint := store.MessageArrivalFingerprint(item.Raw, parsed.MessageID, item.InternalDate, item.Size)
 
 	rawHash := sha256Hex(item.Raw)
 	blobPath := ""
@@ -82,6 +84,8 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 		MailboxID:        mailbox.ID,
 		BlobID:           blobRec.ID,
 		MessageIDHeader:  parsed.MessageID,
+		CanonicalSHA256:  fingerprint.CanonicalSHA256,
+		MessageIDHash:    fingerprint.MessageIDHash,
 		InReplyTo:        parsed.InReplyTo,
 		ReferencesHeader: parsed.References,
 		Subject:          parsed.Subject,
@@ -92,7 +96,8 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 		Date:             date,
 		InternalDate:     item.InternalDate,
 		UID:              item.UID,
-		Size:             item.Size,
+		UIDValidity:      mailbox.UIDValidity,
+		Size:             fingerprint.Size,
 		BlobPath:         blobPath,
 		BodyText:         store.MessageBodyPreview(parsed.Text, store.DefaultMessageBodyPreviewBytes),
 		BodyHTML:         "",
@@ -103,7 +108,8 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 		IsSigned:         parsed.IsSigned,
 	})
 	if err != nil {
-		return store.MessageRecord{}, parsed, nil, err
+		_, cleanupErr := s.deleteUnreferencedBlob(ctx, userID, blobRec.ID, blobPath)
+		return store.MessageRecord{}, parsed, nil, errors.Join(err, cleanupErr)
 	}
 	if msg.LanguageCode != languageCode {
 		msg.LanguageCode = languageCode
@@ -323,16 +329,26 @@ func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.M
 
 // RepairMailboxSearchIndex indexes local mailbox messages that are missing from Bleve.
 func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, mailbox store.Mailbox, runID int64, progress *store.SyncProgress) (int, error) {
-	if s.Search == nil || !mailbox.IncludeInSearch {
+	if s.Search == nil {
 		return 0, nil
+	}
+	if !mailbox.IncludeInSearch {
+		_, err := s.Search.PurgeMailbox(ctx, userID, mailbox.ID)
+		return 0, err
 	}
 	indexedIDs, err := s.Search.MailboxMessageIDs(ctx, userID, mailbox.ID)
 	if err != nil {
 		return 0, err
 	}
-	missing, err := s.countMissingMailboxSearchDocuments(ctx, userID, mailbox.ID, indexedIDs)
-	if err != nil || missing == 0 {
+	missing, staleIDs, err := s.diffMailboxSearchDocuments(ctx, userID, mailbox.ID, indexedIDs)
+	if err != nil {
 		return 0, err
+	}
+	if err := s.Search.DeleteMessages(ctx, userID, staleIDs); err != nil {
+		return 0, err
+	}
+	if missing == 0 {
+		return 0, nil
 	}
 	previousLatestFrom := ""
 	previousLatestSubject := ""
@@ -398,19 +414,28 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 	}
 }
 
-func (s *Service) countMissingMailboxSearchDocuments(ctx context.Context, userID, mailboxID int64, indexedIDs map[int64]bool) (int, error) {
+func (s *Service) diffMailboxSearchDocuments(ctx context.Context, userID, mailboxID int64, indexedIDs map[int64]bool) (int, []int64, error) {
 	missing := 0
+	staleIDs := make(map[int64]struct{}, len(indexedIDs))
+	for id := range indexedIDs {
+		staleIDs[id] = struct{}{}
+	}
 	var afterID int64
 	for {
 		messages, err := s.Store.ListMessagesForMailboxIndex(ctx, userID, mailboxID, 500, afterID)
 		if err != nil {
-			return missing, err
+			return missing, nil, err
 		}
 		if len(messages) == 0 {
-			return missing, nil
+			stale := make([]int64, 0, len(staleIDs))
+			for id := range staleIDs {
+				stale = append(stale, id)
+			}
+			return missing, stale, nil
 		}
 		for _, msg := range messages {
 			afterID = msg.ID
+			delete(staleIDs, msg.ID)
 			if !indexedIDs[msg.ID] {
 				missing++
 			}

@@ -1329,6 +1329,19 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 	if len(raw) == 0 {
 		return store.MessageRecord{}, fmt.Errorf("sent IMAP copy is missing raw message data")
 	}
+	if fetched.UIDValidity > 0 {
+		if s.syncer == nil {
+			return store.MessageRecord{}, fmt.Errorf("IMAP sync is not configured")
+		}
+		if _, err := s.syncer.ResetMailboxGenerationIfNeeded(ctx, userID, account, mailbox, fetched.UIDValidity); err != nil {
+			return store.MessageRecord{}, err
+		}
+		var err error
+		mailbox, err = s.store.GetMailboxForUser(ctx, userID, mailbox.ID)
+		if err != nil {
+			return store.MessageRecord{}, err
+		}
+	}
 	saved, err := s.blobs.SaveRawMessage(userID, account.ID, mailbox.Name, uid, raw)
 	if err != nil {
 		return store.MessageRecord{}, err
@@ -1341,7 +1354,11 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		Size:   saved.Size,
 	})
 	if err != nil {
-		return store.MessageRecord{}, err
+		deleted, cleanupErr := s.store.DeleteBlobIfUnreferencedForUser(ctx, userID, blobRec.ID)
+		if deleted && s.blobs != nil {
+			cleanupErr = errors.Join(cleanupErr, s.blobs.DeleteUserBlob(userID, saved.Path))
+		}
+		return store.MessageRecord{}, errors.Join(err, cleanupErr)
 	}
 	messageDate := outgoing.Date
 	if messageDate.IsZero() {
@@ -1371,6 +1388,7 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		Date:             messageDate,
 		InternalDate:     internalDate,
 		UID:              uid,
+		UIDValidity:      int64(fetched.UIDValidity),
 		Size:             int64(len(raw)),
 		BlobPath:         saved.Path,
 		BodyText:         outgoing.BodyText,
@@ -1384,9 +1402,6 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		return store.MessageRecord{}, err
 	}
 	if err := s.store.CreateLocation(ctx, userID, msg.ID, mailbox.ID, uid); err != nil {
-		return store.MessageRecord{}, err
-	}
-	if err := s.store.UpdateMailboxLastUID(ctx, userID, mailbox.ID, uid); err != nil {
 		return store.MessageRecord{}, err
 	}
 	attachmentDocs := []search.AttachmentDoc{}

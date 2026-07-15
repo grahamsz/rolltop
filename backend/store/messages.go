@@ -4,6 +4,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -15,6 +18,8 @@ type CreateMessage struct {
 	MailboxID        int64
 	BlobID           int64
 	MessageIDHeader  string
+	CanonicalSHA256  string
+	MessageIDHash    string
 	InReplyTo        string
 	ReferencesHeader string
 	ThreadKey        string
@@ -26,6 +31,7 @@ type CreateMessage struct {
 	Date             time.Time
 	InternalDate     time.Time
 	UID              uint32
+	UIDValidity      int64
 	Size             int64
 	BlobPath         string
 	BodyText         string
@@ -43,23 +49,84 @@ func (s *Store) CreateMessage(ctx context.Context, m CreateMessage) (MessageReco
 	if err != nil {
 		return MessageRecord{}, err
 	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return MessageRecord{}, err
+	}
+	defer tx.Rollback()
+	if m.UIDValidity > 0 {
+		var currentUIDValidity int64
+		err := tx.QueryRowContext(ctx, `SELECT uidvalidity FROM mailboxes
+			WHERE user_id = ? AND account_id = ? AND id = ?`, m.UserID, m.AccountID, m.MailboxID).
+			Scan(&currentUIDValidity)
+		if errors.Is(err, sql.ErrNoRows) {
+			return MessageRecord{}, ErrNotFound
+		}
+		if err != nil {
+			return MessageRecord{}, err
+		}
+		if currentUIDValidity <= 0 || currentUIDValidity != m.UIDValidity {
+			return MessageRecord{}, fmt.Errorf("mailbox generation changed before storing UID %d", m.UID)
+		}
+	}
 	ts := nowUnix()
 	if strings.TrimSpace(m.ThreadKey) == "" {
 		m.ThreadKey = ThreadKey(m.MessageIDHeader, m.InReplyTo, m.ReferencesHeader, m.Subject)
 	}
-	res, err := db.ExecContext(ctx, `INSERT INTO messages
-			(user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, thread_headers_checked_at, subject, language_code, from_addr, to_addr, cc_addr, date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, is_starred, has_attachments, is_encrypted, is_signed, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.UserID, m.AccountID, m.MailboxID, m.BlobID, m.MessageIDHeader, m.InReplyTo, m.ReferencesHeader, m.ThreadKey, ts, m.Subject, strings.ToLower(strings.TrimSpace(m.LanguageCode)), m.FromAddr, m.ToAddr, m.CCAddr,
-		m.Date.UTC().Unix(), m.InternalDate.UTC().Unix(), m.UID, m.Size, m.BlobPath, m.BodyText, m.BodyHTML, boolInt(m.IsRead), boolInt(m.IsStarred), boolInt(m.HasAttachments), boolInt(m.IsEncrypted), boolInt(m.IsSigned), ts, ts)
+	if strings.TrimSpace(m.MessageIDHash) == "" {
+		m.MessageIDHash = HashedMessageID(m.MessageIDHeader)
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO messages
+			(user_id, account_id, mailbox_id, blob_id, message_id_header, canonical_sha256, message_id_hash, in_reply_to, references_header, thread_key, thread_headers_checked_at, subject, language_code, from_addr, to_addr, cc_addr, date_unix, internal_date_unix, uid, uid_validity, size, blob_path, body_text, body_html, is_read, is_starred, has_attachments, is_encrypted, is_signed, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.UserID, m.AccountID, m.MailboxID, m.BlobID, m.MessageIDHeader, m.CanonicalSHA256, m.MessageIDHash, m.InReplyTo, m.ReferencesHeader, m.ThreadKey, ts, m.Subject, strings.ToLower(strings.TrimSpace(m.LanguageCode)), m.FromAddr, m.ToAddr, m.CCAddr,
+		m.Date.UTC().Unix(), m.InternalDate.UTC().Unix(), m.UID, m.UIDValidity, m.Size, m.BlobPath, m.BodyText, m.BodyHTML, boolInt(m.IsRead), boolInt(m.IsStarred), boolInt(m.HasAttachments), boolInt(m.IsEncrypted), boolInt(m.IsSigned), ts, ts)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: messages.user_id, messages.account_id, messages.mailbox_id, messages.uid") {
+			var existingID int64
+			if m.UIDValidity > 0 {
+				var storedUIDValidity int64
+				if queryErr := tx.QueryRowContext(ctx, `SELECT id, uid_validity FROM messages
+					WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND uid = ?`,
+					m.UserID, m.AccountID, m.MailboxID, m.UID).Scan(&existingID, &storedUIDValidity); queryErr != nil {
+					return MessageRecord{}, queryErr
+				}
+				if storedUIDValidity != m.UIDValidity {
+					return MessageRecord{}, fmt.Errorf("mailbox generation changed: stored UID %d belongs to another generation", m.UID)
+				}
+			} else if queryErr := tx.QueryRowContext(ctx, `SELECT id FROM messages
+				WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND uid = ?`,
+				m.UserID, m.AccountID, m.MailboxID, m.UID).Scan(&existingID); queryErr != nil {
+				return MessageRecord{}, queryErr
+			}
+			if _, updateErr := tx.ExecContext(ctx, `UPDATE messages SET
+				canonical_sha256 = CASE WHEN ? <> '' THEN ? ELSE canonical_sha256 END,
+				message_id_hash = CASE WHEN ? <> '' THEN ? ELSE message_id_hash END,
+				uid_validity = CASE WHEN ? > 0 THEN ? ELSE uid_validity END,
+				updated_at = ?
+				WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND uid = ?`,
+				m.CanonicalSHA256, m.CanonicalSHA256, m.MessageIDHash, m.MessageIDHash,
+				m.UIDValidity, m.UIDValidity, ts, m.UserID, m.AccountID, m.MailboxID, m.UID); updateErr != nil {
+				return MessageRecord{}, updateErr
+			}
+			if restoreErr := restoreMailboxGenerationStateTx(ctx, tx, existingID, m); restoreErr != nil {
+				return MessageRecord{}, restoreErr
+			}
+			if err := tx.Commit(); err != nil {
+				return MessageRecord{}, err
+			}
 			return s.GetMessageByUID(ctx, m.UserID, m.AccountID, m.MailboxID, m.UID)
 		}
 		return MessageRecord{}, err
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
+		return MessageRecord{}, err
+	}
+	if err := restoreMailboxGenerationStateTx(ctx, tx, id, m); err != nil {
+		return MessageRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return MessageRecord{}, err
 	}
 	if err := s.upsertPluginMessageLanguage(ctx, m.UserID, id, m.LanguageCode); err != nil {
@@ -119,6 +186,23 @@ func (s *Store) GetMessageForUser(ctx context.Context, userID, id int64) (Messag
 	m.CreatedAt = unixTime(created)
 	m.UpdatedAt = unixTime(updated)
 	return m, err
+}
+
+// GetMessageUIDValidityForUser returns the IMAP mailbox generation captured
+// when a message row was stored. Mutation paths compare it with the current
+// mailbox generation before using the row's UID remotely.
+func (s *Store) GetMessageUIDValidityForUser(ctx context.Context, userID, id int64) (int64, error) {
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	var uidValidity int64
+	err = db.QueryRowContext(ctx, `SELECT uid_validity FROM messages
+		WHERE user_id = ? AND id = ?`, userID, id).Scan(&uidValidity)
+	if err == sql.ErrNoRows {
+		return 0, ErrNotFound
+	}
+	return uidValidity, err
 }
 
 // GetMessageEnvelopeForUser loads one message without body_text/body_html. Hot
@@ -252,7 +336,28 @@ func (s *Store) PurgeMailboxMessageBatch(ctx context.Context, userID, accountID,
 }
 
 // DeleteMessagesMissingUIDs removes local messages no longer present in a remote mailbox UID set.
+// It intentionally does not create expunge evidence because the UID list is not
+// bound to a verified mailbox generation.
 func (s *Store) DeleteMessagesMissingUIDs(ctx context.Context, userID, accountID, mailboxID int64, remoteUIDs []uint32) ([]MessageRecord, error) {
+	return s.deleteMessagesMissingUIDs(ctx, userID, accountID, mailboxID, remoteUIDs, 0, 0, nil, false)
+}
+
+// DeleteMessagesMissingUIDsAndRecordExpunges records short-lived source
+// fingerprints and deletes stale rows in one transaction, but only while the
+// mailbox still has the UIDVALIDITY attached to the remote UID snapshot. Only
+// local UIDs below the snapshot's UIDNEXT are eligible, so rows created after
+// the remote search cannot be mistaken for expunges. A generation mismatch or
+// missing snapshot bound is a safe no-op. Callers may supply canonical digests
+// loaded from retained raw blobs; exact and metadata matches are still recorded
+// when a canonical digest is unavailable.
+func (s *Store) DeleteMessagesMissingUIDsAndRecordExpunges(ctx context.Context, userID, accountID, mailboxID int64, remoteUIDs []uint32, remoteUIDValidity, remoteUIDNext uint32, canonicalByMessageID map[int64]string) ([]MessageRecord, error) {
+	if remoteUIDValidity == 0 || remoteUIDNext == 0 {
+		return nil, nil
+	}
+	return s.deleteMessagesMissingUIDs(ctx, userID, accountID, mailboxID, remoteUIDs, int64(remoteUIDValidity), remoteUIDNext, canonicalByMessageID, true)
+}
+
+func (s *Store) deleteMessagesMissingUIDs(ctx context.Context, userID, accountID, mailboxID int64, remoteUIDs []uint32, remoteUIDValidity int64, remoteUIDNext uint32, canonicalByMessageID map[int64]string, recordExpunges bool) ([]MessageRecord, error) {
 	db, err := s.dataDB(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -261,19 +366,44 @@ func (s *Store) DeleteMessagesMissingUIDs(ctx context.Context, userID, accountID
 	for _, uid := range remoteUIDs {
 		remote[uid] = true
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if recordExpunges {
+		var currentUIDValidity int64
+		err := tx.QueryRowContext(ctx, `SELECT uidvalidity FROM mailboxes
+			WHERE user_id = ? AND account_id = ? AND id = ?`, userID, accountID, mailboxID).Scan(&currentUIDValidity)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, ErrNotFound
+			}
+			return nil, err
+		}
+		if currentUIDValidity <= 0 || currentUIDValidity != remoteUIDValidity {
+			return nil, nil
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
 			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
 		FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ?`, userID, accountID, mailboxID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	local, err := scanMessages(rows)
 	if err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 	var stale []MessageRecord
 	for _, msg := range local {
+		if recordExpunges && msg.UID >= remoteUIDNext {
+			continue
+		}
 		if !remote[msg.UID] {
 			stale = append(stale, msg)
 		}
@@ -281,24 +411,23 @@ func (s *Store) DeleteMessagesMissingUIDs(ctx context.Context, userID, accountID
 	if len(stale) == 0 {
 		return nil, nil
 	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
 	stmt, err := tx.PrepareContext(ctx, `DELETE FROM messages WHERE user_id = ? AND id = ?`)
 	if err != nil {
-		_ = tx.Rollback()
 		return nil, err
 	}
 	for _, msg := range stale {
+		if recordExpunges {
+			if err := recordExpungedMessageFingerprintTx(ctx, tx, userID, msg.ID, canonicalByMessageID[msg.ID], nowUnix()); err != nil {
+				_ = stmt.Close()
+				return nil, err
+			}
+		}
 		if _, err := stmt.ExecContext(ctx, userID, msg.ID); err != nil {
 			_ = stmt.Close()
-			_ = tx.Rollback()
 			return nil, err
 		}
 	}
 	if err := stmt.Close(); err != nil {
-		_ = tx.Rollback()
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {

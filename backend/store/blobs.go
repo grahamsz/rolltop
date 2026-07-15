@@ -87,6 +87,41 @@ func (s *Store) DeleteBlobForUser(ctx context.Context, userID, id int64) error {
 	return nil
 }
 
+// DeleteBlobIfUnreferencedForUser removes blob metadata only when no tenant-owned
+// row still uses it. Callers may delete the corresponding filesystem path only
+// after this returns deleted=true.
+func (s *Store) DeleteBlobIfUnreferencedForUser(ctx context.Context, userID, id int64) (deleted bool, err error) {
+	if userID <= 0 || id <= 0 {
+		return false, nil
+	}
+	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `DELETE FROM blobs
+		WHERE user_id = ? AND id = ?
+			AND NOT EXISTS (
+				SELECT 1 FROM messages
+				WHERE messages.user_id = blobs.user_id AND messages.blob_id = blobs.id
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM attachments
+				WHERE attachments.user_id = blobs.user_id AND attachments.blob_id = blobs.id
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM contact_icons
+				WHERE contact_icons.user_id = blobs.user_id AND contact_icons.blob_id = blobs.id
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM remote_image_cache
+				WHERE remote_image_cache.user_id = blobs.user_id AND remote_image_cache.blob_id = blobs.id
+			)`, userID, id)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows == 1, nil
+}
+
 // CreateAttachment records attachment metadata for a stored message.
 func (s *Store) CreateAttachment(ctx context.Context, a Attachment) (Attachment, error) {
 	ts := nowUnix()

@@ -446,7 +446,7 @@ func (s *Store) UpdateMailboxSettings(ctx context.Context, userID, mailboxID int
 		_ = tx.Rollback()
 		return fmt.Errorf("%w: top-level folders cannot inherit sync mode", ErrInvalidMailboxSettings)
 	}
-	if settings.Role == "inbox" || settings.Role == "sent" || settings.Role == "drafts" || settings.Role == "trash" || settings.Role == "junk" {
+	if settings.Role == "inbox" || settings.Role == "sent" || settings.Role == "drafts" || settings.Role == "trash" || settings.Role == "junk" || settings.Role == "all" {
 		var existingName string
 		err := tx.QueryRowContext(ctx, `SELECT name FROM mailboxes
 			WHERE user_id = ? AND account_id = ? AND role = ? AND id <> ?
@@ -542,6 +542,8 @@ func normalizeMailboxRole(role string) string {
 		return "trash"
 	case "junk", "spam":
 		return "junk"
+	case "all":
+		return "all"
 	default:
 		return ""
 	}
@@ -593,6 +595,8 @@ func defaultMailboxIcon(name string, role string) string {
 		return "delete"
 	case "junk":
 		return "report"
+	case "all":
+		return "archive"
 	}
 	clean := strings.ToLower(strings.TrimSpace(name))
 	switch {
@@ -673,6 +677,32 @@ func (s *Store) UpdateMailboxLastUID(ctx context.Context, userID, mailboxID int6
 	return err
 }
 
+// UpdateMailboxLastUIDForGeneration advances the incremental checkpoint only
+// while the mailbox still belongs to the generation that produced uid. A
+// concurrent UIDVALIDITY reset must never carry an old-generation UID into the
+// new checkpoint.
+func (s *Store) UpdateMailboxLastUIDForGeneration(ctx context.Context, userID, accountID, mailboxID int64, uid, expectedUIDValidity uint32) error {
+	if userID <= 0 || accountID <= 0 || mailboxID <= 0 || expectedUIDValidity == 0 {
+		return errors.New("invalid generation-bound mailbox checkpoint scope")
+	}
+	db := s.mustDataDB(ctx, userID)
+	res, err := db.ExecContext(ctx, `UPDATE mailboxes
+		SET last_uid = CASE WHEN last_uid < ? THEN ? ELSE last_uid END, updated_at = ?
+		WHERE user_id = ? AND account_id = ? AND id = ? AND uidvalidity = ?`,
+		uid, uid, nowUnix(), userID, accountID, mailboxID, expectedUIDValidity)
+	if err != nil {
+		return err
+	}
+	matched, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if matched == 0 {
+		return s.mailboxGenerationScopeError(ctx, db, userID, accountID, mailboxID, expectedUIDValidity)
+	}
+	return nil
+}
+
 // ResetMailboxLastUID clears the incremental checkpoint so the next sync refetches the folder from UID 1.
 func (s *Store) ResetMailboxLastUID(ctx context.Context, userID, mailboxID int64) error {
 	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE mailboxes SET last_uid = 0, updated_at = ? WHERE id = ? AND user_id = ?`, nowUnix(), mailboxID, userID)
@@ -688,6 +718,57 @@ func (s *Store) UpdateMailboxRemoteStatus(ctx context.Context, userID, mailboxID
 	return err
 }
 
+// InitializeMailboxRemoteStatus records the first proven mailbox generation
+// and its counters. It cannot replace an established UIDVALIDITY, including
+// one installed by a concurrent reset.
+func (s *Store) InitializeMailboxRemoteStatus(ctx context.Context, userID, accountID, mailboxID int64, messageCount, unreadCount int, uidNext, uidValidity uint32) error {
+	if userID <= 0 || accountID <= 0 || mailboxID <= 0 || uidValidity == 0 {
+		return errors.New("invalid mailbox status initialization scope")
+	}
+	db := s.mustDataDB(ctx, userID)
+	res, err := db.ExecContext(ctx, `UPDATE mailboxes
+		SET remote_message_count = ?, remote_unread_count = ?, remote_uid_next = ?,
+			uidvalidity = ?, status_checked_at = ?, updated_at = ?
+		WHERE user_id = ? AND account_id = ? AND id = ? AND uidvalidity = 0`,
+		messageCount, unreadCount, uidNext, uidValidity, nowUnix(), nowUnix(),
+		userID, accountID, mailboxID)
+	if err != nil {
+		return err
+	}
+	matched, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if matched == 0 {
+		return s.mailboxGenerationScopeError(ctx, db, userID, accountID, mailboxID, uidValidity)
+	}
+	return nil
+}
+
+// UpdateMailboxRemoteStatusForGeneration records counters without allowing a
+// stale STATUS result to replace a UIDVALIDITY installed by a concurrent reset.
+func (s *Store) UpdateMailboxRemoteStatusForGeneration(ctx context.Context, userID, accountID, mailboxID int64, messageCount, unreadCount int, uidNext, expectedUIDValidity uint32) error {
+	if userID <= 0 || accountID <= 0 || mailboxID <= 0 || expectedUIDValidity == 0 {
+		return errors.New("invalid generation-bound mailbox status scope")
+	}
+	db := s.mustDataDB(ctx, userID)
+	res, err := db.ExecContext(ctx, `UPDATE mailboxes
+		SET remote_message_count = ?, remote_unread_count = ?, remote_uid_next = ?, status_checked_at = ?, updated_at = ?
+		WHERE user_id = ? AND account_id = ? AND id = ? AND uidvalidity = ?`,
+		messageCount, unreadCount, uidNext, nowUnix(), nowUnix(), userID, accountID, mailboxID, expectedUIDValidity)
+	if err != nil {
+		return err
+	}
+	matched, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if matched == 0 {
+		return s.mailboxGenerationScopeError(ctx, db, userID, accountID, mailboxID, expectedUIDValidity)
+	}
+	return nil
+}
+
 // MessageExistsByUID checks whether a UID has already been mirrored for an account mailbox.
 func (s *Store) MessageExistsByUID(ctx context.Context, userID, accountID, mailboxID int64, uid uint32) (bool, error) {
 	var id int64
@@ -697,6 +778,49 @@ func (s *Store) MessageExistsByUID(ctx context.Context, userID, accountID, mailb
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// MessageExistsByUIDForGeneration binds both the mailbox and message lookup to
+// one UIDVALIDITY. This prevents a reused UID from being mistaken for a row
+// observed before a concurrent mailbox reset.
+func (s *Store) MessageExistsByUIDForGeneration(ctx context.Context, userID, accountID, mailboxID int64, uid, expectedUIDValidity uint32) (bool, error) {
+	if userID <= 0 || accountID <= 0 || mailboxID <= 0 || expectedUIDValidity == 0 {
+		return false, errors.New("invalid generation-bound message lookup scope")
+	}
+	db := s.mustDataDB(ctx, userID)
+	var currentUIDValidity int64
+	var exists bool
+	err := db.QueryRowContext(ctx, `SELECT uidvalidity, EXISTS(
+		SELECT 1 FROM messages
+		WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND uid = ? AND uid_validity = ?
+	) FROM mailboxes WHERE user_id = ? AND account_id = ? AND id = ?`,
+		userID, accountID, mailboxID, uid, expectedUIDValidity,
+		userID, accountID, mailboxID).Scan(&currentUIDValidity, &exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	if currentUIDValidity != int64(expectedUIDValidity) {
+		return false, fmt.Errorf("mailbox UIDVALIDITY is %d, expected %d: %w",
+			currentUIDValidity, expectedUIDValidity, ErrMailboxGenerationChanged)
+	}
+	return exists, nil
+}
+
+func (s *Store) mailboxGenerationScopeError(ctx context.Context, db *sql.DB, userID, accountID, mailboxID int64, expectedUIDValidity uint32) error {
+	var currentUIDValidity int64
+	err := db.QueryRowContext(ctx, `SELECT uidvalidity FROM mailboxes
+		WHERE user_id = ? AND account_id = ? AND id = ?`, userID, accountID, mailboxID).Scan(&currentUIDValidity)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("mailbox UIDVALIDITY is %d, expected %d: %w",
+		currentUIDValidity, expectedUIDValidity, ErrMailboxGenerationChanged)
 }
 
 // MessageUIDsForMailbox returns the local UID set for one user-owned account mailbox.

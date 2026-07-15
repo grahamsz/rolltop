@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -95,6 +96,144 @@ func TestCreateBlobIsIdempotentForUserPath(t *testing.T) {
 	}
 	if second.ID != first.ID {
 		t.Fatalf("expected same blob row, got first=%d second=%d", first.ID, second.ID)
+	}
+}
+
+func TestDeleteBlobIfUnreferencedPreservesReattachedBlob(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "blob-race@example.test", "Blob Race", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateUser(ctx, "blob-race-other@example.test", "Other", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, MailAccount{
+		UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993,
+		Username: "blob-race", EncryptedPassword: "secret", UseTLS: true, Mailbox: "INBOX",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := db.CreateBlob(ctx, BlobRecord{
+		UserID: user.ID,
+		Kind:   "message",
+		Path:   filepath.Join("users", strconv.FormatInt(user.ID, 10), "blobs", "accounts", strconv.FormatInt(account.ID, 10), "mailboxes", "INBOX", "uid-1-deadbeef.eml"),
+		SHA256: "deadbeef",
+		Size:   10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := db.CreateMessage(ctx, CreateMessage{
+		UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: blob.ID,
+		Date: time.Now().UTC(), InternalDate: time.Now().UTC(), UID: 1, Size: blob.Size, BlobPath: blob.Path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteMessageForUser(ctx, user.ID, stale.ID); err != nil {
+		t.Fatal(err)
+	}
+	// This is the interleaving that used to lose the replacement file: a refetch
+	// reuses the path/blob row after stale-message deletion but before cleanup.
+	replacement, err := db.CreateMessage(ctx, CreateMessage{
+		UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: blob.ID,
+		Date: time.Now().UTC(), InternalDate: time.Now().UTC(), UID: 2, Size: blob.Size, BlobPath: blob.Path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := db.DeleteBlobIfUnreferencedForUser(ctx, user.ID, blob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted {
+		t.Fatal("deleted a blob row reattached by a concurrent refetch")
+	}
+	if _, err := db.GetBlobForUser(ctx, user.ID, blob.ID); err != nil {
+		t.Fatalf("reattached blob was not retained: %v", err)
+	}
+	deleted, err = db.DeleteBlobIfUnreferencedForUser(ctx, other.ID, blob.ID)
+	if err != nil || deleted {
+		t.Fatalf("cross-tenant blob delete = %v, deleted=%v", err, deleted)
+	}
+	if err := db.DeleteMessageForUser(ctx, user.ID, replacement.ID); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err = db.DeleteBlobIfUnreferencedForUser(ctx, user.ID, blob.ID)
+	if err != nil || !deleted {
+		t.Fatalf("unreferenced blob delete = %v, deleted=%v", err, deleted)
+	}
+	if _, err := db.GetBlobForUser(ctx, user.ID, blob.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted blob lookup error = %v, want not found", err)
+	}
+}
+
+func TestCreateMessageRejectsStalePositiveMailboxGeneration(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "message-generation@example.test", "Generation", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, MailAccount{
+		UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993,
+		Username: "generation", EncryptedPassword: "secret", UseTLS: true, Mailbox: "INBOX",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, mailbox.ID, 1, 0, 2, 100); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := db.CreateBlob(ctx, BlobRecord{
+		UserID: user.ID, Kind: "message-remote",
+		Path:   filepath.Join("users", strconv.FormatInt(user.ID, 10), "blobs", "old-generation.eml"),
+		SHA256: "old-generation", Size: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate IMAP SELECT observing generation 100, followed by a concurrent
+	// reset to generation 200 before the selected message reaches SQLite.
+	if _, reset, err := db.ResetMailboxForRemoteUIDValidity(ctx, user.ID, account.ID, mailbox.ID, 200); err != nil || !reset {
+		t.Fatalf("generation reset = %v, reset=%v", err, reset)
+	}
+	_, err = db.CreateMessage(ctx, CreateMessage{
+		UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: blob.ID,
+		Date: time.Now().UTC(), InternalDate: time.Now().UTC(), UID: 1, UIDValidity: 100,
+	})
+	if err == nil || !strings.Contains(err.Error(), "generation changed") {
+		t.Fatalf("stale-generation CreateMessage error = %v", err)
+	}
+	exists, err := db.MessageExistsByUID(ctx, user.ID, account.ID, mailbox.ID, 1)
+	if err != nil || exists {
+		t.Fatalf("stale-generation message exists=%v err=%v", exists, err)
+	}
+	if _, err := db.CreateMessage(ctx, CreateMessage{
+		UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: blob.ID,
+		Date: time.Now().UTC(), InternalDate: time.Now().UTC(), UID: 2,
+	}); err != nil {
+		t.Fatalf("legacy UIDVALIDITY-zero CreateMessage failed: %v", err)
 	}
 }
 

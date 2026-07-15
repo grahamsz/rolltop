@@ -337,6 +337,10 @@ func (s *Server) Close() error {
 		return nil
 	}
 	s.backendLifecycleClosed = true
+	if s.ownedSyncRunnerCancel != nil {
+		s.ownedSyncRunnerCancel()
+		s.ownedSyncRunnerCancel = nil
+	}
 	started := s.startedBackendPlugins
 	s.startedBackendPlugins = map[string]plugins.BackendPlugin{}
 
