@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,6 +12,23 @@ import (
 
 	"rolltop/backend/store"
 )
+
+func TestListenStartupHTTPReturnsBindFailureImmediately(t *testing.T) {
+	bindErr := errors.New("bind failed")
+	listener, err := listenStartupHTTPWith(func(network, address string) (net.Listener, error) {
+		if network != "tcp" || address != ":8080" {
+			t.Fatalf("listen called with %q, %q", network, address)
+		}
+		return nil, bindErr
+	}, ":8080")
+	if listener != nil {
+		_ = listener.Close()
+		t.Fatal("listener unexpectedly returned after bind failure")
+	}
+	if !errors.Is(err, bindErr) {
+		t.Fatalf("bind error = %v, want wrapped bind failure", err)
+	}
+}
 
 func TestStartupGateServesStartupHTMLForAppRoutes(t *testing.T) {
 	gate := &startupGate{state: newStartupState()}

@@ -23,6 +23,8 @@ const (
 	reconcileInterval     = 30 * time.Second
 	pollInterval          = 15 * time.Minute
 	runProgressWriteEvery = 25
+	remoteSyncChunkSize   = 25
+	remoteSyncChunkYield  = 500 * time.Millisecond
 )
 
 type workerKey struct {
@@ -414,7 +416,8 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 		return fail(err)
 	}
 	defer writer.Close()
-	var copiedAny bool
+	var unrefreshedCopies bool
+	totalUIDs := int64(len(search.UIDs))
 	err = w.fetcher.FetchUIDs(w.ctx, sourceAccount(item), item.SourceMailbox, search.UIDs, func(message syncer.FetchedMessage) error {
 		scanned++
 		currentUID = message.UID
@@ -441,7 +444,7 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 				return err
 			}
 			transferred++
-			copiedAny = true
+			unrefreshedCopies = true
 			if headerTime, ok := imapclient.SyncTimestampForMarker(appended.Raw, marker); ok {
 				syncedAt = headerTime
 			}
@@ -453,12 +456,22 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 				fingerprint, marker, appended.UID, "transferred", syncedAt, writer.UIDValidity(), destinationSHA256); err != nil {
 				return err
 			}
-			if transferred == 1 || transferred%25 == 0 {
+			if transferred == 1 {
 				w.queueDestinationRefresh(item, destinationAccount, destinationMailbox)
+				unrefreshedCopies = false
 			}
 		}
 		if shouldWriteRunProgress(scanned) {
-			return persistProgress(w.ctx)
+			if err := persistProgress(w.ctx); err != nil {
+				return err
+			}
+		}
+		if shouldYieldRemoteSync(scanned, totalUIDs) {
+			if unrefreshedCopies {
+				w.queueDestinationRefresh(item, destinationAccount, destinationMailbox)
+			}
+			unrefreshedCopies = false
+			return waitForRemoteSyncChunk(w.ctx, remoteSyncChunkYield)
 		}
 		return nil
 	})
@@ -473,7 +486,7 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 			return fail(err)
 		}
 	}
-	if copiedAny {
+	if unrefreshedCopies {
 		w.queueDestinationRefresh(item, destinationAccount, destinationMailbox)
 	}
 	if err := finishRun(w.ctx, db, item.UserID, runID, "completed", ""); err != nil {
@@ -494,6 +507,24 @@ func shouldWriteRunProgress(scanned int64) bool {
 
 func runProgressNeedsFlush(scanned, persistedScanned int64) bool {
 	return scanned > 0 && scanned > persistedScanned
+}
+
+func shouldYieldRemoteSync(scanned, total int64) bool {
+	return scanned > 0 && scanned%remoteSyncChunkSize == 0 && scanned < total
+}
+
+func waitForRemoteSyncChunk(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func sourceMessageAlreadyHandled(ctx context.Context, db *sql.DB, item routine, uidValidity uint32, message syncer.FetchedMessage, fingerprint string) (bool, error) {

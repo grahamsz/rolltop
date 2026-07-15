@@ -12,7 +12,7 @@ import (
 	"rolltop/backend/plugins"
 )
 
-func TestOpenServerSerializesEachUserDatabase(t *testing.T) {
+func TestOpenServerKeepsConcurrentUserConnections(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")
@@ -22,19 +22,38 @@ func TestOpenServerSerializesEachUserDatabase(t *testing.T) {
 	}
 	defer st.Close()
 
-	user, err := st.CreateUser(ctx, "serialized@example.test", "Serialized", "hash", false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	user, account, mailbox, blob := testMailbox(t, ctx, st)
 	userDB, err := st.UserDB(ctx, user.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := userDB.Stats().MaxOpenConnections; got != 1 {
-		t.Fatalf("user database MaxOpenConnections = %d, want 1", got)
+	if got := userDB.Stats().MaxOpenConnections; got < 2 {
+		t.Fatalf("user database MaxOpenConnections = %d, want at least 2 for concurrent tenant work", got)
 	}
-	if got := st.DB().Stats().MaxOpenConnections; got <= 1 {
-		t.Fatalf("system database MaxOpenConnections = %d, want concurrent system reads", got)
+
+	message, err := st.CreateMessage(ctx, CreateMessage{
+		UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: blob.ID,
+		MessageIDHeader: "<startup-backfill@example.test>", Subject: "Startup backfill",
+		FromAddr: "sender@example.test", ToAddr: user.Email, Date: time.Now().UTC(),
+		InternalDate: time.Now().UTC(), UID: 1, Size: blob.Size, BlobPath: blob.Path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := userDB.ExecContext(ctx, `UPDATE messages SET thread_key = '' WHERE user_id = ? AND id = ?`, user.ID, message.ID); err != nil {
+		t.Fatal(err)
+	}
+	backfillCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if n, err := st.BackfillThreadKeys(backfillCtx, 10); err != nil || n != 1 {
+		t.Fatalf("BackfillThreadKeys count = %d, err = %v; want one startup repair", n, err)
+	}
+	var threadKey string
+	if err := userDB.QueryRowContext(ctx, `SELECT thread_key FROM messages WHERE user_id = ? AND id = ?`, user.ID, message.ID).Scan(&threadKey); err != nil {
+		t.Fatal(err)
+	}
+	if threadKey == "" {
+		t.Fatal("startup backfill left thread_key blank")
 	}
 }
 

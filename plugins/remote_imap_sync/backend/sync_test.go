@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
 
 func TestShouldWriteRunProgressCadence(t *testing.T) {
 	tests := []struct {
@@ -71,5 +76,48 @@ func TestRunProgressFailureFlushesSinceLastCheckpoint(t *testing.T) {
 				t.Fatalf("runProgressNeedsFlush(%d, %d) = %v, want %v", tt.scanned, tt.persisted, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestShouldYieldRemoteSyncCadence(t *testing.T) {
+	tests := []struct {
+		name           string
+		scanned, total int64
+		want           bool
+	}{
+		{name: "empty", scanned: 0, total: 100, want: false},
+		{name: "before first chunk", scanned: 24, total: 100, want: false},
+		{name: "first full chunk with more", scanned: 25, total: 100, want: true},
+		{name: "between chunks", scanned: 49, total: 100, want: false},
+		{name: "second full chunk with more", scanned: 50, total: 100, want: true},
+		{name: "exact final chunk", scanned: 25, total: 25, want: false},
+		{name: "final chunk", scanned: 100, total: 100, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldYieldRemoteSync(tt.scanned, tt.total); got != tt.want {
+				t.Fatalf("shouldYieldRemoteSync(%d, %d) = %v, want %v", tt.scanned, tt.total, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWaitForRemoteSyncChunkHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := time.Now()
+	err := waitForRemoteSyncChunk(ctx, time.Minute)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForRemoteSyncChunk() error = %v, want context canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("canceled wait took %s", elapsed)
+	}
+}
+
+func TestWaitForRemoteSyncChunkCompletesDelay(t *testing.T) {
+	if err := waitForRemoteSyncChunk(context.Background(), time.Millisecond); err != nil {
+		t.Fatalf("waitForRemoteSyncChunk() error = %v", err)
 	}
 }

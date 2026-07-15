@@ -14,6 +14,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -193,6 +194,18 @@ func startupListenAddr() string {
 	return addr
 }
 
+func listenStartupHTTP(addr string) (net.Listener, error) {
+	return listenStartupHTTPWith(net.Listen, addr)
+}
+
+func listenStartupHTTPWith(listen func(network, address string) (net.Listener, error), addr string) (net.Listener, error) {
+	listener, err := listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s: %w", addr, err)
+	}
+	return listener, nil
+}
+
 type appRuntime struct {
 	pluginHost io.Closer
 	db         *store.Store
@@ -229,10 +242,14 @@ func run() error {
 		Handler:           gate,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	listener, err := listenStartupHTTP(server.Addr)
+	if err != nil {
+		return err
+	}
 	serverErr := make(chan error, 1)
 	go func() {
-		log.Printf("rolltop starting on %s", server.Addr)
-		err := server.ListenAndServe()
+		log.Printf("rolltop starting on %s", listener.Addr())
+		err := server.Serve(listener)
 		if errors.Is(err, http.ErrServerClosed) {
 			serverErr <- nil
 			return
