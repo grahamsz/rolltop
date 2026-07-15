@@ -233,12 +233,12 @@ func (s *Store) RefreshReadSenderStatsForUser(ctx context.Context, userID int64)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	statsBySender := map[string]*SenderReadStat{}
 	for rows.Next() {
 		var from string
 		var readCount, totalCount int
 		if err := rows.Scan(&from, &readCount, &totalCount); err != nil {
+			_ = rows.Close()
 			return err
 		}
 		sender := SenderIdentity(from)
@@ -254,6 +254,10 @@ func (s *Store) RefreshReadSenderStatsForUser(ctx context.Context, userID int64)
 		stat.ReadCount += readCount
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
 		return err
 	}
 

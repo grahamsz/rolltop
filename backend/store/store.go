@@ -73,7 +73,11 @@ func open(path string, dataDir string, split bool, schema schemaKind, progress M
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite3", path+"?_foreign_keys=on&_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL")
+	// Most Rolltop transactions validate tenant/mailbox state before writing.
+	// BEGIN IMMEDIATE queues those transactions for SQLite's single writer at
+	// the start, instead of allowing concurrent readers to deadlock while both
+	// try to upgrade a stale WAL snapshot to a writer.
+	db, err := sql.Open("sqlite3", path+"?_foreign_keys=on&_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}

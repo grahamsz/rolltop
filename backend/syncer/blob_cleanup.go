@@ -6,6 +6,9 @@ import (
 	"context"
 	"errors"
 	"log"
+	"path/filepath"
+	"strconv"
+	"strings"
 
 	"rolltop/backend/store"
 )
@@ -39,11 +42,43 @@ func (s *Service) blobCleanupDeleteCallback(userID int64) func(string) error {
 		if s.Blobs == nil {
 			return errors.New("blob store is not configured")
 		}
+		// message-remote blobs are metadata placeholders for messages whose raw
+		// body was not retained locally. Their path is an IMAP locator, not a
+		// filesystem path, so cleanup only needs to remove the SQLite records.
+		if isTenantRemoteMessagePath(userID, blobPath) {
+			return nil
+		}
 		if !s.Blobs.OwnsUserBlobPath(userID, blobPath) {
 			return errors.New("blob cleanup path is outside tenant scope")
 		}
 		return s.Blobs.DeleteUserBlob(userID, blobPath)
 	}
+}
+
+func isTenantRemoteMessagePath(userID int64, blobPath string) bool {
+	if userID <= 0 {
+		return false
+	}
+	clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(blobPath)))
+	if clean == "." || filepath.IsAbs(clean) || clean != filepath.ToSlash(strings.TrimSpace(blobPath)) {
+		return false
+	}
+	parts := strings.Split(clean, "/")
+	if len(parts) < 8 || parts[0] != "remote" || parts[1] != "users" ||
+		parts[2] != strconv.FormatInt(userID, 10) || parts[3] != "accounts" ||
+		parts[5] != "mailboxes" {
+		return false
+	}
+	accountID, err := strconv.ParseInt(parts[4], 10, 64)
+	if err != nil || accountID <= 0 {
+		return false
+	}
+	for _, part := range parts[6:] {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) drainPendingBlobCleanupsForUser(ctx context.Context, userID int64, limit int) (completed, failed int, err error) {
