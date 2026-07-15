@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"rolltop/backend/mailparse"
 	"rolltop/backend/plugins"
@@ -344,24 +345,42 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 	if err != nil {
 		return 0, err
 	}
-	if err := s.Search.DeleteMessages(ctx, userID, staleIDs); err != nil {
-		return 0, err
-	}
-	if missing == 0 {
-		return 0, nil
-	}
 	previousLatestFrom := ""
 	previousLatestSubject := ""
-	if progress != nil {
+	maintenanceWork := missing + len(staleIDs)
+	if maintenanceWork > 0 {
+		log.Printf("repair mailbox search index user_id=%d account_id=%d mailbox=%s missing=%d stale=%d",
+			userID, mailbox.AccountID, mailbox.Name, missing, len(staleIDs))
+	}
+	if progress != nil && maintenanceWork > 0 {
 		previousLatestFrom = progress.LatestNewFrom
 		previousLatestSubject = progress.LatestNewSubject
-		progress.MessagesTotal += missing
+		progress.MessagesTotal += maintenanceWork
 		progress.CurrentMailbox = mailbox.Name
 		progress.LatestNewFrom = "rolltop:maintenance"
 		progress.LatestNewSubject = "Repairing full-text index"
 		if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
 			return 0, err
 		}
+	}
+	if err := s.Search.DeleteMessagesWithProgress(ctx, userID, staleIDs, func(deleted int) error {
+		if progress == nil || deleted <= 0 {
+			return nil
+		}
+		progress.MessagesSeen += deleted
+		return s.updateSyncProgress(ctx, userID, runID, *progress)
+	}); err != nil {
+		return 0, err
+	}
+	if missing == 0 {
+		if progress != nil && maintenanceWork > 0 {
+			progress.LatestNewFrom = previousLatestFrom
+			progress.LatestNewSubject = previousLatestSubject
+			if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
+				return 0, err
+			}
+		}
+		return 0, nil
 	}
 
 	indexed := 0

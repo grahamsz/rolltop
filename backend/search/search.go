@@ -558,6 +558,13 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, messageID int64) er
 // Production indexes are separated per user; combined test indexes additionally
 // filter each candidate batch by the indexed user_id before deleting documents.
 func (s *Service) DeleteMessages(ctx context.Context, userID int64, messageIDs []int64) error {
+	return s.DeleteMessagesWithProgress(ctx, userID, messageIDs, nil)
+}
+
+// DeleteMessagesWithProgress removes tenant-scoped documents in bounded commits
+// and reports each committed batch. The callback runs without the Bleve writer
+// lock so callers may persist UI progress safely.
+func (s *Service) DeleteMessagesWithProgress(ctx context.Context, userID int64, messageIDs []int64, onBatch func(int) error) error {
 	if userID <= 0 || len(messageIDs) == 0 {
 		return nil
 	}
@@ -624,6 +631,11 @@ func (s *Service) DeleteMessages(ctx context.Context, userID int64, messageIDs [
 		writer.Unlock()
 		if err != nil {
 			return err
+		}
+		if onBatch != nil {
+			if err := onBatch(len(deleteIDs)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

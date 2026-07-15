@@ -54,3 +54,9 @@ func (s *Server) notifyUserChanged(userID int64) {
 		s.events.Notify(userID)
 	}
 }
+
+func (s *Server) notifySyncProgress(userID int64) {
+	if s.events != nil {
+		s.events.Notify(userID)
+	}
+}

@@ -311,6 +311,7 @@ func New(opts Options) (*Server, error) {
 	}
 	if opts.Syncer != nil {
 		opts.Syncer.Notify = srv.notifyUserChanged
+		opts.Syncer.NotifyProgress = srv.notifySyncProgress
 		opts.Syncer.NotifyRestoredState = srv.notifySnoozeStateChanged
 	}
 	if opts.SyncRunner != nil {

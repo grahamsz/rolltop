@@ -627,6 +627,32 @@ func TestMailListCachedETagInvalidatesOnUserChange(t *testing.T) {
 	}
 }
 
+func TestSyncProgressNotificationDoesNotInvalidateMailList(t *testing.T) {
+	userID := int64(100)
+	server := &Server{events: newEventHub(), mailListCache: newMailListCache()}
+	key := mailListCacheKey{UserID: userID, Page: 1}
+	etag := `"cached-progress"`
+	server.rememberMailListETag(key, etag, server.mailListGeneration(userID))
+	changed, unsubscribe := server.events.Subscribe(userID)
+	defer unsubscribe()
+
+	server.notifySyncProgress(userID)
+
+	select {
+	case <-changed:
+	default:
+		t.Fatal("sync progress did not notify the active SSE subscriber")
+	}
+	if got := server.mailListGeneration(userID); got != 0 {
+		t.Fatalf("sync progress advanced mail-list generation to %d", got)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/mail?page=1", nil)
+	req.Header.Set("If-None-Match", etag)
+	if !server.writeMailListNotModifiedIfFresh(httptest.NewRecorder(), req, key) {
+		t.Fatal("sync progress invalidated an unchanged cached mail page")
+	}
+}
+
 func TestCreateMailIdentityEndpointCreatesMeIdentity(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

@@ -198,8 +198,15 @@ func TestDeleteMessagesIsTenantScopedInCombinedIndex(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := svc.DeleteMessages(ctx, 1, []int64{1, 2}); err != nil {
+	var deletedBatches []int
+	if err := svc.DeleteMessagesWithProgress(ctx, 1, []int64{1, 2}, func(deleted int) error {
+		deletedBatches = append(deletedBatches, deleted)
+		return nil
+	}); err != nil {
 		t.Fatal(err)
+	}
+	if len(deletedBatches) != 1 || deletedBatches[0] != 1 {
+		t.Fatalf("tenant-scoped delete progress=%v, want [1]", deletedBatches)
 	}
 	ownerIDs, err := svc.MessageIDsIndexed(ctx, 1, []int64{1})
 	if err != nil {

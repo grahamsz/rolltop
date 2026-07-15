@@ -233,6 +233,12 @@
   white-space: nowrap;
 }
 
+.remote-imap-sync-waiting {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .remote-imap-sync-row-error {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

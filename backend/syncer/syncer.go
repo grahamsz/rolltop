@@ -7,7 +7,6 @@ import (
 	"errors"
 	"log"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -150,16 +149,16 @@ type Service struct {
 
 	BlobRetention                    time.Duration
 	Notify                           func(userID int64)
+	NotifyProgress                   func(userID int64)
 	ScheduleInboxArrival             func(userID, accountID int64, due time.Time)
 	NotifyRestoredState              func(userID int64)
 	MailboxGenerationRecoveryStarted func(userID int64)
 	PluginDir                        string
 	MasterKey                        []byte
 
-	pluginOnce            sync.Once
-	pluginLoadErr         error
-	backendPlugins        *plugins.BackendManager
-	generationRecoveryNow func() time.Time
+	pluginOnce     sync.Once
+	pluginLoadErr  error
+	backendPlugins *plugins.BackendManager
 }
 
 const (
@@ -556,7 +555,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			}
 			return item
 		}
-		storeFetchedItem := func(item FetchedMessage) (store.MessageRecord, error) {
+		storeFetchedItem := func(item FetchedMessage, runStoredHooks bool) (store.MessageRecord, error) {
 			msg, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item)
 			if err != nil {
 				return store.MessageRecord{}, err
@@ -568,7 +567,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			if searchBatch.Empty() {
 				classificationBatch.Flush(ctx)
 			}
-			if len(storedHooks) > 0 {
+			if runStoredHooks && len(storedHooks) > 0 {
 				if err := searchBatch.Flush(ctx); err != nil {
 					return store.MessageRecord{}, err
 				}
@@ -591,13 +590,16 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			if exists {
 				return nil
 			}
-			msg, err := storeFetchedItem(item)
+			msg, err := storeFetchedItem(item, isPostRebuildArrival(item))
 			if err != nil {
 				return err
 			}
 			prewarmedUIDs[item.UID] = true
 			progress.MessagesSeen++
 			progress.MessagesStored++
+			if progress.MessagesTotal < progress.MessagesSeen {
+				progress.MessagesTotal = progress.MessagesSeen
+			}
 			notifyNewMail := shouldNotifyFetchedItem(item)
 			if shouldCancelSnoozeForFetchedItem(item, notifyNewMail) {
 				if _, err := s.Store.CancelSnoozeForNewMessage(ctx, userID, msg); err != nil {
@@ -614,8 +616,21 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		generationRecoverySnapshot := MailboxUIDSnapshot{}
 		if generationRebuildPending {
 			var prewarmFatalErr, prewarmErr error
+			seedRecoveryProgress := func(snapshot MailboxUIDSnapshot) error {
+				completedBefore := mailboxGenerationSnapshotCompletedBefore(snapshot, mailboxLastUIDAtStart)
+				// The planner estimates only the remaining UID range. Replace that
+				// mailbox contribution with the immutable snapshot total, then seed
+				// seen from the durable checkpoint so each bounded turn reports
+				// cumulative recovery progress instead of restarting at zero.
+				progress.MessagesTotal += len(snapshot.UIDs) - planned.Pending
+				progress.MessagesSeen += completedBefore
+				if progress.MessagesTotal < progress.MessagesSeen {
+					progress.MessagesTotal = progress.MessagesSeen
+				}
+				return s.updateSyncProgress(ctx, userID, run.ID, progress)
+			}
 			generationRecoverySnapshot, prewarmFatalErr, prewarmErr = s.prewarmPendingMailboxGeneration(ctx,
-				userID, account, mailbox, planned.Status.UIDValidity, prewarmHandle)
+				userID, account, mailbox, planned.Status.UIDValidity, prewarmHandle, seedRecoveryProgress)
 			if prewarmFatalErr != nil {
 				status = "failed"
 				errText = prewarmFatalErr.Error()
@@ -626,9 +641,19 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				errText = prewarmErr.Error()
 				return run, prewarmErr
 			}
+			if prewarmErr != nil && generationRecoverySnapshot.UIDNext == 0 {
+				// Production recovery needs the immutable UID snapshot to stop after a
+				// bounded turn. Retrying is preferable to falling back to an unbounded
+				// mailbox fetch that can starve every other account for this tenant.
+				if _, snapshotCapable := s.Fetcher.(MailboxUIDSnapshotFetcher); snapshotCapable {
+					status = "failed"
+					errText = prewarmErr.Error()
+					return run, prewarmErr
+				}
+			}
 			if prewarmErr != nil {
 				// A newest-page preview must never become a new prerequisite for
-				// completing the existing ascending recovery path.
+				// completing a recovery after its immutable snapshot was captured.
 				log.Printf("prewarm mailbox generation user_id=%d account_id=%d mailbox=%s: %v",
 					userID, account.ID, mailbox.Name, prewarmErr)
 			}
@@ -638,13 +663,10 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				return run, err
 			}
 			classificationBatch.Flush(ctx)
-			// The current page is in SQLite and Bleve before stale generation
-			// documents are audited. This keeps a large derived-index purge from
-			// extending the empty-mailbox interval after reset.
-			if _, err := s.RepairMailboxSearchIndex(ctx, userID, mailbox, run.ID, &progress); err != nil {
-				status = "failed"
-				errText = err.Error()
-				return run, err
+			if len(prewarmedUIDs) > 0 {
+				// Invalidate the saved first page once after the bounded preview is
+				// durable. Per-message progress updates use the lightweight event path.
+				s.notify(userID)
 			}
 		}
 		handleFetchedItem := func(item FetchedMessage) error {
@@ -711,7 +733,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				delete(prewarmedUIDs, item.UID)
 				progress.MessagesSeen++
 			}
-			msg, err := storeFetchedItem(item)
+			msg, err := storeFetchedItem(item, !rebuildInProgress || isPostRebuildArrival(item))
 			if err != nil {
 				return err
 			}
@@ -736,15 +758,17 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			}
 			return s.updateSyncProgress(ctx, userID, run.ID, progress)
 		}
-		recoveryStart := sort.Search(len(generationRecoverySnapshot.UIDs), func(i int) bool {
-			return generationRecoverySnapshot.UIDs[i] > mailboxLastUIDAtStart
-		})
-		largeGenerationRecovery := generationRebuildPending && generationRecoverySnapshot.UIDValidity == planned.Status.UIDValidity &&
-			len(generationRecoverySnapshot.UIDs)-recoveryStart > mailboxGenerationRecoveryBatchSize
-		if largeGenerationRecovery {
+		generationSnapshotRecovery := generationRebuildPending &&
+			generationRecoverySnapshot.UIDValidity == planned.Status.UIDValidity &&
+			generationRecoverySnapshot.UIDNext > 0
+		generationRecoveryComplete := true
+		if generationSnapshotRecovery {
+			log.Printf("recover mailbox generation batch user_id=%d account_id=%d mailbox=%s after_uid=%d snapshot_uids=%d limit=%d",
+				userID, account.ID, mailbox.Name, mailboxLastUIDAtStart, len(generationRecoverySnapshot.UIDs),
+				mailboxGenerationRecoveryBatchSize)
 			refreshNewest := func(final bool) error {
 				_, fatalErr, fetchErr := s.prewarmPendingMailboxGeneration(ctx, userID, account, mailbox,
-					planned.Status.UIDValidity, prewarmHandle)
+					planned.Status.UIDValidity, prewarmHandle, nil)
 				if fatalErr != nil {
 					return fatalErr
 				}
@@ -758,8 +782,13 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 					userID, account.ID, mailbox.Name, fetchErr)
 				return nil
 			}
-			err = s.fetchMailboxGenerationSnapshotInBatches(ctx, account, mailbox, mailboxLastUIDAtStart,
-				planned.Status.UIDValidity, generationRecoverySnapshot, handleFetchedItem, refreshNewest)
+			generationRecoveryComplete, err = s.fetchMailboxGenerationSnapshotBatch(ctx, account, mailbox,
+				mailboxLastUIDAtStart, planned.Status.UIDValidity, generationRecoverySnapshot,
+				handleFetchedItem, refreshNewest)
+			if err == nil {
+				log.Printf("recover mailbox generation batch complete user_id=%d account_id=%d mailbox=%s checkpoint_uid=%d final=%t",
+					userID, account.ID, mailbox.Name, lastUIDs[mailboxName], generationRecoveryComplete)
+			}
 		} else {
 			err = s.fetchMailboxForGeneration(ctx, account, mailboxName, mailboxLastUIDAtStart,
 				planned.Status.UIDValidity, handleFetchedItem)
@@ -775,13 +804,31 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			return run, err
 		}
 		classificationBatch.Flush(ctx)
+		if generationRebuildPending && !generationRecoveryComplete {
+			// The checkpoint and index batch are durable. End this scheduler turn
+			// without finalizing the marker so another account can run before the
+			// next bounded history batch.
+			progress.CurrentMailbox = mailboxName
+			progress.CurrentUID = lastUIDs[mailboxName]
+			if err := s.updateSyncProgress(ctx, userID, run.ID, progress); err != nil {
+				status = "failed"
+				errText = err.Error()
+				return run, err
+			}
+			continue
+		}
 		// Fetch the incremental delta before auditing historical search documents.
 		// A mailbox refresh triggered by a move should surface the relocated message
 		// immediately instead of waiting for an O(mailbox size) repair scan.
-		if _, err := s.RepairMailboxSearchIndex(ctx, userID, mailbox, run.ID, &progress); err != nil {
-			status = "failed"
-			errText = err.Error()
-			return run, err
+		// Generation rebuilds index every newly fetched body inline. Leave stale
+		// derived documents for a normal post-recovery sync, even if the replacement
+		// mailbox is small: it may have replaced a very large prior generation.
+		if !generationRebuildPending {
+			if _, err := s.RepairMailboxSearchIndex(ctx, userID, mailbox, run.ID, &progress); err != nil {
+				status = "failed"
+				errText = err.Error()
+				return run, err
+			}
 		}
 		if s.shouldSyncInlineMetadata(planned) {
 			if err := s.syncMailboxReadFlags(ctx, userID, account, mailbox); err != nil {
@@ -1100,7 +1147,7 @@ func (s *Service) updateSyncProgress(ctx context.Context, userID, runID int64, p
 	if err := s.Store.UpdateSyncRunProgress(ctx, userID, runID, progress); err != nil {
 		return err
 	}
-	s.notify(userID)
+	s.notifyProgress(userID)
 	return nil
 }
 
@@ -1145,4 +1192,12 @@ func (s *Service) notify(userID int64) {
 	if s.Notify != nil {
 		s.Notify(userID)
 	}
+}
+
+func (s *Service) notifyProgress(userID int64) {
+	if s.NotifyProgress != nil {
+		s.NotifyProgress(userID)
+		return
+	}
+	s.notify(userID)
 }

@@ -215,6 +215,13 @@ func TestRemoteSyncActiveRunDefersCleanlyAtChunkBoundary(t *testing.T) {
 		latest.Scanned != 25 || latest.Transferred != 20 || latest.Skipped != 5 {
 		t.Fatalf("deferred run=%+v", latest)
 	}
+	view, err := presentRoutine(ctx, fixture.store, fixture.db, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.ActiveRun != nil || view.LatestRun == nil || view.LatestRun.Status != "deferred" {
+		t.Fatalf("deferred routine view active=%+v latest=%+v", view.ActiveRun, view.LatestRun)
+	}
 }
 
 func TestRemoteSyncRechecksRecoveryAfterSearchBeforeDestinationSession(t *testing.T) {

@@ -16,17 +16,16 @@ import (
 
 type generationPrewarmFetcher struct {
 	*fakeFetcher
-	beforeSnapshot  func()
-	beforeAscending func()
-	beforeSparse    func(attempt int, uids []uint32)
-	afterSparse     func(attempt int, uids []uint32)
-	ascendingErr    error
-	ascendingAfter  []uint32
-	sparseAttempts  [][]uint32
-	sparseErr       error
-	sparseErrAt     int
-	snapshotErr     error
-	snapshotCalls   int
+	beforeSnapshot func()
+	beforeSparse   func(attempt int, uids []uint32)
+	afterSparse    func(attempt int, uids []uint32)
+	ascendingErr   error
+	ascendingAfter []uint32
+	sparseAttempts [][]uint32
+	sparseErr      error
+	sparseErrAt    int
+	snapshotErr    error
+	snapshotCalls  int
 }
 
 func (f *generationPrewarmFetcher) SnapshotMailboxUIDs(ctx context.Context, account store.MailAccount, mailbox string) (syncer.MailboxUIDSnapshot, error) {
@@ -68,16 +67,16 @@ func TestPendingGenerationRebuildNotifiesOnlyUIDsAtOrAboveDurableArrivalFloor(t 
 		insertedPrewarmArrival = true
 		base.messages[fixture.user.ID] = append(base.messages[fixture.user.ID], allMessages[205])
 	}
-	insertedAscendingArrival := false
-	fetcher.beforeAscending = func() {
-		if insertedAscendingArrival {
+	insertedHistoryArrival := false
+	fetcher.beforeSparse = func(attempt int, _ []uint32) {
+		if attempt != 3 || insertedHistoryArrival {
 			return
 		}
-		insertedAscendingArrival = true
+		insertedHistoryArrival = true
 		floor, err := fixture.db.MailboxGenerationRebuildArrivalUIDFloor(fixture.ctx, fixture.user.ID,
 			fixture.account.ID, fixture.mailbox.ID, 2)
 		if err != nil || floor != 206 {
-			t.Fatalf("durable arrival floor before ascending fetch=%d err=%v, want 206/nil", floor, err)
+			t.Fatalf("durable arrival floor before history batch=%d err=%v, want 206/nil", floor, err)
 		}
 		var pendingPrewarmArrival int
 		if err := fixture.db.DB().QueryRowContext(fixture.ctx, `SELECT COUNT(*)
@@ -97,8 +96,8 @@ func TestPendingGenerationRebuildNotifiesOnlyUIDsAtOrAboveDurableArrivalFloor(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !insertedPrewarmArrival || !insertedAscendingArrival {
-		t.Fatalf("delivery injection prewarm=%t ascending=%t, want both", insertedPrewarmArrival, insertedAscendingArrival)
+	if !insertedPrewarmArrival || !insertedHistoryArrival {
+		t.Fatalf("delivery injection prewarm=%t history=%t, want both", insertedPrewarmArrival, insertedHistoryArrival)
 	}
 	if _, err := fixture.db.MailboxGenerationRebuildArrivalUIDFloor(fixture.ctx, fixture.user.ID,
 		fixture.account.ID, fixture.mailbox.ID, 2); !store.IsNotFound(err) {
@@ -161,7 +160,9 @@ func TestLegacyZeroFloorMarkerInitializesOnceAcrossRecoveryResume(t *testing.T) 
 		uidValidityByMailbox: map[string]uint32{"inbox": 2},
 	}
 	firstStop := errors.New("stop first legacy-floor resume")
-	fixture.service.Fetcher = &generationPrewarmFetcher{fakeFetcher: firstBase, ascendingErr: firstStop}
+	fixture.service.Fetcher = &generationPrewarmFetcher{
+		fakeFetcher: firstBase, sparseErr: firstStop, sparseErrAt: 2,
+	}
 	fixture.service.ScheduleInboxArrival = func(int64, int64, time.Time) {}
 	if _, err := fixture.service.SyncUserAccountMailboxes(fixture.ctx, fixture.user.ID,
 		fixture.account.ID, []string{"INBOX"}); !errors.Is(err, firstStop) {
@@ -180,7 +181,9 @@ func TestLegacyZeroFloorMarkerInitializesOnceAcrossRecoveryResume(t *testing.T) 
 		uidValidityByMailbox: map[string]uint32{"inbox": 2},
 	}
 	secondStop := errors.New("stop second legacy-floor resume")
-	fixture.service.Fetcher = &generationPrewarmFetcher{fakeFetcher: secondBase, ascendingErr: secondStop}
+	fixture.service.Fetcher = &generationPrewarmFetcher{
+		fakeFetcher: secondBase, sparseErr: secondStop, sparseErrAt: 2,
+	}
 	if _, err := fixture.service.SyncUserAccountMailboxes(fixture.ctx, fixture.user.ID,
 		fixture.account.ID, []string{"INBOX"}); !errors.Is(err, secondStop) {
 		t.Fatalf("second resume error=%v, want %v", err, secondStop)
@@ -219,7 +222,9 @@ func TestGenerationRebuildResumeRepairsStoredArrivalBeforeNetworkFetch(t *testin
 		uidValidityByMailbox: map[string]uint32{"inbox": 2},
 	}
 	firstStop := errors.New("stop after storing post-floor arrival")
-	fixture.service.Fetcher = &generationPrewarmFetcher{fakeFetcher: firstBase, ascendingErr: firstStop}
+	fixture.service.Fetcher = &generationPrewarmFetcher{
+		fakeFetcher: firstBase, sparseErr: firstStop, sparseErrAt: 2,
+	}
 	fixture.service.ScheduleInboxArrival = func(int64, int64, time.Time) {}
 	if _, err := fixture.service.SyncUserAccountMailboxes(fixture.ctx, fixture.user.ID,
 		fixture.account.ID, []string{"INBOX"}); !errors.Is(err, firstStop) {
@@ -236,11 +241,10 @@ func TestGenerationRebuildResumeRepairsStoredArrivalBeforeNetworkFetch(t *testin
 		mailboxes:            []syncer.MailboxInfo{{Name: "INBOX"}},
 		uidValidityByMailbox: map[string]uint32{"inbox": 2},
 	}
-	resumeStop := errors.New("ascending recovery unavailable")
+	resumeStop := errors.New("sparse prewarm unavailable")
 	resume := &generationPrewarmFetcher{
-		fakeFetcher:  resumeBase,
-		snapshotErr:  errors.New("sparse prewarm unavailable"),
-		ascendingErr: resumeStop,
+		fakeFetcher: resumeBase,
+		snapshotErr: resumeStop,
 	}
 	observedBeforeSnapshot := false
 	resume.beforeSnapshot = func() {
@@ -270,7 +274,7 @@ func TestGenerationRebuildResumeRepairsStoredArrivalBeforeNetworkFetch(t *testin
 		t.Fatal(err)
 	}
 	if pendingTotal != 1 {
-		t.Fatalf("pending arrivals after immediate ascending failure=%d, want exactly 1", pendingTotal)
+		t.Fatalf("pending arrivals after immediate snapshot failure=%d, want exactly 1", pendingTotal)
 	}
 	assertNoGenerationPrewarmNotifications(t, fixture.ctx, fixture.db, fixture.user.ID)
 }
@@ -311,7 +315,7 @@ func TestLargeGenerationRebuildFinalRefreshCachesPostSnapshotArrival(t *testing.
 	fetcher := &generationPrewarmFetcher{fakeFetcher: base}
 	injected := false
 	fetcher.beforeSparse = func(attempt int, _ []uint32) {
-		if attempt == 3 && !injected {
+		if attempt == 4 && !injected {
 			injected = true
 			base.messages[fixture.user.ID] = append(base.messages[fixture.user.ID], allMessages[600])
 		}
@@ -347,6 +351,43 @@ func TestLargeGenerationRebuildFinalRefreshCachesPostSnapshotArrival(t *testing.
 	}
 	fixture.service.Fetcher = fetcher
 	fixture.service.ScheduleInboxArrival = func(int64, int64, time.Time) {}
+	firstRun, err := fixture.service.SyncUserAccountMailboxes(fixture.ctx, fixture.user.ID,
+		fixture.account.ID, []string{"INBOX"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if injected || observedBeforeMarkerRemoval {
+		t.Fatalf("first recovery turn injection=%t final refresh observed=%t, want false/false", injected, observedBeforeMarkerRemoval)
+	}
+	if len(fetcher.sparseAttempts) != 3 {
+		t.Fatalf("first recovery turn sparse attempts=%v, want preview plus one history batch", fetcher.sparseAttempts)
+	}
+	firstHistory := fetcher.sparseAttempts[2]
+	if len(firstHistory) != 500 || firstHistory[0] != 1 || firstHistory[len(firstHistory)-1] != 500 {
+		t.Fatalf("first recovery history batch=%s, want range 1..500", describeUIDTestRange(firstHistory))
+	}
+	checkpoint, err := fixture.db.GetMailbox(fixture.ctx, fixture.user.ID, fixture.account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.LastUID != 500 {
+		t.Fatalf("first recovery turn last_uid=%d, want 500", checkpoint.LastUID)
+	}
+	if pending, err := fixture.db.MailboxGenerationRebuildPending(fixture.ctx, fixture.user.ID,
+		fixture.account.ID, fixture.mailbox.ID, 2); err != nil || !pending {
+		t.Fatalf("first recovery turn pending=%t err=%v, want true/nil", pending, err)
+	}
+	firstRun, err = fixture.db.GetSyncRunForUser(fixture.ctx, fixture.user.ID, firstRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstRun.NewMessages != 0 {
+		t.Fatalf("first recovery turn emitted %d new-message notifications", firstRun.NewMessages)
+	}
+	if firstRun.MessagesSeen != 600 || firstRun.MessagesTotal != 600 {
+		t.Fatalf("first recovery turn progress=%d/%d, want 600/600", firstRun.MessagesSeen, firstRun.MessagesTotal)
+	}
+
 	run, err := fixture.service.SyncUserAccountMailboxes(fixture.ctx, fixture.user.ID,
 		fixture.account.ID, []string{"INBOX"})
 	if err != nil {
@@ -360,6 +401,10 @@ func TestLargeGenerationRebuildFinalRefreshCachesPostSnapshotArrival(t *testing.
 	}
 	if len(fetcher.sparseAttempts) != 5 {
 		t.Fatalf("large recovery sparse attempts=%v, want prewarm, two history batches, and final refresh", fetcher.sparseAttempts)
+	}
+	secondHistory := fetcher.sparseAttempts[3]
+	if len(secondHistory) != 100 || secondHistory[0] != 501 || secondHistory[len(secondHistory)-1] != 600 {
+		t.Fatalf("second recovery history batch=%s, want range 501..600", describeUIDTestRange(secondHistory))
 	}
 	refreshed, err := fixture.db.GetMailbox(fixture.ctx, fixture.user.ID, fixture.account.ID, "INBOX")
 	if err != nil {
@@ -389,9 +434,12 @@ func TestLargeGenerationRebuildFinalRefreshCachesPostSnapshotArrival(t *testing.
 	if run.NewMessages != 1 {
 		t.Fatalf("large rebuild run new messages=%d, want 1", run.NewMessages)
 	}
+	if run.MessagesSeen != 601 || run.MessagesTotal != 601 {
+		t.Fatalf("resumed recovery progress=%d/%d, want cumulative 601/601", run.MessagesSeen, run.MessagesTotal)
+	}
 }
 
-func TestPendingGenerationRebuildFallsBackToAscendingAfterSnapshotTimeout(t *testing.T) {
+func TestPendingGenerationRebuildRetriesAfterSnapshotTimeoutWithoutUnboundedFallback(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
@@ -441,28 +489,28 @@ func TestPendingGenerationRebuildFallsBackToAscendingAfterSnapshotTimeout(t *tes
 	}
 	service.Fetcher = timeoutFetcher
 	run, err := service.SyncUserAccountMailboxes(ctx, user.ID, accountRecord.ID, []string{"INBOX"})
-	if err != nil {
-		t.Fatalf("sync after prewarm snapshot timeout: %v", err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("sync after prewarm snapshot timeout error=%v, want deadline exceeded", err)
 	}
-	if timeoutFetcher.snapshotCalls != 2 {
-		t.Fatalf("snapshot calls=%d, want prewarm timeout plus reconciliation", timeoutFetcher.snapshotCalls)
+	if timeoutFetcher.snapshotCalls != 1 {
+		t.Fatalf("snapshot calls=%d, want one bounded recovery attempt", timeoutFetcher.snapshotCalls)
 	}
 	if len(timeoutFetcher.fetchUIDCalls) != 0 {
 		t.Fatalf("snapshot timeout unexpectedly attempted sparse fetches=%v", timeoutFetcher.fetchUIDCalls)
 	}
-	if len(timeoutFetcher.ascendingAfter) != 1 || timeoutFetcher.ascendingAfter[0] != 0 {
-		t.Fatalf("ascending checkpoints=%v, want [0]", timeoutFetcher.ascendingAfter)
+	if len(timeoutFetcher.ascendingAfter) != 0 {
+		t.Fatalf("snapshot timeout used unbounded ascending fallback checkpoints=%v", timeoutFetcher.ascendingAfter)
 	}
 	refreshed, err := db.GetMailbox(ctx, user.ID, accountRecord.ID, "INBOX")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if refreshed.LastUID != 3 {
-		t.Fatalf("completed rebuild last_uid=%d, want 3", refreshed.LastUID)
+	if refreshed.LastUID != 0 {
+		t.Fatalf("failed rebuild last_uid=%d, want 0", refreshed.LastUID)
 	}
 	pending, err := db.MailboxGenerationRebuildPending(ctx, user.ID, accountRecord.ID, mailbox.ID, 2)
-	if err != nil || pending {
-		t.Fatalf("completed rebuild pending=%v err=%v, want false/nil", pending, err)
+	if err != nil || !pending {
+		t.Fatalf("failed rebuild pending=%v err=%v, want true/nil", pending, err)
 	}
 	var rows, distinctUIDs int
 	if err := db.DB().QueryRowContext(ctx, `SELECT COUNT(*), COUNT(DISTINCT uid)
@@ -470,15 +518,15 @@ func TestPendingGenerationRebuildFallsBackToAscendingAfterSnapshotTimeout(t *tes
 		user.ID, accountRecord.ID, mailbox.ID).Scan(&rows, &distinctUIDs); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 3 || distinctUIDs != 3 {
-		t.Fatalf("completed rebuild rows=%d distinct_uids=%d, want 3/3", rows, distinctUIDs)
+	if rows != 0 || distinctUIDs != 0 {
+		t.Fatalf("failed rebuild rows=%d distinct_uids=%d, want 0/0", rows, distinctUIDs)
 	}
 	run, err = db.GetSyncRunForUser(ctx, user.ID, run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if run.NewMessages != 0 {
-		t.Fatalf("completed rebuild emitted %d new-message notifications", run.NewMessages)
+		t.Fatalf("failed rebuild emitted %d new-message notifications", run.NewMessages)
 	}
 	assertNoGenerationPrewarmNotifications(t, ctx, db, user.ID)
 }
@@ -531,8 +579,8 @@ func TestPendingGenerationRebuildKeepsNewestPageWhenOlderPrewarmTimesOut(t *test
 	if !newestPageObserved {
 		t.Fatal("older prewarm phase began without observing the newest page")
 	}
-	if len(timeoutFetcher.sparseAttempts) != 2 {
-		t.Fatalf("sparse attempts=%v, want newest and older phases", timeoutFetcher.sparseAttempts)
+	if len(timeoutFetcher.sparseAttempts) != 3 {
+		t.Fatalf("sparse attempts=%v, want newest preview, timed-out older preview, and history batch", timeoutFetcher.sparseAttempts)
 	}
 	newestPageUIDs := timeoutFetcher.sparseAttempts[0]
 	if len(newestPageUIDs) != 50 || newestPageUIDs[0] != 156 || newestPageUIDs[len(newestPageUIDs)-1] != 205 {
@@ -542,11 +590,15 @@ func TestPendingGenerationRebuildKeepsNewestPageWhenOlderPrewarmTimesOut(t *test
 	if len(olderUIDs) != 150 || olderUIDs[0] != 6 || olderUIDs[len(olderUIDs)-1] != 155 {
 		t.Fatalf("older prewarm phase UIDs=%s, want range 6..155", describeUIDTestRange(olderUIDs))
 	}
-	if len(timeoutFetcher.fetchUIDCalls) != 1 {
-		t.Fatalf("completed sparse fetch calls=%v, want only newest phase", timeoutFetcher.fetchUIDCalls)
+	historyUIDs := timeoutFetcher.sparseAttempts[2]
+	if len(historyUIDs) != 205 || historyUIDs[0] != 1 || historyUIDs[len(historyUIDs)-1] != 205 {
+		t.Fatalf("history batch UIDs=%s, want range 1..205", describeUIDTestRange(historyUIDs))
 	}
-	if len(timeoutFetcher.ascendingAfter) != 1 || timeoutFetcher.ascendingAfter[0] != 0 {
-		t.Fatalf("ascending checkpoints=%v, want fallback from 0", timeoutFetcher.ascendingAfter)
+	if len(timeoutFetcher.fetchUIDCalls) != 2 {
+		t.Fatalf("completed sparse fetch calls=%v, want newest preview and history batch", timeoutFetcher.fetchUIDCalls)
+	}
+	if len(timeoutFetcher.ascendingAfter) != 0 {
+		t.Fatalf("snapshot-backed recovery used ascending fallback checkpoints=%v", timeoutFetcher.ascendingAfter)
 	}
 	refreshed, err := fixture.db.GetMailbox(fixture.ctx, fixture.user.ID, fixture.account.ID, "INBOX")
 	if err != nil {
@@ -586,16 +638,13 @@ func (f *generationPrewarmFetcher) FetchMailboxWithUIDValidity(
 	handle func(syncer.FetchedMessage) error,
 ) error {
 	f.ascendingAfter = append(f.ascendingAfter, afterUID)
-	if f.beforeAscending != nil {
-		f.beforeAscending()
-	}
 	if f.ascendingErr != nil {
 		return f.ascendingErr
 	}
 	return f.fakeFetcher.FetchMailboxWithUIDValidity(ctx, account, mailbox, afterUID, expectedUIDValidity, handle)
 }
 
-func TestPendingGenerationRebuildPrewarmsNewestMessagesBeforeAscendingResume(t *testing.T) {
+func TestPendingGenerationRebuildPrewarmsNewestMessagesBeforeHistoryBatchResume(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
@@ -642,34 +691,37 @@ func TestPendingGenerationRebuildPrewarmsNewestMessagesBeforeAscendingResume(t *
 	interruptErr := errors.New("stop after newest-message prewarm")
 	prewarmObserved := false
 	newestPageObserved := false
-	interrupted := &generationPrewarmFetcher{fakeFetcher: base, ascendingErr: interruptErr}
+	interrupted := &generationPrewarmFetcher{
+		fakeFetcher: base, sparseErr: interruptErr, sparseErrAt: 3,
+	}
 	interrupted.beforeSparse = func(attempt int, uids []uint32) {
-		if attempt != 2 {
+		if attempt == 2 {
+			newestPageObserved = true
+			refreshed, err := db.GetMailbox(ctx, user.ID, accountRecord.ID, "INBOX")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if refreshed.LastUID != 0 {
+				t.Fatalf("newest-page prewarm advanced last_uid to %d, want 0", refreshed.LastUID)
+			}
+			local, err := db.CountMessagesForMailbox(ctx, user.ID, mailbox.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if local != 50 {
+				t.Fatalf("local rows before older prewarm phase=%d, want newest page of 50", local)
+			}
+			if _, err := db.GetMessageByUID(ctx, user.ID, accountRecord.ID, mailbox.ID, 205); err != nil {
+				t.Fatalf("newest UID was not visible before older prewarm phase: %v", err)
+			}
+			if _, err := db.GetMessageByUID(ctx, user.ID, accountRecord.ID, mailbox.ID, 155); !store.IsNotFound(err) {
+				t.Fatalf("older prewarm UID was visible before its phase: %v", err)
+			}
 			return
 		}
-		newestPageObserved = true
-		refreshed, err := db.GetMailbox(ctx, user.ID, accountRecord.ID, "INBOX")
-		if err != nil {
-			t.Fatal(err)
+		if attempt != 3 {
+			return
 		}
-		if refreshed.LastUID != 0 {
-			t.Fatalf("newest-page prewarm advanced last_uid to %d, want 0", refreshed.LastUID)
-		}
-		local, err := db.CountMessagesForMailbox(ctx, user.ID, mailbox.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if local != 50 {
-			t.Fatalf("local rows before older prewarm phase=%d, want newest page of 50", local)
-		}
-		if _, err := db.GetMessageByUID(ctx, user.ID, accountRecord.ID, mailbox.ID, 205); err != nil {
-			t.Fatalf("newest UID was not visible before older prewarm phase: %v", err)
-		}
-		if _, err := db.GetMessageByUID(ctx, user.ID, accountRecord.ID, mailbox.ID, 155); !store.IsNotFound(err) {
-			t.Fatalf("older prewarm UID was visible before its phase: %v", err)
-		}
-	}
-	interrupted.beforeAscending = func() {
 		prewarmObserved = true
 		refreshed, err := db.GetMailbox(ctx, user.ID, accountRecord.ID, "INBOX")
 		if err != nil {
@@ -683,13 +735,13 @@ func TestPendingGenerationRebuildPrewarmsNewestMessagesBeforeAscendingResume(t *
 			t.Fatal(err)
 		}
 		if local != 200 {
-			t.Fatalf("local rows before ascending fetch=%d, want newest 200", local)
+			t.Fatalf("local rows before history batch=%d, want newest 200", local)
 		}
 		if _, err := db.GetMessageByUID(ctx, user.ID, accountRecord.ID, mailbox.ID, 205); err != nil {
 			t.Fatalf("newest UID was not visible after prewarm: %v", err)
 		}
 		if _, err := db.GetMessageByUID(ctx, user.ID, accountRecord.ID, mailbox.ID, 5); !store.IsNotFound(err) {
-			t.Fatalf("historical UID was fetched before ascending pass: %v", err)
+			t.Fatalf("historical UID was fetched before history batch: %v", err)
 		}
 	}
 	service.Fetcher = interrupted
@@ -698,13 +750,14 @@ func TestPendingGenerationRebuildPrewarmsNewestMessagesBeforeAscendingResume(t *
 		t.Fatalf("interrupted rebuild error=%v, want %v", err, interruptErr)
 	}
 	if !prewarmObserved {
-		t.Fatal("ascending fetch began without observing the newest-message prewarm")
+		t.Fatal("history batch began without observing the newest-message prewarm")
 	}
 	if !newestPageObserved {
 		t.Fatal("older prewarm phase began without observing the newest page")
 	}
-	if interrupted.snapshotCalls != 1 || len(interrupted.fetchUIDCalls) != 2 {
-		t.Fatalf("prewarm calls snapshot=%d sparse=%v, want one snapshot and two sparse phases", interrupted.snapshotCalls, interrupted.fetchUIDCalls)
+	if interrupted.snapshotCalls != 1 || len(interrupted.fetchUIDCalls) != 2 || len(interrupted.sparseAttempts) != 3 {
+		t.Fatalf("interrupted calls snapshot=%d completed=%v attempts=%v, want one snapshot, two preview fetches, and one failed history batch",
+			interrupted.snapshotCalls, interrupted.fetchUIDCalls, interrupted.sparseAttempts)
 	}
 	newestPageUIDs := interrupted.fetchUIDCalls[0]
 	if len(newestPageUIDs) != 50 || newestPageUIDs[0] != 156 || newestPageUIDs[len(newestPageUIDs)-1] != 205 {
@@ -738,11 +791,15 @@ func TestPendingGenerationRebuildPrewarmsNewestMessagesBeforeAscendingResume(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resume.fetchUIDCalls) != 0 {
-		t.Fatalf("resume refetched already prewarmed tail with sparse calls=%v", resume.fetchUIDCalls)
+	if len(resume.sparseAttempts) != 1 {
+		t.Fatalf("resume sparse attempts=%v, want one history batch", resume.sparseAttempts)
 	}
-	if len(resume.ascendingAfter) != 1 || resume.ascendingAfter[0] != 0 {
-		t.Fatalf("resume ascending checkpoints=%v, want [0]", resume.ascendingAfter)
+	resumeHistory := resume.sparseAttempts[0]
+	if len(resumeHistory) != 205 || resumeHistory[0] != 1 || resumeHistory[len(resumeHistory)-1] != 205 {
+		t.Fatalf("resume history batch=%s, want range 1..205", describeUIDTestRange(resumeHistory))
+	}
+	if len(resume.ascendingAfter) != 0 {
+		t.Fatalf("snapshot-backed resume used ascending checkpoints=%v", resume.ascendingAfter)
 	}
 	refreshed, err := db.GetMailbox(ctx, user.ID, accountRecord.ID, "INBOX")
 	if err != nil {

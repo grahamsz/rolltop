@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"rolltop/backend/store"
 )
@@ -35,39 +34,52 @@ func (f *generationRecoveryBatchFetcher) FetchUIDsWithUIDValidity(
 	return nil
 }
 
-func TestLargeGenerationSnapshotRefreshesBetweenBatchesAndAtEnd(t *testing.T) {
+func TestLargeGenerationSnapshotRequiresThreeRecoveryTurns(t *testing.T) {
 	fetcher := &generationRecoveryBatchFetcher{statusSelectRaceFetcher: &statusSelectRaceFetcher{
 		moveTestFetcher:  fixturelessMoveFetcher(),
 		selectedValidity: 41,
 	}}
 	service := &Service{Fetcher: fetcher}
-	now := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
-	service.generationRecoveryNow = func() time.Time {
-		now = now.Add(mailboxGenerationRecoveryRefreshInterval + time.Second)
-		return now
-	}
 	uids := make([]uint32, 1001)
 	for i := range uids {
 		uids[i] = uint32(i + 1)
 	}
 	var handled []uint32
 	var refreshes []bool
-	err := service.fetchMailboxGenerationSnapshotInBatches(context.Background(), store.MailAccount{},
-		store.Mailbox{Name: "INBOX"}, 0, 41,
-		MailboxUIDSnapshot{UIDs: uids, UIDValidity: 41, UIDNext: 1002},
-		func(item FetchedMessage) error {
-			handled = append(handled, item.UID)
-			return nil
-		}, func(final bool) error {
-			refreshes = append(refreshes, final)
-			return nil
-		})
-	if err != nil {
-		t.Fatal(err)
+	snapshot := MailboxUIDSnapshot{UIDs: uids, UIDValidity: 41, UIDNext: 1002}
+	afterUID := uint32(0)
+	wantBatchSizes := []int{500, 500, 1}
+	for turn, wantBatchSize := range wantBatchSizes {
+		handledBefore := len(handled)
+		complete, err := service.fetchMailboxGenerationSnapshotBatch(context.Background(), store.MailAccount{},
+			store.Mailbox{Name: "INBOX"}, afterUID, 41, snapshot,
+			func(item FetchedMessage) error {
+				handled = append(handled, item.UID)
+				return nil
+			}, func(final bool) error {
+				refreshes = append(refreshes, final)
+				return nil
+			})
+		if err != nil {
+			t.Fatalf("recovery turn %d: %v", turn+1, err)
+		}
+		wantComplete := turn == len(wantBatchSizes)-1
+		if complete != wantComplete {
+			t.Fatalf("recovery turn %d complete=%t, want %t", turn+1, complete, wantComplete)
+		}
+		if got := len(handled) - handledBefore; got != wantBatchSize {
+			t.Fatalf("recovery turn %d handled=%d, want %d", turn+1, got, wantBatchSize)
+		}
+		afterUID = handled[len(handled)-1]
 	}
 	if len(fetcher.batches) != 3 || len(fetcher.batches[0]) != 500 ||
 		len(fetcher.batches[1]) != 500 || len(fetcher.batches[2]) != 1 {
 		t.Fatalf("recovery batches=%v, want sizes 500/500/1", fetcher.batches)
+	}
+	if fetcher.batches[0][0] != 1 || fetcher.batches[0][499] != 500 ||
+		fetcher.batches[1][0] != 501 || fetcher.batches[1][499] != 1000 ||
+		fetcher.batches[2][0] != 1001 {
+		t.Fatalf("recovery batch boundaries=%v, want 1..500, 501..1000, 1001", fetcher.batches)
 	}
 	if len(handled) != len(uids) || handled[0] != 1 || handled[len(handled)-1] != 1001 {
 		t.Fatalf("handled UIDs count=%d first=%d last=%d", len(handled), handled[0], handled[len(handled)-1])

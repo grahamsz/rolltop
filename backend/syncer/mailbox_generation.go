@@ -39,8 +39,8 @@ func (s *Service) ResetMailboxGenerationIfNeeded(ctx context.Context, userID int
 	if reset && s.MailboxGenerationRecoveryStarted != nil {
 		s.MailboxGenerationRecoveryStarted(userID)
 	}
-	// Search cleanup is derived work. The mailbox sync repairs it immediately
-	// after newest-message prewarming so stale documents cannot delay the first
-	// visible page after a large reset.
+	// Search cleanup is derived work. Newly fetched messages are indexed inline;
+	// stale generation documents are repaired after bounded mailbox recovery so
+	// they cannot hold the tenant recovery gate.
 	return reset, nil
 }

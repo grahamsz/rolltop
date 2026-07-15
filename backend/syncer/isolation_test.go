@@ -856,7 +856,7 @@ func TestRepairMailboxSearchIndexPrunesStaleAndIndexesMissingIDsWhenCountsMatch(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if savedRun.MessagesTotal != 1 || savedRun.MessagesSeen != 1 || savedRun.MessagesStored != 1 {
+	if savedRun.MessagesTotal != 2 || savedRun.MessagesSeen != 2 || savedRun.MessagesStored != 1 {
 		t.Fatalf("repair progress = total %d seen %d stored %d", savedRun.MessagesTotal, savedRun.MessagesSeen, savedRun.MessagesStored)
 	}
 	if savedRun.CurrentMailbox != mailbox.Name {

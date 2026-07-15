@@ -413,6 +413,12 @@ function activeState(state: string) {
   return ["connecting", "queued", "syncing", "running"].includes(state.trim().toLowerCase());
 }
 
+function waitingForMailboxRecovery(routine: RemoteRoutine) {
+  return !routine.active_run &&
+    routine.state.trim().toLowerCase() === "queued" &&
+    routine.latest_run?.status.trim().toLowerCase() === "deferred";
+}
+
 function destinationLabel(destination: RemoteDestination) {
   const account = destination.account_label || destination.account_email || "IMAP account";
   return `${account} / ${destination.mailbox_name || "Folder"}`;
@@ -425,7 +431,7 @@ function lastActivityLabel(routine: RemoteRoutine, user: User) {
 }
 
 function runProgress(routine: RemoteRoutine) {
-  const run = routine.active_run || (activeState(routine.state) ? routine.latest_run : null);
+  const run = routine.active_run;
   if (!run) return null;
   const scanned = run.scanned || run.seen;
   const percent = run.total > 0 ? Math.min(100, Math.round((scanned / run.total) * 100)) : 0;
@@ -456,7 +462,9 @@ function RemoteIMAPSyncSummary({ navigate }: Pick<SettingsContext, "navigate">) 
     };
   }, []);
 
-  const live = routines.filter((routine) => routine.enabled && ["live", "active"].includes(stateTone(routine.state))).length;
+  const live = routines.filter((routine) => routine.enabled &&
+    !waitingForMailboxRecovery(routine) &&
+    ["live", "active"].includes(stateTone(routine.state))).length;
   const errors = routines.filter((routine) => Boolean(routine.last_error)).length;
   const countLabel = !loaded
     ? "Loading routines"
@@ -821,7 +829,8 @@ export function RemoteIMAPSyncSettings({ csrf, user, mailboxes, navigate, addToa
           ) : null}
           {routines.map((routine) => {
             const progress = runProgress(routine);
-            const tone = stateTone(routine.state);
+            const recoveryWaiting = waitingForMailboxRecovery(routine);
+            const tone = recoveryWaiting ? "paused" : stateTone(routine.state);
             return (
               <article className={`remote-imap-sync-routine ${tone}`} key={routine.id}>
                 <label className="remote-imap-sync-switch" title={routine.enabled ? "Pause routine" : "Enable routine"}>
@@ -837,7 +846,10 @@ export function RemoteIMAPSyncSettings({ csrf, user, mailboxes, navigate, addToa
                 <div className="remote-imap-sync-routine-main">
                   <div className="remote-imap-sync-routine-title">
                     <strong>{routine.name}</strong>
-                    <span className={`remote-imap-sync-state ${tone}`}>{activeState(routine.state) ? <Icon name="sync" /> : null}{stateLabel(routine.state)}</span>
+                    <span className={`remote-imap-sync-state ${tone}`}>
+                      {recoveryWaiting ? <Icon name="clock" /> : activeState(routine.state) ? <Icon name="sync" /> : null}
+                      {recoveryWaiting ? "Waiting for mailbox recovery" : stateLabel(routine.state)}
+                    </span>
                   </div>
                   <div className="remote-imap-sync-route">
                     <span>{routine.source.username || routine.source.host} / {routine.source.mailbox}</span>
@@ -855,6 +867,11 @@ export function RemoteIMAPSyncSettings({ csrf, user, mailboxes, navigate, addToa
                         <span style={progress.run.total > 0 ? { width: `${progress.percent}%` } : undefined} />
                       </div>
                       <small>{progress.scanned.toLocaleString()} scanned · {progress.run.transferred.toLocaleString()} transferred</small>
+                    </div>
+                  ) : null}
+                  {recoveryWaiting ? (
+                    <div className="remote-imap-sync-waiting muted">
+                      Rolltop will resume this routine automatically after the local mailbox rebuild finishes.
                     </div>
                   ) : null}
                   {routine.last_error ? (

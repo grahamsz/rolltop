@@ -6,16 +6,14 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"time"
 
 	"rolltop/backend/store"
 )
 
 const (
-	mailboxGenerationPrewarmLimit            = 200
-	mailboxGenerationPrewarmPageSize         = 50
-	mailboxGenerationRecoveryBatchSize       = 500
-	mailboxGenerationRecoveryRefreshInterval = 30 * time.Second
+	mailboxGenerationPrewarmLimit      = 200
+	mailboxGenerationPrewarmPageSize   = 50
+	mailboxGenerationRecoveryBatchSize = 500
 )
 
 // prewarmPendingMailboxGeneration fetches a bounded newest UID window without
@@ -29,6 +27,7 @@ func (s *Service) prewarmPendingMailboxGeneration(
 	mailbox store.Mailbox,
 	expectedUIDValidity uint32,
 	handle func(FetchedMessage) error,
+	snapshotReady func(MailboxUIDSnapshot) error,
 ) (MailboxUIDSnapshot, error, error) {
 	snapshotFetcher, ok := s.Fetcher.(MailboxUIDSnapshotFetcher)
 	if !ok {
@@ -62,6 +61,11 @@ func (s *Service) prewarmPendingMailboxGeneration(
 		previous = uid
 	}
 	snapshot.UIDs = append([]uint32(nil), unique...)
+	if snapshotReady != nil {
+		if err := snapshotReady(snapshot); err != nil {
+			return snapshot, err, nil
+		}
+	}
 	previewUIDs := snapshot.UIDs
 	if len(previewUIDs) > mailboxGenerationPrewarmLimit {
 		previewUIDs = previewUIDs[len(previewUIDs)-mailboxGenerationPrewarmLimit:]
@@ -115,12 +119,16 @@ func (s *Service) prewarmPendingMailboxGeneration(
 	return snapshot, nil, nil
 }
 
-// fetchMailboxGenerationSnapshotInBatches processes one immutable UID snapshot
-// in bounded requests. Refresh runs only between requests, never from inside an
-// active IMAP body callback, so production fetchers do not need reentrant
-// connections. A final refresh is mandatory before the caller may remove the
-// generation marker.
-func (s *Service) fetchMailboxGenerationSnapshotInBatches(
+func mailboxGenerationSnapshotCompletedBefore(snapshot MailboxUIDSnapshot, afterUID uint32) int {
+	return sort.Search(len(snapshot.UIDs), func(i int) bool { return snapshot.UIDs[i] > afterUID })
+}
+
+// fetchMailboxGenerationSnapshotBatch processes at most one bounded portion of
+// an immutable UID snapshot. An incomplete result leaves the durable generation
+// marker and ascending checkpoint in place so the runner can release the mailbox
+// reservation and rotate to another account. Refresh runs only after the IMAP
+// request has returned; the final refresh is mandatory before marker removal.
+func (s *Service) fetchMailboxGenerationSnapshotBatch(
 	ctx context.Context,
 	account store.MailAccount,
 	mailbox store.Mailbox,
@@ -128,33 +136,23 @@ func (s *Service) fetchMailboxGenerationSnapshotInBatches(
 	snapshot MailboxUIDSnapshot,
 	handle func(FetchedMessage) error,
 	refresh func(final bool) error,
-) error {
+) (bool, error) {
 	uids := snapshot.UIDs
 	first := sort.Search(len(uids), func(i int) bool { return uids[i] > afterUID })
 	uids = uids[first:]
-	lastRefresh := s.mailboxGenerationRecoveryTime()
-	for start := 0; start < len(uids); start += mailboxGenerationRecoveryBatchSize {
-		end := start + mailboxGenerationRecoveryBatchSize
-		if end > len(uids) {
-			end = len(uids)
-		}
-		if err := s.fetchUIDsForGeneration(ctx, account, mailbox.Name, uids[start:end],
+	end := len(uids)
+	if end > mailboxGenerationRecoveryBatchSize {
+		end = mailboxGenerationRecoveryBatchSize
+	}
+	if end > 0 {
+		if err := s.fetchUIDsForGeneration(ctx, account, mailbox.Name, uids[:end],
 			expectedUIDValidity, handle); err != nil {
-			return err
-		}
-		if end < len(uids) && s.mailboxGenerationRecoveryTime().Sub(lastRefresh) >= mailboxGenerationRecoveryRefreshInterval {
-			if err := refresh(false); err != nil {
-				return err
-			}
-			lastRefresh = s.mailboxGenerationRecoveryTime()
+			return false, err
 		}
 	}
-	return refresh(true)
-}
-
-func (s *Service) mailboxGenerationRecoveryTime() time.Time {
-	if s != nil && s.generationRecoveryNow != nil {
-		return s.generationRecoveryNow()
+	complete := end == len(uids)
+	if err := refresh(complete); err != nil {
+		return false, err
 	}
-	return time.Now()
+	return complete, nil
 }
