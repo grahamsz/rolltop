@@ -2,9 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import type { DatePrefs, Toast } from "../../../frontend/src/appTypes";
+import type { DatePrefs, LocationState, Toast } from "../../../frontend/src/appTypes";
 import { Icon } from "../../../frontend/src/components/Icon";
+import { SettingsEmpty, SettingsError, SettingsLoading, SettingsPage } from "../../../frontend/src/features/settings/SettingsUI";
 import { displayDateTime } from "../../../frontend/src/lib/format";
+import type { AccountSettingsRuntimePlugin } from "../../../frontend/src/plugins/runtime";
 import type { Mailbox, ThreadMessage, User } from "../../../frontend/src/types";
 import "./styles.css";
 
@@ -45,6 +47,7 @@ type Context = {
   csrf: string;
   user: User;
   mailboxes: Mailbox[];
+  location: LocationState;
   navigate: (url: string) => void;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 };
@@ -70,10 +73,11 @@ const blankRule: Rule = {
   position: 0
 };
 
-export function MailFilterSettings({ csrf, user, mailboxes, navigate, addToast }: Context) {
+export function MailFilterSettings({ csrf, user, mailboxes, location, navigate, addToast }: Context) {
   const [rules, setRules] = useState<Rule[]>([]);
   const [draft, setDraft] = useState<Rule>(blankRule);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const accounts = useMemo(() => {
@@ -86,25 +90,30 @@ export function MailFilterSettings({ csrf, user, mailboxes, navigate, addToast }
     return [...seen.entries()].map(([id, label]) => ({ id, label }));
   }, [mailboxes]);
 
-  async function load() {
-    setLoading(true);
+  async function load(quiet = false) {
+    if (!quiet) {
+      setLoading(true);
+      setLoadError("");
+    }
     try {
       const data = await getJSON<{ rules: Rule[] }>("/api/plugins/mail_filters/rules");
       setRules(data.rules || []);
     } catch (err) {
-      addToast(messageFromError(err), "error");
+      const message = messageFromError(err);
+      if (quiet) addToast(message, "error");
+      else setLoadError(message);
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }
 
   useEffect(() => {
-    const initialQuery = new URLSearchParams(window.location.search).get("query") || "";
+    const initialQuery = new URLSearchParams(location.search).get("query") || "";
     if (initialQuery) {
       setDraft((current) => ({ ...current, query: initialQuery, name: `Filter: ${initialQuery}` }));
     }
     void load();
-  }, []);
+  }, [location.search]);
 
   function edit(rule: Rule) {
     setDraft({
@@ -125,7 +134,7 @@ export function MailFilterSettings({ csrf, user, mailboxes, navigate, addToast }
       const data = await postJSON<{ rule: Rule }>("/api/plugins/mail_filters/rules", csrf, draft);
       setDraft(data.rule);
       addToast("Filter saved.");
-      await load();
+      await load(true);
     } catch (err) {
       addToast(messageFromError(err), "error");
     } finally {
@@ -140,7 +149,7 @@ export function MailFilterSettings({ csrf, user, mailboxes, navigate, addToast }
       await deleteJSON(`/api/plugins/mail_filters/rules/${rule.id}`, csrf);
       if (draft.id === rule.id) resetDraft();
       addToast("Filter deleted.");
-      await load();
+      await load(true);
     } catch (err) {
       addToast(messageFromError(err), "error");
     } finally {
@@ -154,7 +163,7 @@ export function MailFilterSettings({ csrf, user, mailboxes, navigate, addToast }
     try {
       const data = await postJSON<{ processed: number }>(`/api/plugins/mail_filters/rules/${rule.id}/backfill`, csrf, {});
       addToast(`Backfill checked ${data.processed || 0} messages.`);
-      await load();
+      await load(true);
     } catch (err) {
       addToast(messageFromError(err), "error");
     } finally {
@@ -167,7 +176,7 @@ export function MailFilterSettings({ csrf, user, mailboxes, navigate, addToast }
     try {
       const data = await postJSON<{ processed: number }>("/api/plugins/mail_filters/scheduled/run", csrf, {});
       addToast(`Processed ${data.processed || 0} due scheduled filters.`);
-      await load();
+      await load(true);
     } catch (err) {
       addToast(messageFromError(err), "error");
     } finally {
@@ -188,12 +197,17 @@ export function MailFilterSettings({ csrf, user, mailboxes, navigate, addToast }
   }
 
   return (
-    <section className="mail-filter-settings">
-      <div className="content-head">
-        <button className="icon-button" type="button" onClick={() => navigate("/settings/account")} title="Back to settings"><Icon name="arrow_back" /></button>
-        <h1>Mail filters</h1>
-      </div>
-      {loading ? <div className="panel muted">Loading filters...</div> : null}
+    <SettingsPage
+      title="Mail filters"
+      description="Create search-based rules for new and existing mail."
+      backPath="/settings/account/plugins"
+      navigate={navigate}
+      className="mail-filter-settings"
+    >
+      {loading ? <SettingsLoading label="Loading filters..." /> : null}
+      {!loading && loadError ? <SettingsError message={loadError} onRetry={() => void load()} /> : null}
+      {!loading && !loadError ? (
+        <>
       <form className="panel mail-filter-editor" onSubmit={save}>
         <div className="panel-headline">
           <div>
@@ -203,11 +217,11 @@ export function MailFilterSettings({ csrf, user, mailboxes, navigate, addToast }
         </div>
         <label>
           <span className="settings-field-label">Name</span>
-          <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Yoga reservations cleanup" />
+          <input type="text" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Yoga reservations cleanup" />
         </label>
         <label>
           <span className="settings-field-label">Search</span>
-          <input value={draft.query} onChange={(event) => setDraft({ ...draft, query: event.target.value })} placeholder='from:studio@example.com older_than:7d' required />
+          <input type="text" value={draft.query} onChange={(event) => setDraft({ ...draft, query: event.target.value })} placeholder='from:studio@example.com older_than:7d' required />
         </label>
         <div className="mail-filter-grid">
           <label>
@@ -245,7 +259,7 @@ export function MailFilterSettings({ csrf, user, mailboxes, navigate, addToast }
           <label><input type="checkbox" checked={draft.actions.star} onChange={(event) => setAction({ star: event.target.checked })} /> Star matches</label>
           <label className="mail-filter-forward">
             <span className="settings-field-label">Forward to</span>
-            <input value={draft.actions.forward_to} onChange={(event) => setAction({ forward_to: event.target.value })} placeholder="name@example.com" />
+            <input type="email" value={draft.actions.forward_to} onChange={(event) => setAction({ forward_to: event.target.value })} placeholder="name@example.com" />
           </label>
         </div>
         <div className="form-actions">
@@ -271,10 +285,18 @@ export function MailFilterSettings({ csrf, user, mailboxes, navigate, addToast }
               <button className="icon-button" type="button" disabled={busy} onClick={() => void remove(rule)} title="Delete filter"><Icon name="delete" /></button>
             </div>
           ))}
-          {rules.length === 0 ? <div className="muted">No filters yet.</div> : null}
+          {rules.length === 0 ? (
+            <SettingsEmpty
+              icon="label"
+              title="No filters yet"
+              description="Create a filter above to automate matching mail."
+            />
+          ) : null}
         </div>
       </section>
-    </section>
+        </>
+      ) : null}
+    </SettingsPage>
   );
 }
 
@@ -391,7 +413,13 @@ function messageFromError(err: unknown) {
 export default {
   accountSettingsRoutes: [
     {
-      path: "/settings/account/filters",
+      path: "/settings/account/plugins/filters",
+      aliases: ["/settings/account/filters"],
+      title: "Mail filters",
+      label: "Filters",
+      description: "Search-based rules for new and existing mail.",
+      icon: "label",
+      section: "plugins",
       render: (context: Context) => <MailFilterSettings {...context} />
     }
   ],
@@ -402,9 +430,9 @@ export default {
           <h2>Mail filters</h2>
           <div className="muted">Search-based automation for starring, forwarding, moving, and age-based cleanup.</div>
         </div>
-        <button className="secondary" type="button" onClick={() => navigate("/settings/account/filters")}><Icon name="label" />Manage</button>
+        <button className="secondary" type="button" onClick={() => navigate("/settings/account/plugins/filters")}><Icon name="label" />Manage</button>
       </div>
-      <button className="server-row" type="button" onClick={() => navigate("/settings/account/filters")}>
+      <button className="server-row" type="button" onClick={() => navigate("/settings/account/plugins/filters")}>
         <span className="server-row-icon"><Icon name="label" /></span>
         <strong>Filters</strong>
         <small>Create filters from searches and review the 30-day match audit.</small>
@@ -412,7 +440,7 @@ export default {
     </section>
   ),
   renderSearchActions: ({ query, navigate }: { query: string; navigate: (url: string) => void }) => (
-    <button className="secondary" type="button" onClick={() => navigate(`/settings/account/filters?query=${encodeURIComponent(query)}`)}>
+    <button className="secondary" type="button" onClick={() => navigate(`/settings/account/plugins/filters?query=${encodeURIComponent(query)}`)}>
       <Icon name="label" />Create filter
     </button>
   ),
@@ -430,4 +458,4 @@ export default {
     </button>
   ),
   renderMessageActionPanels: (context: MessageActionContext) => <MessageFilterEvaluationsPanel {...context} />
-};
+} satisfies AccountSettingsRuntimePlugin;

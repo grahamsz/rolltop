@@ -1,5 +1,466 @@
 @use "mixins/components" as *;
 
+.settings-shell {
+  width: min(100%, 1180px);
+  min-width: 0;
+  margin: 0 auto;
+}
+
+.settings-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 26px;
+  min-width: 0;
+  margin-bottom: 22px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+
+  a {
+    position: relative;
+    flex: 0 0 auto;
+    min-width: 72px;
+    height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 750;
+    text-decoration: none;
+    white-space: nowrap;
+
+    &::after {
+      content: "";
+      position: absolute;
+      right: 0;
+      bottom: -1px;
+      left: 0;
+      height: 3px;
+      background: transparent;
+    }
+
+    &:hover,
+    &:focus-visible {
+      color: var(--text);
+    }
+
+    &.active {
+      color: var(--text);
+
+      &::after {
+        background: var(--accent-warm, var(--accent));
+      }
+    }
+  }
+}
+
+.settings-shell-content,
+.settings-page,
+.settings-page-content {
+  min-width: 0;
+}
+
+.settings-page,
+.settings-page-content,
+.settings-page-sections {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-page-header {
+  min-height: 58px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-page-heading {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+
+  > div {
+    min-width: 0;
+  }
+
+  h1 {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 23px;
+    overflow-wrap: anywhere;
+  }
+
+  p {
+    max-width: 760px;
+    margin: 5px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+}
+
+.settings-page-back {
+  flex: 0 0 auto;
+  margin-top: -3px;
+}
+
+.settings-page .icon-button {
+  @include icon-button(36px);
+  background: transparent;
+  color: var(--muted);
+
+  &:hover,
+  &:focus-visible {
+    background: var(--hover);
+    color: var(--text);
+  }
+
+  &.danger {
+    color: var(--danger);
+  }
+}
+
+.settings-page-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-page-content {
+  > .panel,
+  > form.panel,
+  > section.panel {
+    margin-bottom: 0;
+  }
+}
+
+.settings-index-group {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-index-heading {
+  min-height: 40px;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+
+  h2 {
+    margin: 0;
+    font-size: 15px;
+  }
+
+  p {
+    margin: 3px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+}
+
+.settings-index {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.settings-index-item + .settings-index-item {
+  border-top: 1px solid var(--border);
+}
+
+.settings-index-row {
+  width: 100%;
+  min-width: 0;
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) minmax(0, auto) 20px;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  text-decoration: none;
+  box-shadow: none;
+
+  &:hover,
+  &:focus-visible {
+    background: var(--hover);
+  }
+}
+
+.settings-index-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-subtle);
+  color: var(--accent-strong);
+
+  .icon {
+    width: 19px;
+    height: 19px;
+  }
+}
+
+.settings-index-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+
+  strong,
+  small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    font-size: 14px;
+  }
+
+  small {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 550;
+  }
+}
+
+.settings-index-meta {
+  max-width: 320px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-index-chevron {
+  color: var(--muted);
+
+  .icon {
+    width: 17px;
+    height: 17px;
+  }
+}
+
+.settings-state {
+  min-width: 0;
+  min-height: 148px;
+  display: grid;
+  align-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+
+  &.compact {
+    min-height: 72px;
+  }
+}
+
+.settings-loading {
+  position: relative;
+  gap: 18px;
+  padding: 22px;
+  overflow: hidden;
+
+  &.compact {
+    gap: 0;
+    padding: 14px;
+  }
+
+  &::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 32%;
+    height: 3px;
+    background: var(--accent-warm, var(--accent));
+    animation: fetch-progress 1.05s ease-in-out infinite;
+  }
+}
+
+.settings-loading-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+
+  .spinner {
+    border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+    border-top-color: var(--accent-strong);
+  }
+}
+
+.settings-loading-skeleton {
+  width: min(100%, 680px);
+  display: grid;
+  gap: 8px;
+  margin: 0 auto;
+
+  span {
+    height: 10px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--border) 68%, transparent);
+
+    &:nth-child(2) {
+      width: 78%;
+    }
+
+    &:nth-child(3) {
+      width: 58%;
+    }
+  }
+}
+
+.settings-error,
+.settings-empty {
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 18px;
+
+  > .icon {
+    color: var(--muted);
+  }
+
+  > div {
+    min-width: 0;
+  }
+
+  h2,
+  p {
+    margin: 0;
+  }
+
+  h2,
+  strong {
+    font-size: 14px;
+  }
+
+  p {
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+}
+
+.settings-error > .icon {
+  color: var(--danger);
+}
+
+.panel .settings-empty {
+  min-height: 104px;
+  padding-right: 0;
+  padding-left: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-refreshing {
+  height: 3px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  background: var(--surface-subtle);
+
+  span {
+    display: block;
+    width: 32%;
+    height: 100%;
+    background: var(--accent-warm, var(--accent));
+    animation: fetch-progress 1.05s ease-in-out infinite;
+  }
+}
+
+.settings-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border-radius: 6px;
+
+  table {
+    min-width: 620px;
+    margin: 0;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+}
+
+.settings-section-note {
+  margin: 0;
+  font-size: 12px;
+}
+
+.mail-mcp-client-list {
+  display: grid;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mail-mcp-client-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+
+  + .mail-mcp-client-row {
+    border-top: 1px solid var(--border);
+  }
+}
+
+.mail-mcp-client-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+
+  strong,
+  small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  small {
+    color: var(--muted);
+    font-size: 12px;
+  }
+}
+
 .settings-columns {
   display: grid;
   grid-template-columns: repeat(3, minmax(220px, 1fr));

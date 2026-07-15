@@ -1,3 +1,20 @@
+@media (max-width: 1040px) {
+  .settings-columns,
+  .search-tuning-row,
+  .swipe-direction-row,
+  .swipe-direction-controls,
+  .settings-split-panel,
+  .identity-main,
+  .identity-mailbox-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .search-tuning-row,
+  .swipe-direction-row {
+    gap: 12px;
+  }
+}
+
 @media (max-width: 900px) {
   .swipe-direction-row,
   .swipe-direction-controls {
@@ -254,22 +271,111 @@
     font-size: 12px;
   }
 
-  .settings-columns,
-  .search-tuning-row,
-  .swipe-direction-row,
-  .swipe-direction-controls {
-    grid-template-columns: 1fr;
+  .settings-tabs {
+    gap: 20px;
+    margin-right: -12px;
+    margin-left: -12px;
+    padding: 0 12px;
+    scroll-padding-inline: 12px;
+
+    a {
+      min-width: 68px;
+      height: 42px;
+    }
   }
 
-  .search-tuning-row,
-  .swipe-direction-row {
+  .settings-page-header {
+    min-height: 54px;
     gap: 12px;
+    flex-wrap: wrap;
   }
 
-  .settings-split-panel,
-  .identity-main,
-  .identity-mailbox-fields {
-    grid-template-columns: 1fr;
+  .settings-page-heading {
+    flex: 1 1 240px;
+
+    h1 {
+      font-size: 21px;
+    }
+
+    p {
+      font-size: 12px;
+    }
+  }
+
+  .settings-page-actions {
+    margin-left: auto;
+  }
+
+  .settings-index-heading {
+    align-items: flex-start;
+
+    > div {
+      min-width: 0;
+    }
+  }
+
+  .settings-index-row {
+    grid-template-columns: 34px minmax(0, 1fr) 18px;
+    gap: 10px;
+    min-height: 76px;
+    padding: 11px 10px;
+  }
+
+  .settings-index-icon {
+    grid-column: 1;
+    grid-row: 1 / 3;
+    width: 34px;
+    height: 34px;
+  }
+
+  .settings-index-copy {
+    grid-column: 2;
+    grid-row: 1;
+
+    small {
+      display: -webkit-box;
+      overflow: hidden;
+      white-space: normal;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+    }
+  }
+
+  .settings-index-meta {
+    grid-column: 2;
+    grid-row: 2;
+    max-width: 100%;
+    font-size: 11px;
+  }
+
+  .settings-index-chevron {
+    grid-column: 3;
+    grid-row: 1 / 3;
+  }
+
+  .settings-error,
+  .settings-empty {
+    grid-template-columns: 28px minmax(0, 1fr);
+
+    > button,
+    .settings-empty-action {
+      grid-column: 2;
+      justify-self: start;
+    }
+  }
+
+  .mail-mcp-client-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+
+    button {
+      justify-self: start;
+    }
+  }
+
+  .mail-mcp-client-copy small {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .panel-headline {

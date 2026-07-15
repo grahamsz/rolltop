@@ -14,9 +14,9 @@
 }
 
 .experimental-spam-badge .icon { height: .9rem; width: .9rem; }
-.experimental-spam-badge.low { background: color-mix(in srgb, #2f855a 12%, transparent); color: #28734d; }
-.experimental-spam-badge.medium { background: color-mix(in srgb, #c47a20 14%, transparent); color: #a65f0b; }
-.experimental-spam-badge.high { background: color-mix(in srgb, #c53030 14%, transparent); color: #b52626; }
+.experimental-spam-badge.low { background: color-mix(in srgb, var(--ok, #17795f) 12%, transparent); color: var(--ok, #17795f); }
+.experimental-spam-badge.medium { background: color-mix(in srgb, var(--accent-warm, #c46b44) 14%, transparent); color: var(--accent-warm-strong, #93482c); }
+.experimental-spam-badge.high { background: color-mix(in srgb, var(--danger, #b14532) 14%, transparent); color: var(--danger, #b14532); }
 
 .experimental-spam-settings { display: grid; gap: 1rem; }
 .experimental-spam-model-card,
@@ -31,9 +31,9 @@
   font-weight: 700;
   padding: .35rem .65rem;
 }
-.experimental-spam-state.ready { background: color-mix(in srgb, #2f855a 14%, transparent); color: #28734d; }
-.experimental-spam-state.learning { background: color-mix(in srgb, #315fa8 14%, transparent); color: #315fa8; }
-.experimental-spam-state.error { background: color-mix(in srgb, #c53030 14%, transparent); color: #b52626; }
+.experimental-spam-state.ready { background: color-mix(in srgb, var(--ok, #17795f) 14%, transparent); color: var(--ok, #17795f); }
+.experimental-spam-state.learning { background: var(--accent-soft, rgba(196, 107, 68, .14)); color: var(--accent-strong, #151f2e); }
+.experimental-spam-state.error { background: color-mix(in srgb, var(--danger, #b14532) 14%, transparent); color: var(--danger, #b14532); }
 
 .experimental-spam-bayes-progress-list { display: grid; gap: .75rem; }
 .experimental-spam-bayes-progress { display: grid; gap: .35rem; }
@@ -109,12 +109,3 @@
 .experimental-spam-evidence-note p { margin: 0; }
 .experimental-spam-detail-meta { color: var(--muted, #68717d); font-size: .75rem; }
 .experimental-spam-feedback-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
-
-@media (prefers-color-scheme: dark) {
-  .experimental-spam-badge.low,
-  .experimental-spam-state.ready { color: #75d6a4; }
-  .experimental-spam-state.learning { color: #91b9ff; }
-  .experimental-spam-badge.medium { color: #efb15f; }
-  .experimental-spam-badge.high,
-  .experimental-spam-state.error { color: #ff8c8c; }
-}

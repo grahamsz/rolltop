@@ -1,6 +1,9 @@
-import { createElement, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import type { AddToast, DatePrefs } from "../../../frontend/src/appTypes";
 import { Icon } from "../../../frontend/src/components/Icon";
+import { SettingsEmpty, SettingsError, SettingsLoading, SettingsPage } from "../../../frontend/src/features/settings/SettingsUI";
 import { displayDateTime } from "../../../frontend/src/lib/format";
+import type { AccountSettingsRuntimePlugin } from "../../../frontend/src/plugins/runtime";
 
 type MailMCPGrant = {
   id: number;
@@ -11,15 +14,11 @@ type MailMCPGrant = {
   last_used_at: number;
 };
 
-type ToastKind = "success" | "error" | "info" | string;
-
 type SettingsContext = {
   csrf: string;
-  user: {
-    date_locale?: string;
-    date_format?: string;
-  };
-  addToast: (message: string, kind?: ToastKind) => number;
+  user: DatePrefs;
+  navigate: (url: string) => void;
+  addToast: AddToast;
 };
 
 class APIError extends Error {
@@ -66,24 +65,36 @@ function clientLabel(grant: MailMCPGrant) {
   return client || "MCP client";
 }
 
-function MailMCPConnectedClients({ csrf, user, addToast }: SettingsContext) {
+function MailMCPConnectedClients({ csrf, user, navigate, addToast }: SettingsContext) {
   const [grants, setGrants] = useState<MailMCPGrant[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [revokingID, setRevokingID] = useState<number | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
+    try {
+      const data = await listGrants();
+      setGrants(data.grants || []);
+    } catch (err) {
+      setLoadError(messageFromError(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
-    void listGrants()
-      .then((data) => {
-        if (cancelled) return;
-        setGrants(data.grants || []);
-        setLoaded(true);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setGrants([]);
-        setLoaded(false);
-      });
+    setLoading(true);
+    setLoadError("");
+    void listGrants().then((data) => {
+      if (!cancelled) setGrants(data.grants || []);
+    }).catch((err) => {
+      if (!cancelled) setLoadError(messageFromError(err));
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
     return () => {
       cancelled = true;
     };
@@ -103,38 +114,61 @@ function MailMCPConnectedClients({ csrf, user, addToast }: SettingsContext) {
     }
   }
 
-  if (!loaded && grants.length === 0) return null;
-
   return (
-    <section className="panel profile-settings">
-      <div className="panel-headline profile-settings-headline">
-        <div>
-          <h2>Connected MCP clients</h2>
-          <div className="muted">Clients listed here can read all mail mirrored in this Rolltop account.</div>
-        </div>
-      </div>
-      {grants.length === 0 ? (
-        <div className="muted">No MCP clients are currently authorized.</div>
-      ) : (
-        <div className="server-list">
-          {grants.map((grant) => (
-            <div className="server-row server-row-with-identities" key={grant.id}>
-              <span>
-                <strong>{clientLabel(grant)}</strong>
-                <small>Can read all mirrored mail · {grant.scope || "mail.readonly"}</small>
-                <small>{grant.last_used_at ? `Last used ${displayDateTime(new Date(grant.last_used_at * 1000).toISOString(), user)}` : `Allowed ${displayDateTime(new Date(grant.created_at * 1000).toISOString(), user)}`}</small>
-              </span>
-              <button className="danger secondary" type="button" disabled={revokingID === grant.id} onClick={() => void revoke(grant)}>
-                <Icon name="delete" />{revokingID === grant.id ? "Revoking..." : "Revoke"}
-              </button>
+    <SettingsPage
+      title="Connected apps"
+      description="Review and revoke apps that can read mirrored mail through Mail MCP."
+      backPath="/settings/account/plugins"
+      navigate={navigate}
+      className="mail-mcp-settings"
+    >
+      {loading ? <SettingsLoading label="Loading connected apps..." /> : null}
+      {!loading && loadError ? <SettingsError message={loadError} onRetry={() => void load()} /> : null}
+      {!loading && !loadError && grants.length === 0 ? (
+        <SettingsEmpty
+          icon="link"
+          title="No connected apps"
+          description="Apps authorized through Mail MCP will appear here."
+        />
+      ) : null}
+      {!loading && !loadError && grants.length > 0 ? (
+        <section className="panel profile-settings">
+          <div className="panel-headline profile-settings-headline">
+            <div>
+              <h2>Mail MCP clients</h2>
+              <div className="muted">These clients can read all mail mirrored in this Rolltop account.</div>
             </div>
-          ))}
-        </div>
-      )}
-    </section>
+          </div>
+          <div className="mail-mcp-client-list">
+            {grants.map((grant) => (
+              <div className="mail-mcp-client-row" key={grant.id}>
+                <span className="mail-mcp-client-copy">
+                  <strong>{clientLabel(grant)}</strong>
+                  <small>Can read all mirrored mail · {grant.scope || "mail.readonly"}</small>
+                  <small>{grant.last_used_at ? `Last used ${displayDateTime(new Date(grant.last_used_at * 1000).toISOString(), user)}` : `Allowed ${displayDateTime(new Date(grant.created_at * 1000).toISOString(), user)}`}</small>
+                </span>
+                <button className="danger secondary" type="button" disabled={revokingID === grant.id} onClick={() => void revoke(grant)}>
+                  <Icon name="delete" />{revokingID === grant.id ? "Revoking..." : "Revoke"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </SettingsPage>
   );
 }
 
 export default {
-  renderAccountSettingsSummary: (context: SettingsContext) => createElement(MailMCPConnectedClients, context)
-};
+  accountSettingsRoutes: [
+    {
+      path: "/settings/account/plugins/connected-apps",
+      title: "Connected apps",
+      label: "Connected apps",
+      description: "Manage apps authorized through Mail MCP.",
+      icon: "link",
+      section: "plugins",
+      render: (context: SettingsContext) => <MailMCPConnectedClients {...context} />
+    }
+  ]
+} satisfies AccountSettingsRuntimePlugin;

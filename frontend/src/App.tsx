@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import type { Bootstrap, ChromeEvent, SyncRun, ThemeDefinition } from "./types";
+import type { Bootstrap, ChromeEvent, FrontendPluginDefinition, SyncRun, ThemeDefinition } from "./types";
 import type { LocationState, MessageTransferAction, MoveTarget, SecurityUnlockState, Toast, ToastCommitReason, ToastUndo } from "./appTypes";
 import { ToastStack } from "./components/common";
 import { LogoMark } from "./components/Icon";
@@ -229,6 +229,12 @@ export default function App() {
   const securityUnlockRef = useRef<SecurityUnlockState>(emptySecurityUnlockState);
   const activeUserIDRef = useRef<number | null>(null);
   const runtimePluginsRef = useRef<RuntimePlugins>(emptyRuntimePlugins());
+  const runtimePluginDefinitions = bootstrap?.frontend_plugins || [];
+  const runtimePluginDefinitionsSignature = JSON.stringify(runtimePluginDefinitions);
+  const runtimePluginsReadyToLoad = bootstrap !== null;
+  const runtimePluginDefinitionsRef = useRef<readonly FrontendPluginDefinition[]>(runtimePluginDefinitions);
+  runtimePluginDefinitionsRef.current = runtimePluginDefinitions;
+  const runtimePluginLoadGenerationRef = useRef(0);
   const bootstrappedFromHTMLRef = useRef(bootstrap !== null);
   const bootstrapGenerationRef = useRef(0);
   const loadedBuildIdentityRef = useRef("");
@@ -437,21 +443,35 @@ export default function App() {
     };
   }, [settleToast]);
 
+  const reloadRuntimePlugins = useCallback(async () => {
+    const generation = ++runtimePluginLoadGenerationRef.current;
+    setRuntimePlugins((current) => ({ ...current, status: "loading", errors: [] }));
+    try {
+      const plugins = await loadRuntimePlugins(runtimePluginDefinitionsRef.current);
+      if (generation !== runtimePluginLoadGenerationRef.current) return;
+      runtimePluginsRef.current = plugins;
+      setRuntimePlugins(plugins);
+    } catch (err) {
+      if (generation !== runtimePluginLoadGenerationRef.current) return;
+      const message = messageFromError(err);
+      const failed: RuntimePlugins = {
+        ...runtimePluginsRef.current,
+        status: "ready",
+        errors: [{ id: "runtime", name: "Plugin runtime", message }]
+      };
+      runtimePluginsRef.current = failed;
+      setRuntimePlugins(failed);
+      addToast(message, "error");
+    }
+  }, [addToast, runtimePluginDefinitionsSignature]);
+
   useEffect(() => {
-    let cancelled = false;
-    void loadRuntimePlugins(bootstrap?.frontend_plugins || [])
-      .then((plugins) => {
-        if (cancelled) return;
-        runtimePluginsRef.current = plugins;
-        setRuntimePlugins(plugins);
-      })
-      .catch((err) => {
-        if (!cancelled) addToast(messageFromError(err), "error");
-      });
+    if (!runtimePluginsReadyToLoad) return;
+    void reloadRuntimePlugins();
     return () => {
-      cancelled = true;
+      runtimePluginLoadGenerationRef.current += 1;
     };
-  }, [addToast, bootstrap?.frontend_plugins]);
+  }, [reloadRuntimePlugins, runtimePluginsReadyToLoad]);
 
   const applySecurityUnlock = useCallback((state: SecurityUnlockState, broadcast = false) => {
     securityUnlockRef.current = state;
@@ -840,6 +860,7 @@ export default function App() {
           openCompose={openCompose}
           refreshChrome={refreshBootstrap}
           runtimePlugins={runtimePlugins}
+          reloadRuntimePlugins={reloadRuntimePlugins}
           securityUnlock={securityUnlock}
           openSecurityUnlock={openSecurityUnlock}
           addToast={addToast}

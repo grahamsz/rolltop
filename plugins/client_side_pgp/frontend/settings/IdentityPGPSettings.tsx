@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { IdentityPGPPrivateKey, MailIdentity, User } from "../../../../frontend/src/types";
 import type { Toast } from "../../../../frontend/src/appTypes";
 import { Icon } from "../../../../frontend/src/components/Icon";
+import { SettingsError, SettingsLoading } from "../../../../frontend/src/features/settings/SettingsUI";
 import { messageFromError } from "../../../../frontend/src/lib/errors";
 import { displayDateTime } from "../../../../frontend/src/lib/format";
 import { hydrateBrowserPGPPrivateKeys } from "../storage/browserPGPKeys";
@@ -29,6 +30,8 @@ export function IdentityPGPSettings({
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const [keys, setKeys] = useState<IdentityPGPPrivateKey[]>([]);
+  const [keysLoading, setKeysLoading] = useState(true);
+  const [keysError, setKeysError] = useState("");
   const [storage, setStorage] = useState<PGPPrivateKeyStorage>("browser");
   const [importOpen, setImportOpen] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
@@ -37,12 +40,39 @@ export function IdentityPGPSettings({
 
   const loadKeys = useCallback(async () => {
     const data = await pgpPlugin.privateKeys();
-    setKeys(await hydrateBrowserPGPPrivateKeys(user.id, data.keys || []));
+    return hydrateBrowserPGPPrivateKeys(user.id, data.keys || []);
   }, [pgpPlugin, user.id]);
 
   useEffect(() => {
-    void loadKeys().catch((err) => addToast(messageFromError(err), "error"));
-  }, [addToast, loadKeys]);
+    let cancelled = false;
+    setKeysLoading(true);
+    setKeysError("");
+    void loadKeys()
+      .then((nextKeys) => {
+        if (!cancelled) setKeys(nextKeys);
+      })
+      .catch((err) => {
+        if (!cancelled) setKeysError(messageFromError(err));
+      })
+      .finally(() => {
+        if (!cancelled) setKeysLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadKeys]);
+
+  async function retryLoadKeys() {
+    setKeysLoading(true);
+    setKeysError("");
+    try {
+      setKeys(await loadKeys());
+    } catch (err) {
+      setKeysError(messageFromError(err));
+    } finally {
+      setKeysLoading(false);
+    }
+  }
 
   function passphraseValues() {
     return [user.email, user.name, identityDraft.email, identityDraft.display_name, identityDraft.email.split("@")[0] || "", identityDraft.email.split("@")[1] || ""];
@@ -229,9 +259,11 @@ export function IdentityPGPSettings({
         <input type="checkbox" checked={identityDraft.autocrypt_enabled ?? true} onChange={(event) => updateIdentityDraft({ autocrypt_enabled: event.target.checked })} />
         Advertise public key with Autocrypt
       </label>
-      <div className="identity-pgp-key-list">
-        {identityKeys.length === 0 ? <div className="muted">No PGP private keys saved for this identity.</div> : null}
-        {identityKeys.map((key) => (
+      <div className="identity-pgp-key-list" aria-busy={keysLoading}>
+        {keysLoading ? <SettingsLoading compact label="Loading PGP keys..." /> : null}
+        {!keysLoading && keysError ? <SettingsError compact message={keysError} onRetry={() => void retryLoadKeys()} /> : null}
+        {!keysLoading && !keysError && identityKeys.length === 0 ? <div className="muted">No PGP private keys saved for this identity.</div> : null}
+        {!keysLoading && !keysError ? identityKeys.map((key) => (
           <div className="identity-pgp-key-row" key={key.id || key.fingerprint}>
             <Icon name="lock" />
             <span>
@@ -255,17 +287,21 @@ export function IdentityPGPSettings({
               </details>
             </div>
           </div>
-        ))}
+        )) : null}
       </div>
-      <div className="identity-pgp-storage-choice">
-        <strong>Private key storage for new keys</strong>
-        <label><input type="radio" checked={storage === "browser"} onChange={() => setStorage("browser")} /><span><strong>This browser only</strong><small>Best server compromise: rolltop saves the public key, while this browser keeps the private key. Other browsers must import the same private key before they can decrypt or sign.</small></span></label>
-        <label><input type="radio" checked={storage === "server"} onChange={() => setStorage("server")} /><span><strong>Server-encrypted copy</strong><small>More convenient across browsers. The server stores the armored private key encrypted with the rolltop master key, and your PGP passphrase is still required in the browser.</small></span></label>
-      </div>
-      <div className="identity-pgp-grid">
-        <section className="identity-pgp-action-card"><h4>Import private key</h4><p>Bring in an existing ASCII-armored private key from a file or pasted text.</p><button className="secondary" type="button" disabled={!identityDraft.id || saving} onClick={() => setImportOpen(true)}>{saving ? "Importing..." : "Import key"}</button></section>
-        <section className="identity-pgp-action-card"><h4>Generate private key</h4><p>Create a new passphrase-protected key in this browser using the storage choice above.</p><button className="secondary" type="button" disabled={!identityDraft.id || generating} onClick={() => setGenerateOpen(true)}>{generating ? "Generating..." : "Generate key"}</button></section>
-      </div>
+      {!keysLoading && !keysError ? (
+        <>
+          <div className="identity-pgp-storage-choice">
+            <strong>Private key storage for new keys</strong>
+            <label><input type="radio" checked={storage === "browser"} onChange={() => setStorage("browser")} /><span><strong>This browser only</strong><small>Best server compromise: rolltop saves the public key, while this browser keeps the private key. Other browsers must import the same private key before they can decrypt or sign.</small></span></label>
+            <label><input type="radio" checked={storage === "server"} onChange={() => setStorage("server")} /><span><strong>Server-encrypted copy</strong><small>More convenient across browsers. The server stores the armored private key encrypted with the rolltop master key, and your PGP passphrase is still required in the browser.</small></span></label>
+          </div>
+          <div className="identity-pgp-grid">
+            <section className="identity-pgp-action-card"><h4>Import private key</h4><p>Bring in an existing ASCII-armored private key from a file or pasted text.</p><button className="secondary" type="button" disabled={!identityDraft.id || saving} onClick={() => setImportOpen(true)}>{saving ? "Importing..." : "Import key"}</button></section>
+            <section className="identity-pgp-action-card"><h4>Generate private key</h4><p>Create a new passphrase-protected key in this browser using the storage choice above.</p><button className="secondary" type="button" disabled={!identityDraft.id || generating} onClick={() => setGenerateOpen(true)}>{generating ? "Generating..." : "Generate key"}</button></section>
+          </div>
+        </>
+      ) : null}
       {importOpen ? <KeyImportModal title="Import private key" description={storage === "browser" ? "Paste, drop, or choose a passphrase-protected ASCII-armored PGP private key. rolltop saves the public key on the server and keeps the private key in this browser only." : "Paste, drop, or choose a passphrase-protected ASCII-armored PGP private key. rolltop stores a server-encrypted private-key copy for unlock/export in your browsers."} placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----" busy={saving} onCancel={() => { if (!saving) setImportOpen(false); }} onImport={(armored) => importKey(armored)} /> : null}
       {generateOpen ? <KeyGenerateModal email={identityDraft.email} busy={generating} validatePassphrase={(passphrase) => pgpPlugin.pgpPassphraseIssues(passphrase, passphraseValues())} onCancel={() => { if (!generating) setGenerateOpen(false); }} onGenerate={(passphrase) => generateKey(passphrase)} /> : null}
     </section>

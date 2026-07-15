@@ -127,7 +127,10 @@
   .mail-pull-refresh.refreshing .pull-refresh-indicator .icon,
   .mail-list-loading span,
   .range-pager-loading::after,
-  .fetch-status-progress span {
+  .fetch-status-progress span,
+  .settings-loading::before,
+  .settings-loading .spinner,
+  .settings-refreshing span {
     animation: none;
   }
 }

@@ -15,32 +15,13 @@ import { folderParentNames, folderTree, type FolderNode } from "../../lib/folder
 import { effectiveMailboxSyncMode, mergeSyncRuns } from "../../lib/sync";
 import { swipeActionChoices, swipeSnoozeChoices } from "../../lib/swipeActions";
 import { pluginIDs } from "../../plugins/registry";
-import type { RuntimePlugin } from "../../plugins/runtime";
+import { accountSettingsRoutes, matchAccountSettingsRoute } from "../../plugins/runtime";
+import type { RuntimePlugin, RuntimePlugins } from "../../plugins/runtime";
 import { identitySecuritySettings } from "../../plugins/identitySecurity";
 import { AdminRemoteImageBlocklist } from "../../plugins/remoteImageBlocklist/AdminRemoteImageBlocklist";
 import { PluginTogglePanel } from "./admin/PluginTogglePanel";
-
-type AccountSettingsSummaryPlugin = RuntimePlugin & {
-  renderAccountSettingsSummary?: (context: {
-    csrf: string;
-    user: User;
-    mailboxes: Mailbox[];
-    navigate: (url: string) => void;
-    addToast: (message: string, kind?: Toast["kind"]) => number;
-  }) => ReactNode;
-};
-
-function accountSettingsSummaryNodes(plugins: readonly RuntimePlugin[], context: {
-  csrf: string;
-  user: User;
-  mailboxes: Mailbox[];
-  navigate: (url: string) => void;
-  addToast: (message: string, kind?: Toast["kind"]) => number;
-}) {
-  return (plugins as readonly AccountSettingsSummaryPlugin[])
-    .map((plugin) => plugin.renderAccountSettingsSummary?.(context))
-    .filter(Boolean);
-}
+import { SettingsEmpty, SettingsError, SettingsIndex, SettingsIndexRow, SettingsLoading, SettingsPage, SettingsShell } from "./SettingsUI";
+import type { SettingsSectionID } from "./SettingsUI";
 
 function emptySMTPForm() {
   return {
@@ -425,7 +406,7 @@ function cloneMailIdentity(identity: MailIdentity): MailIdentity {
 }
 
 type SettingsRoute = {
-  kind: "main" | "imap" | "smtp" | "identities";
+  kind: "general" | "profile" | "display" | "storage" | "about" | "mail" | "imap" | "smtp" | "identities" | "preferences" | "swipes" | "search" | "plugins" | "unknown";
   id: number | null;
   isNew: boolean;
 };
@@ -435,14 +416,25 @@ type FolderSettingsDraft = Pick<Mailbox, "sync_mode" | "role" | "icon" | "show_i
 // Settings uses real URL subpages for IMAP/SMTP editing so refresh/back keeps
 // the selected server instead of returning to the settings index.
 function settingsRouteFromPath(path: string): SettingsRoute {
-  if (path === "/settings/account/identities") return { kind: "identities", id: null, isNew: false };
-  if (path === "/settings/account/imap/new") return { kind: "imap", id: null, isNew: true };
-  if (path === "/settings/account/smtp/new") return { kind: "smtp", id: null, isNew: true };
-  const imap = path.match(/^\/settings\/account\/imap\/(\d+)$/);
+  path = path.length > 1 ? path.replace(/\/+$/, "") : path;
+  if (path === "/settings/account" || path === "/settings/account/general") return { kind: "general", id: null, isNew: false };
+  if (path === "/settings/account/general/profile") return { kind: "profile", id: null, isNew: false };
+  if (path === "/settings/account/general/display") return { kind: "display", id: null, isNew: false };
+  if (path === "/settings/account/general/storage") return { kind: "storage", id: null, isNew: false };
+  if (path === "/settings/account/general/about") return { kind: "about", id: null, isNew: false };
+  if (path === "/settings/account/mail") return { kind: "mail", id: null, isNew: false };
+  if (path === "/settings/account/preferences") return { kind: "preferences", id: null, isNew: false };
+  if (path === "/settings/account/preferences/swipes") return { kind: "swipes", id: null, isNew: false };
+  if (path === "/settings/account/preferences/search") return { kind: "search", id: null, isNew: false };
+  if (path === "/settings/account/plugins") return { kind: "plugins", id: null, isNew: false };
+  if (path === "/settings/account/mail/identities" || path === "/settings/account/identities") return { kind: "identities", id: null, isNew: false };
+  if (path === "/settings/account/mail/imap/new" || path === "/settings/account/imap/new") return { kind: "imap", id: null, isNew: true };
+  if (path === "/settings/account/mail/smtp/new" || path === "/settings/account/smtp/new") return { kind: "smtp", id: null, isNew: true };
+  const imap = path.match(/^\/settings\/account\/(?:mail\/)?imap\/(\d+)$/);
   if (imap) return { kind: "imap", id: Number(imap[1]), isNew: false };
-  const smtp = path.match(/^\/settings\/account\/smtp\/(\d+)$/);
+  const smtp = path.match(/^\/settings\/account\/(?:mail\/)?smtp\/(\d+)$/);
   if (smtp) return { kind: "smtp", id: Number(smtp[1]), isNew: false };
-  return { kind: "main", id: null, isNew: false };
+  return { kind: "unknown", id: null, isNew: false };
 }
 
 function percentValue(value: number | undefined) {
@@ -583,8 +575,8 @@ function folderVisibilityLabel(mailbox: Pick<Mailbox, "show_in_sidebar" | "show_
 
 /**
  * SettingsView coordinates account data from /api/account with profile, storage,
- * IMAP, SMTP, identity, and folder-sync editors. The selected route determines
- * which server form is active while the main page remains a summary/dashboard.
+ * IMAP, SMTP, identity, and folder-sync editors. Each routed section has an
+ * index page and each setting opens in its own detail view.
  */
 export function SettingsView({
   csrf,
@@ -596,7 +588,8 @@ export function SettingsView({
   location,
   navigate,
   refreshChrome,
-  identitySecurityPlugins,
+  runtimePlugins,
+  reloadRuntimePlugins,
   addToast
 }: {
   csrf: string;
@@ -608,10 +601,14 @@ export function SettingsView({
   location: LocationState;
   navigate: (url: string) => void;
   refreshChrome: () => Promise<Bootstrap | null>;
-  identitySecurityPlugins: readonly RuntimePlugin[];
+  runtimePlugins: RuntimePlugins;
+  reloadRuntimePlugins: () => Promise<void>;
   addToast: (message: string, kind?: Toast["kind"]) => number;
 }) {
   const route = settingsRouteFromPath(location.path);
+  const identitySecurityPlugins: readonly RuntimePlugin[] = runtimePlugins.all;
+  const pluginRoutes = accountSettingsRoutes(runtimePlugins);
+  const matchedPluginRoute = matchAccountSettingsRoute(runtimePlugins, location.path);
   const [account, setAccount] = useState<Account | null>(null);
   const [imapAccounts, setIMAPAccounts] = useState<Account[]>([]);
   const [smtpAccounts, setSMTPAccounts] = useState<SMTPAccount[]>([]);
@@ -642,6 +639,17 @@ export function SettingsView({
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [savingIdentity, setSavingIdentity] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const locationPathRef = useRef(location.path);
+  const selectedAccountIDRef = useRef<number | null>(selectedAccountID);
+  const selectedSMTPIDRef = useRef<number | null>(selectedSMTPID);
+  const selectedIdentityIDRef = useRef<number | "new" | null>(selectedIdentityID);
+
+  locationPathRef.current = location.path;
+  selectedAccountIDRef.current = selectedAccountID;
+  selectedSMTPIDRef.current = selectedSMTPID;
+  selectedIdentityIDRef.current = selectedIdentityID;
 
   const loadStorage = useCallback(async () => {
     setStorageLoading(true);
@@ -655,61 +663,75 @@ export function SettingsView({
     }
   }, []);
 
-  // The account endpoint returns several related tables at once. Loading derives
-  // selected IMAP/SMTP rows from the route, then rebuilds form state from those
-  // records so direct links and browser back stay coherent.
-  const load = useCallback(async () => {
+  const syncSelectionToRoute = useCallback((path: string, accounts: Account[], smtp: SMTPAccount[], nextIdentities: MailIdentity[]) => {
+    const routeForSelection = settingsRouteFromPath(path);
+    const currentAccountID = selectedAccountIDRef.current;
+    const nextAccountID = routeForSelection.kind === "imap"
+      ? routeForSelection.isNew
+        ? null
+        : routeForSelection.id && accounts.some((item) => item.id === routeForSelection.id)
+          ? routeForSelection.id
+          : null
+      : currentAccountID && accounts.some((item) => item.id === currentAccountID)
+        ? currentAccountID
+        : accounts[0]?.id || null;
+    const nextAccount = accounts.find((item) => item.id === nextAccountID) || null;
+    const currentSMTPID = selectedSMTPIDRef.current;
+    const nextSMTPID = routeForSelection.kind === "smtp"
+      ? routeForSelection.isNew
+        ? null
+        : routeForSelection.id && smtp.some((item) => item.id === routeForSelection.id)
+          ? routeForSelection.id
+          : null
+      : currentSMTPID && smtp.some((item) => item.id === currentSMTPID)
+        ? currentSMTPID
+        : smtp[0]?.id || null;
+    const nextSMTP = smtp.find((item) => item.id === nextSMTPID) || null;
+
+    selectedAccountIDRef.current = nextAccountID;
+    selectedSMTPIDRef.current = nextSMTPID;
+    setSelectedAccountID(nextAccountID);
+    setSelectedSMTPID(nextSMTPID);
+    setAccount(nextAccount);
+    setForm(nextAccount ? accountToForm(nextAccount) : emptyAccountFormForUser(user));
+    setSMTPForm(nextSMTP ? smtpToForm(nextSMTP) : emptySMTPFormForUser(user));
+
+    const currentIdentityID = selectedIdentityIDRef.current;
+    if (currentIdentityID !== "new") {
+      const nextIdentity = currentIdentityID
+        ? nextIdentities.find((identity) => identity.id === currentIdentityID) || null
+        : nextIdentities[0] || null;
+      if (nextIdentity) {
+        selectedIdentityIDRef.current = nextIdentity.id;
+        setSelectedIdentityID(nextIdentity.id);
+        setIdentityDraft(cloneMailIdentity(nextIdentity));
+      } else {
+        selectedIdentityIDRef.current = "new";
+        setSelectedIdentityID("new");
+        setIdentityDraft(blankMailIdentity(user, nextIdentities));
+      }
+    }
+  }, [user.id, user.email, user.name]);
+
+  // Account data is loaded once on settings entry and explicitly refreshed after
+  // mutations. Route changes only select from the cached records, avoiding a
+  // second request and loader flash for every settings tab or browser-back step.
+  const load = useCallback(async (path = locationPathRef.current) => {
     setLoading(true);
+    setLoadError("");
     try {
       const data = await api.account();
-      const routeForLoad = settingsRouteFromPath(location.path);
       const accounts = data.imap_accounts || [];
-      const nextAccountID = routeForLoad.kind === "imap"
-        ? routeForLoad.isNew
-          ? null
-          : routeForLoad.id && accounts.some((item) => item.id === routeForLoad.id)
-            ? routeForLoad.id
-            : null
-        : selectedAccountID && accounts.some((item) => item.id === selectedAccountID)
-          ? selectedAccountID
-          : accounts[0]?.id || null;
-      const nextAccount = accounts.find((item) => item.id === nextAccountID) || null;
       const smtp = data.smtp_accounts || [];
-      const nextSMTPID = routeForLoad.kind === "smtp"
-        ? routeForLoad.isNew
-          ? null
-          : routeForLoad.id && smtp.some((item) => item.id === routeForLoad.id)
-            ? routeForLoad.id
-            : null
-        : selectedSMTPID && smtp.some((item) => item.id === selectedSMTPID)
-          ? selectedSMTPID
-          : smtp[0]?.id || null;
-      const nextSMTP = smtp.find((item) => item.id === nextSMTPID) || null;
       const nextIdentities = data.identities || [];
       setIMAPAccounts(accounts);
       setSMTPAccounts(smtp);
       setIdentities(nextIdentities);
-      if (selectedIdentityID !== "new") {
-        const nextIdentity = selectedIdentityID
-          ? nextIdentities.find((identity) => identity.id === selectedIdentityID) || null
-          : nextIdentities[0] || null;
-        if (nextIdentity) {
-          setSelectedIdentityID(nextIdentity.id);
-          setIdentityDraft(cloneMailIdentity(nextIdentity));
-        } else {
-          setSelectedIdentityID("new");
-          setIdentityDraft(blankMailIdentity(user, nextIdentities));
-        }
-      }
-      setSelectedAccountID(nextAccountID);
-      setSelectedSMTPID(nextSMTPID);
-      setAccount(nextAccount);
+      syncSelectionToRoute(path, accounts, smtp, nextIdentities);
       setRuns(data.sync_runs);
       setFolders(data.sync_folders);
       setNotice(data.notice);
       setAccountNeedsPassword(Boolean(data.account_needs_password));
-      setForm(nextAccount ? accountToForm(nextAccount) : emptyAccountFormForUser(user));
-      setSMTPForm(nextSMTP ? smtpToForm(nextSMTP) : emptySMTPFormForUser(user));
       if (data.storage) {
         setStorage(data.storage);
         setStorageError("");
@@ -717,14 +739,22 @@ export function SettingsView({
       } else {
         void loadStorage();
       }
+      setLoaded(true);
+    } catch (err) {
+      setLoadError(messageFromError(err));
     } finally {
       setLoading(false);
     }
-  }, [loadStorage, location.path, selectedAccountID, selectedSMTPID, selectedIdentityID, user]);
+  }, [loadStorage, syncSelectionToRoute]);
 
   useEffect(() => {
-    void load().catch((err) => addToast(messageFromError(err), "error"));
-  }, [addToast, load]);
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    syncSelectionToRoute(location.path, imapAccounts, smtpAccounts, identities);
+  }, [identities, imapAccounts, loaded, location.path, smtpAccounts, syncSelectionToRoute]);
 
   useEffect(() => {
     setProfileForm(profileFormForUser(user, availableThemes));
@@ -806,26 +836,24 @@ export function SettingsView({
     setSelectedAccountID(next.id);
     setAccount(next);
     setForm(accountToForm(next));
-    navigate(`/settings/account/imap/${next.id}`);
   }
 
   function newIMAPAccount() {
     setSelectedAccountID(null);
     setAccount(null);
     setForm(emptyAccountFormForUser(user));
-    navigate("/settings/account/imap/new");
+    navigate("/settings/account/mail/imap/new");
   }
 
   function selectSMTP(next: SMTPAccount) {
     setSelectedSMTPID(next.id);
     setSMTPForm(smtpToForm(next));
-    navigate(`/settings/account/smtp/${next.id}`);
   }
 
   function newSMTPAccount() {
     setSelectedSMTPID(null);
     setSMTPForm(emptySMTPFormForUser(user));
-    navigate("/settings/account/smtp/new");
+    navigate("/settings/account/mail/smtp/new");
   }
 
   function chooseIdentity(identity: MailIdentity) {
@@ -836,7 +864,7 @@ export function SettingsView({
   function newIdentity() {
     setSelectedIdentityID("new");
     setIdentityDraft(blankMailIdentity(user, identities));
-    navigate("/settings/account/identities");
+    navigate("/settings/account/mail/identities");
   }
 
   async function save(event: FormEvent) {
@@ -862,8 +890,9 @@ export function SettingsView({
       });
       addToast("IMAP server saved.");
       setSelectedAccountID(data.account.id);
-      navigate(`/settings/account/imap/${data.account.id}`);
-      await load();
+      const nextPath = `/settings/account/mail/imap/${data.account.id}`;
+      navigate(nextPath);
+      await load(nextPath);
       await refreshChrome();
     } catch (err) {
       addToast(messageFromError(err), "error");
@@ -884,8 +913,9 @@ export function SettingsView({
       });
       addToast("SMTP server saved.");
       setSelectedSMTPID(data.smtp_account.id);
-      navigate(`/settings/account/smtp/${data.smtp_account.id}`);
-      await load();
+      const nextPath = `/settings/account/mail/smtp/${data.smtp_account.id}`;
+      navigate(nextPath);
+      await load(nextPath);
     } catch (err) {
       addToast(messageFromError(err), "error");
     }
@@ -916,7 +946,7 @@ export function SettingsView({
       setIdentityDraft((current) => current.smtp_account_id === selectedSMTP.id ? { ...current, smtp_account_id: 0 } : current);
       setSelectedSMTPID(null);
       setSMTPForm(emptySMTPFormForUser(user));
-      navigate("/settings/account");
+      navigate("/settings/account/mail");
       await refreshChrome();
       await load();
     } catch (err) {
@@ -1046,7 +1076,7 @@ export function SettingsView({
       setIdentityDraft((current) => current.imap_account_id === account.id ? { ...current, imap_account_id: 0, sent_mailbox_id: 0, drafts_mailbox_id: 0 } : current);
       setSelectedAccountID(null);
       setAccount(null);
-      navigate("/settings/account");
+      navigate("/settings/account/mail");
       await refreshChrome();
       await load();
     } catch (err) {
@@ -1238,92 +1268,6 @@ export function SettingsView({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [editingFolderID]);
 
-  function renderIMAPList() {
-    return (
-      <section className="panel account-list-panel">
-        <div className="panel-headline">
-          <div>
-            <h2>IMAP servers</h2>
-            <div className="muted">Mailboxes, sync rules, and indexed mail stay scoped to each signed-in user.</div>
-          </div>
-          <button className="secondary" type="button" onClick={newIMAPAccount}><Icon name="add" />Add IMAP</button>
-        </div>
-        <div className="server-list">
-          {imapAccounts.length === 0 ? <div className="muted">No IMAP servers configured.</div> : null}
-          {imapAccounts.map((item) => (
-            <button className="server-row" type="button" key={item.id} onClick={() => selectIMAP(item)}>
-              <span className="server-row-icon"><Icon name="inbox" /></span>
-              <strong>{item.label || item.email}</strong>
-              <small>{item.email} · {item.host}:{item.port}</small>
-            </button>
-          ))}
-        </div>
-      </section>
-    );
-  }
-
-  function renderSMTPList() {
-    return (
-      <section className="panel account-list-panel">
-        <div className="panel-headline">
-          <div>
-            <h2>SMTP servers</h2>
-            <div className="muted">Identities can choose one of these servers for outgoing mail.</div>
-          </div>
-          <button className="secondary" type="button" onClick={newSMTPAccount}><Icon name="add" />Add SMTP</button>
-        </div>
-        <div className="server-list">
-          {smtpAccounts.length === 0 ? <div className="muted">No SMTP servers configured.</div> : null}
-          {smtpAccounts.map((item) => {
-            const serverIdentities = identitiesBySMTP.get(item.id) || [];
-            return (
-              <button className="server-row server-row-with-identities" type="button" key={item.id} onClick={() => selectSMTP(item)}>
-                <span className="server-row-icon"><Icon name="send" /></span>
-                <strong>{item.label || item.host}</strong>
-                <small>{item.username || "no username"} · {item.host}:{item.port}</small>
-                <div className="server-identities">
-                  <span className="server-identities-label">Outgoing identities</span>
-                  {serverIdentities.length > 0 ? (
-                    <span className="server-identity-list">
-                      {serverIdentities.map((identity) => (
-                        <span className="server-identity" key={identity.id}>
-                          <strong>{identity.display_name || identity.email}</strong>
-                          <small>{identity.email}</small>
-                        </span>
-                      ))}
-                    </span>
-                  ) : (
-                    <span className="server-identity-empty">No identities assigned</span>
-                  )}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </section>
-    );
-  }
-
-  function renderIdentitySummary() {
-    const primary = identities.find((identity) => identity.is_primary) || identities[0] || null;
-    return (
-      <section className="panel account-list-panel">
-        <div className="panel-headline">
-          <div>
-            <h2>Identities</h2>
-            <div className="muted">Outgoing names, SMTP server, IMAP server, and Sent/Drafts folders.</div>
-          </div>
-          <button className="secondary" type="button" onClick={() => navigate("/settings/account/identities")}><Icon name="group" />Manage</button>
-        </div>
-        <button className="server-row" type="button" onClick={() => navigate("/settings/account/identities")}>
-          <span className="server-row-icon"><Icon name="group" /></span>
-          <strong>{identities.length === 1 ? "1 identity" : `${identities.length} identities`}</strong>
-          <small>{primary ? `${primary.display_name || primary.email} · ${primary.email}` : "No Me identities configured"}</small>
-        </button>
-      </section>
-    );
-  }
-
   // Folder settings render from the same tree model as the sidebar, with
   // maintenance actions and editable options separated from the read-only row.
   function renderFolderItems(nodes: FolderNode[], depth = 0): ReactNode[] {
@@ -1492,12 +1436,7 @@ export function SettingsView({
     const displayName = user.name || user.email;
     return (
       <section className="panel profile-settings">
-        <div className="panel-headline profile-settings-headline">
-          <div>
-            <h2>Profile</h2>
-            <div className="muted">Signed in as {displayName}</div>
-          </div>
-        </div>
+        <div className="muted settings-section-note">Signed in as {displayName}</div>
         <div className="profile-account-summary">
           <span className="settings-field-label">Account</span>
           <strong>{displayName}</strong>
@@ -1522,7 +1461,6 @@ export function SettingsView({
   function renderDisplaySettings() {
     return (
       <form className="panel display-settings" onSubmit={saveProfile}>
-        <h2>Display preferences</h2>
         <div className="settings-columns display-settings-grid">
           <section>
             <h3>Date localization</h3>
@@ -1643,9 +1581,6 @@ export function SettingsView({
 
     return (
       <form className="panel swipe-settings" onSubmit={saveSwipeSettings}>
-        <div className="panel-headline">
-          <h2>Swipe actions</h2>
-        </div>
         <div className="swipe-direction-list">
           {directionRow("right", "Swipe right")}
           {directionRow("left", "Swipe left")}
@@ -1691,12 +1626,7 @@ export function SettingsView({
   function renderSearchSettings() {
     return (
       <form className="panel search-tuning-settings" onSubmit={saveProfile}>
-        <div className="panel-headline">
-          <div>
-            <h2>Search tuning</h2>
-            <div className="muted">These are query-time ranking controls, so changes do not require a reindex.</div>
-          </div>
-        </div>
+        <p className="muted settings-section-note">These are query-time ranking controls, so changes do not require a reindex.</p>
         <div className="search-tuning-list">
           <SearchSliderRow
             title="Ranking profile"
@@ -1756,11 +1686,10 @@ export function SettingsView({
   function renderStorageSettings() {
     const indexBreakdown = storageIndexBreakdown(storage);
     const showIndexBreakdown = hasStorageIndexBreakdown(indexBreakdown);
+    if (storageLoading) return <SettingsLoading label="Calculating storage usage..." />;
+    if (storageError) return <SettingsError message={storageError} onRetry={() => void loadStorage()} />;
     return (
       <section className="panel">
-        <h2>Storage</h2>
-        {storageLoading ? <div className="muted">Calculating storage usage...</div> : null}
-        {storageError ? <div className="error">{storageError}</div> : null}
         <div className="storage-grid">
           <Stat label="Message Headers" value={formatBytes(storage.DatabaseBytes)} detail={storageEmailDetail(storage.MessageHeaderCount)} />
           <Stat label="Full Text Index" value={formatBytes(storage.IndexBytes)} detail={storageEmailDetail(storage.IndexMessageCount)} />
@@ -1785,7 +1714,6 @@ export function SettingsView({
   function renderLicenseSettings() {
     return (
       <section className="panel license-panel">
-        <h2>License</h2>
         <p>
           rolltop is free software licensed under the GNU Affero General Public License version 3 or later.
           You may run, study, share, and modify it under that license.
@@ -1974,55 +1902,119 @@ export function SettingsView({
     return (
       <section className="panel">
         <h2>Recent sync runs</h2>
-        <table>
-          <thead><tr><th>Status</th><th>Folder</th><th>Messages</th><th>Updated</th></tr></thead>
-          <tbody>
-            {runs.map((run) => (
-              <tr key={run.id}>
-                <td>{run.status}</td>
-                <td>{run.current_mailbox}</td>
-                <td>{run.messages_stored} indexed, {run.messages_skipped} skipped</td>
-                <td>{displayDateTime(run.updated_at, user)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="settings-table-scroll" role="region" aria-label="Recent sync runs" tabIndex={0}>
+          <table>
+            <thead><tr><th>Status</th><th>Folder</th><th>Messages</th><th>Updated</th></tr></thead>
+            <tbody>
+              {runs.map((run) => (
+                <tr key={run.id}>
+                  <td>{run.status}</td>
+                  <td>{run.current_mailbox}</td>
+                  <td>{run.messages_stored} indexed, {run.messages_skipped} skipped</td>
+                  <td>{displayDateTime(run.updated_at, user)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
     );
   }
 
-  if (route.kind === "identities") {
-    return (
-      <>
-        <div className="content-head">
-          <div className="list-head-main">
-            <button className="icon-button" type="button" onClick={() => navigate("/settings/account")} title="Back to settings"><Icon name="arrow_back" /></button>
-            <div>
-              <h1>Identities</h1>
-              <span className="label-pill">{identities.length.toLocaleString()}</span>
-            </div>
-          </div>
-          <button className="secondary" type="button" onClick={newIdentity}><Icon name="edit" />New</button>
-        </div>
-        {loading ? <div className="panel muted">Loading settings...</div> : null}
-        {notice ? <div className="notice">{notice}</div> : null}
-        {renderIdentitySettings()}
-      </>
-    );
-  }
+  const displayName = user.name || user.email;
+  const themeName = (availableThemes.length > 0 ? availableThemes : fallbackThemes())
+    .find((theme) => theme.id === profileForm.theme)?.name || "Classic";
+  const swipeLabel = (action: SwipeAction) => swipeActionChoices.find((choice) => choice.value === action)?.label || action;
+  const sectionForRoute = (): SettingsSectionID => {
+    if (matchedPluginRoute) return matchedPluginRoute.section || "plugins";
+    if (route.kind === "plugins" || route.kind === "unknown") return "plugins";
+    if (["mail", "imap", "smtp", "identities"].includes(route.kind)) return "mail";
+    if (["preferences", "swipes", "search"].includes(route.kind)) return "preferences";
+    return "general";
+  };
 
-  if (route.kind === "imap") {
-    return (
-      <>
-        <div className="content-head">
-          <div className="list-head-main">
-            <button className="icon-button" type="button" onClick={() => navigate("/settings/account")} title="Back to settings"><Icon name="arrow_back" /></button>
-            <h1>{selectedAccountLabel}</h1>
-          </div>
-          <button type="button" onClick={syncNow}><Icon name="sync" />Sync all</button>
-        </div>
-        {loading ? <div className="panel muted">Loading settings...</div> : null}
-        {notice ? <div className="notice">{notice}</div> : null}
+  const noticeNode = notice ? <div className="notice">{notice}</div> : null;
+  let page: ReactNode;
+
+  if (matchedPluginRoute) {
+    page = matchedPluginRoute.render({ csrf, user, mailboxes, location, navigate, addToast });
+  } else if (route.kind === "unknown" && runtimePlugins.status === "loading") {
+    page = <SettingsLoading label="Loading plugin settings..." />;
+  } else if (route.kind === "unknown" && runtimePlugins.errors.length > 0) {
+    page = (
+      <SettingsPage title="Plugin settings unavailable" description="An enabled plugin did not finish loading." backPath="/settings/account/plugins" navigate={navigate}>
+        <SettingsError
+          message={`${runtimePlugins.errors.length} enabled plugin${runtimePlugins.errors.length === 1 ? "" : "s"} could not load.`}
+          onRetry={() => void reloadRuntimePlugins()}
+        />
+      </SettingsPage>
+    );
+  } else if (route.kind === "unknown") {
+    page = (
+      <SettingsPage title="Settings page unavailable" description="This settings page is not registered or its plugin could not load." backPath="/settings/account/plugins" navigate={navigate}>
+        <SettingsEmpty icon="settings" title="No settings page found" description="Return to Plugins to choose an available settings page." />
+      </SettingsPage>
+    );
+  } else if (route.kind === "plugins") {
+    page = (
+      <SettingsPage title="Plugins" description="Settings supplied by enabled Rolltop plugins." navigate={navigate}>
+        {runtimePlugins.status === "loading" ? <SettingsLoading label="Loading plugin settings..." /> : null}
+        {runtimePlugins.errors.length > 0 ? (
+          <SettingsError
+            message={`${runtimePlugins.errors.length} enabled plugin${runtimePlugins.errors.length === 1 ? "" : "s"} could not load.`}
+            onRetry={() => void reloadRuntimePlugins()}
+          />
+        ) : null}
+        {runtimePlugins.status === "ready" && pluginRoutes.length === 0 ? (
+          <SettingsEmpty icon="settings" title="No plugin settings" description="Enabled plugins with configurable settings will appear here." />
+        ) : null}
+        {pluginRoutes.length > 0 ? (
+          <SettingsIndex ariaLabel="Plugin settings">
+            {pluginRoutes.map((pluginRoute) => (
+              <SettingsIndexRow
+                key={pluginRoute.path}
+                icon={pluginRoute.icon}
+                title={pluginRoute.label}
+                description={pluginRoute.description}
+                path={pluginRoute.path}
+                navigate={navigate}
+              />
+            ))}
+          </SettingsIndex>
+        ) : null}
+      </SettingsPage>
+    );
+  } else if (!loaded) {
+    page = loadError
+      ? <SettingsError message={loadError} onRetry={() => void load()} />
+      : <SettingsLoading />;
+  } else if (route.kind === "identities") {
+    page = (
+      <SettingsPage
+        title={<>Identities <span className="label-pill">{identities.length.toLocaleString()}</span></>}
+        description="Outgoing names, delivery servers, Sent and Drafts folders, signatures, and identity security."
+        backPath="/settings/account/mail"
+        navigate={navigate}
+        actions={<button className="secondary" type="button" onClick={newIdentity}><Icon name="edit" />New identity</button>}
+      >
+        {noticeNode}
+        {renderIdentitySettings()}
+      </SettingsPage>
+    );
+  } else if (route.kind === "imap") {
+    page = !route.isNew && !account ? (
+      <SettingsPage title="IMAP server unavailable" backPath="/settings/account/mail" navigate={navigate}>
+        <SettingsEmpty icon="inbox" title="Server not found" description="It may have been removed or may not belong to this account." />
+      </SettingsPage>
+    ) : (
+      <SettingsPage
+        title={selectedAccountLabel}
+        description={route.isNew ? "Connect another incoming mail server." : "Connection, sync scope, folders, and recent activity."}
+        backPath="/settings/account/mail"
+        navigate={navigate}
+        actions={route.isNew ? null : <button type="button" onClick={syncNow}><Icon name="sync" />Sync all</button>}
+      >
+        {noticeNode}
         <form className="panel account-settings" onSubmit={save}>
           <h2>IMAP server</h2>
           <div className="settings-columns account-settings-grid">
@@ -2060,21 +2052,16 @@ export function SettingsView({
         </form>
         {route.isNew ? null : renderFolderSettings()}
         {route.isNew ? null : renderRecentRuns()}
-      </>
+      </SettingsPage>
     );
-  }
-
-  if (route.kind === "smtp") {
-    return (
-      <>
-        <div className="content-head">
-          <div className="list-head-main">
-            <button className="icon-button" type="button" onClick={() => navigate("/settings/account")} title="Back to settings"><Icon name="arrow_back" /></button>
-            <h1>{selectedSMTPLabel}</h1>
-          </div>
-        </div>
-        {loading ? <div className="panel muted">Loading settings...</div> : null}
-        {notice ? <div className="notice">{notice}</div> : null}
+  } else if (route.kind === "smtp") {
+    page = !route.isNew && !selectedSMTP ? (
+      <SettingsPage title="SMTP server unavailable" backPath="/settings/account/mail" navigate={navigate}>
+        <SettingsEmpty icon="send" title="Server not found" description="It may have been removed or may not belong to this account." />
+      </SettingsPage>
+    ) : (
+      <SettingsPage title={selectedSMTPLabel} description="Connection details used by outgoing identities." backPath="/settings/account/mail" navigate={navigate}>
+        {noticeNode}
         <form className="panel smtp-settings-form" onSubmit={saveSMTP}>
           <h2>SMTP server</h2>
           <div className="settings-columns display-settings-grid">
@@ -2098,30 +2085,87 @@ export function SettingsView({
             ) : null}
           </div>
         </form>
-      </>
+      </SettingsPage>
+    );
+  } else if (route.kind === "profile") {
+    page = <SettingsPage title="Profile" description="Account identity and recovery settings." backPath="/settings/account/general" navigate={navigate}>{noticeNode}{renderProfileSettings()}</SettingsPage>;
+  } else if (route.kind === "display") {
+    page = <SettingsPage title="Display" description="Theme, locale, and date formatting." backPath="/settings/account/general" navigate={navigate}>{noticeNode}{renderDisplaySettings()}</SettingsPage>;
+  } else if (route.kind === "storage") {
+    page = <SettingsPage title="Storage" description="Local database, search index, and message-body usage." backPath="/settings/account/general" navigate={navigate}>{renderStorageSettings()}</SettingsPage>;
+  } else if (route.kind === "about") {
+    page = <SettingsPage title="About Rolltop" description="Software license and source terms." backPath="/settings/account/general" navigate={navigate}>{renderLicenseSettings()}</SettingsPage>;
+  } else if (route.kind === "swipes") {
+    page = <SettingsPage title="Swipe actions" description="Choose what left and right swipes do on touch devices." backPath="/settings/account/preferences" navigate={navigate}>{noticeNode}{renderSwipeSettings()}</SettingsPage>;
+  } else if (route.kind === "search") {
+    page = <SettingsPage title="Search tuning" description="Control typo tolerance, ranking, and attachment matching." backPath="/settings/account/preferences" navigate={navigate}>{noticeNode}{renderSearchSettings()}</SettingsPage>;
+  } else if (route.kind === "mail") {
+    page = (
+      <SettingsPage title="Mail" description="Incoming servers, outgoing delivery, folders, and identities." navigate={navigate}>
+        {noticeNode}
+        <section className="settings-index-group">
+          <div className="settings-index-heading">
+            <div><h2>Incoming mail</h2><p>IMAP connections, folder sync, roles, and local indexing.</p></div>
+            <button className="secondary" type="button" onClick={newIMAPAccount}><Icon name="add" />Add IMAP</button>
+          </div>
+          {imapAccounts.length > 0 ? (
+            <SettingsIndex ariaLabel="IMAP servers">
+              {imapAccounts.map((item) => (
+                <SettingsIndexRow key={item.id} icon="inbox" title={item.label || item.email} description={`${item.email} · ${item.host}:${item.port}`} meta="IMAP" path={`/settings/account/mail/imap/${item.id}`} navigate={navigate} onNavigate={() => selectIMAP(item)} />
+              ))}
+            </SettingsIndex>
+          ) : <SettingsEmpty icon="inbox" title="No IMAP servers" description="Add an incoming mail server to begin mirroring mail." />}
+        </section>
+        <section className="settings-index-group">
+          <div className="settings-index-heading">
+            <div><h2>Outgoing mail</h2><p>SMTP delivery servers assigned to outgoing identities.</p></div>
+            <button className="secondary" type="button" onClick={newSMTPAccount}><Icon name="add" />Add SMTP</button>
+          </div>
+          {smtpAccounts.length > 0 ? (
+            <SettingsIndex ariaLabel="SMTP servers">
+              {smtpAccounts.map((item) => (
+                <SettingsIndexRow key={item.id} icon="send" title={item.label || item.host} description={`${item.username || "No username"} · ${item.host}:${item.port}`} meta={`${(identitiesBySMTP.get(item.id) || []).length} identities`} path={`/settings/account/mail/smtp/${item.id}`} navigate={navigate} onNavigate={() => selectSMTP(item)} />
+              ))}
+            </SettingsIndex>
+          ) : <SettingsEmpty icon="send" title="No SMTP servers" description="Add an outgoing server or use the delivery server configured during setup." />}
+        </section>
+        <section className="settings-index-group">
+          <div className="settings-index-heading"><div><h2>Sender identities</h2><p>Names, addresses, signatures, folders, and message security.</p></div></div>
+          <SettingsIndex ariaLabel="Identity settings">
+            <SettingsIndexRow icon="group" title="Identities" description={identities.length > 0 ? `${identities.length} configured outgoing ${identities.length === 1 ? "identity" : "identities"}.` : "Create the first outgoing identity."} meta={identities.length === 1 ? "1 identity" : `${identities.length} identities`} path="/settings/account/mail/identities" navigate={navigate} />
+          </SettingsIndex>
+        </section>
+      </SettingsPage>
+    );
+  } else if (route.kind === "preferences") {
+    page = (
+      <SettingsPage title="Preferences" description="Message gestures and search behavior." navigate={navigate}>
+        <SettingsIndex ariaLabel="Mail preferences">
+          <SettingsIndexRow icon="arrow_back" title="Swipe actions" description="Configure left and right gestures, archive folders, and snooze timing." meta={`Left: ${swipeLabel(swipeDraft.left_action)} · Right: ${swipeLabel(swipeDraft.right_action)}`} path="/settings/account/preferences/swipes" navigate={navigate} />
+          <SettingsIndexRow icon="search" title="Search tuning" description="Adjust ranking, typo matching, contacts, and attachment text." meta={profileForm.search_preset || "Balanced"} path="/settings/account/preferences/search" navigate={navigate} />
+        </SettingsIndex>
+      </SettingsPage>
+    );
+  } else {
+    page = (
+      <SettingsPage title="General" description="Your profile, interface, local storage, and Rolltop information." navigate={navigate}>
+        {noticeNode}
+        <SettingsIndex ariaLabel="General settings">
+          <SettingsIndexRow icon="group" title="Profile" description="Signed-in identity and password-recovery address." meta={displayName} path="/settings/account/general/profile" navigate={navigate} />
+          <SettingsIndexRow icon="settings" title="Display" description="Theme, locale, and date formatting." meta={themeName} path="/settings/account/general/display" navigate={navigate} />
+          <SettingsIndexRow icon="mail" title="Storage" description="Database, search index, and cached message-body usage." meta={storageError ? "Unavailable" : storageLoading ? "Calculating" : formatBytes(storage.TotalBytes)} path="/settings/account/general/storage" navigate={navigate} />
+          <SettingsIndexRow icon="file_text" title="About" description="Rolltop license and source terms." meta="AGPL v3+" path="/settings/account/general/about" navigate={navigate} />
+        </SettingsIndex>
+      </SettingsPage>
     );
   }
 
   return (
-    <>
-      <div className="content-head">
-        <h1>Settings</h1>
-      </div>
-      {loading ? <div className="panel muted">Loading settings...</div> : null}
-      {notice ? <div className="notice">{notice}</div> : null}
-      {renderProfileSettings()}
-      <div className="settings-server-index">
-        {renderIMAPList()}
-        {renderSMTPList()}
-        {renderIdentitySummary()}
-        {accountSettingsSummaryNodes(identitySecurityPlugins, { csrf, user, mailboxes, navigate, addToast })}
-      </div>
-      {renderDisplaySettings()}
-      {renderSwipeSettings()}
-      {renderSearchSettings()}
-      {renderStorageSettings()}
-      {renderLicenseSettings()}
-    </>
+    <SettingsShell activeSection={sectionForRoute()} navigate={navigate}>
+      {loading && loaded && !matchedPluginRoute ? <div className="settings-refreshing" role="status" aria-label="Refreshing settings"><span /></div> : null}
+      {loadError && loaded && !matchedPluginRoute ? <SettingsError message={loadError} onRetry={() => void load()} /> : null}
+      {page}
+    </SettingsShell>
   );
 }
 
@@ -2315,7 +2359,7 @@ export function SyncRunView({
     <>
       <div className="content-head">
         <h1>Sync run</h1>
-        <button className="secondary" type="button" onClick={() => navigate("/settings/account")}>Back to settings</button>
+        <button className="secondary" type="button" onClick={() => navigate("/settings/account/mail")}>Back to mail settings</button>
       </div>
       {error ? <div className="error">{error}</div> : null}
       {run ? (

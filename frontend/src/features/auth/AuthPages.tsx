@@ -31,7 +31,7 @@ export function SetupPage({
     try {
       await api.setup(csrf, { email, name, password });
       await onReady();
-      navigate("/settings/account/imap/new");
+      navigate("/settings/account/mail/imap/new");
     } catch (err) {
       setError(messageFromError(err));
     } finally {

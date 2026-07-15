@@ -20,4 +20,4 @@ go build -buildmode=plugin -o plugins/remote_imap_sync/backend/remote_imap_sync.
 npm run build:plugins
 ```
 
-The frontend settings route is `/settings/account/remote-imap-sync`.
+The frontend settings route is `/settings/account/plugins/remote-imap-sync`.

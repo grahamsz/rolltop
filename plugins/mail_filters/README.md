@@ -34,7 +34,7 @@ npm run build:plugins
 - Backend ABI: `backend/plugins/backend.go`
 - Sync dispatch: `backend/syncer/autocrypt.go`
 - Stored-message call site: `backend/syncer/syncer.go`
-- Frontend settings route: `/settings/account/filters`
+- Frontend settings route: `/settings/account/plugins/filters`
 
 ## Notes
 

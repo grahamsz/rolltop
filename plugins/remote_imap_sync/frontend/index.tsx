@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import type { Toast } from "../../../frontend/src/appTypes";
 import { Icon } from "../../../frontend/src/components/Icon";
+import { SettingsEmpty, SettingsError, SettingsLoading, SettingsPage } from "../../../frontend/src/features/settings/SettingsUI";
 import { displayDateTime } from "../../../frontend/src/lib/format";
-import type { RuntimeMessageDetailsContext } from "../../../frontend/src/plugins/runtime";
+import type { AccountSettingsRuntimePlugin, RuntimeMessageDetailsContext } from "../../../frontend/src/plugins/runtime";
 import type { Mailbox, User } from "../../../frontend/src/types";
 import "./styles.css";
 
@@ -472,11 +473,11 @@ function RemoteIMAPSyncSummary({ navigate }: Pick<SettingsContext, "navigate">) 
           <h2>Remote IMAP sync</h2>
           <div className="muted">One-way mailbox migration into a connected Rolltop account.</div>
         </div>
-        <button className="secondary" type="button" onClick={() => navigate("/settings/account/remote-imap-sync")}>
+        <button className="secondary" type="button" onClick={() => navigate("/settings/account/plugins/remote-imap-sync")}>
           <Icon name="sync" />Manage
         </button>
       </div>
-      <button className="server-row" type="button" onClick={() => navigate("/settings/account/remote-imap-sync")}>
+      <button className="server-row" type="button" onClick={() => navigate("/settings/account/plugins/remote-imap-sync")}>
         <span className="server-row-icon"><Icon name="sync" /></span>
         <strong>IMAP migration</strong>
         <small>{countLabel}</small>
@@ -493,15 +494,34 @@ export function RemoteIMAPSyncSettings({ csrf, user, mailboxes, navigate, addToa
   const [sourceFolders, setSourceFolders] = useState<SourceFolder[]>([]);
   const [sourceCapabilities, setSourceCapabilities] = useState<DiscoverResponse["capabilities"]>(undefined);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const editorRef = useRef<HTMLElement | null>(null);
+  const mailboxesRef = useRef(mailboxes);
+  mailboxesRef.current = mailboxes;
+  const destinationMailboxKey = useMemo(() => JSON.stringify(
+    [...mailboxes]
+      .sort((left, right) => left.account_id - right.account_id || left.id - right.id)
+      .map((mailbox) => [
+        mailbox.account_id,
+        mailbox.account_label || "",
+        mailbox.account_email || "",
+        mailbox.id,
+        mailbox.name,
+        mailbox.role || ""
+      ])
+  ), [mailboxes]);
+  const destinationMailboxKeyRef = useRef(destinationMailboxKey);
 
   const load = useCallback(async (quiet = false) => {
-    if (!quiet) setLoading(true);
+    if (!quiet) {
+      setLoading(true);
+      setLoadError("");
+    }
     try {
       const data = await requestJSON<RoutinesResponse>(`${apiBase}/routines`);
       const nextRoutines = (data.routines || []).map(normalizeRoutine);
-      const nextDestinations = normalizeDestinations(data.destinations, mailboxes);
+      const nextDestinations = normalizeDestinations(data.destinations, mailboxesRef.current);
       setRoutines(nextRoutines);
       setDestinations(nextDestinations);
       setDraft((current) => {
@@ -509,15 +529,24 @@ export function RemoteIMAPSyncSettings({ csrf, user, mailboxes, navigate, addToa
         return blankDraft(nextDestinations);
       });
     } catch (error) {
-      if (!quiet) addToast(messageFromError(error), "error");
+      if (!quiet) setLoadError(messageFromError(error));
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [addToast, mailboxes]);
+  }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Chrome events replace the mailbox array whenever counts change. Refresh the
+  // destination fallback only for structural mailbox changes, and keep the
+  // current routines/editor visible while that background request is running.
+  useEffect(() => {
+    if (destinationMailboxKeyRef.current === destinationMailboxKey) return;
+    destinationMailboxKeyRef.current = destinationMailboxKey;
+    void load(true);
+  }, [destinationMailboxKey, load]);
 
   const pollingFast = routines.some((routine) => activeState(routine.state) || routine.state === "retrying");
   useEffect(() => {
@@ -763,22 +792,18 @@ export function RemoteIMAPSyncSettings({ csrf, user, mailboxes, navigate, addToa
   }
 
   return (
-    <section className="remote-imap-sync-settings">
-      <div className="content-head remote-imap-sync-page-head">
-        <div className="list-head-main">
-          <button className="icon-button" type="button" onClick={() => navigate("/settings/account")} title="Back to settings" aria-label="Back to settings">
-            <Icon name="arrow_back" />
-          </button>
-          <div>
-            <h1>Remote IMAP sync</h1>
-            <span className="label-pill">{routines.length.toLocaleString()}</span>
-          </div>
-        </div>
-        <button type="button" onClick={newRoutine}><Icon name="add" />Add routine</button>
-      </div>
-
-      {loading ? <div className="panel muted">Loading sync routines...</div> : null}
-
+    <SettingsPage
+      title="Remote IMAP sync"
+      description="Copy mail one way from a remote IMAP folder into a connected Rolltop account."
+      backPath="/settings/account/plugins"
+      navigate={navigate}
+      className="remote-imap-sync-settings"
+      actions={<button type="button" disabled={loading || Boolean(loadError)} onClick={newRoutine}><Icon name="add" />Add routine</button>}
+    >
+      {loading ? <SettingsLoading label="Loading sync routines..." /> : null}
+      {!loading && loadError ? <SettingsError message={loadError} onRetry={() => void load()} /> : null}
+      {!loading && !loadError ? (
+        <>
       <section className="panel remote-imap-sync-list-panel" aria-live="polite">
         <div className="panel-headline">
           <div>
@@ -788,10 +813,11 @@ export function RemoteIMAPSyncSettings({ csrf, user, mailboxes, navigate, addToa
         </div>
         <div className="remote-imap-sync-routine-list">
           {!loading && routines.length === 0 ? (
-            <div className="remote-imap-sync-empty">
-              <Icon name="sync" />
-              <div><strong>No sync routines</strong><span>Add a source folder and choose where its mail should arrive.</span></div>
-            </div>
+            <SettingsEmpty
+              icon="sync"
+              title="No sync routines"
+              description="Add a source folder and choose where its mail should arrive."
+            />
           ) : null}
           {routines.map((routine) => {
             const progress = runProgress(routine);
@@ -883,7 +909,7 @@ export function RemoteIMAPSyncSettings({ csrf, user, mailboxes, navigate, addToa
             <div className="remote-imap-sync-form-grid routine">
               <label>
                 <span className="settings-field-label">Name</span>
-                <input value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} placeholder="Gmail Inbox to MXRoute" required />
+                <input type="text" value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} placeholder="Gmail Inbox to MXRoute" required />
               </label>
               <label className="remote-imap-sync-enabled-field">
                 <input type="checkbox" checked={draft.enabled} onChange={(event) => updateDraft({ enabled: event.target.checked })} />
@@ -906,7 +932,7 @@ export function RemoteIMAPSyncSettings({ csrf, user, mailboxes, navigate, addToa
                 <>
                   <label>
                     <span className="settings-field-label">Host</span>
-                    <input value={draft.source_host} onChange={(event) => updateDraft({ source_host: event.target.value })} placeholder="imap.example.com" required />
+                    <input type="text" value={draft.source_host} onChange={(event) => updateDraft({ source_host: event.target.value })} placeholder="imap.example.com" required />
                   </label>
                   <label>
                     <span className="settings-field-label">Port</span>
@@ -940,6 +966,7 @@ export function RemoteIMAPSyncSettings({ csrf, user, mailboxes, navigate, addToa
               <label className="remote-imap-sync-folder-field">
                 <span className="settings-field-label">Source folder</span>
                 <input
+                  type="text"
                   list="remote-imap-sync-source-folders"
                   value={draft.source_mailbox}
                   onChange={(event) => updateDraft({ source_mailbox: event.target.value })}
@@ -1002,17 +1029,25 @@ export function RemoteIMAPSyncSettings({ csrf, user, mailboxes, navigate, addToa
           </div>
         </form>
       </section>
-    </section>
+        </>
+      ) : null}
+    </SettingsPage>
   );
 }
 
 export default {
   accountSettingsRoutes: [
     {
-      path: "/settings/account/remote-imap-sync",
+      path: "/settings/account/plugins/remote-imap-sync",
+      aliases: ["/settings/account/remote-imap-sync"],
+      title: "Remote IMAP sync",
+      label: "IMAP sync",
+      description: "Copy mail from remote IMAP folders into Rolltop.",
+      icon: "sync",
+      section: "plugins",
       render: (context: SettingsContext) => <RemoteIMAPSyncSettings {...context} />
     }
   ],
   renderAccountSettingsSummary: (context: SettingsContext) => <RemoteIMAPSyncSummary navigate={context.navigate} />,
   renderMessageDetails: (context: RuntimeMessageDetailsContext) => <RemoteIMAPSyncMessageDetails {...context} />
-};
+} satisfies AccountSettingsRuntimePlugin;

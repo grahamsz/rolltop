@@ -4,8 +4,10 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { Icon } from "../../../frontend/src/components/Icon";
+import { SettingsError, SettingsLoading, SettingsPage } from "../../../frontend/src/features/settings/SettingsUI";
 import { displayDateTime } from "../../../frontend/src/lib/format";
 import type { DatePrefs, Toast } from "../../../frontend/src/appTypes";
+import type { AccountSettingsRuntimePlugin } from "../../../frontend/src/plugins/runtime";
 import type { Mailbox, Message, MessageAnnotation, ThreadMessage, User } from "../../../frontend/src/types";
 import "./styles.css";
 
@@ -275,17 +277,21 @@ function completeBootstrapSelections(selections: BootstrapSelection[]) {
 function SpamFilterSettings({ csrf, user, mailboxes, navigate, addToast }: SettingsContext) {
   const [status, setStatus] = useState<Status | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
   const [limit, setLimit] = useState(500);
   const [selections, setSelections] = useState<BootstrapSelection[]>(() => defaultBootstrapSelections(mailboxes));
   const [preview, setPreview] = useState<BootstrapPreview | null>(null);
 
   const load = useCallback(async (quiet = false) => {
-    if (!quiet) setLoading(true);
+    if (!quiet) {
+      setLoading(true);
+      setLoadError("");
+    }
     try {
       setStatus(await getStatus());
     } catch (error) {
-      if (!quiet) addToast(messageFromError(error), "error");
+      if (!quiet) setLoadError(messageFromError(error));
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -399,19 +405,16 @@ function SpamFilterSettings({ csrf, user, mailboxes, navigate, addToast }: Setti
   }
 
   return (
-    <section className="experimental-spam-settings">
-      <div className="settings-titlebar">
-        <button className="icon-button" type="button" onClick={() => navigate("/settings/account")} title="Back to settings" aria-label="Back to settings">
-          <Icon name="arrow_back" />
-        </button>
-        <div>
-          <h1>Experimental spam filter</h1>
-          <p>Advisory local scoring. The plugin never itself moves, hides, deletes, archives, or sends mail.</p>
-        </div>
-      </div>
-
-      {loading ? <section className="panel"><p>Loading spam-filter status…</p></section> : null}
-      {!loading && status ? (
+    <SettingsPage
+      title="Experimental spam filter"
+      description="Advisory local scoring that never moves, hides, deletes, archives, or sends mail."
+      backPath="/settings/account/plugins"
+      navigate={navigate}
+      className="experimental-spam-settings"
+    >
+      {loading ? <SettingsLoading label="Loading spam-filter status..." /> : null}
+      {!loading && loadError ? <SettingsError message={loadError} onRetry={() => void load()} /> : null}
+      {!loading && !loadError && status ? (
         <>
           <section className="panel experimental-spam-model-card">
             <div className="panel-headline">
@@ -525,7 +528,7 @@ function SpamFilterSettings({ csrf, user, mailboxes, navigate, addToast }: Setti
           </section>
         </>
       ) : null}
-    </section>
+    </SettingsPage>
   );
 }
 
@@ -594,9 +597,9 @@ function SpamFilterSummary({ navigate }: SettingsContext) {
           <h2>Experimental spam filter</h2>
           <div className="muted">Advisory named-rule scoring with personal Bayes and tenant-local evidence.</div>
         </div>
-        <button className="secondary" type="button" onClick={() => navigate("/settings/account/experimental-spam-filter")}><Icon name="report" />Review</button>
+        <button className="secondary" type="button" onClick={() => navigate("/settings/account/plugins/spam-filter")}><Icon name="report" />Review</button>
       </div>
-      <button className="server-row" type="button" onClick={() => navigate("/settings/account/experimental-spam-filter")}>
+      <button className="server-row" type="button" onClick={() => navigate("/settings/account/plugins/spam-filter")}>
         <span className="server-row-icon"><Icon name="report" /></span>
         <strong>Spam risk</strong>
         <small>{status ? `${status.classified.toLocaleString()} classified · ${status.spam_feedback + status.ham_feedback} feedback labels` : "View model and local backfill status"}</small>
@@ -850,7 +853,13 @@ function renderMessageAnnotations({ location, annotations }: AnnotationContext):
 export default {
   accountSettingsRoutes: [
     {
-      path: "/settings/account/experimental-spam-filter",
+      path: "/settings/account/plugins/spam-filter",
+      aliases: ["/settings/account/experimental-spam-filter"],
+      title: "Experimental spam filter",
+      label: "Spam filter",
+      description: "Review advisory scoring and personal Bayes training.",
+      icon: "report",
+      section: "plugins",
       render: (context: SettingsContext) => <SpamFilterSettings {...context} />
     }
   ],
@@ -858,4 +867,4 @@ export default {
   renderMessageAnnotations,
   renderMessageMenuActions: (context: MessageActionContext) => <SpamMenuActions {...context} />,
   renderMessageActionPanels: (context: MessageActionContext) => <SpamDetailsPanel {...context} />
-};
+} satisfies AccountSettingsRuntimePlugin;
