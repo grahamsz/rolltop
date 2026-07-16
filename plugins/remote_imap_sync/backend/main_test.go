@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	mmcrypto "rolltop/backend/crypto"
 	"rolltop/backend/imapclient"
@@ -521,5 +523,92 @@ func TestRoutineMutationStopsWorkerBeforePersistence(t *testing.T) {
 	manager.mu.Unlock()
 	if workerPresent || pendingPresent {
 		t.Fatal("routine worker or pending trigger remained after mutation")
+	}
+}
+
+func TestPauseRoutineAPIStopsCopyAndIdleWorkersBeforeReturning(t *testing.T) {
+	fixture := newBackendFixture(t)
+	ctx := context.Background()
+	backend := &remoteIMAPSyncBackend{}
+	item, err := backend.prepareRoutine(ctx, testAPIHost{}, fixture.store, fixture.db,
+		fixture.owner.ID, 0, fixture.inputForOwner("password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err = persistRoutine(ctx, fixture.db, item)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker := newRoutineWorker(context.Background(), nil, fixture.store, nil, item)
+	copyStarted := make(chan struct{})
+	copyStopped := make(chan struct{})
+	idleStarted := make(chan struct{})
+	idleStopped := make(chan struct{})
+	var copyStartOnce, copyStopOnce, idleStartOnce, idleStopOnce sync.Once
+	worker.searchSourceMailbox = func(ctx context.Context, _ store.MailAccount, _ string, _ uint32, _ time.Time) (imapclient.MailboxUIDSearch, error) {
+		copyStartOnce.Do(func() { close(copyStarted) })
+		<-ctx.Done()
+		copyStopOnce.Do(func() { close(copyStopped) })
+		return imapclient.MailboxUIDSearch{}, ctx.Err()
+	}
+	worker.watchSourceMailbox = func(ctx context.Context, _ store.MailAccount, _ string, _ func()) error {
+		idleStartOnce.Do(func() { close(idleStarted) })
+		<-ctx.Done()
+		idleStopOnce.Do(func() { close(idleStopped) })
+		return ctx.Err()
+	}
+	key := workerKey{userID: item.UserID, routineID: item.ID}
+	manager := &routineManager{
+		wake: make(chan struct{}, 1), workers: map[workerKey]*routineWorker{key: worker},
+		pending: make(map[workerKey]string),
+	}
+	backend.manager = manager
+	worker.Start()
+	t.Cleanup(worker.Stop)
+
+	waitFor := func(label string, signal <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-signal:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for %s", label)
+		}
+	}
+	waitFor("copy worker startup", copyStarted)
+	waitFor("IDLE worker startup", idleStarted)
+
+	host := routeAPIHost{st: fixture.store, userID: fixture.owner.ID}
+	request := httptest.NewRequest(http.MethodPost,
+		"/api/plugins/remote_imap_sync/routines/"+strconv.FormatInt(item.ID, 10)+"/enabled",
+		strings.NewReader(`{"enabled":false}`))
+	recorder := httptest.NewRecorder()
+	backend.handleAPI(host, apiPath+"/routines/"+strconv.FormatInt(item.ID, 10)+"/enabled", recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("pause status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	waitFor("copy worker cancellation", copyStopped)
+	waitFor("IDLE worker cancellation", idleStopped)
+
+	paused, err := getRoutine(ctx, fixture.db, fixture.owner.ID, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paused.Enabled || paused.State != "paused" || !paused.NextRetryAt.IsZero() {
+		t.Fatalf("paused routine = enabled %t state %q next retry %s", paused.Enabled, paused.State, paused.NextRetryAt)
+	}
+	manager.mu.Lock()
+	_, workerPresent := manager.workers[key]
+	_, triggerPresent := manager.pending[key]
+	manager.mu.Unlock()
+	if workerPresent || triggerPresent {
+		t.Fatal("paused routine retained a live worker or pending retry trigger")
+	}
+	latest, err := latestRun(ctx, fixture.db, fixture.owner.ID, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.Status != "canceled" {
+		t.Fatalf("active run after pause = %+v, want canceled", latest)
 	}
 }

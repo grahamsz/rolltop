@@ -357,6 +357,8 @@ func (r *Runner) QueueAccountMailboxes(userID, accountID int64, mailboxes []stri
 }
 
 // StartMailboxMaintenance reserves one account/mailbox and runs local maintenance in the background.
+// Work on another mailbox of the same account may continue concurrently. A
+// pending generation recovery blocks admission and cancels active maintenance.
 func (r *Runner) StartMailboxMaintenance(userID int64, mailbox store.Mailbox, label string, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
 	ctx := r.context()
 	if ctx.Err() != nil {

@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -52,6 +53,22 @@ func (s *Store) GetMessageBodiesForUser(ctx context.Context, userID, messageID i
 	var bodyText, bodyHTML string
 	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT body_text, body_html FROM messages WHERE user_id = ? AND id = ?`, userID, messageID).Scan(&bodyText, &bodyHTML)
 	return bodyText, bodyHTML, err
+}
+
+// BlobPathInUseForUser reports whether tenant-owned content metadata currently
+// exposes a filesystem path. Blob foreign keys alone do not count: pruned
+// messages deliberately keep a message-remote placeholder while clearing the
+// path that makes a local file live.
+func (s *Store) BlobPathInUseForUser(ctx context.Context, userID int64, blobPath string) (bool, error) {
+	var inUse bool
+	err := s.mustDataDB(ctx, userID).QueryRowContext(ctx, `SELECT
+		EXISTS (SELECT 1 FROM messages WHERE user_id = ? AND blob_path = ?)
+		OR EXISTS (SELECT 1 FROM attachments WHERE user_id = ? AND blob_path = ?)
+		OR EXISTS (SELECT 1 FROM contact_icons icon JOIN blobs blob ON blob.user_id = icon.user_id AND blob.id = icon.blob_id
+			WHERE icon.user_id = ? AND blob.path = ?)
+		OR EXISTS (SELECT 1 FROM remote_image_cache WHERE user_id = ? AND blob_path = ?)`,
+		userID, blobPath, userID, blobPath, userID, blobPath, userID, blobPath).Scan(&inUse)
+	return inUse, err
 }
 
 // CompactMessageBodiesBefore replaces old full bodies with previews after raw blobs age out.
@@ -220,14 +237,60 @@ func (s *Store) ListMessagesWithExpiredCachedBlobs(ctx context.Context, cutoff t
 
 // CacheMessageBlob attaches a freshly fetched temporary raw blob to an existing message row.
 func (s *Store) CacheMessageBlob(ctx context.Context, userID, messageID int64, blob BlobRecord) (MessageRecord, error) {
-	blob.UserID = userID
-	blob.Kind = "message-cache"
-	blobRec, err := s.CreateBlob(ctx, blob)
+	return s.attachMessageBlob(ctx, userID, messageID, blob, "message-cache")
+}
+
+// RetainMessageBlob attaches a freshly fetched raw blob as ordinary retained
+// message data. Retention maintenance will age it by the message date rather
+// than the short on-demand cache window.
+func (s *Store) RetainMessageBlob(ctx context.Context, userID, messageID int64, blob BlobRecord) (MessageRecord, error) {
+	return s.attachMessageBlob(ctx, userID, messageID, blob, "message")
+}
+
+func (s *Store) attachMessageBlob(ctx context.Context, userID, messageID int64, blob BlobRecord, kind string) (MessageRecord, error) {
+	db := s.mustDataDB(ctx, userID)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return MessageRecord{}, err
 	}
-	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET blob_id = ?, blob_path = ?, updated_at = ? WHERE user_id = ? AND id = ?`,
-		blobRec.ID, blobRec.Path, nowUnix(), userID, messageID)
+	defer tx.Rollback()
+	var previousBlobID int64
+	if err := tx.QueryRowContext(ctx, `SELECT blob_id FROM messages WHERE user_id = ? AND id = ?`, userID, messageID).Scan(&previousBlobID); err != nil {
+		if err == sql.ErrNoRows {
+			return MessageRecord{}, ErrNotFound
+		}
+		return MessageRecord{}, err
+	}
+
+	ts := nowUnix()
+	targetBlobID := previousBlobID
+	err = tx.QueryRowContext(ctx, `SELECT id FROM blobs WHERE user_id = ? AND path = ?`, userID, blob.Path).Scan(&targetBlobID)
+	switch {
+	case err == sql.ErrNoRows:
+		targetBlobID = previousBlobID
+		res, updateErr := tx.ExecContext(ctx, `UPDATE blobs SET kind = ?, path = ?, sha256 = ?, size = ?, created_at = ?
+			WHERE user_id = ? AND id = ?`, kind, blob.Path, blob.SHA256, blob.Size, ts, userID, previousBlobID)
+		if updateErr != nil {
+			return MessageRecord{}, updateErr
+		}
+		n, updateErr := res.RowsAffected()
+		if updateErr != nil {
+			return MessageRecord{}, updateErr
+		}
+		if n == 0 {
+			return MessageRecord{}, ErrNotFound
+		}
+	case err != nil:
+		return MessageRecord{}, err
+	default:
+		if _, err := tx.ExecContext(ctx, `UPDATE blobs SET kind = ?, sha256 = ?, size = ?, created_at = ?
+			WHERE user_id = ? AND id = ?`, kind, blob.SHA256, blob.Size, ts, userID, targetBlobID); err != nil {
+			return MessageRecord{}, err
+		}
+	}
+
+	res, err := tx.ExecContext(ctx, `UPDATE messages SET blob_id = ?, blob_path = ?, updated_at = ? WHERE user_id = ? AND id = ? AND blob_id = ?`,
+		targetBlobID, blob.Path, ts, userID, messageID, previousBlobID)
 	if err != nil {
 		return MessageRecord{}, err
 	}
@@ -237,6 +300,18 @@ func (s *Store) CacheMessageBlob(ctx context.Context, userID, messageID int64, b
 	}
 	if n == 0 {
 		return MessageRecord{}, ErrNotFound
+	}
+	if targetBlobID != previousBlobID {
+		// Attachment metadata points at the raw message blob; keep those foreign
+		// keys aligned when a prior failed hydration already owns this path.
+		if _, err := tx.ExecContext(ctx, `UPDATE attachments SET blob_id = ?
+			WHERE user_id = ? AND message_id = ? AND blob_id = ? AND blob_path = ''`,
+			targetBlobID, userID, messageID, previousBlobID); err != nil {
+			return MessageRecord{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return MessageRecord{}, err
 	}
 	return s.GetMessageForUser(ctx, userID, messageID)
 }

@@ -39,6 +39,46 @@ func TestMarkSearchVisibleMessagesPendingIndexIsTenantScoped(t *testing.T) {
 	assertResetIndexState(t, ctx, db, other.ID, otherVisible.ID, false, otherVisible)
 }
 
+func TestMarkMessageAttachmentIndexPendingIsTenantScoped(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	owner, err := db.CreateUser(ctx, "message-index-pending@example.test", "Owner", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateUser(ctx, "message-index-pending-other@example.test", "Other", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := createIndexedMessageForResetTest(t, ctx, db, owner, "INBOX", true, 1)
+
+	if err := db.MarkMessageAttachmentIndexPending(ctx, other.ID, message.ID); err != ErrNotFound {
+		t.Fatalf("cross-tenant pending error=%v, want not found", err)
+	}
+	unchanged, err := db.GetMessageForUser(ctx, owner.ID, message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.AttachmentIndexedAt.IsZero() {
+		t.Fatal("cross-tenant update reset the owner's index marker")
+	}
+	if err := db.MarkMessageAttachmentIndexPending(ctx, owner.ID, message.ID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := db.GetMessageForUser(ctx, owner.ID, message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending.AttachmentIndexedAt.IsZero() {
+		t.Fatal("owner message did not become pending")
+	}
+}
+
 func TestListMessagesNeedingAttachmentIndexAfterWrapsWithinTenant(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))

@@ -403,6 +403,83 @@ func TestRunnerMailboxMaintenanceBlocksSyncUntilFinished(t *testing.T) {
 	}
 }
 
+func TestRunnerMailboxMaintenanceAllowsDifferentMailboxAndHonorsRecoveryGate(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "parallel-maintenance@example.test", "Parallel Maintenance", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.UpsertMailAccount(ctx, store.MailAccount{
+		UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993,
+		Username: user.Email, EncryptedPassword: "encrypted", UseTLS: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runner := NewRunner(&Service{Store: db})
+	inboxKeys, reserved := runner.reserveAccountMailboxes(user.ID, account.ID, []string{inbox.Name})
+	if !reserved {
+		t.Fatal("could not reserve the other mailbox sync")
+	}
+	defer runner.releaseAccountMailboxReservations(user.ID, account.ID, []string{inbox.Name}, inboxKeys)
+
+	run, started, err := runner.StartMailboxMaintenance(user.ID, archive, "Rebuilding full-text index", func(context.Context, int64, *store.SyncProgress) error {
+		return nil
+	})
+	if err != nil || !started {
+		t.Fatalf("maintenance beside another mailbox started=%t err=%v", started, err)
+	}
+	waitForRunnerSyncRun(t, ctx, db, user.ID, run.ID)
+	if !runner.IsAccountMailboxRunning(user.ID, account.ID, inbox.Name) {
+		t.Fatal("maintenance released the unrelated mailbox reservation")
+	}
+
+	runner.mu.Lock()
+	runner.generationRecoveryUsers[user.ID] = true
+	runner.mu.Unlock()
+	_, started, err = runner.StartMailboxMaintenance(user.ID, archive, "Rebuilding full-text index", func(context.Context, int64, *store.SyncProgress) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("maintenance rejected by recovery gate error=%v", err)
+	}
+	if started {
+		t.Fatal("maintenance started while generation recovery was gated")
+	}
+}
+
+func waitForRunnerSyncRun(t *testing.T, ctx context.Context, db *store.Store, userID, runID int64) store.SyncRun {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		run, err := db.GetSyncRunForUser(ctx, userID, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.Status != "running" {
+			return run
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sync run %d did not finish: %+v", runID, run)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestGenerationRecoveryCancelsActiveMailboxMaintenance(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

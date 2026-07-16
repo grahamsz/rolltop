@@ -637,6 +637,10 @@ export function SettingsView({
   const [deletingAccountID, setDeletingAccountID] = useState<number | null>(null);
   const [deletingSMTPID, setDeletingSMTPID] = useState<number | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const [folderMaintenance, setFolderMaintenance] = useState<{
+    mailboxID: number;
+    action: "rebuild" | "purge-index" | "purge-references";
+  } | null>(null);
   const [savingIdentity, setSavingIdentity] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
@@ -1133,6 +1137,16 @@ export function SettingsView({
     ].join("\n");
   }
 
+  function rebuildSearchIndexConfirmMessage(folder: SyncFolder) {
+    return [
+      `Rebuild the full-text index for ${folder.mailbox.name}?`,
+      "",
+      "Rolltop will replace this folder's local search documents from its stored raw messages.",
+      "Messages whose raw data is no longer local will be fetched from your IMAP server.",
+      "This does not change or delete messages on the IMAP server."
+    ].join("\n");
+  }
+
   function purgeLocalReferencesConfirmMessage(folder: SyncFolder) {
     return [
       `Purge local references and the full-text index for ${folder.mailbox.name}?`,
@@ -1207,7 +1221,8 @@ export function SettingsView({
   }
 
   async function purgeFolderSearchIndex(folder: SyncFolder) {
-    if (!window.confirm(purgeSearchIndexConfirmMessage(folder))) return;
+    if (folderMaintenance || !window.confirm(purgeSearchIndexConfirmMessage(folder))) return;
+    setFolderMaintenance({ mailboxID: folder.mailbox.id, action: "purge-index" });
     try {
       await api.purgeFolderSearchIndex(csrf, folder.mailbox.id);
       addToast(`${folder.mailbox.name} full-text index purge started.`);
@@ -1215,11 +1230,29 @@ export function SettingsView({
       await load();
     } catch (err) {
       addToast(messageFromError(err), "error");
+    } finally {
+      setFolderMaintenance(null);
+    }
+  }
+
+  async function rebuildFolderSearchIndex(folder: SyncFolder) {
+    if (folderMaintenance || !window.confirm(rebuildSearchIndexConfirmMessage(folder))) return;
+    setFolderMaintenance({ mailboxID: folder.mailbox.id, action: "rebuild" });
+    try {
+      await api.rebuildFolderSearchIndex(csrf, folder.mailbox.id);
+      addToast(`${folder.mailbox.name} full-text index rebuild started.`);
+      await refreshChrome();
+      await load();
+    } catch (err) {
+      addToast(messageFromError(err), "error");
+    } finally {
+      setFolderMaintenance(null);
     }
   }
 
   async function purgeFolderLocalReferences(folder: SyncFolder) {
-    if (!window.confirm(purgeLocalReferencesConfirmMessage(folder))) return;
+    if (folderMaintenance || !window.confirm(purgeLocalReferencesConfirmMessage(folder))) return;
+    setFolderMaintenance({ mailboxID: folder.mailbox.id, action: "purge-references" });
     try {
       await api.purgeFolderLocalReferences(csrf, folder.mailbox.id);
       addToast(`${folder.mailbox.name} local references purge started.`);
@@ -1227,6 +1260,8 @@ export function SettingsView({
       await load();
     } catch (err) {
       addToast(messageFromError(err), "error");
+    } finally {
+      setFolderMaintenance(null);
     }
   }
 
@@ -1830,27 +1865,52 @@ export function SettingsView({
               </div>
             </section>
 
-            <section className="folder-edit-section folder-edit-section-wide folder-purge-section">
-              <span className="settings-field-label">Local purge</span>
-              <div className="folder-purge-note">These actions only change rolltop's local cache. They never delete messages from your IMAP server.</div>
+            <section className="folder-edit-section folder-edit-section-wide folder-index-section">
+              <span className="settings-field-label">Local index</span>
+              <div className="folder-purge-note">These actions only change Rolltop's local cache. They never delete messages from your IMAP server.</div>
               <div className="folder-purge-actions">
                 <button
                   className="secondary folder-purge-button"
                   type="button"
-                  disabled={folder.is_running}
+                  disabled={folder.is_running || Boolean(folderMaintenance) || !folder.mailbox.include_in_search}
+                  aria-busy={folderMaintenance?.mailboxID === folder.mailbox.id && folderMaintenance.action === "rebuild"}
+                  onClick={() => rebuildFolderSearchIndex(folder)}
+                  title={!folder.mailbox.include_in_search
+                    ? "Enable Search visibility before rebuilding this folder"
+                    : folder.is_running
+                      ? "Wait for this folder's current work to finish"
+                      : "Replace this folder's local full-text search documents"}
+                >
+                  <Icon name="sync" />
+                  {folderMaintenance?.mailboxID === folder.mailbox.id && folderMaintenance.action === "rebuild"
+                    ? "Starting rebuild..."
+                    : "Rebuild full-text index"}
+                </button>
+                <button
+                  className="secondary folder-purge-button"
+                  type="button"
+                  disabled={folder.is_running || Boolean(folderMaintenance)}
+                  aria-busy={folderMaintenance?.mailboxID === folder.mailbox.id && folderMaintenance.action === "purge-index"}
                   onClick={() => purgeFolderSearchIndex(folder)}
                   title={folder.is_running ? "Wait for this folder's current sync to finish" : "Purge only the local full-text search index"}
                 >
-                  <Icon name="search" />Purge full-text index
+                  <Icon name="search" />
+                  {folderMaintenance?.mailboxID === folder.mailbox.id && folderMaintenance.action === "purge-index"
+                    ? "Starting purge..."
+                    : "Purge full-text index"}
                 </button>
                 <button
                   className="secondary folder-purge-button danger"
                   type="button"
-                  disabled={folder.is_running}
+                  disabled={folder.is_running || Boolean(folderMaintenance)}
+                  aria-busy={folderMaintenance?.mailboxID === folder.mailbox.id && folderMaintenance.action === "purge-references"}
                   onClick={() => purgeFolderLocalReferences(folder)}
                   title={folder.is_running ? "Wait for this folder's current sync to finish" : "Purge local references and the local full-text search index"}
                 >
-                  <Icon name="delete" />Purge references and index
+                  <Icon name="delete" />
+                  {folderMaintenance?.mailboxID === folder.mailbox.id && folderMaintenance.action === "purge-references"
+                    ? "Starting purge..."
+                    : "Purge references and index"}
                 </button>
               </div>
             </section>

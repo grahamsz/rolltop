@@ -142,6 +142,90 @@ func TestAttachmentIndexFailureDoesNotPinHigherMessageIDs(t *testing.T) {
 	}
 }
 
+func TestRepairMailboxSearchIndexFailureDoesNotPinHigherMessageIDs(t *testing.T) {
+	fixture := newMoveTestFixture(t)
+	ctx := context.Background()
+	searchService, err := search.Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = searchService.Close() })
+	second := createPendingAttachmentIndexMessage(t, ctx, fixture, fixture.message.UID+1)
+	fetcher := &attachmentIndexQueueFetcher{
+		moveTestFetcher: fixture.fetcher,
+		failures: map[uint32]error{
+			fixture.message.UID: errors.New("sensitive remote response and raw body"),
+		},
+	}
+	fixture.service.Search = searchService
+	fixture.service.Fetcher = fetcher
+	if err := fixture.store.MarkMessageAttachmentIndexed(ctx, fixture.userID, fixture.message.ID, fixture.message.HasAttachments); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	previousWriter, previousFlags, previousPrefix := log.Writer(), log.Flags(), log.Prefix()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	})
+
+	indexed, err := fixture.service.RepairMailboxSearchIndex(ctx, fixture.userID, fixture.source, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexed != 2 {
+		t.Fatalf("repair indexed=%d, want 2", indexed)
+	}
+	assertAttachmentIndexPending(t, ctx, fixture.store, fixture.userID, fixture.message.ID, true)
+	assertAttachmentIndexPending(t, ctx, fixture.store, fixture.userID, second.ID, false)
+	pending, err := fixture.store.ListMessagesNeedingAttachmentIndex(ctx, fixture.userID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].ID != fixture.message.ID {
+		t.Fatalf("messages eligible for later enrichment=%v, want failed message %d", pending, fixture.message.ID)
+	}
+
+	fallbackHits, err := searchService.Search(ctx, fixture.userID, "manual", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsMessageID(fallbackHits, fixture.message.ID) {
+		t.Fatalf("fallback search hits=%v, want failed message %d", fallbackHits, fixture.message.ID)
+	}
+	laterHits, err := searchService.Search(ctx, fixture.userID, fmt.Sprintf("body %d", second.UID), 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsMessageID(laterHits, second.ID) {
+		t.Fatalf("later message search hits=%v, want %d", laterHits, second.ID)
+	}
+	if fetcher.callCount(fixture.message.UID) != 1 || fetcher.callCount(second.UID) != 1 {
+		t.Fatalf("repair fetch calls failed=%d later=%d, want one each", fetcher.callCount(fixture.message.UID), fetcher.callCount(second.UID))
+	}
+
+	output := logs.String()
+	if strings.Contains(output, "sensitive remote response") || strings.Contains(output, "raw body") {
+		t.Fatalf("repair log exposed error content: %q", output)
+	}
+	for _, want := range []string{
+		"repair mailbox search index legacy remote page deferred",
+		"requested=2",
+		"enriched=1",
+		"deferred=1",
+		"error_type=*errors.errorString",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("repair log %q does not contain %q", output, want)
+		}
+	}
+}
+
 func containsMessageID(ids []int64, want int64) bool {
 	for _, id := range ids {
 		if id == want {

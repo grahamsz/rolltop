@@ -110,6 +110,92 @@ func (s *Service) FetchAndCacheRawMessageForMessage(ctx context.Context, userID 
 	return raw, nil
 }
 
+func (s *Service) retainFetchedRawMessageForIndexRepair(ctx context.Context, userID int64, msg store.MessageRecord, account store.MailAccount, mailbox store.Mailbox, raw []byte) (store.MessageRecord, error) {
+	if msg.UserID != userID || account.UserID != userID || mailbox.UserID != userID ||
+		msg.AccountID != account.ID || msg.MailboxID != mailbox.ID || mailbox.AccountID != account.ID {
+		return msg, store.ErrNotFound
+	}
+	if s.Blobs == nil || len(raw) == 0 {
+		return msg, nil
+	}
+	messageDate := msg.Date
+	if messageDate.IsZero() {
+		messageDate = msg.InternalDate
+	}
+	if !s.shouldRetainBlob(messageDate) {
+		return msg, nil
+	}
+	saved, err := s.Blobs.SaveRawMessage(userID, account.ID, mailbox.Name, msg.UID, raw)
+	if err != nil {
+		return msg, err
+	}
+	retained, err := s.Store.RetainMessageBlob(ctx, userID, msg.ID, store.BlobRecord{
+		Path:   saved.Path,
+		SHA256: saved.SHA256,
+		Size:   saved.Size,
+	})
+	if err != nil {
+		return msg, errors.Join(err, s.cleanupFailedRetainedMessageBlob(userID, saved.Path))
+	}
+	if retained.BlobID != msg.BlobID && msg.BlobID > 0 {
+		if _, err := s.deleteUnreferencedBlob(ctx, userID, msg.BlobID, msg.BlobPath); err != nil {
+			return retained, err
+		}
+	}
+	return retained, nil
+}
+
+func (s *Service) readLocalRawMessageForIndexRepair(userID int64, msg store.MessageRecord) ([]byte, bool, error) {
+	if msg.UserID != userID {
+		return nil, false, store.ErrNotFound
+	}
+	if s.Blobs == nil || strings.TrimSpace(msg.BlobPath) == "" {
+		return nil, false, nil
+	}
+	file, err := s.Blobs.OpenUserBlob(userID, msg.BlobPath)
+	if err != nil {
+		return nil, false, nil
+	}
+	raw, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		return nil, false, nil
+	}
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	return raw, true, nil
+}
+
+func (s *Service) cleanupFailedRetainedMessageBlob(userID int64, blobPath string) error {
+	if s.Blobs == nil || strings.TrimSpace(blobPath) == "" {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if s.Store != nil {
+		blobRecord, err := s.Store.GetBlobByPathForUser(cleanupCtx, userID, blobPath)
+		if err == nil {
+			deleted, cleanupErr := s.deleteUnreferencedBlob(cleanupCtx, userID, blobRecord.ID, blobPath)
+			if cleanupErr != nil || deleted {
+				return cleanupErr
+			}
+			inUse, err := s.Store.BlobPathInUseForUser(cleanupCtx, userID, blobPath)
+			if err != nil || inUse {
+				return err
+			}
+			// A pruned message still references its message-remote placeholder by
+			// ID, but an empty message.blob_path means this newly recreated file
+			// is not live and may be removed without deleting the placeholder.
+			return s.Blobs.DeleteUserBlob(userID, blobPath)
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+	}
+	return s.Blobs.DeleteUserBlob(userID, blobPath)
+}
+
 func (s *Service) fetchRawMessageForMessage(ctx context.Context, userID int64, msg store.MessageRecord) ([]byte, store.MailAccount, store.Mailbox, error) {
 	if msg.UserID != userID {
 		return nil, store.MailAccount{}, store.Mailbox{}, store.ErrNotFound

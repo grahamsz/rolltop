@@ -323,6 +323,27 @@ func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.M
 	if err != nil {
 		return nil, &attachmentIndexDeferredError{stage: "raw-fetch", err: err}
 	}
+	return s.prepareSearchVisibleAttachmentIndexMessageFromRaw(ctx, msg, raw)
+}
+
+func (s *Service) prepareAttachmentIndexMessageFromRaw(ctx context.Context, msg store.MessageRecord, raw []byte) (*pendingFetchedSearchIndex, error) {
+	if s.Search == nil {
+		return nil, nil
+	}
+	mailbox, err := s.Store.GetMailboxForUser(ctx, msg.UserID, msg.MailboxID)
+	if err != nil {
+		return nil, err
+	}
+	if !mailbox.IncludeInSearch {
+		if err := s.Search.DeleteMessage(ctx, msg.UserID, msg.ID); err != nil {
+			return nil, err
+		}
+		return nil, s.Store.MarkMessageAttachmentIndexed(ctx, msg.UserID, msg.ID, msg.HasAttachments)
+	}
+	return s.prepareSearchVisibleAttachmentIndexMessageFromRaw(ctx, msg, raw)
+}
+
+func (s *Service) prepareSearchVisibleAttachmentIndexMessageFromRaw(ctx context.Context, msg store.MessageRecord, raw []byte) (*pendingFetchedSearchIndex, error) {
 	parsed, err := mailparse.Parse(raw)
 	if err != nil {
 		securityState, securityHandled, securityErr := s.detectMessageSecurity(ctx, msg.UserID, raw, plugins.MessageBody{Purpose: "storage", Text: msg.BodyText, HTML: msg.BodyHTML})
@@ -474,16 +495,57 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 	}
 
 	indexed := 0
+	deferred := 0
 	var afterID int64
 	batch := newFetchedSearchIndexBatch(s)
+	recordItem := func(msg store.MessageRecord, item *pendingFetchedSearchIndex) error {
+		if err := batch.Add(ctx, item); err != nil {
+			return err
+		}
+		indexed++
+		indexedIDs[msg.ID] = true
+		if progress != nil {
+			progress.CurrentMailbox = mailbox.Name
+			progress.CurrentUID = msg.UID
+			progress.MessagesSeen++
+			progress.MessagesStored++
+			if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	fallbackItem := func(msg store.MessageRecord) error {
+		if indexedIDs[msg.ID] {
+			return nil
+		}
+		s.deferAttachmentIndexRetry(userID, msg.ID, time.Now())
+		if err := s.Store.MarkMessageAttachmentIndexPending(ctx, userID, msg.ID); err != nil {
+			return err
+		}
+		item := &pendingFetchedSearchIndex{
+			Document:    search.MessageIndexDocument{Message: msg},
+			KeepPending: true,
+		}
+		if err := recordItem(msg, item); err != nil {
+			return err
+		}
+		deferred++
+		return nil
+	}
+	remoteHydrationUnavailable := false
 	for {
-		messages, err := s.Store.ListMessagesForMailboxIndex(ctx, userID, mailbox.ID, 100, afterID)
+		messages, err := s.Store.ListMessagesForMailboxIndex(ctx, userID, mailbox.ID, 500, afterID)
 		if err != nil {
 			return indexed, err
 		}
 		if len(messages) == 0 {
 			if err := batch.Flush(ctx); err != nil {
 				return indexed, err
+			}
+			if deferred > 0 {
+				log.Printf("repair mailbox search index complete user_id=%d account_id=%d mailbox=%q indexed=%d deferred=%d",
+					userID, mailbox.AccountID, mailbox.Name, indexed, deferred)
 			}
 			if progress != nil {
 				progress.LatestNewFrom = previousLatestFrom
@@ -494,31 +556,46 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 			}
 			return indexed, nil
 		}
+		remoteMessages := make([]store.MessageRecord, 0, len(messages))
 		for _, msg := range messages {
 			afterID = msg.ID
 			if indexedIDs[msg.ID] {
 				continue
 			}
-			if progress != nil {
-				progress.CurrentMailbox = mailbox.Name
-				progress.CurrentUID = msg.UID
-			}
-			item, err := s.prepareAttachmentIndexMessage(ctx, msg)
+			raw, local, err := s.readLocalRawMessageForIndexRepair(userID, msg)
 			if err != nil {
 				return indexed, err
 			}
-			if err := batch.Add(ctx, item); err != nil {
+			if !local {
+				remoteMessages = append(remoteMessages, msg)
+				continue
+			}
+			item, err := s.prepareAttachmentIndexMessageFromRaw(ctx, msg, raw)
+			if err != nil {
 				return indexed, err
 			}
-			indexed++
-			indexedIDs[msg.ID] = true
-			if progress != nil {
-				progress.MessagesSeen++
-				progress.MessagesStored++
-				if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
+			if err := recordItem(msg, item); err != nil {
+				return indexed, err
+			}
+			s.clearAttachmentIndexRetry(userID, msg.ID)
+		}
+		if len(remoteMessages) == 0 {
+			continue
+		}
+		if remoteHydrationUnavailable {
+			for _, msg := range remoteMessages {
+				if err := fallbackItem(msg); err != nil {
 					return indexed, err
 				}
 			}
+			continue
+		}
+		breaker, err := s.repairMailboxSearchRemotePage(ctx, userID, mailbox, remoteMessages, recordItem, fallbackItem)
+		if err != nil {
+			return indexed, err
+		}
+		if breaker {
+			remoteHydrationUnavailable = true
 		}
 	}
 }

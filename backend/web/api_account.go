@@ -727,6 +727,8 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 	action := parts[1]
 	if len(parts) == 3 && parts[1] == "search-index" && parts[2] == "purge" {
 		action = "purge-search-index"
+	} else if len(parts) == 3 && parts[1] == "search-index" && parts[2] == "rebuild" {
+		action = "rebuild-search-index"
 	} else if len(parts) == 3 && parts[1] == "local-references" && parts[2] == "purge" {
 		action = "purge-local-references"
 	} else if len(parts) != 2 {
@@ -812,7 +814,7 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 		}
 		writeJSON(w, map[string]any{"ok": true})
 	case "purge-search-index":
-		if s.syncer == nil || s.syncRunner == nil {
+		if s.syncer == nil || s.syncer.Search == nil || s.syncRunner == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "Search indexing is not configured.")
 			return
 		}
@@ -826,6 +828,43 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 		}
 		if err != nil {
 			writeAPIError(w, http.StatusBadGateway, "could not start search index purge")
+			return
+		}
+		s.notifyUserChanged(cu.User.ID)
+		writeJSON(w, map[string]any{"ok": true, "queued": true, "run_id": run.ID})
+	case "rebuild-search-index":
+		if !mb.IncludeInSearch {
+			writeAPIError(w, http.StatusBadRequest, "Full-text search is disabled for this folder.")
+			return
+		}
+		if s.syncer == nil || s.syncer.Search == nil || s.syncRunner == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "Search indexing is not configured.")
+			return
+		}
+		run, started, err := s.syncRunner.StartMailboxMaintenance(cu.User.ID, mb, "Rebuilding full-text index", func(ctx context.Context, runID int64, progress *store.SyncProgress) error {
+			log.Printf("rebuild mailbox search index stage=purge user_id=%d account_id=%d mailbox=%q", cu.User.ID, mb.AccountID, mb.Name)
+			purged, err := s.syncer.PurgeMailboxSearchIndexWithProgress(ctx, cu.User.ID, mb.ID, runID, progress)
+			if err != nil {
+				return err
+			}
+			progress.LatestNewFrom = "rolltop:maintenance"
+			progress.LatestNewSubject = "Rebuilding full-text index"
+			if err := s.store.UpdateSyncRunProgress(ctx, cu.User.ID, runID, *progress); err != nil {
+				return err
+			}
+			log.Printf("rebuild mailbox search index stage=repair user_id=%d account_id=%d mailbox=%q purged=%d", cu.User.ID, mb.AccountID, mb.Name, purged)
+			indexed, err := s.syncer.RepairMailboxSearchIndex(ctx, cu.User.ID, mb, runID, progress)
+			if err == nil {
+				log.Printf("rebuild mailbox search index complete user_id=%d account_id=%d mailbox=%q purged=%d indexed=%d", cu.User.ID, mb.AccountID, mb.Name, purged, indexed)
+			}
+			return err
+		})
+		if !started && err == nil {
+			writeAPIError(w, http.StatusConflict, "Sync or rebuild is already running for this folder.")
+			return
+		}
+		if err != nil {
+			writeAPIError(w, http.StatusBadGateway, "could not start search index rebuild")
 			return
 		}
 		s.notifyUserChanged(cu.User.ID)

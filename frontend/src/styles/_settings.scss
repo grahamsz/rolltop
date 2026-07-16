@@ -1388,10 +1388,10 @@
   }
 }
 
-.folder-purge-section {
-  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border));
+.folder-index-section {
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--danger) 5%, var(--surface));
+  background: var(--surface);
   padding: 12px;
 }
 

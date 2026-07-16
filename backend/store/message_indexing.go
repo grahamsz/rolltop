@@ -129,6 +129,24 @@ func (s *Store) MarkMessageAttachmentIndexed(ctx context.Context, userID, messag
 	return nil
 }
 
+// MarkMessageAttachmentIndexPending keeps a fallback search document eligible
+// for later raw-body and attachment enrichment.
+func (s *Store) MarkMessageAttachmentIndexPending(ctx context.Context, userID, messageID int64) error {
+	result, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET attachment_indexed_at = 0, updated_at = ?
+		WHERE user_id = ? AND id = ?`, nowUnix(), userID, messageID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // UpdateMessageLanguage stores plugin-detected language metadata for search filtering.
 func (s *Store) UpdateMessageLanguage(ctx context.Context, userID, messageID int64, languageCode string) error {
 	languageCode = strings.ToLower(strings.TrimSpace(languageCode))

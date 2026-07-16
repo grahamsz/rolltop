@@ -84,7 +84,8 @@ func TestGenerationRebuildResumesWithoutRepairNotificationOrSnoozeCancellation(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	snooze, err := db.SnoozeMessage(ctx, user.ID, rootMessage.ID, now.Add(48*time.Hour))
+	snoozeUntil := time.Now().UTC().Add(7 * 24 * time.Hour).Truncate(time.Second)
+	snooze, err := db.SnoozeMessage(ctx, user.ID, rootMessage.ID, snoozeUntil)
 	if err != nil {
 		t.Fatal(err)
 	}

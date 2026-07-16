@@ -474,6 +474,8 @@ export const api = {
   saveFolderSettings: (csrf: string, id: number, settings: Record<string, unknown>) =>
     postJSON<{ ok: boolean }>(`/api/account/folders/${id}/settings`, csrf, settings),
   syncFolder: (csrf: string, id: number) => postJSON<{ ok: boolean }>(`/api/account/folders/${id}/sync`, csrf),
+  rebuildFolderSearchIndex: (csrf: string, id: number) =>
+    postJSON<{ ok: boolean; queued: boolean; run_id: number }>(`/api/account/folders/${id}/search-index/rebuild`, csrf),
   purgeFolderSearchIndex: (csrf: string, id: number) =>
     postJSON<{ ok: boolean; queued: boolean; run_id: number }>(`/api/account/folders/${id}/search-index/purge`, csrf),
   purgeFolderLocalReferences: (csrf: string, id: number) =>
