@@ -153,12 +153,25 @@ type Service struct {
 	ScheduleInboxArrival             func(userID, accountID int64, due time.Time)
 	NotifyRestoredState              func(userID int64)
 	MailboxGenerationRecoveryStarted func(userID int64)
-	PluginDir                        string
-	MasterKey                        []byte
+	// DeferMailboxGenerationRebuilds makes ordinary Runner-scheduled syncs
+	// yield newly discovered generation markers to the serialized recovery
+	// worker. Direct Service callers retain the synchronous behavior used by
+	// maintenance tools and focused tests.
+	DeferMailboxGenerationRebuilds bool
+	PluginDir                      string
+	MasterKey                      []byte
 
 	pluginOnce     sync.Once
 	pluginLoadErr  error
 	backendPlugins *plugins.BackendManager
+
+	attachmentIndexMu         sync.Mutex
+	attachmentIndexCursor     map[int64]int64
+	attachmentIndexRetryAfter map[attachmentIndexRetryKey]time.Time
+	attachmentIndexLastPrune  time.Time
+	attachmentIndexContinueAt map[int64]time.Time
+	// attachmentIndexContinuationDelay is overridden only by focused tests.
+	attachmentIndexContinuationDelay time.Duration
 }
 
 const (
@@ -202,6 +215,7 @@ func (s *Service) enabledBackendPlugins(ctx context.Context) ([]plugins.BackendP
 	if s == nil {
 		return nil, nil
 	}
+	generationRecoveryPhase(ctx, "plugin-discovery", "load-manifests")
 	if err := s.initBackendPlugins(); err != nil {
 		return nil, err
 	}
@@ -211,6 +225,7 @@ func (s *Service) enabledBackendPlugins(ctx context.Context) ([]plugins.BackendP
 	ids := s.backendPlugins.PluginIDs()
 	out := make([]plugins.BackendPlugin, 0, len(ids))
 	for _, pluginID := range ids {
+		generationRecoveryPhase(ctx, "plugin-discovery", pluginID)
 		if !s.pluginEnabled(ctx, pluginID) {
 			continue
 		}
@@ -243,6 +258,12 @@ func (s *Service) SyncUserMailboxes(ctx context.Context, userID int64, mailboxNa
 // SyncUserAccountMailboxes targets one IMAP server, which avoids ambiguous folder
 // names when multiple accounts contain the same mailbox path.
 func (s *Service) SyncUserAccountMailboxes(ctx context.Context, userID, accountID int64, mailboxNames []string) (store.SyncRun, error) {
+	return s.syncUserAccountMailboxes(ctx, userID, accountID, mailboxNames, syncAccountOptions{})
+}
+
+func (s *Service) syncUserAccountMailboxes(ctx context.Context, userID, accountID int64,
+	mailboxNames []string, options syncAccountOptions,
+) (store.SyncRun, error) {
 	if s.Fetcher == nil {
 		return store.SyncRun{}, errors.New("sync fetcher is not configured")
 	}
@@ -250,7 +271,7 @@ func (s *Service) SyncUserAccountMailboxes(ctx context.Context, userID, accountI
 	if err != nil {
 		return store.SyncRun{}, err
 	}
-	return s.syncAccount(ctx, userID, account, mailboxNames, syncAccountOptions{})
+	return s.syncAccount(ctx, userID, account, mailboxNames, options)
 }
 
 // RecoverUserAccountMailboxGeneration runs one scheduler-bounded generation
@@ -375,9 +396,11 @@ func (s *Service) syncUser(ctx context.Context, userID int64, requestedMailboxes
 // The defer marks interrupted runs when the process context is cancelled.
 type syncAccountOptions struct {
 	generationRecovery bool
+	deferPendingFlags  bool
 }
 
 func (s *Service) syncAccount(ctx context.Context, userID int64, account store.MailAccount, requestedMailboxes []string, options syncAccountOptions) (store.SyncRun, error) {
+	generationRecoveryPhase(ctx, "sqlite-create-sync-run", "")
 	run, err := s.Store.CreateSyncRun(ctx, userID, account.ID)
 	if err != nil {
 		return store.SyncRun{}, err
@@ -397,18 +420,21 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		s.notify(userID)
 	}()
 
+	generationRecoveryPhase(ctx, "mailbox-selection", "")
 	mailboxNames, err := s.mailboxesToSync(ctx, account, requestedMailboxes)
 	if err != nil {
 		status = "failed"
 		errText = err.Error()
 		return run, err
 	}
+	generationRecoveryPhase(ctx, "sqlite-last-uids", "")
 	lastUIDs, err := s.Store.LastUIDs(ctx, userID, account.ID)
 	if err != nil {
 		status = "failed"
 		errText = err.Error()
 		return run, err
 	}
+	generationRecoveryPhase(ctx, "imap-mailbox-status", "")
 	plan := s.planMailboxes(ctx, account, mailboxNames, lastUIDs)
 	requestedSet := requestedMailboxSet(requestedMailboxes)
 	progress.MailboxesTotal = len(plan)
@@ -419,6 +445,8 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 
 	if options.generationRecovery {
 		log.Printf("recover mailbox generation phase user_id=%d account_id=%d phase=defer-pending-flags", userID, account.ID)
+	} else if options.deferPendingFlags {
+		log.Printf("sync user_id=%d account_id=%d phase=defer-pending-flags reason=mailbox-generation-recovery", userID, account.ID)
 	} else {
 		if err := s.PushPendingReadState(ctx, userID, 500); err != nil {
 			status = "failed"
@@ -435,16 +463,19 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 	for _, planned := range plan {
 		mailboxName := planned.Name
 		mailboxLastUIDAtStart := planned.LastUID
+		generationRecoveryCheckpoint(ctx, mailboxLastUIDAtStart)
 		progress.CurrentMailbox = mailboxName
 		progress.CurrentUID = mailboxLastUIDAtStart
 		s.updateSyncProgress(ctx, userID, run.ID, progress)
 
+		generationRecoveryPhase(ctx, "sqlite-get-mailbox", "")
 		mailbox, err := s.Store.GetOrCreateMailbox(ctx, userID, account.ID, mailboxName)
 		if err != nil {
 			status = "failed"
 			errText = err.Error()
 			return run, err
 		}
+		generationRecoveryPhase(ctx, "sqlite-generation-state", "")
 		generationReset, err := s.ResetMailboxGenerationIfNeeded(ctx, userID, account, mailbox,
 			planned.Status.UIDValidity, planned.Status.UIDNext)
 		if err != nil {
@@ -491,6 +522,34 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 					return run, err
 				}
 			}
+		}
+		if generationRebuildPending && s.DeferMailboxGenerationRebuilds && !options.generationRecovery {
+			// An ordinary Inbox bypass may discover a second UIDVALIDITY change
+			// while another mailbox is recovering. Persist the STATUS snapshot,
+			// then leave all message fetches to the per-tenant recovery worker so
+			// this sync cannot start another untracked rebuild inline.
+			if err := s.Store.UpdateMailboxRemoteStatusForGeneration(ctx, userID, account.ID, mailbox.ID,
+				int(planned.Status.Messages), int(planned.Status.Unseen), planned.Status.UIDNext,
+				planned.Status.UIDValidity); err != nil {
+				status = "failed"
+				errText = err.Error()
+				return run, err
+			}
+			progress.CurrentMailbox = mailboxName
+			progress.CurrentUID = mailboxLastUIDAtStart
+			if err := s.updateSyncProgress(ctx, userID, run.ID, progress); err != nil {
+				status = "failed"
+				errText = err.Error()
+				return run, err
+			}
+			log.Printf("queue mailbox generation recovery user_id=%d account_id=%d mailbox=%q reason=serialized-recovery",
+				userID, account.ID, mailboxName)
+			// ResetMailboxGenerationIfNeeded already signals for a fresh marker.
+			// A marker restored from disk still needs to wake the worker.
+			if !generationReset && s.MailboxGenerationRecoveryStarted != nil {
+				s.MailboxGenerationRecoveryStarted(userID)
+			}
+			return run, nil
 		}
 		rebuildInProgress := generationReset || generationRebuildPending
 		isPostRebuildArrival := func(item FetchedMessage) bool {
@@ -551,6 +610,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				return run, err
 			}
 		}
+		generationRecoveryPhase(ctx, "plugin-hook-discovery", "")
 		classifiers, storedHooks, err := s.postStorePluginHooks(ctx)
 		if err != nil {
 			status = "failed"
@@ -579,22 +639,28 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			return item
 		}
 		storeFetchedItem := func(item FetchedMessage, runStoredHooks bool) (store.MessageRecord, error) {
-			msg, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item)
+			msg, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item, !rebuildInProgress)
 			if err != nil {
 				return store.MessageRecord{}, err
 			}
-			if err := searchBatch.Add(ctx, pendingIndex); err != nil {
-				return store.MessageRecord{}, err
-			}
-			classificationBatch.Add(msg, parsed)
-			if searchBatch.Empty() {
-				classificationBatch.Flush(ctx)
-			}
-			if runStoredHooks && len(storedHooks) > 0 {
-				if err := searchBatch.Flush(ctx); err != nil {
+			if !rebuildInProgress {
+				if err := searchBatch.Add(ctx, pendingIndex); err != nil {
 					return store.MessageRecord{}, err
 				}
-				classificationBatch.Flush(ctx)
+				classificationBatch.Add(msg, parsed)
+				if searchBatch.Empty() {
+					classificationBatch.Flush(ctx)
+				}
+			} else {
+				generationRecoveryPhase(ctx, "search-deferred", "generation-rebuild")
+			}
+			if runStoredHooks && len(storedHooks) > 0 {
+				if !rebuildInProgress {
+					if err := searchBatch.Flush(ctx); err != nil {
+						return store.MessageRecord{}, err
+					}
+					classificationBatch.Flush(ctx)
+				}
 				if err := s.importStoredMessageHooks(ctx, storedHooks, msg, mailbox); err != nil {
 					return store.MessageRecord{}, err
 				}
@@ -605,6 +671,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		prewarmedUIDs := map[uint32]bool{}
 		prewarmHandle := func(item FetchedMessage) error {
 			item = prepareFetchedItem(item)
+			generationRecoveryPhase(ctx, "sqlite-message-exists", "")
 			exists, err := s.Store.MessageExistsByUIDForGeneration(ctx, userID, account.ID, mailbox.ID,
 				item.UID, item.UIDValidity)
 			if err != nil {
@@ -638,7 +705,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		}
 		generationRecoverySnapshot := MailboxUIDSnapshot{}
 		if generationRebuildPending {
-			log.Printf("recover mailbox generation phase user_id=%d account_id=%d mailbox=%s phase=snapshot-and-newest-page after_uid=%d",
+			log.Printf("recover mailbox generation phase user_id=%d account_id=%d mailbox=%q phase=snapshot-and-newest-page after_uid=%d",
 				userID, account.ID, mailbox.Name, mailboxLastUIDAtStart)
 			var prewarmFatalErr, prewarmErr error
 			seedRecoveryProgress := func(snapshot MailboxUIDSnapshot) error {
@@ -656,7 +723,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			}
 			generationRecoverySnapshot, prewarmFatalErr, prewarmErr = s.prewarmPendingMailboxGeneration(ctx,
 				userID, account, mailbox, planned.Status.UIDValidity, prewarmHandle, seedRecoveryProgress)
-			log.Printf("recover mailbox generation phase complete user_id=%d account_id=%d mailbox=%s phase=snapshot-and-newest-page snapshot_uids=%d prewarmed=%d",
+			log.Printf("recover mailbox generation phase complete user_id=%d account_id=%d mailbox=%q phase=snapshot-and-newest-page snapshot_uids=%d prewarmed=%d",
 				userID, account.ID, mailbox.Name, len(generationRecoverySnapshot.UIDs), len(prewarmedUIDs))
 			if prewarmFatalErr != nil {
 				status = "failed"
@@ -711,6 +778,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				}
 				return s.updateSyncProgress(ctx, userID, run.ID, progress)
 			}
+			generationRecoveryPhase(ctx, "sqlite-message-exists", "")
 			exists, err := s.Store.MessageExistsByUIDForGeneration(ctx, userID, account.ID, mailbox.ID,
 				item.UID, item.UIDValidity)
 			if err != nil {
@@ -746,11 +814,13 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 					progress.MessagesSkipped++
 				}
 				if item.UID > lastUIDs[mailboxName] {
+					generationRecoveryPhase(ctx, "sqlite-checkpoint", "")
 					if err := s.Store.UpdateMailboxLastUIDForGeneration(ctx, userID, account.ID, mailbox.ID,
 						item.UID, item.UIDValidity); err != nil {
 						return err
 					}
 					lastUIDs[mailboxName] = item.UID
+					generationRecoveryCheckpoint(ctx, item.UID)
 				}
 				return s.updateSyncProgress(ctx, userID, run.ID, progress)
 			}
@@ -777,11 +847,13 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				}
 			}
 			if item.UID > lastUIDs[mailboxName] {
+				generationRecoveryPhase(ctx, "sqlite-checkpoint", "")
 				if err := s.Store.UpdateMailboxLastUIDForGeneration(ctx, userID, account.ID, mailbox.ID,
 					item.UID, item.UIDValidity); err != nil {
 					return err
 				}
 				lastUIDs[mailboxName] = item.UID
+				generationRecoveryCheckpoint(ctx, item.UID)
 			}
 			return s.updateSyncProgress(ctx, userID, run.ID, progress)
 		}
@@ -790,7 +862,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			generationRecoverySnapshot.UIDNext > 0
 		generationRecoveryComplete := true
 		if generationSnapshotRecovery {
-			log.Printf("recover mailbox generation batch user_id=%d account_id=%d mailbox=%s after_uid=%d snapshot_uids=%d limit=%d",
+			log.Printf("recover mailbox generation batch user_id=%d account_id=%d mailbox=%q after_uid=%d snapshot_uids=%d limit=%d",
 				userID, account.ID, mailbox.Name, mailboxLastUIDAtStart, len(generationRecoverySnapshot.UIDs),
 				mailboxGenerationRecoveryBatchSize)
 			refreshNewest := func(final bool) error {
@@ -813,7 +885,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				mailboxLastUIDAtStart, planned.Status.UIDValidity, generationRecoverySnapshot,
 				handleFetchedItem, refreshNewest)
 			if err == nil {
-				log.Printf("recover mailbox generation batch complete user_id=%d account_id=%d mailbox=%s checkpoint_uid=%d final=%t",
+				log.Printf("recover mailbox generation batch complete user_id=%d account_id=%d mailbox=%q checkpoint_uid=%d final=%t",
 					userID, account.ID, mailbox.Name, lastUIDs[mailboxName], generationRecoveryComplete)
 			}
 		} else {
@@ -847,9 +919,10 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		// Fetch the incremental delta before auditing historical search documents.
 		// A mailbox refresh triggered by a move should surface the relocated message
 		// immediately instead of waiting for an O(mailbox size) repair scan.
-		// Generation rebuilds index every newly fetched body inline. Leave stale
-		// derived documents for a normal post-recovery sync, even if the replacement
-		// mailbox is small: it may have replaced a very large prior generation.
+		// Generation rebuilds restore authoritative SQLite rows first. Pending
+		// current rows are indexed after the recovery gate opens; stale documents
+		// from the replaced generation are purged by a later normal folder sync or
+		// the explicit offline search reset.
 		if !generationRebuildPending {
 			if _, err := s.RepairMailboxSearchIndex(ctx, userID, mailbox, run.ID, &progress); err != nil {
 				status = "failed"
@@ -1042,7 +1115,7 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 			}
 			return nil
 		}
-		msg, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item)
+		msg, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item, true)
 		if err != nil {
 			return err
 		}
@@ -1171,6 +1244,7 @@ func (s *Service) planMailboxes(ctx context.Context, account store.MailAccount, 
 // updateSyncProgress persists a progress snapshot and immediately notifies the
 // event hub, which is what drives the sidebar and settings sync indicators.
 func (s *Service) updateSyncProgress(ctx context.Context, userID, runID int64, progress store.SyncProgress) error {
+	generationRecoveryPhase(ctx, "sqlite-sync-progress", "")
 	if err := s.Store.UpdateSyncRunProgress(ctx, userID, runID, progress); err != nil {
 		return err
 	}

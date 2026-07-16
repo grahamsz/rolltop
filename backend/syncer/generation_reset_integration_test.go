@@ -137,8 +137,8 @@ func TestSyncResetsMailboxGenerationAndRefetchesReusedUID(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(oldHits) != 1 || len(newHits) != 1 || newHits[0] != messages[0].ID {
-				t.Fatalf("search during bounded reset old=%v new=%v want deferred stale hit/[new message]", oldHits, newHits)
+			if len(oldHits) != 1 || len(newHits) != 0 {
+				t.Fatalf("search during bounded reset old=%v new=%v want stale hit/deferred replacement", oldHits, newHits)
 			}
 			if _, err := service.SyncUser(ctx, user.ID); err != nil {
 				t.Fatal(err)
@@ -149,6 +149,13 @@ func TestSyncResetsMailboxGenerationAndRefetchesReusedUID(t *testing.T) {
 			}
 			if len(oldHits) != 0 {
 				t.Fatalf("post-recovery search repair retained stale hits=%v", oldHits)
+			}
+			newHits, err = searchService.Search(ctx, user.ID, "newgenerationtoken", 10, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(newHits) != 1 || newHits[0] != messages[0].ID {
+				t.Fatalf("post-recovery search repair replacement hits=%v, want message %d", newHits, messages[0].ID)
 			}
 		})
 	}

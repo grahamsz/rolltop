@@ -1061,8 +1061,20 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := searchSvc.IndexMessage(ctx, first, nil); err != nil {
+	if err := db.MarkMessageAttachmentIndexed(ctx, user.ID, first.ID, false); err != nil {
 		t.Fatal(err)
+	}
+	// Simulate an old-generation document whose SQLite row was purged. Its raw
+	// Bleve count matches the one current committed row, but the IDs do not.
+	stale := first
+	stale.ID += 1_000_000
+	stale.UID += 1_000_000
+	stale.Subject = "Stale generation"
+	if err := searchSvc.IndexMessage(ctx, stale, nil); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := searchSvc.CountMailboxMessages(ctx, user.ID, mailbox.ID); err != nil || count != 1 {
+		t.Fatalf("raw search index count = %d, %v; want 1, nil", count, err)
 	}
 	if _, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Empty"); err != nil {
 		t.Fatal(err)
@@ -1091,17 +1103,27 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	if box.LocalMessageCount != 2 {
 		t.Fatalf("local message count = %d", box.LocalMessageCount)
 	}
-	if box.SearchIndexedCount == nil || *box.SearchIndexedCount != 1 {
+	if box.SearchIndexedCount == nil || *box.SearchIndexedCount != 0 {
 		t.Fatalf("search indexed count = %v", box.SearchIndexedCount)
 	}
 	if box.SearchIndexTotal == nil || *box.SearchIndexTotal != 4 {
 		t.Fatalf("search index total = %v", box.SearchIndexTotal)
 	}
-	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 25 {
+	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 0 {
 		t.Fatalf("search index percent = %v", box.SearchIndexPercent)
 	}
 	if emptyBox.SearchIndexPercent == nil || *emptyBox.SearchIndexPercent != 0 {
 		t.Fatalf("empty search index percent = %v", emptyBox.SearchIndexPercent)
+	}
+	if err := searchSvc.IndexMessage(ctx, first, nil); err != nil {
+		t.Fatal(err)
+	}
+	server.populateMailboxSearchIndexStats(ctx, user.ID, &box)
+	if box.SearchIndexedCount == nil || *box.SearchIndexedCount != 1 {
+		t.Fatalf("search indexed count after current document = %v", box.SearchIndexedCount)
+	}
+	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 25 {
+		t.Fatalf("search index percent after current document = %v", box.SearchIndexPercent)
 	}
 }
 

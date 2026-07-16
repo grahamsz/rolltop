@@ -36,6 +36,7 @@ func (s *Service) prewarmPendingMailboxGeneration(
 	if !ok {
 		return MailboxUIDSnapshot{}, nil, nil
 	}
+	generationRecoveryPhase(ctx, "imap-uid-snapshot", "")
 	snapshot, err := snapshotFetcher.SnapshotMailboxUIDs(ctx, account, mailbox.Name)
 	if err != nil {
 		return MailboxUIDSnapshot{}, nil, err
@@ -64,6 +65,7 @@ func (s *Service) prewarmPendingMailboxGeneration(
 		previous = uid
 	}
 	snapshot.UIDs = append([]uint32(nil), unique...)
+	generationRecoverySetTotal(ctx, len(snapshot.UIDs))
 	if snapshotReady != nil {
 		if err := snapshotReady(snapshot); err != nil {
 			return snapshot, err, nil
@@ -77,6 +79,7 @@ func (s *Service) prewarmPendingMailboxGeneration(
 		return snapshot, nil, nil
 	}
 
+	generationRecoveryPhase(ctx, "sqlite-local-uids", "")
 	localUIDs, err := s.Store.MessageUIDsForMailbox(ctx, userID, account.ID, mailbox.ID)
 	if err != nil {
 		return snapshot, err, nil
@@ -108,8 +111,14 @@ func (s *Service) prewarmPendingMailboxGeneration(
 
 	var callbackErr error
 	for _, phase := range phases {
+		generationRecoveryPhase(ctx, "imap-newest-fetch", "awaiting-body")
 		fetchErr := s.fetchUIDsForGeneration(ctx, account, mailbox.Name, phase, expectedUIDValidity, func(item FetchedMessage) error {
+			generationRecoveryStartMessage(ctx, item.UID)
+			defer generationRecoveryPhase(ctx, "imap-newest-fetch", "awaiting-body")
 			err := handle(item)
+			if err == nil {
+				generationRecoveryMessageCompleted(ctx, item.UID)
+			}
 			if err != nil && callbackErr == nil {
 				callbackErr = err
 			}
@@ -148,12 +157,22 @@ func (s *Service) fetchMailboxGenerationSnapshotBatch(
 		end = mailboxGenerationRecoveryBatchSize
 	}
 	if end > 0 {
+		generationRecoveryPhase(ctx, "imap-history-fetch", "awaiting-body")
 		if err := s.fetchUIDsForGeneration(ctx, account, mailbox.Name, uids[:end],
-			expectedUIDValidity, handle); err != nil {
+			expectedUIDValidity, func(item FetchedMessage) error {
+				generationRecoveryStartMessage(ctx, item.UID)
+				defer generationRecoveryPhase(ctx, "imap-history-fetch", "awaiting-body")
+				err := handle(item)
+				if err == nil {
+					generationRecoveryMessageCompleted(ctx, item.UID)
+				}
+				return err
+			}); err != nil {
 			return false, err
 		}
 	}
 	complete := end == len(uids)
+	generationRecoveryPhase(ctx, "refresh-newest", "")
 	if err := refresh(complete); err != nil {
 		return false, err
 	}

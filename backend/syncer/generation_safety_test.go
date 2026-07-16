@@ -3,9 +3,12 @@ package syncer
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"rolltop/backend/blob"
 	"rolltop/backend/store"
 )
 
@@ -288,6 +291,16 @@ func TestGenerationRecoveryDefersTenantPendingFlagUploads(t *testing.T) {
 		t.Fatalf("regular sync Seen writes=%d, want 1", fetcher.seenWriteCalls)
 	}
 
+	// An unrelated account-qualified poll admitted during recovery uses the
+	// normal fetch path but must not drain tenant-wide pending flags.
+	if _, err := fixture.service.syncUserAccountMailboxes(context.Background(), fixture.userID,
+		fixture.account.ID, []string{fixture.source.Name}, syncAccountOptions{deferPendingFlags: true}); err == nil {
+		t.Fatal("deferred-flag sync unexpectedly succeeded with the refusing test fetcher")
+	}
+	if fetcher.seenWriteCalls != 1 {
+		t.Fatalf("deferred-flag sync performed pending Seen writes: calls=%d, want 1", fetcher.seenWriteCalls)
+	}
+
 	// A generation-recovery turn must start fetching the requested mailbox
 	// without first performing up to 500 unrelated writes for the tenant.
 	if _, err := fixture.service.RecoverUserAccountMailboxGeneration(context.Background(), fixture.userID,
@@ -303,6 +316,155 @@ func TestGenerationRecoveryDefersTenantPendingFlagUploads(t *testing.T) {
 	}
 	if !message.ReadSyncPending {
 		t.Fatal("generation recovery cleared the deferred local Seen change")
+	}
+}
+
+func TestRunnerPollDuringGenerationRecoveryDefersTenantPendingFlagUploads(t *testing.T) {
+	fixture := newMoveTestFixture(t)
+	fetcher := &generationRefusingFlagFetcher{moveTestFetcher: fixture.fetcher}
+	fixture.service.Fetcher = fetcher
+	if err := fixture.store.MarkMessageReadForUser(context.Background(), fixture.userID, fixture.message.ID, false, true); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := NewRunnerWithContext(context.Background(), fixture.service)
+	runner.mu.Lock()
+	runner.generationRecoveryUsers[fixture.userID] = true
+	runner.generationRecoveryRuns[fixture.userID] = true
+	runner.generationRecoveryKnown[fixture.userID] = true
+	runner.generationRecoveryAccounts[fixture.userID] = map[int64]bool{fixture.account.ID: true}
+	runner.generationRecoveryTargets[fixture.userID] = map[string]bool{
+		accountMailboxKey(fixture.userID, fixture.account.ID, "Gmail Forward"): true,
+	}
+	runner.mu.Unlock()
+	keys, ok := runner.reserveAccountMailboxes(fixture.userID, fixture.account.ID, []string{fixture.source.Name})
+	if !ok {
+		t.Fatal("unrelated Inbox poll was blocked by generation recovery")
+	}
+	runner.runReservedAccountMailboxes(fixture.userID, fixture.account.ID, []string{fixture.source.Name}, keys)
+	if fetcher.seenWriteCalls != 0 {
+		t.Fatalf("runner poll drained tenant Seen writes during recovery: calls=%d", fetcher.seenWriteCalls)
+	}
+}
+
+type serializedGenerationDiscoveryFetcher struct {
+	*moveTestFetcher
+	snapshotCalls int
+	sparseCalls   int
+	boundCalls    int
+}
+
+func (f *serializedGenerationDiscoveryFetcher) MailboxStatus(context.Context, store.MailAccount, string) (MailboxStatus, error) {
+	return MailboxStatus{Messages: 1, Unseen: 1, UIDNext: 2, UIDValidity: 2}, nil
+}
+
+func (f *serializedGenerationDiscoveryFetcher) SnapshotMailboxUIDs(context.Context, store.MailAccount, string) (MailboxUIDSnapshot, error) {
+	f.snapshotCalls++
+	return MailboxUIDSnapshot{UIDs: []uint32{1}, UIDValidity: 2, UIDNext: 2}, nil
+}
+
+func (f *serializedGenerationDiscoveryFetcher) FetchMailboxWithUIDValidity(context.Context, store.MailAccount,
+	string, uint32, uint32, func(FetchedMessage) error,
+) error {
+	f.boundCalls++
+	return nil
+}
+
+func (f *serializedGenerationDiscoveryFetcher) FetchUIDsWithUIDValidity(_ context.Context, _ store.MailAccount,
+	mailbox string, uids []uint32, expectedUIDValidity uint32, handle func(FetchedMessage) error,
+) error {
+	f.sparseCalls++
+	for _, uid := range uids {
+		if err := handle(FetchedMessage{
+			Mailbox: mailbox, UID: uid, UIDValidity: expectedUIDValidity,
+			InternalDate: time.Date(2026, 7, 16, 8, 30, 0, 0, time.UTC),
+			Raw: []byte("From: sender@example.test\r\nTo: owner@example.test\r\n" +
+				"Subject: recovered\r\nMessage-ID: <recovered@example.test>\r\n\r\nbody\r\n"),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TestRunnerServiceYieldsDiscoveredGenerationToSerializedRecovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "serialized-generation@example.test", "Serialized Generation", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := recoveryTestAccount(t, ctx, db, user.ID, "serialized-generation")
+	mailbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, mailbox.ID, 1, 1, 2, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	fetcher := &serializedGenerationDiscoveryFetcher{moveTestFetcher: &moveTestFetcher{}}
+	service := &Service{Store: db, Blobs: blob.New(dir), Fetcher: fetcher}
+	runner := NewRunnerWithContext(ctx, service)
+	if !service.DeferMailboxGenerationRebuilds {
+		t.Fatal("Runner did not enable serialized mailbox generation discovery")
+	}
+	// Keep the test deterministic while retaining the Runner-installed policy.
+	// The production callback wakes the same recovery entrypoint invoked below.
+	signals := 0
+	service.MailboxGenerationRecoveryStarted = func(signalUserID int64) {
+		if signalUserID != user.ID {
+			t.Fatalf("recovery signal user_id=%d, want %d", signalUserID, user.ID)
+		}
+		signals++
+	}
+	_ = runner
+
+	if _, err := service.SyncUserAccountMailboxes(ctx, user.ID, account.ID, []string{"INBOX"}); err != nil {
+		t.Fatal(err)
+	}
+	if fetcher.snapshotCalls != 0 || fetcher.sparseCalls != 0 || fetcher.boundCalls != 0 {
+		t.Fatalf("ordinary sync started generation fetch snapshot/sparse/bound=%d/%d/%d, want 0/0/0",
+			fetcher.snapshotCalls, fetcher.sparseCalls, fetcher.boundCalls)
+	}
+	if signals != 1 {
+		t.Fatalf("generation recovery signals=%d, want 1", signals)
+	}
+	pending, err := db.MailboxGenerationRebuildPending(ctx, user.ID, account.ID, mailbox.ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
+		t.Fatal("ordinary sync did not retain the durable generation marker")
+	}
+	mailbox, err = db.GetMailboxForUser(ctx, user.ID, mailbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mailbox.UIDValidity != 2 || mailbox.LastUID != 0 || mailbox.RemoteMessageCount != 1 ||
+		mailbox.RemoteUnreadCount != 1 || mailbox.RemoteUIDNext != 2 {
+		t.Fatalf("yielded mailbox status=%+v, want generation 2, checkpoint 0, remote 1/1/2", mailbox)
+	}
+
+	if _, err := service.RecoverUserAccountMailboxGeneration(ctx, user.ID, account.ID, "INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	if fetcher.snapshotCalls == 0 || fetcher.sparseCalls == 0 {
+		t.Fatalf("designated recovery did not fetch generation snapshot/sparse=%d/%d",
+			fetcher.snapshotCalls, fetcher.sparseCalls)
+	}
+	pending, err = db.MailboxGenerationRebuildExists(ctx, user.ID, account.ID, mailbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending {
+		t.Fatal("designated recovery did not finalize the generation marker")
 	}
 }
 

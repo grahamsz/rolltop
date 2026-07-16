@@ -358,7 +358,7 @@ func (s *Service) completeCopiedMessageLocally(ctx context.Context, userID int64
 	if err := s.applyCopiedMessageFlags(ctx, destAccount, dest, fetched.UID, msg, &fetched); err != nil {
 		return err
 	}
-	copied, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, destAccount, dest, fetched)
+	copied, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, destAccount, dest, fetched, true)
 	if err != nil {
 		return err
 	}

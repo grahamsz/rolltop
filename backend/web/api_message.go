@@ -844,9 +844,10 @@ func (s *Server) startMoveRefresh(userID, accountID int64, mailboxes []string) {
 	if s.syncRunner == nil {
 		return
 	}
-	if !s.syncRunner.StartAccountMailboxes(userID, accountID, mailboxes) {
-		s.syncRunner.QueueAccountMailboxes(userID, accountID, mailboxes)
-	}
+	// Moves call this while holding the tenant's foreground reservation. The
+	// queue path records a deferred refresh without waiting on that same token;
+	// release schedules it before another foreground writer can take a turn.
+	s.syncRunner.QueueAccountMailboxes(userID, accountID, mailboxes)
 }
 
 // apiBulkMoveMessages does small batches inline and large batches as background
@@ -981,7 +982,7 @@ func (s *Server) apiBulkCopyMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	refreshDest := func() {
 		if s.syncRunner != nil {
-			s.syncRunner.StartAccountMailboxes(cu.User.ID, dest.AccountID, []string{dest.Name})
+			s.syncRunner.QueueAccountMailboxes(cu.User.ID, dest.AccountID, []string{dest.Name})
 		}
 	}
 	if len(in.MessageIDs) > 5 {

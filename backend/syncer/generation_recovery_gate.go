@@ -4,7 +4,6 @@ package syncer
 
 import (
 	"context"
-	"errors"
 	"log"
 	"sort"
 	"strings"
@@ -27,15 +26,11 @@ type generationRecoveryReplay struct {
 	attachments      bool
 }
 
-type generationRecoveryAccountReplay struct {
-	userID  int64
-	request deferredAccountMailbox
-}
-
 type generationRecoveryActivity struct {
-	accountID int64
-	mailbox   string
-	startedAt time.Time
+	accountID   int64
+	mailbox     string
+	startedAt   time.Time
+	diagnostics *generationRecoveryDiagnostics
 }
 
 // SignalMailboxGenerationRecovery closes the tenant gate as soon as a normal
@@ -49,6 +44,7 @@ func (r *Runner) SignalMailboxGenerationRecovery(userID int64) {
 	r.ensureGenerationRecoveryMapsLocked()
 	r.generationRecoveryEpoch[userID]++
 	delete(r.generationRecoveryAccounts, userID)
+	delete(r.generationRecoveryTargets, userID)
 	delete(r.generationRecoveryKnown, userID)
 	r.activateGenerationRecoveryLocked(userID)
 	r.mu.Unlock()
@@ -88,7 +84,8 @@ func (r *Runner) generationRecoveryEpochSnapshotForUser(userID int64) map[int64]
 }
 
 func (r *Runner) reconcileGenerationRecoveryUsers(pending map[int64]bool,
-	pendingAccounts map[int64]map[int64]bool, snapshot map[int64]uint64,
+	pendingAccounts map[int64]map[int64]bool, pendingTargets map[int64]map[string]bool,
+	snapshot map[int64]uint64,
 ) {
 	if r == nil {
 		return
@@ -105,6 +102,7 @@ func (r *Runner) reconcileGenerationRecoveryUsers(pending map[int64]bool,
 		expectedEpoch, observed := snapshot[userID]
 		if pendingAccounts != nil && (!wasActive || (observed && expectedEpoch == r.generationRecoveryEpoch[userID])) {
 			r.generationRecoveryAccounts[userID] = cloneGenerationRecoveryAccounts(pendingAccounts[userID])
+			r.generationRecoveryTargets[userID] = cloneGenerationRecoveryTargets(pendingTargets[userID])
 			r.generationRecoveryKnown[userID] = true
 		}
 	}
@@ -113,6 +111,7 @@ func (r *Runner) reconcileGenerationRecoveryUsers(pending map[int64]bool,
 		freshSnapshot := observed && expectedEpoch == r.generationRecoveryEpoch[userID]
 		if pendingAccounts != nil && !pending[userID] && freshSnapshot {
 			r.generationRecoveryAccounts[userID] = map[int64]bool{}
+			r.generationRecoveryTargets[userID] = map[string]bool{}
 			r.generationRecoveryKnown[userID] = true
 		}
 		if pending[userID] || r.generationRecoveryRuns[userID] || r.generationRecoveryReplay[userID] ||
@@ -151,7 +150,7 @@ func (r *Runner) refreshGenerationRecoveryGateForUser(ctx context.Context, userI
 	if pending {
 		pendingUsers[userID] = true
 	}
-	r.reconcileGenerationRecoveryUsers(pendingUsers, nil, snapshot)
+	r.reconcileGenerationRecoveryUsers(pendingUsers, nil, nil, snapshot)
 	r.wakeMailboxGenerationRebuildRecovery()
 }
 
@@ -178,6 +177,7 @@ func (r *Runner) clearGenerationRecoveryLocked(userID int64) generationRecoveryR
 	sortGenerationRecoveryReplay(&replay)
 	delete(r.generationRecoveryUsers, userID)
 	delete(r.generationRecoveryAccounts, userID)
+	delete(r.generationRecoveryTargets, userID)
 	delete(r.generationRecoveryKnown, userID)
 	delete(r.generationRecoveryCursor, userID)
 	delete(r.generationRecoveryAuto, userID)
@@ -191,6 +191,7 @@ func (r *Runner) replayAfterGenerationRecovery(replay generationRecoveryReplay) 
 	if r.context().Err() != nil {
 		return
 	}
+	replay = r.coalesceGenerationRecoveryReplay(replay)
 	if r.replayGenerationRecovery != nil {
 		r.replayGenerationRecovery(replay)
 		r.mu.Lock()
@@ -345,62 +346,20 @@ func (r *Runner) runGenerationRecoveryReplay(replay generationRecoveryReplay) {
 			replay = generationRecoveryReplay{userID: prepared.userID}
 			continue
 		}
-		runSenderStats := r.claimGenerationRecoverySenderStatsLocked(prepared.userID)
-		var attachmentCtx context.Context
-		var attachmentDone chan struct{}
-		runAttachments := false
-		if !runSenderStats {
-			attachmentCtx, attachmentDone, runAttachments = r.claimGenerationRecoveryAttachmentBatchLocked(prepared.userID)
+		// Search indexing and sender statistics are derived maintenance. Release
+		// the broad replay gate before running either one so a slow Bleve writer
+		// cannot keep Inbox polling or remote IMAP copy routines paused.
+		maintenance := generationRecoveryReplay{
+			userID:      prepared.userID,
+			senderStats: r.senderStatsPending[prepared.userID],
+			attachments: r.attachmentPending[prepared.userID],
 		}
-		if !runSenderStats && !runAttachments {
-			delete(r.generationRecoveryReplay, prepared.userID)
-			r.mu.Unlock()
-			return
-		}
+		delete(r.generationRecoveryReplay, prepared.userID)
 		r.mu.Unlock()
-
-		if runSenderStats {
-			if maintenanceErr := r.refreshSenderStatsDuringGenerationRecoveryReplay(prepared.userID); maintenanceErr != nil {
-				if r.generationRecoveryInterrupted(prepared.userID) {
-					r.pauseGenerationRecoveryReplay(generationRecoveryReplay{userID: prepared.userID})
-					return
-				}
-				if r.context().Err() != nil {
-					return
-				}
-				if !r.failOpenGenerationRecoveryReplay(prepared.userID, "sender stats", maintenanceErr) &&
-					r.generationRecoveryInterrupted(prepared.userID) {
-					r.pauseGenerationRecoveryReplay(generationRecoveryReplay{userID: prepared.userID})
-				}
-				return
-			}
-		}
-		if runAttachments {
-			maintenanceErr := r.indexAttachmentsDuringGenerationRecoveryReplay(prepared.userID, attachmentCtx, attachmentDone)
-			if r.generationRecoveryInterrupted(prepared.userID) {
-				r.pauseGenerationRecoveryReplay(generationRecoveryReplay{userID: prepared.userID})
-				return
-			}
-			if maintenanceErr != nil {
-				if r.context().Err() != nil {
-					return
-				}
-				if errors.Is(maintenanceErr, context.Canceled) {
-					replay = generationRecoveryReplay{userID: prepared.userID}
-					continue
-				}
-				if !r.failOpenGenerationRecoveryReplay(prepared.userID, "attachment index", maintenanceErr) &&
-					r.generationRecoveryInterrupted(prepared.userID) {
-					r.pauseGenerationRecoveryReplay(generationRecoveryReplay{userID: prepared.userID})
-				}
-				return
-			}
-		}
-		if r.generationRecoveryInterrupted(prepared.userID) {
-			r.pauseGenerationRecoveryReplay(generationRecoveryReplay{userID: prepared.userID})
-			return
-		}
-		replay = generationRecoveryReplay{userID: prepared.userID}
+		log.Printf("recover mailbox generation replay complete user_id=%d sender_stats_queued=%t search_index_queued=%t",
+			prepared.userID, maintenance.senderStats, maintenance.attachments)
+		r.scheduleGenerationRecoveryWorkOutsideGate(maintenance)
+		return
 	}
 }
 
@@ -424,90 +383,6 @@ func leadingGenerationRecoveryAccountInboxes(requests []deferredAccountMailbox) 
 		count++
 	}
 	return count
-}
-
-func (r *Runner) claimGenerationRecoverySenderStatsLocked(userID int64) bool {
-	if !r.senderStatsPending[userID] {
-		return false
-	}
-	delete(r.senderStatsPending, userID)
-	r.mailboxRunning[mailboxKey(userID, "__recovery_sender_stats__")] = true
-	return true
-}
-
-func (r *Runner) refreshSenderStatsDuringGenerationRecoveryReplay(userID int64) error {
-	err := r.refreshReadSenderStatsForUser(r.context(), userID)
-	r.mu.Lock()
-	delete(r.mailboxRunning, mailboxKey(userID, "__recovery_sender_stats__"))
-	if err != nil {
-		r.senderStatsPending[userID] = true
-	}
-	r.mu.Unlock()
-	if err != nil && r.context().Err() == nil {
-		log.Printf("refresh sender stats after mailbox generation replay user_id=%d: %v", userID, err)
-	}
-	return err
-}
-
-func (r *Runner) claimGenerationRecoveryAttachmentBatchLocked(userID int64) (context.Context, chan struct{}, bool) {
-	if !r.attachmentPending[userID] || r.attachmentDone[userID] != nil {
-		return nil, nil, false
-	}
-	delete(r.attachmentPending, userID)
-	ctx, cancel := context.WithCancel(r.context())
-	done := make(chan struct{})
-	r.mailboxRunning[mailboxKey(userID, "__attachments__")] = true
-	r.attachmentCancels[userID] = cancel
-	r.attachmentDone[userID] = done
-	return ctx, done, true
-}
-
-func (r *Runner) indexAttachmentsDuringGenerationRecoveryReplay(userID int64, ctx context.Context, done chan struct{}) error {
-	n, err := r.indexPendingAttachmentsForUser(ctx, userID, attachmentIndexBatchSize)
-	more := err == nil && n == attachmentIndexBatchSize
-	canceled := ctx.Err() != nil
-	r.mu.Lock()
-	delete(r.mailboxRunning, mailboxKey(userID, "__attachments__"))
-	if cancel := r.attachmentCancels[userID]; cancel != nil {
-		cancel()
-	}
-	delete(r.attachmentCancels, userID)
-	delete(r.attachmentDone, userID)
-	if err != nil || more || canceled {
-		r.attachmentPending[userID] = true
-	}
-	r.mu.Unlock()
-	if done != nil {
-		close(done)
-	}
-	if err != nil && r.context().Err() == nil && !errors.Is(err, context.Canceled) {
-		log.Printf("attachment index after mailbox generation replay user_id=%d: %v", userID, err)
-	}
-	if canceled {
-		return context.Canceled
-	}
-	return err
-}
-
-// failOpenGenerationRecoveryReplay hands derived maintenance back to the normal
-// scheduler. A corrupt index row or other permanent maintenance error must not
-// strand mailbox sync, remote-copy workers, and foreground mail behind the
-// recovery gate indefinitely.
-func (r *Runner) failOpenGenerationRecoveryReplay(userID int64, phase string, maintenanceErr error) bool {
-	r.mu.Lock()
-	if !r.generationRecoveryReplay[userID] || r.generationRecoveryUsers[userID] {
-		r.mu.Unlock()
-		return false
-	}
-	replay := r.takeDeferredGenerationRecoveryReplayLocked(userID)
-	replay.senderStats = r.senderStatsPending[userID]
-	replay.attachments = r.attachmentPending[userID]
-	delete(r.generationRecoveryReplay, userID)
-	r.mu.Unlock()
-
-	log.Printf("mailbox generation replay maintenance deferred user_id=%d phase=%s: %v", userID, phase, maintenanceErr)
-	r.scheduleGenerationRecoveryWorkOutsideGate(replay)
-	return true
 }
 
 func (r *Runner) scheduleGenerationRecoveryWorkOutsideGate(replay generationRecoveryReplay) {
@@ -706,6 +581,9 @@ func (r *Runner) ensureGenerationRecoveryMapsLocked() {
 	if r.generationRecoveryAccounts == nil {
 		r.generationRecoveryAccounts = map[int64]map[int64]bool{}
 	}
+	if r.generationRecoveryTargets == nil {
+		r.generationRecoveryTargets = map[int64]map[string]bool{}
+	}
 	if r.generationRecoveryKnown == nil {
 		r.generationRecoveryKnown = map[int64]bool{}
 	}
@@ -737,8 +615,24 @@ func (r *Runner) generationRecoveryGatedLocked(userID int64) bool {
 		(r.generationRecoveryReplay != nil && r.generationRecoveryReplay[userID])
 }
 
-func (r *Runner) generationRecoveryAccountGatedLocked(userID, accountID int64) bool {
-	if r.generationRecoveryRuns[userID] || r.generationRecoveryReplay[userID] {
+func (r *Runner) generationRecoveryAccountMailboxesGatedLocked(userID, accountID int64, mailboxes []string) bool {
+	if r.generationRecoveryReplay[userID] && !r.generationRecoveryUsers[userID] && !r.generationRecoveryRuns[userID] {
+		// Replay work also owns exact broad/account mailbox reservations. Keep
+		// live Inbox polling available without allowing unrelated folder work to
+		// fan out while the serialized replay drains.
+		return !generationRecoveryInboxBypassAllowed(mailboxes) || r.generationRecoveryOrdinaryWriterRunningLocked(userID)
+	}
+	if r.generationRecoveryRuns[userID] {
+		// Active work owns an exact mailbox reservation. Do not let an
+		// unrelated Inbox poll wait behind a large recovery turn.
+		if targets, known := r.generationRecoveryTargets[userID]; known {
+			for _, mailbox := range mailboxes {
+				if targets[accountMailboxKey(userID, accountID, mailbox)] {
+					return true
+				}
+			}
+			return !generationRecoveryInboxBypassAllowed(mailboxes) || r.generationRecoveryOrdinaryWriterRunningLocked(userID)
+		}
 		return true
 	}
 	if !r.generationRecoveryUsers[userID] {
@@ -747,10 +641,30 @@ func (r *Runner) generationRecoveryAccountGatedLocked(userID, accountID int64) b
 	if !r.generationRecoveryKnown[userID] {
 		return true
 	}
-	if r.generationRecoveryAccounts[userID][accountID] {
-		return true
+	if targets, known := r.generationRecoveryTargets[userID]; known {
+		for _, mailbox := range mailboxes {
+			if targets[accountMailboxKey(userID, accountID, mailbox)] {
+				return true
+			}
+		}
+		return !generationRecoveryInboxBypassAllowed(mailboxes) || r.generationRecoveryOrdinaryWriterRunningLocked(userID)
 	}
-	return r.ordinaryMailboxSyncRunningLocked(userID)
+	// Compatibility with a gate signaled before an exact target snapshot was
+	// installed. The next durable scan replaces this account-wide fallback.
+	return r.generationRecoveryAccounts[userID][accountID] || !generationRecoveryInboxBypassAllowed(mailboxes) ||
+		r.generationRecoveryOrdinaryWriterRunningLocked(userID)
+}
+
+func generationRecoveryInboxBypassAllowed(mailboxes []string) bool {
+	if len(mailboxes) == 0 {
+		return false
+	}
+	for _, mailbox := range mailboxes {
+		if !strings.EqualFold(strings.TrimSpace(mailbox), "INBOX") {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneGenerationRecoveryAccounts(accounts map[int64]bool) map[int64]bool {
@@ -763,42 +677,14 @@ func cloneGenerationRecoveryAccounts(accounts map[int64]bool) map[int64]bool {
 	return out
 }
 
-func (r *Runner) takeReadyGenerationRecoveryAccountReplays() []generationRecoveryAccountReplay {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var ready []generationRecoveryAccountReplay
-	userIDs := make([]int64, 0, len(r.generationRecoveryAccts))
-	for userID := range r.generationRecoveryAccts {
-		userIDs = append(userIDs, userID)
-	}
-	sort.Slice(userIDs, func(i, j int) bool { return userIDs[i] < userIDs[j] })
-	for _, userID := range userIDs {
-		requests := r.generationRecoveryAccts[userID]
-		if !r.generationRecoveryUsers[userID] || !r.generationRecoveryKnown[userID] ||
-			r.generationRecoveryRuns[userID] || r.generationRecoveryReplay[userID] ||
-			r.ordinaryMailboxSyncRunningLocked(userID) {
-			continue
-		}
-		pendingAccounts := r.generationRecoveryAccounts[userID]
-		keys := make([]string, 0, len(requests))
-		for key := range requests {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			request := requests[key]
-			if pendingAccounts[request.accountID] {
-				continue
-			}
-			ready = append(ready, generationRecoveryAccountReplay{userID: userID, request: request})
-			delete(requests, key)
-			break
-		}
-		if len(requests) == 0 {
-			delete(r.generationRecoveryAccts, userID)
+func cloneGenerationRecoveryTargets(targets map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(targets))
+	for target := range targets {
+		if target = strings.TrimSpace(target); target != "" {
+			out[target] = true
 		}
 	}
-	return ready
+	return out
 }
 
 func (r *Runner) nextMailboxGenerationRecoveryAttempts(rebuilds []store.PendingMailboxGenerationRebuild) []store.PendingMailboxGenerationRebuild {
@@ -868,15 +754,14 @@ func (r *Runner) deferGenerationRecoveryAccountMailboxesLocked(userID, accountID
 	}
 }
 
-func (r *Runner) deferSenderStatsForGenerationRecovery(userID int64) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.generationRecoveryGatedLocked(userID) {
-		return false
+func (r *Runner) clearDeferredGenerationRecoveryAccountMailboxesLocked(userID, accountID int64, mailboxes []string) {
+	requests := r.generationRecoveryAccts[userID]
+	for _, mailbox := range uniqueMailboxes(mailboxes) {
+		delete(requests, accountMailboxKey(userID, accountID, mailbox))
 	}
-	r.ensureGenerationRecoveryMapsLocked()
-	r.senderStatsPending[userID] = true
-	return true
+	if len(requests) == 0 {
+		delete(r.generationRecoveryAccts, userID)
+	}
 }
 
 func (r *Runner) reserveGenerationRecoveryMailbox(rebuild store.PendingMailboxGenerationRebuild) ([]string, bool) {
@@ -897,15 +782,26 @@ func (r *Runner) reserveGenerationRecoveryMailbox(rebuild store.PendingMailboxGe
 		return nil, false
 	}
 	r.generationRecoveryRuns[rebuild.UserID] = true
+	startedAt := time.Now()
 	r.generationRecoveryActive[rebuild.UserID] = generationRecoveryActivity{
-		accountID: rebuild.AccountID,
-		mailbox:   rebuild.MailboxName,
-		startedAt: time.Now(),
+		accountID:   rebuild.AccountID,
+		mailbox:     rebuild.MailboxName,
+		startedAt:   startedAt,
+		diagnostics: newGenerationRecoveryDiagnostics(startedAt),
 	}
 	for _, key := range keys {
 		r.mailboxRunning[key] = true
 	}
 	return keys, true
+}
+
+func (r *Runner) generationRecoveryDiagnosticsForUser(userID int64) *generationRecoveryDiagnostics {
+	if r == nil || userID <= 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.generationRecoveryActive[userID].diagnostics
 }
 
 func (r *Runner) releaseGenerationRecoveryMailbox(userID int64, keys []string) {
@@ -919,7 +815,7 @@ func (r *Runner) releaseGenerationRecoveryMailbox(userID int64, keys []string) {
 }
 
 func (r *Runner) userWorkRunningLocked(userID int64) bool {
-	if r.autoRunning[userID] || r.foregroundRunning[userID] > 0 {
+	if r.autoRunning[userID] || r.foregroundRunning[userID] > 0 || r.senderStatsRunning[userID] {
 		return true
 	}
 	prefix := mailboxKey(userID, "")
@@ -941,6 +837,39 @@ func (r *Runner) ordinaryMailboxSyncRunningLocked(userID int64) bool {
 		if key != attachmentKey && strings.HasPrefix(key, prefix) {
 			return true
 		}
+	}
+	return false
+}
+
+func (r *Runner) mailboxWriterRunningLocked(userID int64) bool {
+	if r.generationRecoveryRuns[userID] || r.autoPlanning[userID] {
+		return true
+	}
+	prefix := mailboxKey(userID, "")
+	attachmentKey := mailboxKey(userID, "__attachments__")
+	for key := range r.mailboxRunning {
+		if key != attachmentKey && strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) generationRecoveryOrdinaryWriterRunningLocked(userID int64) bool {
+	if r.autoRunning[userID] || r.foregroundRunning[userID] > 0 {
+		return true
+	}
+	prefix := mailboxKey(userID, "")
+	attachmentKey := mailboxKey(userID, "__attachments__")
+	activeKey := ""
+	if activity, ok := r.generationRecoveryActive[userID]; ok {
+		activeKey = accountMailboxKey(userID, activity.accountID, activity.mailbox)
+	}
+	for key := range r.mailboxRunning {
+		if key == attachmentKey || key == activeKey || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		return true
 	}
 	return false
 }

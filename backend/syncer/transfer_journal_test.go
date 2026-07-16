@@ -1066,7 +1066,7 @@ func TestStoreFetchedMessagePersistsArrivalFingerprints(t *testing.T) {
 	internalDate := time.Date(2026, 7, 14, 12, 1, 0, 0, time.UTC)
 	item := FetchedMessage{Mailbox: fixture.destination.Name, UID: 74, InternalDate: internalDate, Raw: raw}
 
-	msg, _, _, err := fixture.service.storeFetchedMessage(context.Background(), fixture.userID, fixture.account, fixture.destination, item)
+	msg, _, _, err := fixture.service.storeFetchedMessage(context.Background(), fixture.userID, fixture.account, fixture.destination, item, true)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -94,6 +94,48 @@ docker run --rm -p 8080:8080 \
 
 Keep `.env.rolltop` with the same care as the Docker volume. Changing or losing `ROLLTOP_MASTER_KEY` makes stored IMAP passwords undecryptable.
 
+### Offline Search Index Reset
+
+If one user's full-text index is corrupt or persistently stalled, Rolltop can
+quarantine that tenant's Bleve directory and rebuild it from the local mirror.
+The numeric local user ID is the number in `/data/users/<id>` and in log fields
+such as `user_id=1`.
+
+This resets only derived search data. It does not restore messages that are
+absent from the user's SQLite mirror. Deploy the mailbox-recovery fix and let
+the local mailbox row count reach the remote count first; use `reset-search`
+only if Bleve repair remains stalled after that. During the later rebuild,
+Rolltop may fetch raw messages from the configured IMAP server when retained
+local `.eml` data has expired.
+
+Stop every Rolltop process that mounts the data volume, then run:
+
+```sh
+docker stop <rolltop-container>
+docker run --rm \
+  --env-file .env.rolltop \
+  -v rolltop-data:/data \
+  ghcr.io/grahamsz/rolltop:latest \
+  reset-search --user-id 1 --confirm-offline
+```
+
+For Docker Compose, use your actual service name; the one-off command inherits
+that service's image, environment, and volumes:
+
+```sh
+ROLLTOP_SERVICE=<your-service-name>
+docker compose stop "$ROLLTOP_SERVICE"
+docker compose run --rm --no-deps "$ROLLTOP_SERVICE" \
+  reset-search --user-id 1 --confirm-offline
+```
+
+The command never contacts IMAP or deletes message/blob data. It atomically
+renames `/data/users/<id>/bleve` to a timestamped quarantine directory and
+prints the exact restore paths. Start Rolltop normally to queue the rebuild.
+The data-volume lock makes the command fail if a current Rolltop server still
+holds that volume, but `--confirm-offline` remains mandatory for an explicit
+operator check.
+
 ## V1 Flow
 
 1. First admin creates the initial account at `/setup`.

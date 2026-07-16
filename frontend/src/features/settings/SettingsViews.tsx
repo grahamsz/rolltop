@@ -1910,7 +1910,7 @@ export function SettingsView({
                 <tr key={run.id}>
                   <td>{run.status}</td>
                   <td>{run.current_mailbox}</td>
-                  <td>{run.messages_stored} indexed, {run.messages_skipped} skipped</td>
+                  <td>{run.messages_stored} saved, {run.messages_skipped} skipped</td>
                   <td>{displayDateTime(run.updated_at, user)}</td>
                 </tr>
               ))}
@@ -2371,7 +2371,7 @@ export function SyncRunView({
             <dt>Finished</dt><dd>{run.finished_at ? displayDateTime(run.finished_at, datePrefs) : "-"}</dd>
             <dt>Folder</dt><dd>{run.current_mailbox}</dd>
             <dt>UID</dt><dd>{run.current_uid}</dd>
-            <dt>Messages</dt><dd>{run.messages_stored} indexed, {run.messages_skipped} skipped, {run.messages_seen} seen</dd>
+            <dt>Messages</dt><dd>{run.messages_stored} saved, {run.messages_skipped} skipped, {run.messages_seen} seen</dd>
             <dt>Error</dt><dd>{run.error || "-"}</dd>
           </dl>
         </section>

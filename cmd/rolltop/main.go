@@ -40,7 +40,13 @@ type mailboxWatcher interface {
 }
 
 func main() {
-	if err := run(); err != nil {
+	var err error
+	if len(os.Args) > 1 {
+		err = runCommand(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	} else {
+		err = run()
+	}
+	if err != nil {
 		log.Fatal(err)
 	}
 }
@@ -271,6 +277,16 @@ func run() error {
 		_ = server.Shutdown(shutdownCtx)
 		return err
 	}
+	lock, err := acquireInstanceLock(cfg.DataDir)
+	if err != nil {
+		startup.fail(err)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		<-serverErr
+		return err
+	}
+	defer lock.Close()
 
 	app, err := startApp(ctx, cfg, startup)
 	if err != nil {
@@ -418,6 +434,13 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 	})
 	if err != nil {
 		return nil, err
+	}
+	users, err := db.ListUsers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list users for pending search maintenance: %w", err)
+	}
+	for _, user := range users {
+		syncRunner.StartAttachmentIndex(user.ID)
 	}
 
 	go backfillThreadHeaders(ctx, db, cfg.DataDir)

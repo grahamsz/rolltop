@@ -863,11 +863,33 @@ func (s *Server) populateMailboxSearchIndexStats(ctx context.Context, userID int
 	if s.search == nil || box == nil || !box.IncludeInSearch {
 		return
 	}
-	indexed, err := s.search.CountMailboxMessages(ctx, userID, box.ID)
+	bleveIDs, err := s.search.MailboxMessageIDs(ctx, userID, box.ID)
 	if err != nil {
-		log.Printf("count search index user_id=%d mailbox_id=%d: %v", userID, box.ID, err)
+		log.Printf("list search index messages user_id=%d mailbox_id=%d: %v", userID, box.ID, err)
 		return
 	}
+	indexed := 0
+	var afterID int64
+	for {
+		committedIDs, err := s.store.ListSearchIndexedMessageIDsForMailbox(ctx, userID, box.ID, afterID, 1000)
+		if err != nil {
+			log.Printf("list committed search rows user_id=%d mailbox_id=%d: %v", userID, box.ID, err)
+			return
+		}
+		for _, messageID := range committedIDs {
+			afterID = messageID
+			if bleveIDs[messageID] {
+				indexed++
+			}
+		}
+		if len(committedIDs) < 1000 {
+			break
+		}
+	}
+	// Bleve can retain documents from an interrupted mailbox-generation reset.
+	// Count only current SQLite rows whose exact document ID is present and whose
+	// post-commit marker is set; a stale document cannot substitute for a missing
+	// current message merely because the aggregate counts happen to match.
 	// Use the same remote-aware folder total as the local sync meter so the two
 	// percentages are directly comparable in the settings UI. When STATUS has
 	// not been fetched yet, MessageCount falls back to the local count.

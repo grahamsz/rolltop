@@ -23,6 +23,7 @@ func (s *Service) detectMessageSecurity(ctx context.Context, userID int64, raw [
 		if !ok {
 			continue
 		}
+		generationRecoveryPhase(ctx, "plugin-security-detect", backendPlugin.ID())
 		state, stateErr := provider.DetectMessageSecurity(ctx, host, userID, raw, body)
 		if errors.Is(stateErr, plugins.ErrUnsupported) {
 			continue
@@ -48,6 +49,7 @@ func (s *Service) transformMessageSecurityBody(ctx context.Context, userID int64
 		if !ok {
 			continue
 		}
+		generationRecoveryPhase(ctx, "plugin-security-transform", backendPlugin.ID())
 		transform, transformErr := provider.TransformMessageBody(ctx, host, userID, raw, state, body)
 		if errors.Is(transformErr, plugins.ErrUnsupported) {
 			continue

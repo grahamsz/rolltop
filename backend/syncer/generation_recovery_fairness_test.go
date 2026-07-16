@@ -123,7 +123,7 @@ func (f *boundedRecoveryFairnessFetcher) FetchMailbox(
 	return f.FetchMailboxWithUIDValidity(ctx, account, mailbox, afterUID, status.UIDValidity, handle)
 }
 
-func TestBoundedGenerationRecoveryRunsHealthyAccountBeforeNextBatch(t *testing.T) {
+func TestBoundedGenerationRecoveryDoesNotLetDeferredInboxStarveNextBatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	dir := t.TempDir()
@@ -206,18 +206,17 @@ func TestBoundedGenerationRecoveryRunsHealthyAccountBeforeNextBatch(t *testing.T
 	close(fetcher.releaseHistory)
 	select {
 	case healthyReserved := <-nextAttemptObserved:
-		if !healthyReserved {
-			t.Fatal("next recovery attempt was considered before the deferred healthy account reserved Inbox")
+		if healthyReserved {
+			t.Fatal("deferred Inbox was allowed to take priority over the next recovery batch")
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("bounded recovery did not release and rescan pending work")
 	}
 	select {
 	case <-fetcher.healthyStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("deferred healthy account sync did not start")
+		t.Fatal("deferred Inbox started before a later live poll or final recovery replay")
+	default:
 	}
-	close(fetcher.releaseHealthy)
 	cancel()
 	deadline := time.Now().Add(5 * time.Second)
 	for {

@@ -16,6 +16,9 @@ const fetchedSearchIndexBatchSize = 25
 type pendingFetchedSearchIndex struct {
 	Document              search.MessageIndexDocument
 	HasVisibleAttachments bool
+	// KeepPending commits a fallback document without claiming that raw-body
+	// enrichment completed. The attachment worker can retry the message later.
+	KeepPending bool
 }
 
 // fetchedSearchIndexBatch amortizes Bleve commit cost during IMAP fetches and
@@ -60,12 +63,26 @@ func (b *fetchedSearchIndexBatch) Flush(ctx context.Context) error {
 		documents = append(documents, item.Document)
 	}
 	if b.service.Search != nil {
+		generationRecoveryPhase(ctx, "search-index-batch", "bleve")
 		if err := b.service.Search.IndexMessages(ctx, documents); err != nil {
 			return err
 		}
 	}
 	for _, item := range b.items {
 		message := item.Document.Message
+		if item.KeepPending {
+			if _, err := b.service.Store.GetMessageForUser(ctx, message.UserID, message.ID); err != nil {
+				if store.IsNotFound(err) && b.service.Search != nil {
+					if deleteErr := b.service.Search.DeleteMessage(ctx, message.UserID, message.ID); deleteErr != nil {
+						return deleteErr
+					}
+					continue
+				}
+				return err
+			}
+			continue
+		}
+		generationRecoveryPhase(ctx, "sqlite-mark-search-indexed", "")
 		if err := b.service.Store.MarkMessageAttachmentIndexed(ctx, message.UserID, message.ID, item.HasVisibleAttachments); err != nil {
 			if store.IsNotFound(err) && b.service.Search != nil {
 				// A move can remove the SQLite row while this batch is waiting for

@@ -421,6 +421,10 @@ func TestMailboxGenerationRecoveryRotatesFailingAccountAndReopensRecoveredAccoun
 	if len(attempted) != 3 || attempted[2].AccountID != failingAccount.ID {
 		t.Fatalf("post-recovery attempts=%+v, want rotation back to the failed account", attempted)
 	}
+	// A fresh live poll can use the exact Inbox bypass after the durable scan
+	// observes that this account's marker is gone. The earlier fail-closed
+	// request remains parked so it cannot starve the next recovery attempt.
+	runner.QueueAccountMailboxes(user.ID, healthyAccount.ID, []string{healthyInbox.Name})
 	select {
 	case <-fetcher.started:
 	case <-time.After(time.Second):
@@ -461,6 +465,7 @@ func TestMailboxGenerationRecoveryStaleScanKeepsAccountsFailClosed(t *testing.T)
 	runner.reconcileGenerationRecoveryUsers(
 		map[int64]bool{userID: true},
 		map[int64]map[int64]bool{userID: {oldAccountID: true}},
+		nil,
 		staleSnapshot,
 	)
 
@@ -474,35 +479,7 @@ func TestMailboxGenerationRecoveryStaleScanKeepsAccountsFailClosed(t *testing.T)
 	}
 }
 
-func TestMailboxGenerationRecoveryDrainsOneHealthyAccountPerUser(t *testing.T) {
-	runner := NewRunnerWithContext(context.Background(), nil)
-	const userID = int64(92)
-	const pendingAccountID = int64(100)
-	runner.mu.Lock()
-	runner.generationRecoveryUsers[userID] = true
-	runner.generationRecoveryKnown[userID] = true
-	runner.generationRecoveryAccounts[userID] = map[int64]bool{pendingAccountID: true}
-	runner.deferGenerationRecoveryAccountMailboxesLocked(userID, 200, []string{"INBOX"})
-	runner.deferGenerationRecoveryAccountMailboxesLocked(userID, 300, []string{"INBOX"})
-	runner.mu.Unlock()
-
-	ready := runner.takeReadyGenerationRecoveryAccountReplays()
-	if len(ready) != 1 {
-		t.Fatalf("ready account replays=%+v, want exactly one tenant writer", ready)
-	}
-	runner.mu.Lock()
-	remaining := len(runner.generationRecoveryAccts[userID])
-	runner.mailboxRunning[accountMailboxKey(userID, ready[0].request.accountID, ready[0].request.mailbox)] = true
-	runner.mu.Unlock()
-	if remaining != 1 {
-		t.Fatalf("deferred account requests remaining=%d, want 1", remaining)
-	}
-	if more := runner.takeReadyGenerationRecoveryAccountReplays(); len(more) != 0 {
-		t.Fatalf("drained another account while ordinary tenant work was active: %+v", more)
-	}
-}
-
-func TestMailboxGenerationRecoveryAllowsOnlyOneHealthyAccountWriter(t *testing.T) {
+func TestMailboxGenerationRecoveryAllowsOnlyHealthyInboxWriter(t *testing.T) {
 	runner := NewRunnerWithContext(context.Background(), nil)
 	const userID = int64(93)
 	const failedAccountID = int64(100)
@@ -517,8 +494,10 @@ func TestMailboxGenerationRecoveryAllowsOnlyOneHealthyAccountWriter(t *testing.T
 	if !reserved {
 		t.Fatal("first marker-free account mailbox did not reserve")
 	}
-	if _, overlapping := runner.reserveAccountMailboxes(userID, healthyAccountID, []string{"Archive"}); overlapping {
-		t.Fatal("second healthy mailbox overlapped the tenant writer")
+	archiveKeys, archiveReserved := runner.reserveAccountMailboxes(userID, healthyAccountID, []string{"Archive"})
+	if archiveReserved {
+		runner.releaseAccountMailboxReservations(userID, healthyAccountID, []string{"Archive"}, archiveKeys)
+		t.Fatal("non-Inbox folder bypassed serialized recovery")
 	}
 	failedRebuild := store.PendingMailboxGenerationRebuild{
 		UserID: userID, AccountID: failedAccountID, MailboxID: 300, MailboxName: "INBOX", TargetUIDValidity: 44,
@@ -631,11 +610,21 @@ func TestMailboxGenerationRecoveryGateDefersTenantWorkUntilFinalMarker(t *testin
 	if pending, err := runner.queuePendingMailboxGenerationRebuilds(ctx); err != nil || pending != 2 {
 		t.Fatalf("initial recovery queue pending=%d err=%v", pending, err)
 	}
-	healthyKeys, healthyReserved := runner.reserveAccountMailboxes(owner.ID, blockedAccount.ID, []string{blockedMailbox.Name})
-	if !healthyReserved {
-		t.Fatal("marker-free account was blocked by another account's recovery marker")
+	sameAccountKeys, sameAccountReserved := runner.reserveAccountMailboxes(owner.ID, firstAccount.ID, []string{"Other Folder"})
+	if sameAccountReserved {
+		runner.releaseAccountMailboxReservations(owner.ID, firstAccount.ID, []string{"Other Folder"}, sameAccountKeys)
+		t.Fatal("non-Inbox folder on the recovering account bypassed serialization")
 	}
-	runner.releaseAccountMailboxReservations(owner.ID, blockedAccount.ID, []string{blockedMailbox.Name}, healthyKeys)
+	healthyKeys, healthyReserved := runner.reserveAccountMailboxes(owner.ID, blockedAccount.ID, []string{blockedMailbox.Name})
+	if healthyReserved {
+		runner.releaseAccountMailboxReservations(owner.ID, blockedAccount.ID, []string{blockedMailbox.Name}, healthyKeys)
+		t.Fatal("non-Inbox folder on a marker-free account bypassed serialization")
+	}
+	healthyInboxKeys, healthyInboxReserved := runner.reserveAccountMailboxes(owner.ID, blockedAccount.ID, []string{"INBOX"})
+	if !healthyInboxReserved {
+		t.Fatal("marker-free Inbox was blocked by another account's recovery marker")
+	}
+	runner.releaseAccountMailboxReservations(owner.ID, blockedAccount.ID, []string{"INBOX"}, healthyInboxKeys)
 	if _, started, err := runner.StartMailboxMaintenance(owner.ID, blockedMailbox, "Healthy maintenance", func(context.Context, int64, *store.SyncProgress) error {
 		t.Fatal("maintenance callback ran while another account was recovering")
 		return nil
@@ -643,7 +632,7 @@ func TestMailboxGenerationRecoveryGateDefersTenantWorkUntilFinalMarker(t *testin
 		t.Fatalf("healthy-account maintenance bypassed broad recovery gate: started=%t err=%v", started, err)
 	}
 	runner.mu.Lock()
-	firstAccountBlocked := runner.generationRecoveryAccountGatedLocked(owner.ID, firstAccount.ID)
+	firstAccountBlocked := runner.generationRecoveryAccountMailboxesGatedLocked(owner.ID, firstAccount.ID, []string{firstMailbox.Name})
 	runner.mu.Unlock()
 	if !firstAccountBlocked {
 		t.Fatal("account with a pending recovery marker was allowed to sync")
@@ -680,7 +669,7 @@ func TestMailboxGenerationRecoveryGateDefersTenantWorkUntilFinalMarker(t *testin
 	}
 	runner.releaseAccountMailboxReservations(owner.ID, firstAccount.ID, []string{firstMailbox.Name}, firstKeys)
 	runner.mu.Lock()
-	secondAccountBlocked := runner.generationRecoveryAccountGatedLocked(owner.ID, secondAccount.ID)
+	secondAccountBlocked := runner.generationRecoveryAccountMailboxesGatedLocked(owner.ID, secondAccount.ID, []string{secondMailbox.Name})
 	runner.mu.Unlock()
 	if !secondAccountBlocked {
 		t.Fatal("account with the remaining recovery marker was allowed to sync")
@@ -710,7 +699,9 @@ func TestMailboxGenerationRecoveryGateDefersTenantWorkUntilFinalMarker(t *testin
 	select {
 	case replay := <-replayed:
 		if replay.userID != owner.ID || replay.auto || len(replay.mailboxes) != 1 ||
-			replay.mailboxes[0] != blockedMailbox.Name || len(replay.accountMailboxes) != 0 ||
+			replay.mailboxes[0] != blockedMailbox.Name || len(replay.accountMailboxes) != 1 ||
+			replay.accountMailboxes[0].accountID != firstAccount.ID ||
+			replay.accountMailboxes[0].mailbox != "Other Folder" ||
 			!replay.senderStats || !replay.attachments {
 			t.Fatalf("replayed tenant work=%+v", replay)
 		}

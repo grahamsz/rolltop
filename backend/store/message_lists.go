@@ -98,6 +98,35 @@ func (s *Store) CountMessagesForMailbox(ctx context.Context, userID, mailboxID i
 	return n, err
 }
 
+// ListSearchIndexedMessageIDsForMailbox pages current local rows whose search
+// document commit marker is set. Callers can intersect these IDs with Bleve
+// hits without letting stale documents substitute for missing current rows.
+func (s *Store) ListSearchIndexedMessageIDsForMailbox(ctx context.Context, userID, mailboxID, afterID int64, limit int) ([]int64, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	db, err := s.dataDB(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id FROM messages
+		WHERE user_id = ? AND mailbox_id = ? AND attachment_indexed_at > 0 AND id > ?
+		ORDER BY id LIMIT ?`, userID, mailboxID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, limit)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // CountSearchEnabledMessagesForUser counts local messages in folders included in
 // full-text search. Settings storage uses this alongside Bleve's document count
 // to show whether SQLite mail and the search index are in the same ballpark.

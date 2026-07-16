@@ -84,6 +84,15 @@ func (s *Server) MailboxGenerationRecoveryActive(userID int64) bool {
 	return s != nil && s.syncRunner != nil && s.syncRunner.MailboxGenerationRecoveryActive(userID)
 }
 
+// BeginForegroundOperation coordinates a plugin-owned mail write with core
+// sync recovery and derived indexing for the same tenant.
+func (s *Server) BeginForegroundOperation(ctx context.Context, userID int64) (func(), error) {
+	if s == nil || s.syncRunner == nil {
+		return nil, errors.New("foreground mail scheduling is not configured")
+	}
+	return s.syncRunner.BeginForegroundOperation(ctx, userID)
+}
+
 func (s *Server) RequireAPIAuth(w http.ResponseWriter, r *http.Request) (plugins.CurrentUser, bool) {
 	cu, ok := s.requireAPIAuth(w, r)
 	if !ok {
@@ -94,6 +103,7 @@ func (s *Server) RequireAPIAuth(w http.ResponseWriter, r *http.Request) (plugins
 
 var _ plugins.AccountMailboxSyncHost = (*Server)(nil)
 var _ plugins.MailboxGenerationRecoveryHost = (*Server)(nil)
+var _ plugins.ForegroundOperationHost = (*Server)(nil)
 
 func (s *Server) LoginUserID(w http.ResponseWriter, r *http.Request, userID int64) error {
 	return s.loginUser(w, r, userID)

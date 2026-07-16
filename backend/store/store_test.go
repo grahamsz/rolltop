@@ -916,6 +916,92 @@ func TestStorageMessageCountsAreTenantScoped(t *testing.T) {
 	}
 }
 
+func TestListSearchIndexedMessageIDsForMailboxIsTenantAndMailboxScoped(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	owner, err := db.CreateUser(ctx, "indexed-count@example.test", "Indexed Count", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateUser(ctx, "indexed-count-other@example.test", "Other", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerAccount, err := db.CreateMailAccount(ctx, MailAccount{UserID: owner.ID, Email: owner.Email, Host: "imap.example.test", Port: 993, Username: owner.Email, EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAccount, err := db.CreateMailAccount(ctx, MailAccount{UserID: other.ID, Email: other.Email, Host: "imap.example.test", Port: 993, Username: other.Email, EncryptedPassword: "secret", UseTLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerInbox, err := db.GetOrCreateMailbox(ctx, owner.ID, ownerAccount.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerArchive, err := db.GetOrCreateMailbox(ctx, owner.ID, ownerAccount.ID, "Archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherInbox, err := db.GetOrCreateMailbox(ctx, other.ID, otherAccount.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerBlob, err := db.CreateBlob(ctx, BlobRecord{UserID: owner.ID, Kind: "message", Path: "messages/owner.eml", SHA256: "owner", Size: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherBlob, err := db.CreateBlob(ctx, BlobRecord{UserID: other.ID, Kind: "message", Path: "messages/other.eml", SHA256: "other", Size: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := func(userID, accountID, mailboxID, blobID int64, uid uint32) MessageRecord {
+		message, err := db.CreateMessage(ctx, CreateMessage{
+			UserID: userID, AccountID: accountID, MailboxID: mailboxID, BlobID: blobID,
+			UID: uid, Date: time.Now(), InternalDate: time.Now(), Subject: "count",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return message
+	}
+	indexedInbox := create(owner.ID, ownerAccount.ID, ownerInbox.ID, ownerBlob.ID, 1)
+	create(owner.ID, ownerAccount.ID, ownerInbox.ID, ownerBlob.ID, 2)
+	indexedArchive := create(owner.ID, ownerAccount.ID, ownerArchive.ID, ownerBlob.ID, 3)
+	indexedOther := create(other.ID, otherAccount.ID, otherInbox.ID, otherBlob.ID, 1)
+	indexedOtherSecond := create(other.ID, otherAccount.ID, otherInbox.ID, otherBlob.ID, 2)
+	for _, message := range []MessageRecord{indexedInbox, indexedArchive, indexedOther, indexedOtherSecond} {
+		if err := db.MarkMessageAttachmentIndexed(ctx, message.UserID, message.ID, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for name, test := range map[string]struct {
+		userID    int64
+		mailboxID int64
+		want      int
+	}{
+		"owner inbox":   {owner.ID, ownerInbox.ID, 1},
+		"owner archive": {owner.ID, ownerArchive.ID, 1},
+		"other inbox":   {other.ID, otherInbox.ID, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ids, err := db.ListSearchIndexedMessageIDsForMailbox(ctx, test.userID, test.mailboxID, 0, 500)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(ids) != test.want {
+				t.Fatalf("indexed IDs = %v, want count %d", ids, test.want)
+			}
+		})
+	}
+}
+
 func TestOnboardingMailboxDefaultsDiscoverAllButAutoSyncInboxOnly(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"rolltop/backend/mailparse"
 	"rolltop/backend/plugins"
@@ -14,7 +15,14 @@ import (
 	"rolltop/backend/store"
 )
 
-func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox, item FetchedMessage) (store.MessageRecord, mailparse.ParsedMessage, *pendingFetchedSearchIndex, error) {
+// storeFetchedMessage always persists message and attachment metadata. Callers
+// may defer the derived search document during generation recovery so attachment
+// text extraction and Bleve writes run later in the attachment-index worker.
+func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account store.MailAccount, mailbox store.Mailbox,
+	item FetchedMessage, prepareSearchDocument bool,
+) (store.MessageRecord, mailparse.ParsedMessage, *pendingFetchedSearchIndex, error) {
+	generationRecoveryStartMessage(ctx, item.UID)
+	generationRecoveryPhase(ctx, "mime-parse", "")
 	parsed, err := mailparse.Parse(item.Raw)
 	if err != nil {
 		parsed = mailparse.ParsedMessage{
@@ -22,6 +30,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 			Text:    fmt.Sprintf("rolltop stored the raw message, but could not parse its MIME body: %v. Download the raw .eml to inspect it.", err),
 		}
 	}
+	generationRecoveryPhase(ctx, "plugin-security", "")
 	securityState, securityHandled, err := s.detectMessageSecurity(ctx, userID, item.Raw, plugins.MessageBody{Purpose: "storage", Text: parsed.Text, HTML: parsed.HTML})
 	if err != nil {
 		return store.MessageRecord{}, parsed, nil, err
@@ -54,6 +63,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 	blobKind := "message-remote"
 	blobSize := int64(0)
 	if s.shouldRetainBlob(date) {
+		generationRecoveryPhase(ctx, "blob-save", "")
 		saved, err := s.Blobs.SaveRawMessage(userID, account.ID, item.Mailbox, item.UID, item.Raw)
 		if err != nil {
 			return store.MessageRecord{}, parsed, nil, err
@@ -64,6 +74,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 		blobSize = saved.Size
 		rawHash = saved.SHA256
 	}
+	generationRecoveryPhase(ctx, "sqlite-create-blob", "")
 	blobRec, err := s.Store.CreateBlob(ctx, store.BlobRecord{
 		UserID: userID,
 		Kind:   blobKind,
@@ -76,9 +87,12 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 	}
 
 	languageCode := ""
+	generationRecoveryPhase(ctx, "sqlite-plugin-enabled", plugins.LanguageSearch)
 	if s.pluginEnabled(ctx, plugins.LanguageSearch) {
+		generationRecoveryPhase(ctx, "language-detect", plugins.LanguageSearch)
 		languageCode = detectLanguageCode(parsed.Subject, parsed.Text)
 	}
+	generationRecoveryPhase(ctx, "sqlite-create-message", "")
 	msg, err := s.Store.CreateMessage(ctx, store.CreateMessage{
 		UserID:           userID,
 		AccountID:        account.ID,
@@ -118,20 +132,26 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 			return store.MessageRecord{}, parsed, nil, err
 		}
 	}
+	generationRecoveryPhase(ctx, "sqlite-create-location", "")
 	if err := s.Store.CreateLocation(ctx, userID, msg.ID, mailbox.ID, item.UID); err != nil {
 		return store.MessageRecord{}, parsed, nil, err
 	}
+	generationRecoveryPhase(ctx, "plugin-incoming-message", "discover")
 	if err := s.importIncomingMessageHooks(ctx, userID, item.Raw, parsed.From); err != nil {
 		return store.MessageRecord{}, parsed, nil, err
 	}
+	searchVisible := mailbox.IncludeInSearch && s.Search != nil
+	prepareSearchDocument = prepareSearchDocument && searchVisible
 	attachmentDocs := make([]search.AttachmentDoc, 0, len(parsed.Files))
 	visibleAttachmentCount := 0
 	if len(parsed.Files) > 0 {
+		generationRecoveryPhase(ctx, "sqlite-delete-attachments", "")
 		if err := s.Store.DeleteAttachmentsForMessage(ctx, userID, msg.ID); err != nil {
 			return store.MessageRecord{}, parsed, nil, err
 		}
 	}
 	for _, file := range parsed.Files {
+		generationRecoveryPhase(ctx, "sqlite-create-attachment", "")
 		if _, err := s.Store.CreateAttachment(ctx, store.Attachment{
 			UserID:      userID,
 			MessageID:   msg.ID,
@@ -147,15 +167,20 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 		}
 		if !file.IsInline {
 			visibleAttachmentCount++
-			attachmentDocs = append(attachmentDocs, search.AttachmentDoc{
-				Filename:    file.Filename,
-				ContentType: file.ContentType,
-				Text:        file.SearchableText(),
-			})
+			if prepareSearchDocument {
+				generationRecoveryPhase(ctx, "search-extract-attachment", "attachment-text")
+				attachmentDocs = append(attachmentDocs, search.AttachmentDoc{
+					Filename:    file.Filename,
+					ContentType: file.ContentType,
+					Text:        file.SearchableText(),
+				})
+			}
 		}
 	}
 	msg.HasAttachments = visibleAttachmentCount > 0
-	if mailbox.IncludeInSearch && s.Search != nil {
+	generationRecoveryMessageStored(ctx, item.UID)
+	if prepareSearchDocument {
+		generationRecoveryPhase(ctx, "search-prepare", "")
 		indexMsg := msg
 		indexMsg.BodyText = parsed.Text
 		indexMsg.BodyHTML = ""
@@ -167,6 +192,12 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 			HasVisibleAttachments: visibleAttachmentCount > 0,
 		}, nil
 	}
+	if searchVisible {
+		// Keep attachment_indexed_at unset. IndexPendingAttachmentsForUser will
+		// reparse the raw message and commit the complete document after recovery.
+		return msg, parsed, nil, nil
+	}
+	generationRecoveryPhase(ctx, "sqlite-mark-attachment-indexed", "")
 	if err := s.Store.MarkMessageAttachmentIndexed(ctx, userID, msg.ID, visibleAttachmentCount > 0); err != nil {
 		return store.MessageRecord{}, parsed, nil, err
 	}
@@ -178,26 +209,84 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 	if s.Search == nil {
 		return 0, nil
 	}
-	messages, err := s.Store.ListMessagesNeedingAttachmentIndex(ctx, userID, limit)
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	cursor := s.attachmentIndexCursorForUser(userID)
+	messages, wrapped, err := s.Store.ListMessagesNeedingAttachmentIndexAfter(ctx, userID, cursor, limit)
 	if err != nil {
 		return 0, err
 	}
 	batch := newFetchedSearchIndexBatch(s)
-	processed := 0
+	indexed := 0
+	enriched := 0
+	deferred := 0
+	fallback := 0
+	coolingDown := 0
 	for _, msg := range messages {
+		if err := ctx.Err(); err != nil {
+			return indexed, err
+		}
+		now := time.Now()
+		if !s.attachmentIndexRetryReady(userID, msg.ID, now) {
+			coolingDown++
+			continue
+		}
 		item, err := s.prepareAttachmentIndexMessage(ctx, msg)
 		if err != nil {
-			return processed, err
+			var deferredErr *attachmentIndexDeferredError
+			if !errors.As(err, &deferredErr) {
+				return indexed, err
+			}
+			if ctx.Err() != nil {
+				return indexed, ctx.Err()
+			}
+			retryAt := s.deferAttachmentIndexRetry(userID, msg.ID, now)
+			log.Printf("attachment index message deferred user_id=%d account_id=%d mailbox_id=%d message_id=%d uid=%d stage=%s error_type=%T retry_in=%s",
+				userID, msg.AccountID, msg.MailboxID, msg.ID, msg.UID, deferredErr.stage, deferredErr.err,
+				retryAt.Sub(now).Round(time.Second))
+			if err := batch.Add(ctx, &pendingFetchedSearchIndex{
+				Document:    search.MessageIndexDocument{Message: msg},
+				KeepPending: true,
+			}); err != nil {
+				return indexed, err
+			}
+			indexed++
+			deferred++
+			fallback++
+			continue
 		}
+		s.clearAttachmentIndexRetry(userID, msg.ID)
 		if err := batch.Add(ctx, item); err != nil {
-			return processed, err
+			return indexed, err
 		}
-		processed++
+		indexed++
+		enriched++
 	}
 	if err := batch.Flush(ctx); err != nil {
-		return processed, err
+		return indexed, err
 	}
-	return processed, nil
+	if len(messages) > 0 {
+		s.advanceAttachmentIndexCursor(userID, messages[len(messages)-1].ID)
+	}
+	if deferred > 0 || coolingDown > 0 {
+		log.Printf("attachment index batch user_id=%d inspected=%d indexed=%d enriched=%d fallback=%d deferred=%d cooling_down=%d wrapped=%t",
+			userID, len(messages), indexed, enriched, fallback, deferred, coolingDown, wrapped)
+	}
+	if enriched == 0 && deferred+coolingDown == len(messages) && len(messages) == limit &&
+		(!wrapped || deferred > 0) {
+		now := time.Now()
+		continueAt := s.deferAttachmentIndexContinuation(userID, now)
+		log.Printf("attachment index continuation scheduled user_id=%d after_message_id=%d resume_in=%s",
+			userID, messages[len(messages)-1].ID, continueAt.Sub(now).Round(time.Millisecond))
+		return 0, nil
+	}
+	// A wrapped page containing only cooling-down rows has completed a cursor
+	// cycle. Stop here and let the earliest per-message retry wake the worker.
+	if wrapped && enriched == 0 && len(messages) == limit {
+		return 0, nil
+	}
+	return len(messages), nil
 }
 
 // IndexAttachmentsForMessage reparses one raw message, indexes its attachment text, and updates message metadata.
@@ -231,7 +320,7 @@ func (s *Service) prepareAttachmentIndexMessage(ctx context.Context, msg store.M
 	}
 	raw, err := s.FetchRawMessageForMessage(ctx, msg.UserID, msg)
 	if err != nil {
-		return nil, err
+		return nil, &attachmentIndexDeferredError{stage: "raw-fetch", err: err}
 	}
 	parsed, err := mailparse.Parse(raw)
 	if err != nil {

@@ -1136,7 +1136,7 @@ export function SyncRunMini({ run }: { run: SyncRun }) {
         : run.status === "running" ? 100 : 0;
   const isPurge = run.latest_new_from === "rolltop:maintenance" && run.latest_new_subject.trim().toLowerCase().startsWith("purging");
   const isMove = run.latest_new_from === "rolltop:move";
-  const indexedLabel = run.messages_stored > 0 ? `${run.messages_stored.toLocaleString()} indexed` : "Indexing...";
+  const savedLabel = run.messages_stored > 0 ? `${run.messages_stored.toLocaleString()} saved` : "Syncing...";
   const movedLabel = totalMessages > 0
     ? `${run.messages_seen.toLocaleString()} of ${totalMessages.toLocaleString()} moved`
     : "Moving...";
@@ -1148,8 +1148,8 @@ export function SyncRunMini({ run }: { run: SyncRun }) {
     : isMove
       ? movedLabel
       : run.messages_skipped > 0
-        ? `${indexedLabel}, ${run.messages_skipped.toLocaleString()} skipped`
-        : indexedLabel;
+        ? `${savedLabel}, ${run.messages_skipped.toLocaleString()} skipped`
+        : savedLabel;
   return (
     <div className="sync-run-mini">
       <div className="sync-run-title">

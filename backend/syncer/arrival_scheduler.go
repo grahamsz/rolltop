@@ -113,17 +113,19 @@ func (r *Runner) queuePendingMailboxGenerationRebuilds(ctx context.Context) (int
 	}
 	pendingUsers := make(map[int64]bool, len(rebuilds))
 	pendingAccounts := make(map[int64]map[int64]bool, len(rebuilds))
+	pendingTargets := make(map[int64]map[string]bool, len(rebuilds))
 	for _, rebuild := range rebuilds {
 		pendingUsers[rebuild.UserID] = true
 		if pendingAccounts[rebuild.UserID] == nil {
 			pendingAccounts[rebuild.UserID] = map[int64]bool{}
 		}
 		pendingAccounts[rebuild.UserID][rebuild.AccountID] = true
+		if pendingTargets[rebuild.UserID] == nil {
+			pendingTargets[rebuild.UserID] = map[string]bool{}
+		}
+		pendingTargets[rebuild.UserID][accountMailboxKey(rebuild.UserID, rebuild.AccountID, rebuild.MailboxName)] = true
 	}
-	r.reconcileGenerationRecoveryUsers(pendingUsers, pendingAccounts, epochSnapshot)
-	for _, replay := range r.takeReadyGenerationRecoveryAccountReplays() {
-		r.QueueAccountMailboxes(replay.userID, replay.request.accountID, []string{replay.request.mailbox})
-	}
+	r.reconcileGenerationRecoveryUsers(pendingUsers, pendingAccounts, pendingTargets, epochSnapshot)
 	// Preserve Inbox-first ordering within each account, but rotate the account
 	// attempted for each tenant so one failing server cannot monopolize recovery.
 	for _, rebuild := range r.nextMailboxGenerationRecoveryAttempts(rebuilds) {
@@ -139,6 +141,7 @@ func (r *Runner) queuePendingMailboxGenerationRebuilds(ctx context.Context) (int
 			r.markMailboxGenerationRecoveryAttempt(rebuild)
 		}
 	}
+	r.updateGenerationRecoveryQueueStatuses(rebuilds, time.Now(), log.Printf)
 	return len(rebuilds), nil
 }
 
@@ -168,18 +171,26 @@ func (r *Runner) startPendingMailboxGenerationRebuild(rebuild store.PendingMailb
 		}
 		turnCtx, cancel := context.WithTimeout(r.context(), timeout)
 		defer cancel()
+		diagnostics := r.generationRecoveryDiagnosticsForUser(rebuild.UserID)
+		turnCtx = withGenerationRecoveryDiagnostics(turnCtx, diagnostics)
+		generationRecoveryPhase(turnCtx, "sync-plan", "")
+		heartbeatDone := make(chan struct{})
+		defer close(heartbeatDone)
+		go runGenerationRecoveryHeartbeat(turnCtx, heartbeatDone, generationRecoveryHeartbeatInterval,
+			rebuild.UserID, rebuild.AccountID, rebuild.MailboxName, diagnostics,
+			func() string { return r.generationRecoveryQueueStatusForUser(rebuild.UserID) }, log.Printf)
 		startedAt := time.Now()
-		log.Printf("recover mailbox generation turn start user_id=%d account_id=%d mailbox=%s timeout=%s",
+		log.Printf("recover mailbox generation turn start user_id=%d account_id=%d mailbox=%q timeout=%s",
 			rebuild.UserID, rebuild.AccountID, rebuild.MailboxName, timeout)
 		if _, err := r.Service.RecoverUserAccountMailboxGeneration(turnCtx, rebuild.UserID, rebuild.AccountID,
 			rebuild.MailboxName); err != nil {
-			log.Printf("recover mailbox generation user_id=%d account_id=%d mailbox=%s: %v",
+			log.Printf("recover mailbox generation user_id=%d account_id=%d mailbox=%q: %v",
 				rebuild.UserID, rebuild.AccountID, rebuild.MailboxName, err)
 			return
 		}
-		log.Printf("recover mailbox generation turn complete user_id=%d account_id=%d mailbox=%s elapsed=%s",
-			rebuild.UserID, rebuild.AccountID, rebuild.MailboxName, time.Since(startedAt).Round(time.Millisecond))
 		succeeded = true
+		log.Printf("recover mailbox generation turn complete user_id=%d account_id=%d mailbox=%q elapsed=%s",
+			rebuild.UserID, rebuild.AccountID, rebuild.MailboxName, time.Since(startedAt).Round(time.Millisecond))
 	}()
 	return true
 }

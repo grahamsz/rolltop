@@ -18,6 +18,54 @@ type recoveryGateHost struct {
 	active map[int64]bool
 }
 
+type foregroundRecoveryHost struct {
+	plugins.BackendStartHost
+	mu              sync.Mutex
+	active          map[int64]bool
+	held            map[int64]bool
+	beginCount      int
+	releaseCount    int
+	activateOnBegin bool
+}
+
+func newForegroundRecoveryHost() *foregroundRecoveryHost {
+	return &foregroundRecoveryHost{active: map[int64]bool{}, held: map[int64]bool{}}
+}
+
+func (h *foregroundRecoveryHost) MailboxGenerationRecoveryActive(userID int64) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.active[userID]
+}
+
+func (h *foregroundRecoveryHost) BeginForegroundOperation(ctx context.Context, userID int64) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	h.beginCount++
+	h.held[userID] = true
+	if h.activateOnBegin {
+		h.active[userID] = true
+	}
+	h.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.mu.Lock()
+			delete(h.held, userID)
+			h.releaseCount++
+			h.mu.Unlock()
+		})
+	}, nil
+}
+
+func (h *foregroundRecoveryHost) snapshot(userID int64) (held bool, begins, releases int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.held[userID], h.beginCount, h.releaseCount
+}
+
 func newRecoveryGateHost() *recoveryGateHost {
 	return &recoveryGateHost{active: map[int64]bool{}}
 }
@@ -78,6 +126,96 @@ func TestRemoteSyncRecoveryWaitHonorsCancellationBeforeRunStarts(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("remote sync recovery wait ignored cancellation")
+	}
+}
+
+func TestRemoteSyncRunHoldsOptionalForegroundReservationThroughCopyWork(t *testing.T) {
+	fixture := newBackendFixture(t)
+	item := createRecoveryDeferredRoutine(t, fixture)
+	host := newForegroundRecoveryHost()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	searchHeld := false
+	worker := &routineWorker{
+		host: host, store: fixture.store, item: item, ctx: ctx, cancel: cancel,
+		searchSourceMailbox: func(context.Context, store.MailAccount, string, uint32, time.Time) (imapclient.MailboxUIDSearch, error) {
+			searchHeld, _, _ = host.snapshot(item.UserID)
+			return imapclient.MailboxUIDSearch{UIDValidity: 501}, nil
+		},
+	}
+	if err := worker.runOnce("manual", 1); err != nil {
+		t.Fatal(err)
+	}
+	held, begins, releases := host.snapshot(item.UserID)
+	if !searchHeld {
+		t.Fatal("source copy work ran without the foreground reservation")
+	}
+	if held || begins != 1 || releases != 1 {
+		t.Fatalf("foreground reservation held=%t begins=%d releases=%d, want false/1/1", held, begins, releases)
+	}
+}
+
+func TestRemoteSyncReleasesForegroundReservationWhenRecoveryWinsAcquireRace(t *testing.T) {
+	fixture := newBackendFixture(t)
+	item := createRecoveryDeferredRoutine(t, fixture)
+	host := newForegroundRecoveryHost()
+	host.activateOnBegin = true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	worker := &routineWorker{host: host, store: fixture.store, item: item, ctx: ctx, cancel: cancel}
+
+	if err := worker.runOnce("manual", 1); !errors.Is(err, errRemoteSyncDeferredForRecovery) {
+		t.Fatalf("acquire-race error=%v, want clean recovery deferral", err)
+	}
+	held, begins, releases := host.snapshot(item.UserID)
+	if held || begins != 1 || releases != 1 {
+		t.Fatalf("foreground reservation held=%t begins=%d releases=%d, want false/1/1", held, begins, releases)
+	}
+	var runCount int
+	if err := fixture.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_remote_imap_sync_runs
+		WHERE user_id = ? AND routine_id = ?`, item.UserID, item.ID).Scan(&runCount); err != nil {
+		t.Fatal(err)
+	}
+	if runCount != 0 {
+		t.Fatalf("acquire-race created %d runs before recovery deferral, want 0", runCount)
+	}
+}
+
+func TestRemoteSyncChunkYieldRunsDestinationWorkBetweenForegroundTurns(t *testing.T) {
+	fixture := newBackendFixture(t)
+	item := createRecoveryDeferredRoutine(t, fixture)
+	host := newForegroundRecoveryHost()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	worker := &routineWorker{host: host, store: fixture.store, item: item, ctx: ctx, cancel: cancel}
+	reservation := remoteSyncForegroundReservation{worker: worker, userID: item.UserID}
+	if err := reservation.Acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	destinationWorkCompleted := false
+	err := reservation.Yield(ctx, 0, func() {
+		held, begins, releases := host.snapshot(item.UserID)
+		if held || begins != 1 || releases != 1 {
+			t.Fatalf("destination work observed reservation held=%t begins=%d releases=%d, want false/1/1",
+				held, begins, releases)
+		}
+		destinationWorkCompleted = true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !destinationWorkCompleted {
+		t.Fatal("destination mailbox work did not complete between foreground turns")
+	}
+	held, begins, releases := host.snapshot(item.UserID)
+	if !held || begins != 2 || releases != 1 {
+		t.Fatalf("reacquired reservation held=%t begins=%d releases=%d, want true/2/1", held, begins, releases)
+	}
+	reservation.Release()
+	held, begins, releases = host.snapshot(item.UserID)
+	if held || begins != 2 || releases != 2 {
+		t.Fatalf("final reservation held=%t begins=%d releases=%d, want false/2/2", held, begins, releases)
 	}
 }
 

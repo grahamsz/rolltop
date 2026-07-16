@@ -323,7 +323,7 @@ func (w *routineWorker) idleLoop() {
 		if w.ctx.Err() != nil {
 			return
 		}
-		if err := w.waitForMailboxGenerationRecovery(w.ctx, w.item.UserID); err != nil {
+		if err := waitForMailboxGenerationRecoveryCheck(w.ctx, w.item.UserID, w.recoveryPollEvery(), w.remoteSyncRecoveryPending); err != nil {
 			if errors.Is(err, context.Canceled) || w.ctx.Err() != nil {
 				return
 			}
@@ -372,6 +372,11 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 	if err := w.waitForMailboxGenerationRecovery(w.ctx, item.UserID); err != nil {
 		return err
 	}
+	foreground := remoteSyncForegroundReservation{worker: w, userID: item.UserID}
+	if err := foreground.Acquire(w.ctx); err != nil {
+		return err
+	}
+	defer foreground.Release()
 	if err := beginRoutineRun(w.ctx, db, item); err != nil {
 		return err
 	}
@@ -379,6 +384,8 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 	if err != nil {
 		return err
 	}
+	runStatus := newRemoteSyncRunStatus(w.ctx, item.UserID, item.ID, runID, trigger)
+	runStatus.Start()
 	var scanned, transferred, skipped int64
 	var currentUID uint32
 	var persistedScanned int64
@@ -394,13 +401,16 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 	}
 	fail := func(runErr error) error {
 		_ = persistProgress(context.Background())
+		runStatus.Update(scanned, transferred, skipped, currentUID)
 		if errors.Is(runErr, context.Canceled) || w.ctx.Err() != nil {
 			_ = finishRun(context.Background(), db, item.UserID, runID, "canceled", "")
+			runStatus.Finish("canceled", runErr)
 			return runErr
 		}
 		message := sanitizeRemoteError(runErr)
 		_ = finishRun(context.Background(), db, item.UserID, runID, "failed", message)
 		_ = failRoutineRun(context.Background(), db, item, message, time.Now().UTC().Add(retryDelay(failureAttempt)))
+		runStatus.Finish("failed", runErr)
 		return runErr
 	}
 	deferForRecovery := func() error {
@@ -410,6 +420,8 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 		if deferErr := finishDeferredRoutineRun(context.Background(), db, item, runID); deferErr != nil {
 			return fail(deferErr)
 		}
+		runStatus.Update(scanned, transferred, skipped, currentUID)
+		runStatus.Finish("deferred", nil)
 		return errRemoteSyncDeferredForRecovery
 	}
 	destinationMailbox, err := w.store.GetMailboxForUser(w.ctx, item.UserID, item.DestinationMailboxID)
@@ -427,6 +439,7 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 	if err != nil {
 		return fail(err)
 	}
+	runStatus.SetTotal(int64(len(search.UIDs)))
 	pendingRecovery, err := w.remoteSyncRecoveryPending(w.ctx, item.UserID)
 	if err != nil {
 		return fail(err)
@@ -444,6 +457,7 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 		if err != nil {
 			return fail(err)
 		}
+		runStatus.SetTotal(int64(len(search.UIDs)))
 		pendingRecovery, err = w.remoteSyncRecoveryPending(w.ctx, item.UserID)
 		if err != nil {
 			return fail(err)
@@ -462,7 +476,12 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 		if err := finishRun(w.ctx, db, item.UserID, runID, "completed", ""); err != nil {
 			return fail(err)
 		}
-		return completeRoutineRun(w.ctx, db, item)
+		if err := completeRoutineRun(w.ctx, db, item); err != nil {
+			runStatus.Finish("failed", err)
+			return err
+		}
+		runStatus.Finish("completed", nil)
+		return nil
 	}
 	writer, err := w.fetcher.OpenSyncDestinationSession(w.ctx, destinationAccount, destinationMailbox.Name)
 	if err != nil {
@@ -491,6 +510,7 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 		}
 		scanned++
 		currentUID = message.UID
+		runStatus.Update(scanned, transferred, skipped, currentUID)
 		fingerprint := messageFingerprint(message.Raw)
 		handled, err := sourceMessageAlreadyHandled(w.ctx, db, item, search.UIDValidity, message, fingerprint)
 		if err != nil {
@@ -502,6 +522,7 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 		}
 		if handled {
 			skipped++
+			runStatus.Update(scanned, transferred, skipped, currentUID)
 			if err := recordHandledMessage(w.ctx, db, item, search.UIDValidity, message.UID,
 				fingerprint, marker, 0, "skipped"); err != nil {
 				return err
@@ -514,6 +535,7 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 				return err
 			}
 			transferred++
+			runStatus.Update(scanned, transferred, skipped, currentUID)
 			unrefreshedCopies = true
 			if headerTime, ok := imapclient.SyncTimestampForMarker(appended.Raw, marker); ok {
 				syncedAt = headerTime
@@ -537,15 +559,7 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 			}
 		}
 		if shouldYieldRemoteSync(scanned, totalUIDs) {
-			flushDestinationRefresh()
-			pendingRecovery, err := w.remoteSyncRecoveryPending(w.ctx, item.UserID)
-			if err != nil {
-				return err
-			}
-			if pendingRecovery {
-				return errRemoteSyncDeferredForRecovery
-			}
-			return waitForRemoteSyncChunk(w.ctx, remoteSyncChunkYield)
+			return foreground.Yield(w.ctx, remoteSyncChunkYield, flushDestinationRefresh)
 		}
 		return nil
 	})
@@ -573,8 +587,11 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 		return fail(err)
 	}
 	if err := completeRoutineRun(w.ctx, db, item); err != nil {
+		runStatus.Finish("failed", err)
 		return err
 	}
+	runStatus.Update(scanned, transferred, skipped, currentUID)
+	runStatus.Finish("completed", nil)
 	return nil
 }
 
@@ -618,6 +635,73 @@ func remoteSyncRecoveryPending(ctx context.Context, st *store.Store, userID int6
 func (w *routineWorker) mailboxGenerationRecoveryActive(userID int64) bool {
 	host, ok := w.host.(plugins.MailboxGenerationRecoveryHost)
 	return ok && host.MailboxGenerationRecoveryActive(userID)
+}
+
+func (w *routineWorker) beginForegroundOperation(ctx context.Context, userID int64) (func(), error) {
+	host, ok := w.host.(plugins.ForegroundOperationHost)
+	if !ok {
+		return func() {}, nil
+	}
+	release, err := host.BeginForegroundOperation(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if release == nil {
+		return func() {}, nil
+	}
+	return release, nil
+}
+
+type remoteSyncForegroundReservation struct {
+	worker  *routineWorker
+	userID  int64
+	release func()
+}
+
+func (r *remoteSyncForegroundReservation) Acquire(ctx context.Context) error {
+	if r == nil || r.worker == nil {
+		return errors.New("remote IMAP sync foreground scheduling is not available")
+	}
+	if r.release != nil {
+		return nil
+	}
+	release, err := r.worker.beginForegroundOperation(ctx, r.userID)
+	if err != nil {
+		return err
+	}
+	r.release = release
+	// Recovery can be signaled after the preceding wait or yield but before the
+	// host grants this turn. Never wait for it while holding the reservation.
+	pendingRecovery, err := r.worker.remoteSyncRecoveryPending(ctx, r.userID)
+	if err != nil {
+		r.Release()
+		return err
+	}
+	if pendingRecovery {
+		r.Release()
+		return errRemoteSyncDeferredForRecovery
+	}
+	return nil
+}
+
+func (r *remoteSyncForegroundReservation) Release() {
+	if r == nil || r.release == nil {
+		return
+	}
+	release := r.release
+	r.release = nil
+	release()
+}
+
+func (r *remoteSyncForegroundReservation) Yield(ctx context.Context, delay time.Duration, betweenTurns func()) error {
+	r.Release()
+	if betweenTurns != nil {
+		betweenTurns()
+	}
+	if err := waitForRemoteSyncChunk(ctx, delay); err != nil {
+		return err
+	}
+	return r.Acquire(ctx)
 }
 
 func (w *routineWorker) searchMailboxUIDsSince(ctx context.Context, account store.MailAccount, mailbox string, afterUID uint32, since time.Time) (imapclient.MailboxUIDSearch, error) {
@@ -712,7 +796,8 @@ func waitForMailboxGenerationRecoveryStartCheck(ctx context.Context, userID int6
 }
 
 func (w *routineWorker) waitForMailboxGenerationRecovery(ctx context.Context, userID int64) error {
-	return waitForMailboxGenerationRecoveryCheck(ctx, userID, w.recoveryPollEvery(), w.remoteSyncRecoveryPending)
+	return waitForRemoteSyncRecoveryWithStatus(ctx, userID, w.item.ID, w.recoveryPollEvery(),
+		remoteSyncRecoveryWaitHeartbeatInterval, w.remoteSyncRecoveryPending, log.Printf)
 }
 
 func (w *routineWorker) recoveryPollEvery() time.Duration {

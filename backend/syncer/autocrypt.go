@@ -22,6 +22,7 @@ func (s *Service) importIncomingMessageHooks(ctx context.Context, userID int64, 
 		if !ok {
 			continue
 		}
+		generationRecoveryPhase(ctx, "plugin-incoming-message", backendPlugin.ID())
 		if err := hook.ImportIncomingMessage(ctx, host, userID, raw, parsedFrom); err != nil {
 			return err
 		}
@@ -50,6 +51,7 @@ func (s *Service) importStoredMessageHooks(ctx context.Context, hooks []plugins.
 		IsStarred:   msg.IsStarred,
 	}
 	for _, hook := range hooks {
+		generationRecoveryPhase(ctx, "plugin-stored-message", hook.ID())
 		if err := hook.ImportStoredMessage(ctx, host, info); err != nil && !errors.Is(err, plugins.ErrUnsupported) {
 			return err
 		}

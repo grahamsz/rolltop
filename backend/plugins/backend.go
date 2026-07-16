@@ -46,6 +46,15 @@ type MailboxGenerationRecoveryHost interface {
 	MailboxGenerationRecoveryActive(int64) bool
 }
 
+// ForegroundOperationHost is an optional scheduling capability for plugins
+// that perform a long-lived, tenant-scoped mail write. The host pauses derived
+// maintenance and serializes mailbox-generation recovery until the returned
+// release function is called.
+type ForegroundOperationHost interface {
+	BackendHost
+	BeginForegroundOperation(context.Context, int64) (func(), error)
+}
+
 // StoredMessageContext is the host-owned subset of a newly mirrored message
 // passed to plugins that need to react after a message row exists.
 type StoredMessageContext struct {
@@ -519,7 +528,6 @@ func (m *BackendManager) Plugin(id string) (BackendPlugin, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if plugin := m.loaded[id]; plugin != nil {
-		log.Printf("debug backend plugin module reused plugin_id=%s", id)
 		return plugin, true, nil
 	}
 	if failure := strings.TrimSpace(m.failures[id]); failure != "" {
