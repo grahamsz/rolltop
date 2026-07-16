@@ -27,11 +27,11 @@ func (f *Fetcher) SnapshotMailboxUIDs(ctx context.Context, account store.MailAcc
 	if err := validateUIDSnapshotRequest(ctx, mailbox); err != nil {
 		return syncer.MailboxUIDSnapshot{}, err
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return syncer.MailboxUIDSnapshot{}, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	return snapshotMailboxUIDs(ctx, c, mailbox)
 }
 

@@ -1,16 +1,21 @@
 package imapclient
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"net"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/emersion/go-imap"
+	"github.com/emersion/go-imap/client"
 
 	"rolltop/backend/syncer"
 )
@@ -200,6 +205,185 @@ func TestFetcherCommandTimeoutUsesBoundedDefault(t *testing.T) {
 	}
 	if got := (&Fetcher{Timeout: 17 * time.Second}).commandTimeout(); got != 17*time.Second {
 		t.Fatalf("configured fetcher timeout = %s", got)
+	}
+}
+
+func TestFetchUIDsDoesNotApplyCommandDeadlineToMessageHandler(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	serverDone := make(chan error, 1)
+	go func() {
+		defer serverConn.Close()
+		if _, err := io.WriteString(serverConn, "* OK [CAPABILITY IMAP4rev1] test server ready\r\n"); err != nil {
+			serverDone <- err
+			return
+		}
+		reader := bufio.NewReader(serverConn)
+		for i, uid := range []uint32{1, 2} {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			fields := strings.Fields(line)
+			if len(fields) < 4 || !strings.EqualFold(fields[1], "UID") || !strings.EqualFold(fields[2], "FETCH") || fields[3] != fmt.Sprint(uid) {
+				serverDone <- fmt.Errorf("unexpected command %q", strings.TrimSpace(line))
+				return
+			}
+			raw := []byte(fmt.Sprintf("Subject: UID %d\r\n\r\nbody", uid))
+			if _, err := fmt.Fprintf(serverConn,
+				"* %d FETCH (UID %d INTERNALDATE \"16-Jul-2026 00:00:00 +0000\" RFC822.SIZE %d FLAGS () BODY[] {%d}\r\n",
+				i+1, uid, len(raw), len(raw)); err != nil {
+				serverDone <- err
+				return
+			}
+			if _, err := serverConn.Write(raw); err != nil {
+				serverDone <- err
+				return
+			}
+			if _, err := fmt.Fprintf(serverConn, ")\r\n%s OK UID FETCH complete\r\n", fields[0]); err != nil {
+				serverDone <- err
+				return
+			}
+		}
+		serverDone <- nil
+	}()
+
+	c, err := client.New(clientConn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.ErrorLog = log.New(io.Discard, "", 0)
+	defer c.Terminate()
+	c.SetState(imap.SelectedState, &imap.MailboxStatus{Name: "INBOX", Messages: 2, UidNext: 3, UidValidity: 1})
+	c.Timeout = 20 * time.Millisecond
+
+	var fetched []uint32
+	err = (&Fetcher{BatchSize: 1}).fetchUIDs(context.Background(), c, "INBOX", []uint32{1, 2}, func(message syncer.FetchedMessage) error {
+		fetched = append(fetched, message.UID)
+		if message.UID == 1 {
+			time.Sleep(60 * time.Millisecond)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("fetchUIDs() error = %v", err)
+	}
+	if want := []uint32{1, 2}; !reflect.DeepEqual(fetched, want) {
+		t.Fatalf("fetched UIDs = %v, want %v", fetched, want)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGuardedUIDFetchHonorsConfiguredCommandTimeout(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	serverDone := make(chan error, 1)
+	commandReceived := make(chan struct{})
+	go func() {
+		defer serverConn.Close()
+		if _, err := io.WriteString(serverConn, "* OK [CAPABILITY IMAP4rev1] test server ready\r\n"); err != nil {
+			serverDone <- err
+			return
+		}
+		reader := bufio.NewReader(serverConn)
+		if _, err := reader.ReadString('\n'); err != nil {
+			serverDone <- err
+			return
+		}
+		close(commandReceived)
+		_, err := io.Copy(io.Discard, reader)
+		serverDone <- err
+	}()
+
+	c, err := client.New(clientConn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.ErrorLog = log.New(io.Discard, "", 0)
+	defer c.Terminate()
+	c.SetState(imap.SelectedState, &imap.MailboxStatus{Name: "INBOX", Messages: 1, UidNext: 2, UidValidity: 1})
+	c.Timeout = 20 * time.Millisecond
+	seqset := new(imap.SeqSet)
+	seqset.AddNum(1)
+	messages := make(chan *imap.Message, 1)
+	// The parent deadline is deliberately much longer. The configured client
+	// timeout must still bound the active command after its socket deadline is
+	// cleared to avoid leaking that deadline into message handling.
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	err = guardedUIDFetch(ctx, c, seqset, []imap.FetchItem{imap.FetchUid, rawBodySection().FetchItem()}, messages)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("guardedUIDFetch() error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+		t.Fatalf("guardedUIDFetch() took %s, want configured timeout before parent deadline", elapsed)
+	}
+	select {
+	case <-commandReceived:
+	default:
+		t.Fatal("server did not receive UID FETCH")
+	}
+	if _, ok := <-messages; ok {
+		t.Fatal("UID FETCH message channel remained open")
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTerminateClientOnContextUnblocksStalledCommand(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	serverDone := make(chan error, 1)
+	commandReceived := make(chan struct{})
+	go func() {
+		defer serverConn.Close()
+		if _, err := io.WriteString(serverConn, "* OK [CAPABILITY IMAP4rev1] test server ready\r\n"); err != nil {
+			serverDone <- err
+			return
+		}
+		reader := bufio.NewReader(serverConn)
+		if _, err := reader.ReadString('\n'); err != nil {
+			serverDone <- err
+			return
+		}
+		close(commandReceived)
+		_, err := io.Copy(io.Discard, reader)
+		serverDone <- err
+	}()
+
+	c, err := client.New(clientConn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.ErrorLog = log.New(io.Discard, "", 0)
+	c.SetState(imap.AuthenticatedState, nil)
+	c.Timeout = time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	cleanup := terminateClientOnContext(ctx, c)
+	defer cleanup()
+
+	started := time.Now()
+	_, err = c.Status("INBOX", []imap.StatusItem{imap.StatusUidNext})
+	if err == nil {
+		t.Fatal("stalled STATUS unexpectedly succeeded")
+	}
+	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+		t.Fatalf("stalled STATUS took %s after context deadline", elapsed)
+	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("context error = %v, want deadline exceeded", ctx.Err())
+	}
+	select {
+	case <-commandReceived:
+	default:
+		t.Fatal("server did not receive STATUS")
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -250,7 +250,22 @@ func (s *Service) SyncUserAccountMailboxes(ctx context.Context, userID, accountI
 	if err != nil {
 		return store.SyncRun{}, err
 	}
-	return s.syncAccount(ctx, userID, account, mailboxNames)
+	return s.syncAccount(ctx, userID, account, mailboxNames, syncAccountOptions{})
+}
+
+// RecoverUserAccountMailboxGeneration runs one scheduler-bounded generation
+// recovery turn. Pending flag uploads are tenant-wide work and are deliberately
+// deferred until recovery releases its gate; otherwise a single mailbox turn can
+// perform hundreds of unrelated IMAP commands before fetching its first body.
+func (s *Service) RecoverUserAccountMailboxGeneration(ctx context.Context, userID, accountID int64, mailboxName string) (store.SyncRun, error) {
+	if s.Fetcher == nil {
+		return store.SyncRun{}, errors.New("sync fetcher is not configured")
+	}
+	account, err := s.Store.GetMailAccountForUser(ctx, userID, accountID)
+	if err != nil {
+		return store.SyncRun{}, err
+	}
+	return s.syncAccount(ctx, userID, account, []string{mailboxName}, syncAccountOptions{generationRecovery: true})
 }
 
 // DiscoverMailboxes refreshes local mailbox rows and remote STATUS counters
@@ -339,7 +354,7 @@ func (s *Service) syncUser(ctx context.Context, userID int64, requestedMailboxes
 	}
 	var first store.SyncRun
 	for _, account := range accounts {
-		run, err := s.syncAccount(ctx, userID, account, requestedMailboxes)
+		run, err := s.syncAccount(ctx, userID, account, requestedMailboxes, syncAccountOptions{})
 		if first.ID == 0 {
 			first = run
 		}
@@ -353,12 +368,16 @@ func (s *Service) syncUser(ctx context.Context, userID int64, requestedMailboxes
 // syncAccount is the main incremental sync pipeline:
 // 1. create a sync_runs row for UI progress,
 // 2. plan folders from IMAP STATUS and last stored UID,
-// 3. push pending local Seen/Flagged changes,
+// 3. normally push pending local Seen/Flagged changes (recovery defers them),
 // 4. fetch only UIDs newer than each mailbox's last UID,
 // 5. store blobs/message rows/attachments/search documents, and
 // 6. reconcile lightweight metadata for small folders.
 // The defer marks interrupted runs when the process context is cancelled.
-func (s *Service) syncAccount(ctx context.Context, userID int64, account store.MailAccount, requestedMailboxes []string) (store.SyncRun, error) {
+type syncAccountOptions struct {
+	generationRecovery bool
+}
+
+func (s *Service) syncAccount(ctx context.Context, userID int64, account store.MailAccount, requestedMailboxes []string, options syncAccountOptions) (store.SyncRun, error) {
 	run, err := s.Store.CreateSyncRun(ctx, userID, account.ID)
 	if err != nil {
 		return store.SyncRun{}, err
@@ -398,15 +417,19 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 	}
 	s.updateSyncProgress(ctx, userID, run.ID, progress)
 
-	if err := s.PushPendingReadState(ctx, userID, 500); err != nil {
-		status = "failed"
-		errText = err.Error()
-		return run, err
-	}
-	if err := s.PushPendingStarState(ctx, userID, 500); err != nil {
-		status = "failed"
-		errText = err.Error()
-		return run, err
+	if options.generationRecovery {
+		log.Printf("recover mailbox generation phase user_id=%d account_id=%d phase=defer-pending-flags", userID, account.ID)
+	} else {
+		if err := s.PushPendingReadState(ctx, userID, 500); err != nil {
+			status = "failed"
+			errText = err.Error()
+			return run, err
+		}
+		if err := s.PushPendingStarState(ctx, userID, 500); err != nil {
+			status = "failed"
+			errText = err.Error()
+			return run, err
+		}
 	}
 
 	for _, planned := range plan {
@@ -615,6 +638,8 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		}
 		generationRecoverySnapshot := MailboxUIDSnapshot{}
 		if generationRebuildPending {
+			log.Printf("recover mailbox generation phase user_id=%d account_id=%d mailbox=%s phase=snapshot-and-newest-page after_uid=%d",
+				userID, account.ID, mailbox.Name, mailboxLastUIDAtStart)
 			var prewarmFatalErr, prewarmErr error
 			seedRecoveryProgress := func(snapshot MailboxUIDSnapshot) error {
 				completedBefore := mailboxGenerationSnapshotCompletedBefore(snapshot, mailboxLastUIDAtStart)
@@ -631,6 +656,8 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			}
 			generationRecoverySnapshot, prewarmFatalErr, prewarmErr = s.prewarmPendingMailboxGeneration(ctx,
 				userID, account, mailbox, planned.Status.UIDValidity, prewarmHandle, seedRecoveryProgress)
+			log.Printf("recover mailbox generation phase complete user_id=%d account_id=%d mailbox=%s phase=snapshot-and-newest-page snapshot_uids=%d prewarmed=%d",
+				userID, account.ID, mailbox.Name, len(generationRecoverySnapshot.UIDs), len(prewarmedUIDs))
 			if prewarmFatalErr != nil {
 				status = "failed"
 				errText = prewarmFatalErr.Error()

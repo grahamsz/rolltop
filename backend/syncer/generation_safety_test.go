@@ -271,6 +271,41 @@ func TestPendingAndPulledFlagsStayLocalAcrossGenerationChange(t *testing.T) {
 	}
 }
 
+func TestGenerationRecoveryDefersTenantPendingFlagUploads(t *testing.T) {
+	fixture := newMoveTestFixture(t)
+	fetcher := &generationRefusingFlagFetcher{moveTestFetcher: fixture.fetcher}
+	fixture.service.Fetcher = fetcher
+	if err := fixture.store.MarkMessageReadForUser(context.Background(), fixture.userID, fixture.message.ID, false, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// A regular sync still drains pending local flag changes before fetching.
+	if _, err := fixture.service.SyncUserAccountMailboxes(context.Background(), fixture.userID,
+		fixture.account.ID, []string{fixture.source.Name}); err == nil {
+		t.Fatal("regular sync unexpectedly succeeded with the refusing test fetcher")
+	}
+	if fetcher.seenWriteCalls != 1 {
+		t.Fatalf("regular sync Seen writes=%d, want 1", fetcher.seenWriteCalls)
+	}
+
+	// A generation-recovery turn must start fetching the requested mailbox
+	// without first performing up to 500 unrelated writes for the tenant.
+	if _, err := fixture.service.RecoverUserAccountMailboxGeneration(context.Background(), fixture.userID,
+		fixture.account.ID, fixture.source.Name); err == nil {
+		t.Fatal("generation recovery unexpectedly succeeded with the refusing test fetcher")
+	}
+	if fetcher.seenWriteCalls != 1 {
+		t.Fatalf("generation recovery performed pending Seen writes: calls=%d, want 1", fetcher.seenWriteCalls)
+	}
+	message, err := fixture.store.GetMessageForUser(context.Background(), fixture.userID, fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !message.ReadSyncPending {
+		t.Fatal("generation recovery cleared the deferred local Seen change")
+	}
+}
+
 type recordingCopyFlagFetcher struct {
 	*moveTestFetcher
 	flaggedValidity uint32

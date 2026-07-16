@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,6 +41,27 @@ func TestRunnerGlobalMailboxReservationBlocksAccountJob(t *testing.T) {
 	}
 	if !r.IsAccountMailboxRunning(7, 101, "gmail forward") {
 		t.Fatalf("account running state did not notice the global mailbox reservation")
+	}
+}
+
+func TestAccountMailboxBlockReasonNamesActiveGenerationRecovery(t *testing.T) {
+	runner := NewRunner(nil)
+	rebuild := store.PendingMailboxGenerationRebuild{
+		UserID:      7,
+		AccountID:   101,
+		MailboxName: "INBOX",
+	}
+	keys, ok := runner.reserveGenerationRecoveryMailbox(rebuild)
+	if !ok {
+		t.Fatal("generation recovery reservation failed")
+	}
+	defer runner.releaseGenerationRecoveryMailbox(rebuild.UserID, keys)
+
+	reason := runner.AccountMailboxBlockReason(rebuild.UserID, 202, "INBOX")
+	for _, want := range []string{"mailbox generation recovery active", "account_id=101", `mailbox="INBOX"`} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("block reason %q does not contain %q", reason, want)
+		}
 	}
 }
 

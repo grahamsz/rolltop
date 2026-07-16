@@ -11,7 +11,10 @@ import (
 )
 
 const (
-	mailboxGenerationPrewarmLimit      = 200
+	// One newest page is enough to make the mailbox immediately useful. Older
+	// history belongs to the bounded ascending recovery turn; prewarming four
+	// pages made the supposedly bounded scheduler spend minutes before checkpointing.
+	mailboxGenerationPrewarmLimit      = 50
 	mailboxGenerationPrewarmPageSize   = 50
 	mailboxGenerationRecoveryBatchSize = 500
 )

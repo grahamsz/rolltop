@@ -36,12 +36,14 @@ type Runner struct {
 	generationRecoveryAccounts map[int64]map[int64]bool
 	generationRecoveryKnown    map[int64]bool
 	generationRecoveryCursor   map[int64]int64
+	generationRecoveryActive   map[int64]generationRecoveryActivity
 	generationRecoveryAuto     map[int64]bool
 	generationRecoveryBoxes    map[int64]map[string]string
 	generationRecoveryAccts    map[int64]map[string]deferredAccountMailbox
 	arrivalScheduler           *inboxArrivalScheduler
 	rebuildRecoveryRunning     bool
 	rebuildRecoveryInterval    time.Duration
+	generationRecoveryTimeout  time.Duration
 	rebuildRecoveryWake        chan struct{}
 	rebuildRecoveryBeforeStop  func()
 	queueRebuildMailbox        func(store.PendingMailboxGenerationRebuild)
@@ -82,6 +84,7 @@ func NewRunnerWithContext(ctx context.Context, service *Service) *Runner {
 		generationRecoveryAccounts: map[int64]map[int64]bool{},
 		generationRecoveryKnown:    map[int64]bool{},
 		generationRecoveryCursor:   map[int64]int64{},
+		generationRecoveryActive:   map[int64]generationRecoveryActivity{},
 		generationRecoveryAuto:     map[int64]bool{},
 		generationRecoveryBoxes:    map[int64]map[string]string{},
 		generationRecoveryAccts:    map[int64]map[string]deferredAccountMailbox{},
@@ -862,6 +865,53 @@ func (r *Runner) IsAccountMailboxRunning(userID, accountID int64, mailbox string
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.accountMailboxReservedLocked(userID, accountID, mailbox)
+}
+
+// AccountMailboxBlockReason describes why an account-qualified mailbox request
+// was declined. Poll/IDLE logs use this after StartAccountMailboxes returns false
+// so a tenant-wide recovery gate is not mislabeled as two stuck Inbox jobs.
+func (r *Runner) AccountMailboxBlockReason(userID, accountID int64, mailbox string) string {
+	if r == nil {
+		return "sync runner is unavailable"
+	}
+	if err := r.context().Err(); err != nil {
+		return "sync runner is stopping"
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if activity, ok := r.generationRecoveryActive[userID]; ok {
+		elapsed := time.Since(activity.startedAt).Round(time.Second)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		return fmt.Sprintf("mailbox generation recovery active account_id=%d mailbox=%q elapsed=%s",
+			activity.accountID, activity.mailbox, elapsed)
+	}
+	if r.generationRecoveryRuns[userID] {
+		return "mailbox generation recovery active"
+	}
+	if r.generationRecoveryReplay[userID] {
+		return "mailbox generation recovery replay active"
+	}
+	if r.generationRecoveryUsers[userID] {
+		if !r.generationRecoveryKnown[userID] {
+			return "mailbox generation recovery pending account scan"
+		}
+		if r.generationRecoveryAccounts[userID][accountID] {
+			return "mailbox generation recovery pending for this account"
+		}
+		return "mailbox generation recovery waiting for active tenant work"
+	}
+	if r.accountMailboxReservedLocked(userID, accountID, mailbox) {
+		return "mailbox sync already running"
+	}
+	if r.autoRunning[userID] {
+		return "account-wide sync already running"
+	}
+	if r.foregroundRunning[userID] > 0 {
+		return "foreground mail operation active"
+	}
+	return "sync request was not started"
 }
 
 func uniqueMailboxes(mailboxes []string) []string {

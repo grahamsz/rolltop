@@ -32,6 +32,12 @@ type generationRecoveryAccountReplay struct {
 	request deferredAccountMailbox
 }
 
+type generationRecoveryActivity struct {
+	accountID int64
+	mailbox   string
+	startedAt time.Time
+}
+
 // SignalMailboxGenerationRecovery closes the tenant gate as soon as a normal
 // sync creates a durable generation marker. The epoch prevents an older store
 // snapshot from reopening a gate that was signaled while that query ran.
@@ -706,6 +712,9 @@ func (r *Runner) ensureGenerationRecoveryMapsLocked() {
 	if r.generationRecoveryCursor == nil {
 		r.generationRecoveryCursor = map[int64]int64{}
 	}
+	if r.generationRecoveryActive == nil {
+		r.generationRecoveryActive = map[int64]generationRecoveryActivity{}
+	}
 	if r.generationRecoveryAuto == nil {
 		r.generationRecoveryAuto = map[int64]bool{}
 	}
@@ -888,6 +897,11 @@ func (r *Runner) reserveGenerationRecoveryMailbox(rebuild store.PendingMailboxGe
 		return nil, false
 	}
 	r.generationRecoveryRuns[rebuild.UserID] = true
+	r.generationRecoveryActive[rebuild.UserID] = generationRecoveryActivity{
+		accountID: rebuild.AccountID,
+		mailbox:   rebuild.MailboxName,
+		startedAt: time.Now(),
+	}
 	for _, key := range keys {
 		r.mailboxRunning[key] = true
 	}
@@ -900,6 +914,7 @@ func (r *Runner) releaseGenerationRecoveryMailbox(userID int64, keys []string) {
 		delete(r.mailboxRunning, key)
 	}
 	delete(r.generationRecoveryRuns, userID)
+	delete(r.generationRecoveryActive, userID)
 	r.mu.Unlock()
 }
 

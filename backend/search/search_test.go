@@ -4,6 +4,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"math"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,109 @@ import (
 
 	"rolltop/backend/store"
 )
+
+type observedErrContext struct {
+	context.Context
+	errCalled chan struct{}
+}
+
+func (c *observedErrContext) Err() error {
+	select {
+	case c.errCalled <- struct{}{}:
+	default:
+	}
+	return c.Context.Err()
+}
+
+func TestWriterOperationsHonorCancellationWhileWaiting(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(context.Context, *Service) error
+	}{
+		{
+			name: "index messages",
+			run: func(ctx context.Context, svc *Service) error {
+				return svc.IndexMessage(ctx, store.MessageRecord{
+					ID: 2, UserID: 1, MailboxID: 10, Subject: "new message", Date: time.Now(),
+				}, nil)
+			},
+		},
+		{
+			name: "delete messages",
+			run: func(ctx context.Context, svc *Service) error {
+				return svc.DeleteMessages(ctx, 1, []int64{1})
+			},
+		},
+		{
+			name: "purge mailbox",
+			run: func(ctx context.Context, svc *Service) error {
+				_, err := svc.PurgeMailbox(ctx, 1, 10)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer svc.Close()
+
+			seed := store.MessageRecord{
+				ID: 1, UserID: 1, MailboxID: 10, Subject: "seed message", Date: time.Now(),
+			}
+			if err := svc.IndexMessage(context.Background(), seed, nil); err != nil {
+				t.Fatal(err)
+			}
+
+			writer := svc.writerForUser(1)
+			writer.Lock()
+			writerHeld := true
+			defer func() {
+				if writerHeld {
+					writer.Unlock()
+				}
+			}()
+
+			baseCtx, cancel := context.WithCancel(context.Background())
+			ctx := &observedErrContext{Context: baseCtx, errCalled: make(chan struct{}, 1)}
+			result := make(chan error, 1)
+			go func() {
+				result <- tt.run(ctx, svc)
+			}()
+
+			select {
+			case <-ctx.errCalled:
+			case <-time.After(time.Second):
+				cancel()
+				t.Fatal("operation did not reach the writer lock")
+			}
+			cancel()
+
+			select {
+			case err := <-result:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("operation error = %v, want context.Canceled", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("operation did not stop after cancellation")
+			}
+
+			writer.Unlock()
+			writerHeld = false
+			if !writer.TryLock() {
+				t.Fatal("writer lock remained held after cancellation")
+			}
+			writer.Unlock()
+
+			if err := tt.run(context.Background(), svc); err != nil {
+				t.Fatalf("operation after cancellation: %v", err)
+			}
+		})
+	}
+}
 
 func TestOpenPerUserKeepsDuplicateMessageIDsSeparate(t *testing.T) {
 	ctx := context.Background()

@@ -27,8 +27,9 @@ import (
 )
 
 const (
-	idleCycleDuration = 29 * time.Minute
-	idleStopGrace     = 5 * time.Second
+	idleCycleDuration         = 29 * time.Minute
+	idleStopGrace             = 5 * time.Second
+	defaultIMAPCommandTimeout = 60 * time.Second
 )
 
 var errIdleStopTimeout = errors.New("IDLE session did not stop cleanly")
@@ -60,11 +61,11 @@ func (f *Fetcher) ProbeCapabilities(ctx context.Context, account store.MailAccou
 	if f == nil {
 		return ServerCapabilities{}, errors.New("probe IMAP capabilities requires a fetcher")
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return ServerCapabilities{}, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	capabilities, err := probeCapabilities(c)
 	if err != nil {
 		return ServerCapabilities{}, err
@@ -93,11 +94,11 @@ func probeCapabilities(supporter capabilitySupporter) (ServerCapabilities, error
 // ListMailboxes logs in, lists selectable folders, and returns only names. It does
 // not create local rows; sync.Service decides which folders belong to the user DB.
 func (f *Fetcher) ListMailboxes(ctx context.Context, account store.MailAccount) ([]syncer.MailboxInfo, error) {
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return nil, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 
 	mailboxes := make(chan *imap.MailboxInfo, 50)
 	done := make(chan error, 1)
@@ -144,11 +145,11 @@ func (f *Fetcher) SearchTrainingCandidates(ctx context.Context, account store.Ma
 	if err := ctx.Err(); err != nil {
 		return syncer.TrainingCandidateSearch{}, err
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return syncer.TrainingCandidateSearch{}, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	return f.searchTrainingCandidates(ctx, c, mailbox, query)
 }
 
@@ -309,11 +310,11 @@ func (f *Fetcher) FetchTrainingCandidates(ctx context.Context, account store.Mai
 	if len(uids) == 0 {
 		return nil
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	return f.fetchTrainingCandidates(ctx, c, mailbox, uids, handle)
 }
 
@@ -447,11 +448,11 @@ func (f *Fetcher) MailboxStatus(ctx context.Context, account store.MailAccount, 
 		return syncer.MailboxStatus{}, ctx.Err()
 	default:
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return syncer.MailboxStatus{}, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	status, err := c.Status(mailbox, []imap.StatusItem{imap.StatusMessages, imap.StatusUnseen, imap.StatusUidNext, imap.StatusUidValidity})
 	if err != nil {
 		return syncer.MailboxStatus{}, fmt.Errorf("status mailbox %q: %w", mailbox, err)
@@ -471,11 +472,11 @@ func (f *Fetcher) CreateMailbox(ctx context.Context, account store.MailAccount, 
 	if mailbox == "" {
 		return fmt.Errorf("folder name is required")
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	if err := c.Create(mailbox); err != nil {
 		return fmt.Errorf("create IMAP folder %q: %w", mailbox, err)
 	}
@@ -489,11 +490,11 @@ func (f *Fetcher) UIDs(ctx context.Context, account store.MailAccount, mailbox s
 		return nil, ctx.Err()
 	default:
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return nil, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	if _, err := c.Select(mailbox, true); err != nil {
 		return nil, fmt.Errorf("select mailbox %q read-only for UID reconcile: %w", mailbox, err)
 	}
@@ -511,11 +512,11 @@ func (f *Fetcher) UIDs(ctx context.Context, account store.MailAccount, mailbox s
 // for UIDs greater than afterUID, fetches RFC822 bodies in batches, and streams each
 // result to the syncer callback instead of accumulating a mailbox in memory.
 func (f *Fetcher) FetchMailbox(ctx context.Context, account store.MailAccount, mailbox string, afterUID uint32, handle func(syncer.FetchedMessage) error) error {
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 
 	mbox, err := c.Select(mailbox, true)
 	if err != nil {
@@ -538,11 +539,11 @@ func (f *Fetcher) FetchMailbox(ctx context.Context, account store.MailAccount, m
 // FetchUIDs fetches a known sparse UID set. Explicit folder repair uses this to
 // fill local holes without downloading every already-mirrored message body.
 func (f *Fetcher) FetchUIDs(ctx context.Context, account store.MailAccount, mailbox string, uids []uint32, handle func(syncer.FetchedMessage) error) error {
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	if _, err := c.Select(mailbox, true); err != nil {
 		return fmt.Errorf("select mailbox %q read-only: %w", mailbox, err)
 	}
@@ -579,7 +580,7 @@ func (f *Fetcher) fetchUIDs(ctx context.Context, c *client.Client, mailbox strin
 		messages := make(chan *imap.Message, 20)
 		done := make(chan error, 1)
 		go func() {
-			done <- c.UidFetch(seqset, items, messages)
+			done <- guardedUIDFetch(ctx, c, seqset, items, messages)
 		}()
 		fetched := make([]syncer.FetchedMessage, 0, len(requested))
 		var readErr error
@@ -630,6 +631,46 @@ func (f *Fetcher) fetchUIDs(ctx context.Context, c *client.Client, mailbox strin
 		}
 	}
 	return nil
+}
+
+// guardedUIDFetch prevents go-imap's absolute command deadline from remaining
+// armed while fetched messages are parsed, stored, and indexed. The dependency
+// has no context-aware command API, so cancellation closes the connection to
+// unblock an active fetch.
+func guardedUIDFetch(ctx context.Context, c *client.Client, seqset *imap.SeqSet, items []imap.FetchItem, messages chan *imap.Message) error {
+	if err := ctx.Err(); err != nil {
+		close(messages)
+		return err
+	}
+	if c == nil {
+		close(messages)
+		return errors.New("fetch UIDs requires an IMAP client")
+	}
+
+	previousTimeout := c.Timeout
+	c.Timeout = 0
+	defer func() { c.Timeout = previousTimeout }()
+
+	commandTimeout := previousTimeout
+	if commandTimeout <= 0 {
+		commandTimeout = defaultIMAPCommandTimeout
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
+	terminated := make(chan struct{})
+	stopTerminate := context.AfterFunc(commandCtx, func() {
+		_ = c.Terminate()
+		close(terminated)
+	})
+	err := c.UidFetch(seqset, items, messages)
+	if !stopTerminate() {
+		<-terminated
+	}
+	commandErr := commandCtx.Err()
+	cancel()
+	if commandErr != nil {
+		return commandErr
+	}
+	return err
 }
 
 func orderFetchedUIDBatch(requested []uint32, fetched []syncer.FetchedMessage) ([]syncer.FetchedMessage, error) {
@@ -695,11 +736,11 @@ func (f *Fetcher) FetchMessage(ctx context.Context, account store.MailAccount, m
 	if uid == 0 {
 		return syncer.FetchedMessage{}, fmt.Errorf("fetch message requires a nonzero UID")
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return syncer.FetchedMessage{}, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	selected, err := c.Select(mailbox, true)
 	if err != nil {
 		return syncer.FetchedMessage{}, fmt.Errorf("select mailbox %q read-only: %w", mailbox, err)
@@ -783,11 +824,11 @@ func (f *Fetcher) AppendMessageWithFlags(ctx context.Context, account store.Mail
 	if mailbox == "" || len(raw) == 0 {
 		return syncer.FetchedMessage{}, fmt.Errorf("append message requires a mailbox and raw message")
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return syncer.FetchedMessage{}, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 
 	var beforeUIDNext, beforeUIDValidity uint32
 	if status, err := c.Status(mailbox, []imap.StatusItem{imap.StatusUidNext, imap.StatusUidValidity}); err == nil && status != nil {
@@ -1002,11 +1043,11 @@ func (f *Fetcher) SetSeen(ctx context.Context, account store.MailAccount, mailbo
 		return ctx.Err()
 	default:
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	if _, err := c.Select(mailbox, false); err != nil {
 		return fmt.Errorf("select mailbox %q read-write: %w", mailbox, err)
 	}
@@ -1031,11 +1072,11 @@ func (f *Fetcher) SeenUIDs(ctx context.Context, account store.MailAccount, mailb
 		return nil, ctx.Err()
 	default:
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return nil, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	if _, err := c.Select(mailbox, true); err != nil {
 		return nil, fmt.Errorf("select mailbox %q read-only for seen search: %w", mailbox, err)
 	}
@@ -1055,11 +1096,11 @@ func (f *Fetcher) SetFlagged(ctx context.Context, account store.MailAccount, mai
 		return ctx.Err()
 	default:
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	if _, err := c.Select(mailbox, false); err != nil {
 		return fmt.Errorf("select mailbox %q read-write: %w", mailbox, err)
 	}
@@ -1084,11 +1125,11 @@ func (f *Fetcher) FlaggedUIDs(ctx context.Context, account store.MailAccount, ma
 		return nil, ctx.Err()
 	default:
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return nil, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	if _, err := c.Select(mailbox, true); err != nil {
 		return nil, fmt.Errorf("select mailbox %q read-only for flagged search: %w", mailbox, err)
 	}
@@ -1112,16 +1153,16 @@ func (f *Fetcher) WatchMailbox(ctx context.Context, account store.MailAccount, m
 	if strings.TrimSpace(mailbox) == "" {
 		return fmt.Errorf("watch mailbox requires a mailbox name")
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	if _, err := c.Select(mailbox, true); err != nil {
 		return fmt.Errorf("select mailbox %q read-only for IDLE: %w", mailbox, err)
 	}
 	// IDLE is intentionally long-lived and has its own context/stop handling.
-	// Restore the command timeout before the deferred LOGOUT runs.
+	// Restore the normal timeout before any final non-IDLE command handling.
 	c.Timeout = 0
 	defer func() { c.Timeout = f.commandTimeout() }()
 	log.Printf("imap idle account_id=%d mailbox=%s: selected read-only", account.ID, mailbox)
@@ -1254,17 +1295,63 @@ func (f *Fetcher) login(account store.MailAccount) (*client.Client, error) {
 	}
 	c.Timeout = timeout
 	if err := c.Login(account.Username, password); err != nil {
-		_ = c.Logout()
+		_ = c.Terminate()
 		return nil, fmt.Errorf("login to IMAP server %s: %w", addr, err)
 	}
 	return c, nil
+}
+
+// loginWithinContext bounds dialing and authentication by the shorter of the
+// configured command timeout and the caller's deadline. Once connected, callers
+// should also use terminateClientOnContext so cancellation interrupts a command
+// already in progress.
+func (f *Fetcher) loginWithinContext(ctx context.Context, account store.MailAccount) (*client.Client, error) {
+	bounded, err := f.boundedByContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return bounded.loginByContext(ctx, account)
+}
+
+// terminateClientOnContext makes one-shot IMAP sessions obey cancellation even
+// though go-imap v1 has no context-aware command API. Cleanup closes the socket
+// directly instead of issuing LOGOUT, which could otherwise add another blocked
+// network command after the useful work has already failed or completed.
+func terminateClientOnContext(ctx context.Context, c *client.Client) func() {
+	if c == nil {
+		return func() {}
+	}
+	stopWatching := watchClientContext(ctx, c)
+	return func() {
+		stopWatching()
+		_ = c.Terminate()
+	}
+}
+
+func watchClientContext(ctx context.Context, c *client.Client) func() {
+	if c == nil {
+		return func() {}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	terminated := make(chan struct{})
+	stopTerminate := context.AfterFunc(ctx, func() {
+		_ = c.Terminate()
+		close(terminated)
+	})
+	return func() {
+		if !stopTerminate() {
+			<-terminated
+		}
+	}
 }
 
 func (f *Fetcher) commandTimeout() time.Duration {
 	if f != nil && f.Timeout > 0 {
 		return f.Timeout
 	}
-	return 60 * time.Second
+	return defaultIMAPCommandTimeout
 }
 
 func hasAttr(attrs []string, target string) bool {

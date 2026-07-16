@@ -31,11 +31,11 @@ func (f *Fetcher) SnapshotMailboxAppendBoundary(ctx context.Context, account sto
 	if mailbox == "" {
 		return syncer.MailboxAppendBoundary{}, errors.New("append boundary requires a mailbox")
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return syncer.MailboxAppendBoundary{}, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	selected, err := c.Select(mailbox, true)
 	if err != nil {
 		return syncer.MailboxAppendBoundary{}, fmt.Errorf("select mailbox %q for append boundary: %w", mailbox, err)
@@ -62,11 +62,11 @@ func (f *Fetcher) SnapshotExactMessageMatches(ctx context.Context, account store
 	if messageID == "" && minimumUID == 0 {
 		return syncer.ExactMessageMatchSnapshot{}, errors.New("exact raw message match requires a pre-dispatch minimum UID")
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return syncer.ExactMessageMatchSnapshot{}, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	selected, err := c.Select(mailbox, true)
 	if err != nil {
 		return syncer.ExactMessageMatchSnapshot{}, fmt.Errorf("select mailbox %q for exact message match: %w", mailbox, err)

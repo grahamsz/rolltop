@@ -403,6 +403,44 @@ func (s *Service) writerForUser(userID int64) *sync.Mutex {
 	return s.writers[key]
 }
 
+const writerLockRetryInterval = 5 * time.Millisecond
+
+// lockWriter waits for one tenant's Bleve writer without making cancellation
+// wait behind another long-running index operation. A final context check after
+// TryLock closes the race where cancellation and lock release happen together.
+func lockWriter(ctx context.Context, writer *sync.Mutex) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if writer.TryLock() {
+		if err := ctx.Err(); err != nil {
+			writer.Unlock()
+			return err
+		}
+		return nil
+	}
+	timer := time.NewTimer(writerLockRetryInterval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if writer.TryLock() {
+			if err := ctx.Err(); err != nil {
+				writer.Unlock()
+				return err
+			}
+			return nil
+		}
+		timer.Reset(writerLockRetryInterval)
+	}
+}
+
 // indexForUser resolves the correct Bleve handle. In per-user mode it lazily opens
 // and caches one index per tenant, with a double-check to avoid duplicate handles
 // during concurrent searches or sync writes.
@@ -481,9 +519,13 @@ func (s *Service) IndexMessages(ctx context.Context, documents []MessageIndexDoc
 			batch.Index(strconv.FormatInt(document.Message.ID, 10), buildMessageDocument(document.Message, document.Attachments))
 		}
 		writer := s.writerForUser(userID)
-		writer.Lock()
-		err = index.Batch(batch)
-		writer.Unlock()
+		err = func() error {
+			if err := lockWriter(ctx, writer); err != nil {
+				return err
+			}
+			defer writer.Unlock()
+			return index.Batch(batch)
+		}()
 		if err != nil {
 			return err
 		}
@@ -602,38 +644,48 @@ func (s *Service) DeleteMessagesWithProgress(ctx context.Context, userID int64, 
 		for _, id := range unique[start:end] {
 			deleteIDs = append(deleteIDs, strconv.FormatInt(id, 10))
 		}
+		committed := 0
 		writer := s.writerForUser(userID)
-		writer.Lock()
-		if !s.perUser {
-			userQuery := bleve.NewTermQuery(strconv.FormatInt(userID, 10))
-			userQuery.SetField("user_id")
-			docQuery := bleve.NewDocIDQuery(deleteIDs)
-			request := bleve.NewSearchRequestOptions(bleve.NewConjunctionQuery(userQuery, docQuery), len(deleteIDs), 0, false)
-			result, searchErr := index.Search(request)
-			if searchErr != nil {
-				writer.Unlock()
-				return searchErr
+		err = func() error {
+			if err := lockWriter(ctx, writer); err != nil {
+				return err
 			}
-			deleteIDs = deleteIDs[:0]
-			for _, hit := range result.Hits {
-				deleteIDs = append(deleteIDs, hit.ID)
+			defer writer.Unlock()
+			if !s.perUser {
+				userQuery := bleve.NewTermQuery(strconv.FormatInt(userID, 10))
+				userQuery.SetField("user_id")
+				docQuery := bleve.NewDocIDQuery(deleteIDs)
+				request := bleve.NewSearchRequestOptions(bleve.NewConjunctionQuery(userQuery, docQuery), len(deleteIDs), 0, false)
+				result, searchErr := index.Search(request)
+				if searchErr != nil {
+					return searchErr
+				}
+				deleteIDs = deleteIDs[:0]
+				for _, hit := range result.Hits {
+					deleteIDs = append(deleteIDs, hit.ID)
+				}
 			}
-		}
-		if len(deleteIDs) == 0 {
-			writer.Unlock()
-			continue
-		}
-		batch := index.NewBatch()
-		for _, id := range deleteIDs {
-			batch.Delete(id)
-		}
-		err = index.Batch(batch)
-		writer.Unlock()
+			if len(deleteIDs) == 0 {
+				return nil
+			}
+			batch := index.NewBatch()
+			for _, id := range deleteIDs {
+				batch.Delete(id)
+			}
+			if err := index.Batch(batch); err != nil {
+				return err
+			}
+			committed = len(deleteIDs)
+			return nil
+		}()
 		if err != nil {
 			return err
 		}
+		if committed == 0 {
+			continue
+		}
 		if onBatch != nil {
-			if err := onBatch(len(deleteIDs)); err != nil {
+			if err := onBatch(committed); err != nil {
 				return err
 			}
 		}
@@ -775,9 +827,13 @@ func (s *Service) PurgeMailboxWithProgress(ctx context.Context, userID, mailboxI
 			batch.Delete(hit.ID)
 		}
 		writer := s.writerForUser(userID)
-		writer.Lock()
-		err = index.Batch(batch)
-		writer.Unlock()
+		err = func() error {
+			if err := lockWriter(ctx, writer); err != nil {
+				return err
+			}
+			defer writer.Unlock()
+			return index.Batch(batch)
+		}()
 		if err != nil {
 			return deleted, err
 		}

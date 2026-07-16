@@ -44,11 +44,11 @@ func (f *Fetcher) MoveMessageWithReceipt(ctx context.Context, account store.Mail
 	if err := validateMoveRequest(ctx, sourceMailbox, destMailbox, uid, expectedSourceUIDValidity); err != nil {
 		return nil, err
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return nil, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	return moveMessageWithReceipt(ctx, c, sourceMailbox, destMailbox, uid, expectedSourceUIDValidity)
 }
 
@@ -220,17 +220,7 @@ func (f *Fetcher) ExistingUIDsWithValidity(ctx context.Context, account store.Ma
 	if err != nil {
 		return nil, 0, err
 	}
-	defer c.Terminate()
-
-	watchDone := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = c.Terminate()
-		case <-watchDone:
-		}
-	}()
-	defer close(watchDone)
+	defer terminateClientOnContext(ctx, c)()
 
 	existing, uidValidity, err := existingUIDsWithValidity(ctx, c, mailbox, uids)
 	if err != nil {

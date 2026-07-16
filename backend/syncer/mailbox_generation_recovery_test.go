@@ -24,9 +24,21 @@ type recoveryFailingFetcher struct {
 	calls atomic.Int64
 }
 
+type recoveryBlockingFetcher struct {
+	*moveTestFetcher
+	started chan struct{}
+	once    sync.Once
+}
+
 func (f *recoveryFailingFetcher) MailboxStatus(context.Context, store.MailAccount, string) (MailboxStatus, error) {
 	f.calls.Add(1)
 	return MailboxStatus{}, errors.New("recovery IMAP unavailable")
+}
+
+func (f *recoveryBlockingFetcher) MailboxStatus(ctx context.Context, _ store.MailAccount, _ string) (MailboxStatus, error) {
+	f.once.Do(func() { close(f.started) })
+	<-ctx.Done()
+	return MailboxStatus{}, ctx.Err()
 }
 
 func (f *recoveryHealthyAccountFetcher) ListMailboxes(context.Context, store.MailAccount) ([]MailboxInfo, error) {
@@ -223,6 +235,62 @@ func TestMailboxGenerationRecoveryFailureWaitsForRetryInterval(t *testing.T) {
 			t.Fatalf("failed recovery did not retry on the timer: calls=%d", fetcher.calls.Load())
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestMailboxGenerationRecoveryDeadlineReleasesReservationAndKeepsMarker(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "rebuild-deadline@example.test", "Rebuild Deadline", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := recoveryTestAccount(t, ctx, db, user.ID, "deadline")
+	mailbox := recoveryTestNeverMailbox(t, ctx, db, user.ID, account.ID, "INBOX")
+	insertRecoveryTestMarker(t, ctx, db, user.ID, account.ID, mailbox.ID, 91)
+	fetcher := &recoveryBlockingFetcher{moveTestFetcher: &moveTestFetcher{}, started: make(chan struct{})}
+	runner := NewRunnerWithContext(ctx, &Service{Store: db, Fetcher: fetcher})
+	runner.generationRecoveryTimeout = 25 * time.Millisecond
+	rebuild := store.PendingMailboxGenerationRebuild{
+		UserID:            user.ID,
+		AccountID:         account.ID,
+		MailboxID:         mailbox.ID,
+		MailboxName:       mailbox.Name,
+		TargetUIDValidity: 91,
+	}
+	if !runner.startPendingMailboxGenerationRebuild(rebuild) {
+		t.Fatal("generation recovery did not start")
+	}
+	select {
+	case <-fetcher.started:
+	case <-time.After(time.Second):
+		t.Fatal("generation recovery did not reach IMAP status")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		runner.mu.Lock()
+		running := runner.generationRecoveryRuns[user.ID]
+		runner.mu.Unlock()
+		if !running && !runner.IsAccountMailboxRunning(user.ID, account.ID, mailbox.Name) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed-out generation recovery did not release its reservation")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	pending, err := db.MailboxGenerationRebuildPending(ctx, user.ID, account.ID, mailbox.ID, 91)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
+		t.Fatal("timed-out generation recovery removed its durable rebuild marker")
 	}
 }
 

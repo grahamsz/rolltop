@@ -516,7 +516,8 @@ func inboxPoll(ctx context.Context, db *store.Store, runner *syncer.Runner, inte
 			}
 			for _, target := range targets {
 				if !runner.StartAccountMailboxes(target.UserID, target.Account.ID, []string{target.Mailbox.Name}) {
-					log.Printf("inbox poll user_id=%d account_id=%d queued: inbox already running", target.UserID, target.Account.ID)
+					log.Printf("inbox poll user_id=%d account_id=%d queued: %s", target.UserID, target.Account.ID,
+						runner.AccountMailboxBlockReason(target.UserID, target.Account.ID, target.Mailbox.Name))
 				}
 			}
 		}
@@ -564,7 +565,8 @@ func inboxIdle(ctx context.Context, db *store.Store, runner *syncer.Runner, watc
 					err := watcher.WatchMailbox(watchCtx, target.Account, target.Mailbox.Name, func() {
 						log.Printf("inbox idle user_id=%d account_id=%d event: queue inbox sync", target.UserID, target.Account.ID)
 						if !runner.StartAccountMailboxes(target.UserID, target.Account.ID, []string{target.Mailbox.Name}) {
-							log.Printf("inbox idle user_id=%d account_id=%d queued: inbox already running", target.UserID, target.Account.ID)
+							log.Printf("inbox idle user_id=%d account_id=%d queued: %s", target.UserID, target.Account.ID,
+								runner.AccountMailboxBlockReason(target.UserID, target.Account.ID, target.Mailbox.Name))
 						}
 					})
 					if watchCtx.Err() != nil {

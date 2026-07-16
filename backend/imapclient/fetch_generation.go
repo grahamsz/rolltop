@@ -22,11 +22,11 @@ func (f *Fetcher) FetchMailboxWithUIDValidity(ctx context.Context, account store
 	if err := validateGenerationFetch(ctx, mailbox, expectedUIDValidity, handle); err != nil {
 		return err
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 
 	status, err := c.Select(strings.TrimSpace(mailbox), true)
 	if err != nil {
@@ -55,11 +55,11 @@ func (f *Fetcher) FetchUIDsWithUIDValidity(ctx context.Context, account store.Ma
 	if err := validateGenerationFetch(ctx, mailbox, expectedUIDValidity, handle); err != nil {
 		return err
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 
 	status, err := c.Select(strings.TrimSpace(mailbox), true)
 	if err != nil {

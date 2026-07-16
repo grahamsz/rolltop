@@ -43,6 +43,7 @@ type SyncDestinationSession struct {
 	client      *client.Client
 	mailbox     string
 	uidValidity uint32
+	stopContext func()
 }
 
 // OpenSyncDestinationSession logs in and selects one destination mailbox once,
@@ -58,24 +59,29 @@ func (f *Fetcher) OpenSyncDestinationSession(ctx context.Context, account store.
 	if mailbox == "" {
 		return nil, errors.New("open sync destination session requires a mailbox name")
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return nil, err
 	}
+	stopContext := watchClientContext(ctx, c)
 	selected, err := c.Select(mailbox, true)
 	if err != nil {
-		_ = c.Logout()
+		stopContext()
+		_ = c.Terminate()
 		return nil, fmt.Errorf("select mailbox %q read-only for sync destination: %w", mailbox, err)
 	}
 	if err := ctx.Err(); err != nil {
-		_ = c.Logout()
+		stopContext()
+		_ = c.Terminate()
 		return nil, err
 	}
 	var uidValidity uint32
 	if selected != nil {
 		uidValidity = selected.UidValidity
 	}
-	return &SyncDestinationSession{fetcher: f, client: c, mailbox: mailbox, uidValidity: uidValidity}, nil
+	return &SyncDestinationSession{
+		fetcher: f, client: c, mailbox: mailbox, uidValidity: uidValidity, stopContext: stopContext,
+	}, nil
 }
 
 // UIDValidity returns the destination mailbox epoch captured by SELECT. It is
@@ -88,7 +94,7 @@ func (s *SyncDestinationSession) UIDValidity() uint32 {
 	return s.uidValidity
 }
 
-// Close logs out of the held destination connection. It is safe to call more
+// Close terminates the held destination connection. It is safe to call more
 // than once after all session operations have stopped.
 func (s *SyncDestinationSession) Close() error {
 	if s == nil || s.client == nil {
@@ -96,7 +102,11 @@ func (s *SyncDestinationSession) Close() error {
 	}
 	c := s.client
 	s.client = nil
-	return c.Logout()
+	if s.stopContext != nil {
+		s.stopContext()
+		s.stopContext = nil
+	}
+	return c.Terminate()
 }
 
 func (s *SyncDestinationSession) ready(ctx context.Context) error {
@@ -122,11 +132,11 @@ func (f *Fetcher) SearchMailboxUIDsSince(ctx context.Context, account store.Mail
 	if mailbox == "" {
 		return MailboxUIDSearch{}, errors.New("search mailbox requires a mailbox name")
 	}
-	c, err := f.login(account)
+	c, err := f.loginWithinContext(ctx, account)
 	if err != nil {
 		return MailboxUIDSearch{}, err
 	}
-	defer c.Logout()
+	defer terminateClientOnContext(ctx, c)()
 	selected, err := c.Select(mailbox, true)
 	if err != nil {
 		return MailboxUIDSearch{}, fmt.Errorf("select mailbox %q read-only for UID search: %w", mailbox, err)

@@ -16,6 +16,7 @@ const (
 	inboxArrivalRetryDelay                   = 30 * time.Second
 	inboxArrivalMinimumDelay                 = 10 * time.Millisecond
 	mailboxGenerationRebuildRecoveryInterval = 30 * time.Second
+	mailboxGenerationRecoveryTurnTimeout     = 2 * time.Minute
 )
 
 type inboxArrivalTimer interface {
@@ -161,12 +162,23 @@ func (r *Runner) startPendingMailboxGenerationRebuild(rebuild store.PendingMailb
 			// persistent IMAP failure into an unbounded immediate retry loop.
 			r.startMailboxGenerationRebuildRecovery()
 		}()
-		if _, err := r.Service.SyncUserAccountMailboxes(r.context(), rebuild.UserID, rebuild.AccountID,
-			[]string{rebuild.MailboxName}); err != nil {
+		timeout := r.generationRecoveryTimeout
+		if timeout <= 0 {
+			timeout = mailboxGenerationRecoveryTurnTimeout
+		}
+		turnCtx, cancel := context.WithTimeout(r.context(), timeout)
+		defer cancel()
+		startedAt := time.Now()
+		log.Printf("recover mailbox generation turn start user_id=%d account_id=%d mailbox=%s timeout=%s",
+			rebuild.UserID, rebuild.AccountID, rebuild.MailboxName, timeout)
+		if _, err := r.Service.RecoverUserAccountMailboxGeneration(turnCtx, rebuild.UserID, rebuild.AccountID,
+			rebuild.MailboxName); err != nil {
 			log.Printf("recover mailbox generation user_id=%d account_id=%d mailbox=%s: %v",
 				rebuild.UserID, rebuild.AccountID, rebuild.MailboxName, err)
 			return
 		}
+		log.Printf("recover mailbox generation turn complete user_id=%d account_id=%d mailbox=%s elapsed=%s",
+			rebuild.UserID, rebuild.AccountID, rebuild.MailboxName, time.Since(startedAt).Round(time.Millisecond))
 		succeeded = true
 	}()
 	return true
