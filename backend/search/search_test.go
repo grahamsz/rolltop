@@ -8,8 +8,11 @@ import (
 	"math"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/blevesearch/bleve/v2"
 
 	"rolltop/backend/store"
 )
@@ -17,6 +20,31 @@ import (
 type observedErrContext struct {
 	context.Context
 	errCalled chan struct{}
+}
+
+type delegatedBleveIndex interface {
+	bleve.Index
+}
+
+type blockingBatchIndex struct {
+	delegatedBleveIndex
+	started     chan struct{}
+	release     chan struct{}
+	finished    chan struct{}
+	startOnce   sync.Once
+	releaseOnce sync.Once
+	finishOnce  sync.Once
+}
+
+func (i *blockingBatchIndex) Batch(*bleve.Batch) error {
+	i.startOnce.Do(func() { close(i.started) })
+	<-i.release
+	i.finishOnce.Do(func() { close(i.finished) })
+	return nil
+}
+
+func (i *blockingBatchIndex) unblock() {
+	i.releaseOnce.Do(func() { close(i.release) })
 }
 
 func (c *observedErrContext) Err() error {
@@ -114,6 +142,207 @@ func TestWriterOperationsHonorCancellationWhileWaiting(t *testing.T) {
 				t.Fatalf("operation after cancellation: %v", err)
 			}
 		})
+	}
+}
+
+func TestBleveBatchCancellationDoesNotWaitForUnderlyingWrite(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		prepare   func(*Service) error
+		operation func(context.Context, *Service) error
+	}{
+		{
+			name: "index",
+			operation: func(ctx context.Context, svc *Service) error {
+				return svc.IndexMessage(ctx, store.MessageRecord{
+					ID: 1, UserID: 1, MailboxID: 10, Subject: "blocked commit", Date: time.Now(),
+				}, nil)
+			},
+		},
+		{
+			name: "delete",
+			prepare: func(svc *Service) error {
+				return svc.IndexMessage(context.Background(), store.MessageRecord{
+					ID: 1, UserID: 1, MailboxID: 10, Subject: "delete blocked commit", Date: time.Now(),
+				}, nil)
+			},
+			operation: func(ctx context.Context, svc *Service) error {
+				return svc.DeleteMessage(ctx, 1, 1)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assertCanceledBleveBatch(t, test.prepare, test.operation)
+		})
+	}
+}
+
+func assertCanceledBleveBatch(t *testing.T, prepare func(*Service) error,
+	operation func(context.Context, *Service) error,
+) {
+	t.Helper()
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepare != nil {
+		if err := prepare(svc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blocking := &blockingBatchIndex{
+		delegatedBleveIndex: svc.index,
+		started:             make(chan struct{}),
+		release:             make(chan struct{}),
+		finished:            make(chan struct{}),
+	}
+	svc.index = blocking
+	t.Cleanup(func() {
+		blocking.unblock()
+		_ = svc.Close()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- operation(ctx, svc)
+	}()
+
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("Bleve batch did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("write error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("write remained blocked after cancellation")
+	}
+	select {
+	case <-blocking.finished:
+		t.Fatal("underlying Bleve batch finished before it was released")
+	default:
+	}
+
+	writer := svc.writerForUser(1)
+	if writer.TryLock() {
+		writer.Unlock()
+		t.Fatal("writer lock was released while the Bleve batch was still running")
+	}
+
+	blocking.unblock()
+	select {
+	case <-blocking.finished:
+	case <-time.After(time.Second):
+		t.Fatal("underlying Bleve batch did not finish after release")
+	}
+	deadline := time.Now().Add(time.Second)
+	for !writer.TryLock() {
+		if time.Now().After(deadline) {
+			t.Fatal("writer lock was not released after the Bleve batch finished")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	writer.Unlock()
+}
+
+func TestCloseWaitsForDetachedBleveBatch(t *testing.T) {
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocking := &blockingBatchIndex{
+		delegatedBleveIndex: svc.index,
+		started:             make(chan struct{}),
+		release:             make(chan struct{}),
+		finished:            make(chan struct{}),
+	}
+	svc.index = blocking
+	t.Cleanup(func() {
+		blocking.unblock()
+		_ = svc.Close()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	writeResult := make(chan error, 1)
+	go func() {
+		writeResult <- svc.IndexMessage(ctx, store.MessageRecord{
+			ID: 1, UserID: 1, MailboxID: 10, Subject: "close waits", Date: time.Now(),
+		}, nil)
+	}()
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("Bleve batch did not start")
+	}
+	cancel()
+	if err := <-writeResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("write error=%v, want context canceled", err)
+	}
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- svc.Close() }()
+	select {
+	case err := <-closeResult:
+		t.Fatalf("Close returned before detached batch finished: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	blocking.unblock()
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after detached batch released")
+	}
+}
+
+func TestCloseCanBeRetriedAfterDetachedWriterTimeout(t *testing.T) {
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.closeWriterTimeout = 20 * time.Millisecond
+	blocking := &blockingBatchIndex{
+		delegatedBleveIndex: svc.index,
+		started:             make(chan struct{}),
+		release:             make(chan struct{}),
+		finished:            make(chan struct{}),
+	}
+	svc.index = blocking
+	t.Cleanup(func() {
+		blocking.unblock()
+		_ = svc.Close()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	writeResult := make(chan error, 1)
+	go func() {
+		writeResult <- svc.IndexMessage(ctx, store.MessageRecord{
+			ID: 1, UserID: 1, MailboxID: 10, Subject: "retry close", Date: time.Now(),
+		}, nil)
+	}()
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("Bleve batch did not start")
+	}
+	cancel()
+	if err := <-writeResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("write error=%v, want context canceled", err)
+	}
+	if err := svc.Close(); err == nil || !strings.Contains(err.Error(), "did not stop") {
+		t.Fatalf("first Close error = %v, want writer timeout", err)
+	}
+
+	blocking.unblock()
+	if err := svc.Close(); err != nil {
+		t.Fatalf("retry Close: %v", err)
 	}
 }
 

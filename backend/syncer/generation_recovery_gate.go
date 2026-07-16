@@ -47,6 +47,7 @@ func (r *Runner) SignalMailboxGenerationRecovery(userID int64) {
 	delete(r.generationRecoveryTargets, userID)
 	delete(r.generationRecoveryKnown, userID)
 	r.activateGenerationRecoveryLocked(userID)
+	r.cancelOrdinaryMailboxWorkLocked(userID)
 	r.mu.Unlock()
 	r.wakeMailboxGenerationRebuildRecovery()
 }
@@ -99,6 +100,9 @@ func (r *Runner) reconcileGenerationRecoveryUsers(pending map[int64]bool,
 			r.generationRecoveryEpoch[userID]++
 		}
 		r.activateGenerationRecoveryLocked(userID)
+		if !wasActive {
+			r.cancelOrdinaryMailboxWorkLocked(userID)
+		}
 		expectedEpoch, observed := snapshot[userID]
 		if pendingAccounts != nil && (!wasActive || (observed && expectedEpoch == r.generationRecoveryEpoch[userID])) {
 			r.generationRecoveryAccounts[userID] = cloneGenerationRecoveryAccounts(pendingAccounts[userID])
@@ -453,7 +457,9 @@ func (r *Runner) runGenerationRecoveryReplayMailboxes(userID int64, mailboxes []
 	for r.context().Err() == nil {
 		keys, reserved := r.reserveGenerationRecoveryReplayMailboxes(userID, mailboxes)
 		if reserved {
-			r.runReservedMailboxes(userID, mailboxes, keys)
+			if err := r.runReservedMailboxes(userID, mailboxes, keys); err != nil {
+				return false
+			}
 			return !r.generationRecoveryInterrupted(userID)
 		}
 		if r.generationRecoveryInterrupted(userID) {
@@ -471,7 +477,9 @@ func (r *Runner) runGenerationRecoveryReplayAccountMailbox(userID int64, request
 	for r.context().Err() == nil {
 		keys, reserved := r.reserveGenerationRecoveryReplayAccountMailboxes(userID, request.accountID, mailboxes)
 		if reserved {
-			r.runReservedAccountMailboxes(userID, request.accountID, mailboxes, keys)
+			if err := r.runReservedAccountMailboxes(userID, request.accountID, mailboxes, keys); err != nil {
+				return false
+			}
 			return !r.generationRecoveryInterrupted(userID)
 		}
 		if r.generationRecoveryInterrupted(userID) {
@@ -499,6 +507,7 @@ func (r *Runner) reserveGenerationRecoveryReplayMailboxes(userID int64, mailboxe
 	for _, key := range keys {
 		r.mailboxRunning[key] = true
 	}
+	r.startMailboxWorkActivitiesLocked(userID, 0, mailboxes, keys, runnerWorkRecoveryReplay)
 	return keys, true
 }
 
@@ -517,6 +526,7 @@ func (r *Runner) reserveGenerationRecoveryReplayAccountMailboxes(userID, account
 	for _, key := range keys {
 		r.mailboxRunning[key] = true
 	}
+	r.startMailboxWorkActivitiesLocked(userID, accountID, mailboxes, keys, runnerWorkRecoveryReplay)
 	return keys, true
 }
 
@@ -776,6 +786,7 @@ func (r *Runner) reserveGenerationRecoveryMailbox(rebuild store.PendingMailboxGe
 	if !r.generationRecoveryUsers[rebuild.UserID] {
 		r.generationRecoveryEpoch[rebuild.UserID]++
 		r.activateGenerationRecoveryLocked(rebuild.UserID)
+		r.cancelOrdinaryMailboxWorkLocked(rebuild.UserID)
 	}
 	if r.generationRecoveryRuns[rebuild.UserID] || r.generationRecoveryReplay[rebuild.UserID] ||
 		r.userWorkRunningLocked(rebuild.UserID) {

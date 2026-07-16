@@ -218,3 +218,98 @@ func TestGenerationRecoveryQueueStatusDistinguishesConcurrentOrdinaryMailWork(t 
 		t.Fatalf("concurrent ordinary-work status=%q", status)
 	}
 }
+
+func TestGenerationRecoveryQueueStatusReportsExactBlockersAndElapsedTime(t *testing.T) {
+	runner := NewRunner(nil)
+	userID := int64(7)
+	startedAt := time.Unix(100, 0)
+	mailboxStartedAt := startedAt.Add(30 * time.Second)
+	mailboxReservationKey := accountMailboxKey(userID, 11, "INBOX")
+	otherTenantKey := accountMailboxKey(9, 22, "Private Folder")
+
+	runner.mu.Lock()
+	runner.autoRunning[userID] = true
+	runner.startWorkActivityLocked(runnerUserWorkActivityKey(runnerWorkAccountSync, userID), runnerWorkActivity{
+		kind: runnerWorkAccountSync, userID: userID, startedAt: startedAt,
+	})
+	runner.mailboxRunning[mailboxReservationKey] = true
+	runner.startWorkActivityLocked(runnerMailboxWorkActivityKey(mailboxReservationKey), runnerWorkActivity{
+		kind: runnerWorkMailboxSync, userID: userID, accountID: 11, mailbox: "INBOX", startedAt: mailboxStartedAt,
+	})
+	runner.mailboxRunning[otherTenantKey] = true
+	runner.startWorkActivityLocked(runnerMailboxWorkActivityKey(otherTenantKey), runnerWorkActivity{
+		kind: runnerWorkMailboxSync, userID: 9, accountID: 22, mailbox: "Private Folder", startedAt: startedAt,
+	})
+	snapshot := runner.generationRecoveryQueueSnapshotLocked(userID, nil)
+	runner.mu.Unlock()
+
+	status := snapshot.status(startedAt.Add(time.Minute))
+	for _, want := range []string{
+		"other_mailbox_work_active=true",
+		`{kind=account_wide_sync key="user:7:account_wide_sync" phase=mailboxes elapsed=1m0s}`,
+		`{kind=mailbox_sync key="7:11:inbox" account_id=11 mailbox="INBOX" elapsed=30s}`,
+	} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("blocker status %q does not contain %q", status, want)
+		}
+	}
+	if strings.Contains(status, "Private Folder") || strings.Contains(status, "account_id=22") {
+		t.Fatalf("blocker status leaked another tenant's reservation: %q", status)
+	}
+}
+
+func TestGenerationRecoveryQueueStatusTracksMailboxReservationLifecycle(t *testing.T) {
+	runner := NewRunner(nil)
+	userID := int64(7)
+	accountID := int64(11)
+	mailboxes := []string{"Gmail Forward"}
+	keys, reserved := runner.reserveAccountMailboxes(userID, accountID, mailboxes)
+	if !reserved {
+		t.Fatal("mailbox reservation was refused")
+	}
+
+	runner.mu.Lock()
+	activity, tracked := runner.workActivities[runnerMailboxWorkActivityKey(keys[0])]
+	runner.mu.Unlock()
+	if !tracked || activity.kind != runnerWorkMailboxSync || activity.userID != userID ||
+		activity.accountID != accountID || activity.mailbox != mailboxes[0] || activity.startedAt.IsZero() {
+		t.Fatalf("tracked mailbox activity=%+v, present=%t", activity, tracked)
+	}
+
+	runner.releaseAccountMailboxReservations(userID, accountID, mailboxes, keys)
+	runner.mu.Lock()
+	_, tracked = runner.workActivities[runnerMailboxWorkActivityKey(keys[0])]
+	runner.mu.Unlock()
+	if tracked {
+		t.Fatal("mailbox activity remained after its reservation was released")
+	}
+}
+
+func TestGenerationRecoveryQueueStatusElapsedTimeDoesNotDefeatRateLimit(t *testing.T) {
+	runner := NewRunner(nil)
+	rebuild := store.PendingMailboxGenerationRebuild{
+		UserID: 7, AccountID: 11, MailboxID: 3, MailboxName: "Gmail Forward",
+	}
+	startedAt := time.Unix(100, 0)
+	runner.mu.Lock()
+	runner.foregroundRunning[rebuild.UserID] = 1
+	runner.startWorkActivityLocked(runnerUserWorkActivityKey(runnerWorkForeground, rebuild.UserID), runnerWorkActivity{
+		kind: runnerWorkForeground, userID: rebuild.UserID, startedAt: startedAt,
+	})
+	runner.mu.Unlock()
+
+	var logs []string
+	logf := func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+	runner.updateGenerationRecoveryQueueStatuses([]store.PendingMailboxGenerationRebuild{rebuild}, startedAt, logf)
+	runner.updateGenerationRecoveryQueueStatuses([]store.PendingMailboxGenerationRebuild{rebuild}, startedAt.Add(time.Minute), logf)
+	if len(logs) != 1 {
+		t.Fatalf("changing elapsed time bypassed rate limit: %q", logs)
+	}
+	runner.updateGenerationRecoveryQueueStatuses([]store.PendingMailboxGenerationRebuild{rebuild},
+		startedAt.Add(generationRecoveryQueueStatusRepeatInterval), logf)
+	if len(logs) != 2 || !strings.Contains(logs[1], "elapsed=2m0s") {
+		t.Fatalf("rate-limited blocker repeat=%q", logs)
+	}
+}

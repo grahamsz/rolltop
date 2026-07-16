@@ -185,7 +185,7 @@ func (s *Service) searchSimilarMessageIDs(ctx context.Context, userID int64, can
 	if err != nil {
 		return nil, err
 	}
-	result, err := index.Search(req)
+	result, err := index.SearchInContext(ctx, req)
 	if err != nil {
 		return nil, err
 	}

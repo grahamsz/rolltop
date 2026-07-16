@@ -201,8 +201,8 @@ func seedLegacyV21Fixture(t *testing.T, ctx context.Context, db *sql.DB, fixture
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO messages
 		(id, user_id, account_id, mailbox_id, blob_id, message_id_header, thread_key, subject, from_addr, to_addr,
-		 date_unix, internal_date_unix, uid, size, blob_path, body_text, is_read, is_starred, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 140, 141, 61, 321, ?, 'Legacy body survives', 1, 1, 142, 143)`,
+		 date_unix, internal_date_unix, uid, size, blob_path, body_text, is_read, is_starred, attachment_indexed_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 140, 141, 61, 321, ?, 'Legacy body survives', 1, 1, 142, 142, 143)`,
 		fixture.MessageID, fixture.UserID, fixture.AccountID, fixture.SourceMailboxID, fixture.BlobID,
 		fmt.Sprintf("<legacy-%d@example.test>", fixture.UserID), fmt.Sprintf("legacy-thread-%d", fixture.UserID),
 		"Legacy subject "+fixture.Email, "sender-"+fixture.Email, fixture.Email, blobPath); err != nil {
@@ -286,11 +286,11 @@ func assertLegacyV21FixtureUpgraded(t *testing.T, ctx context.Context, db *sql.D
 		t.Fatalf("upgraded blob = path %q sha %q size %d", blobPath, blobSHA, blobSize)
 	}
 	var subject, body, canonicalSHA, messageIDHash string
-	var uidValidity int64
+	var uidValidity, importCompletedAt int64
 	var isRead, isStarred int
-	if err := db.QueryRowContext(ctx, `SELECT subject, body_text, is_read, is_starred, canonical_sha256, message_id_hash, uid_validity
+	if err := db.QueryRowContext(ctx, `SELECT subject, body_text, is_read, is_starred, canonical_sha256, message_id_hash, uid_validity, import_completed_at
 		FROM messages WHERE user_id = ? AND id = ?`, fixture.UserID, fixture.MessageID).
-		Scan(&subject, &body, &isRead, &isStarred, &canonicalSHA, &messageIDHash, &uidValidity); err != nil {
+		Scan(&subject, &body, &isRead, &isStarred, &canonicalSHA, &messageIDHash, &uidValidity, &importCompletedAt); err != nil {
 		t.Fatal(err)
 	}
 	if subject != "Legacy subject "+fixture.Email || body != "Legacy body survives" || isRead != 1 || isStarred != 1 {
@@ -298,6 +298,9 @@ func assertLegacyV21FixtureUpgraded(t *testing.T, ctx context.Context, db *sql.D
 	}
 	if canonicalSHA != "" || messageIDHash != "" || uidValidity != 0 {
 		t.Fatalf("legacy message proof defaults = canonical %q message-id %q uidvalidity %d, want empty/empty/0", canonicalSHA, messageIDHash, uidValidity)
+	}
+	if importCompletedAt != 143 {
+		t.Fatalf("legacy message import completion = %d, want prior updated_at 143", importCompletedAt)
 	}
 	var locationCount int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM locations
@@ -389,6 +392,7 @@ func assertLatestArrivalSchemaIsTenantScoped(t *testing.T, ctx context.Context, 
 		"mailbox_generation_blob_cleanup":              {"user_id", "blob_id", "blob_path"},
 		"mailbox_generation_rebuild_inbox_arrivals":    {"user_id", "original_arrival_id", "classification"},
 		"blob_cleanup_queue":                           {"user_id", "blob_id", "blob_path", "blob_sha256", "blob_size", "blob_created_at"},
+		"messages":                                     {"user_id", "import_completed_at"},
 	}
 	for table, columns := range tables {
 		assertTenantTableColumns(t, ctx, db, table, columns)
@@ -528,6 +532,7 @@ func currentUserMigrationSetsForUpgradeTest() []migrationSet {
 		userTransferDispatchRecoveryMigrationSet(),
 		userBlobCleanupQueueMigrationSet(),
 		userMailboxGenerationArrivalFloorMigrationSet(),
+		userMessageImportCompletionMigrationSet(),
 	)
 }
 

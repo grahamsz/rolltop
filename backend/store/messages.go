@@ -41,6 +41,7 @@ type CreateMessage struct {
 	HasAttachments   bool
 	IsEncrypted      bool
 	IsSigned         bool
+	ImportPending    bool
 }
 
 // CreateMessage inserts or updates a mirrored message row and its mailbox location.
@@ -70,6 +71,10 @@ func (s *Store) CreateMessage(ctx context.Context, m CreateMessage) (MessageReco
 		}
 	}
 	ts := nowUnix()
+	importCompletedAt := ts
+	if m.ImportPending {
+		importCompletedAt = 0
+	}
 	if strings.TrimSpace(m.ThreadKey) == "" {
 		m.ThreadKey = ThreadKey(m.MessageIDHeader, m.InReplyTo, m.ReferencesHeader, m.Subject)
 	}
@@ -77,10 +82,10 @@ func (s *Store) CreateMessage(ctx context.Context, m CreateMessage) (MessageReco
 		m.MessageIDHash = HashedMessageID(m.MessageIDHeader)
 	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO messages
-			(user_id, account_id, mailbox_id, blob_id, message_id_header, canonical_sha256, message_id_hash, in_reply_to, references_header, thread_key, thread_headers_checked_at, subject, language_code, from_addr, to_addr, cc_addr, date_unix, internal_date_unix, uid, uid_validity, size, blob_path, body_text, body_html, is_read, is_starred, has_attachments, is_encrypted, is_signed, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(user_id, account_id, mailbox_id, blob_id, message_id_header, canonical_sha256, message_id_hash, in_reply_to, references_header, thread_key, thread_headers_checked_at, subject, language_code, from_addr, to_addr, cc_addr, date_unix, internal_date_unix, uid, uid_validity, size, blob_path, body_text, body_html, is_read, is_starred, has_attachments, is_encrypted, is_signed, import_completed_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.UserID, m.AccountID, m.MailboxID, m.BlobID, m.MessageIDHeader, m.CanonicalSHA256, m.MessageIDHash, m.InReplyTo, m.ReferencesHeader, m.ThreadKey, ts, m.Subject, strings.ToLower(strings.TrimSpace(m.LanguageCode)), m.FromAddr, m.ToAddr, m.CCAddr,
-		m.Date.UTC().Unix(), m.InternalDate.UTC().Unix(), m.UID, m.UIDValidity, m.Size, m.BlobPath, m.BodyText, m.BodyHTML, boolInt(m.IsRead), boolInt(m.IsStarred), boolInt(m.HasAttachments), boolInt(m.IsEncrypted), boolInt(m.IsSigned), ts, ts)
+		m.Date.UTC().Unix(), m.InternalDate.UTC().Unix(), m.UID, m.UIDValidity, m.Size, m.BlobPath, m.BodyText, m.BodyHTML, boolInt(m.IsRead), boolInt(m.IsStarred), boolInt(m.HasAttachments), boolInt(m.IsEncrypted), boolInt(m.IsSigned), importCompletedAt, ts, ts)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: messages.user_id, messages.account_id, messages.mailbox_id, messages.uid") {
 			var existingID int64
@@ -103,16 +108,20 @@ func (s *Store) CreateMessage(ctx context.Context, m CreateMessage) (MessageReco
 				canonical_sha256 = CASE WHEN ? <> '' THEN ? ELSE canonical_sha256 END,
 				message_id_hash = CASE WHEN ? <> '' THEN ? ELSE message_id_hash END,
 				uid_validity = CASE WHEN ? > 0 THEN ? ELSE uid_validity END,
+				import_completed_at = CASE WHEN import_completed_at = 0 AND ? > 0 THEN ? ELSE import_completed_at END,
 				updated_at = ?
 				WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND uid = ?`,
 				m.CanonicalSHA256, m.CanonicalSHA256, m.MessageIDHash, m.MessageIDHash,
-				m.UIDValidity, m.UIDValidity, ts, m.UserID, m.AccountID, m.MailboxID, m.UID); updateErr != nil {
+				m.UIDValidity, m.UIDValidity, importCompletedAt, importCompletedAt, ts, m.UserID, m.AccountID, m.MailboxID, m.UID); updateErr != nil {
 				return MessageRecord{}, updateErr
 			}
 			if restoreErr := restoreMailboxGenerationStateTx(ctx, tx, existingID, m); restoreErr != nil {
 				return MessageRecord{}, restoreErr
 			}
 			if err := tx.Commit(); err != nil {
+				return MessageRecord{}, err
+			}
+			if err := s.upsertPluginMessageLanguage(ctx, m.UserID, existingID, m.LanguageCode); err != nil {
 				return MessageRecord{}, err
 			}
 			return s.GetMessageByUID(ctx, m.UserID, m.AccountID, m.MailboxID, m.UID)
@@ -133,6 +142,62 @@ func (s *Store) CreateMessage(ctx context.Context, m CreateMessage) (MessageReco
 		return MessageRecord{}, err
 	}
 	return s.GetMessageForUser(ctx, m.UserID, id)
+}
+
+// MarkMessageImportCompleted makes one fully persisted and indexed message
+// eligible for generation-bound checkpoint advancement.
+func (s *Store) MarkMessageImportCompleted(ctx context.Context, userID, messageID int64) error {
+	return s.MarkMessagesImportCompleted(ctx, userID, []int64{messageID})
+}
+
+// MarkMessagesImportCompleted marks a batch of user-owned messages complete.
+// Missing IDs are terminal: a post-store hook may have already moved or
+// deleted the source row. Cross-tenant IDs remain untouched by the user scope.
+func (s *Store) MarkMessagesImportCompleted(ctx context.Context, userID int64, messageIDs []int64) error {
+	if userID <= 0 {
+		return errors.New("invalid message import completion user scope")
+	}
+	ids := make([]int64, 0, len(messageIDs))
+	seen := make(map[int64]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		if id <= 0 {
+			return errors.New("invalid message import completion ID")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	db := s.mustDataDB(ctx, userID)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	completedAt := nowUnix()
+	for start := 0; start < len(ids); start += 500 {
+		end := start + 500
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		args := make([]any, 0, len(chunk)+2)
+		args = append(args, completedAt, userID)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE messages
+			SET import_completed_at = CASE WHEN import_completed_at = 0 THEN ? ELSE import_completed_at END
+			WHERE user_id = ? AND id IN (`+sqlPlaceholders(len(chunk))+`)`, args...)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // GetMessageByUID loads one message by account/mailbox UID inside a user scope.

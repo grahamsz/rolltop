@@ -1406,6 +1406,7 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 		IsEncrypted:      form.SecurityEncrypted,
 		IsSigned:         form.SecuritySigned,
 		IsRead:           true,
+		ImportPending:    true,
 	})
 	if err != nil {
 		return store.MessageRecord{}, err
@@ -1444,14 +1445,17 @@ func (s *Server) storeSentMessage(ctx context.Context, userID int64, account sto
 			}
 		}
 		msg.HasAttachments = visibleAttachmentCount > 0
-		if err := s.store.MarkMessageAttachmentIndexed(ctx, userID, msg.ID, msg.HasAttachments); err != nil {
-			return store.MessageRecord{}, err
-		}
 	}
 	if s.search != nil {
 		if err := s.search.IndexMessage(ctx, msg, attachmentDocs); err != nil {
 			return store.MessageRecord{}, err
 		}
+	}
+	if err := s.store.MarkMessageAttachmentIndexed(ctx, userID, msg.ID, msg.HasAttachments); err != nil {
+		return store.MessageRecord{}, err
+	}
+	if err := s.store.MarkMessageImportCompleted(ctx, userID, msg.ID); err != nil {
+		return store.MessageRecord{}, err
 	}
 	return msg, nil
 }

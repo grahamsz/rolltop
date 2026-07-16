@@ -4,6 +4,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,13 +27,22 @@ import (
 
 // Service owns Bleve indexes and query construction for either combined-test or per-user production mode.
 type Service struct {
-	index   bleve.Index
-	root    string
-	perUser bool
-	mu      sync.Mutex
-	indexes map[int64]bleve.Index
-	writers map[int64]*sync.Mutex
+	index              bleve.Index
+	root               string
+	perUser            bool
+	mu                 sync.Mutex
+	indexes            map[int64]bleve.Index
+	writers            map[int64]*sync.Mutex
+	closing            bool
+	writes             sync.WaitGroup
+	closeDone          chan struct{}
+	closeErr           error
+	closeWriterTimeout time.Duration
 }
+
+var errSearchServiceClosing = errors.New("search service is closing")
+
+const searchCloseWriterTimeout = 2 * time.Second
 
 // AttachmentDoc is transient attachment text passed to IndexMessage after raw message parsing.
 type AttachmentDoc struct {
@@ -363,25 +373,58 @@ func dateField() *mapping.FieldMapping {
 
 // Close releases the combined index and all lazily opened per-user indexes.
 func (s *Service) Close() error {
-	var first error
-	if s.index != nil {
-		if err := s.index.Close(); err != nil {
-			first = err
-		}
-	}
 	s.mu.Lock()
+	if !s.closing {
+		s.closing = true
+		s.closeDone = make(chan struct{})
+		go s.closeAfterWrites(s.closeDone)
+	}
+	done := s.closeDone
+	timeout := s.closeWriterTimeout
+	if timeout <= 0 {
+		timeout = searchCloseWriterTimeout
+	}
+	s.mu.Unlock()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		s.mu.Lock()
+		err := s.closeErr
+		s.mu.Unlock()
+		return err
+	case <-timer.C:
+		return errors.New("search index writer did not stop before close")
+	}
+}
+
+func (s *Service) closeAfterWrites(done chan struct{}) {
+	s.writes.Wait()
+	var first error
+	s.mu.Lock()
+	combined := s.index
+	s.index = nil
 	indexes := make([]bleve.Index, 0, len(s.indexes))
 	for _, index := range s.indexes {
 		indexes = append(indexes, index)
 	}
 	s.indexes = map[int64]bleve.Index{}
 	s.mu.Unlock()
+	if combined != nil {
+		if err := combined.Close(); err != nil {
+			first = err
+		}
+	}
 	for _, index := range indexes {
 		if err := index.Close(); err != nil && first == nil {
 			first = err
 		}
 	}
-	return first
+	s.mu.Lock()
+	s.closeErr = first
+	close(done)
+	s.mu.Unlock()
 }
 
 // writerForUser returns the write mutex for the target Bleve index. Production
@@ -401,6 +444,16 @@ func (s *Service) writerForUser(userID int64) *sync.Mutex {
 		s.writers[key] = &sync.Mutex{}
 	}
 	return s.writers[key]
+}
+
+func (s *Service) beginWrite() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return errSearchServiceClosing
+	}
+	s.writes.Add(1)
+	return nil
 }
 
 const writerLockRetryInterval = 5 * time.Millisecond
@@ -446,7 +499,9 @@ func lockWriter(ctx context.Context, writer *sync.Mutex) error {
 // during concurrent searches or sync writes.
 func (s *Service) indexForUser(userID int64) (bleve.Index, error) {
 	if !s.perUser {
-		if s.index == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.closing || s.index == nil {
 			return nil, fmt.Errorf("search index is not open")
 		}
 		return s.index, nil
@@ -455,6 +510,10 @@ func (s *Service) indexForUser(userID int64) (bleve.Index, error) {
 		return nil, fmt.Errorf("user id is required for search index")
 	}
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return nil, errSearchServiceClosing
+	}
 	if index := s.indexes[userID]; index != nil {
 		s.mu.Unlock()
 		return index, nil
@@ -466,6 +525,11 @@ func (s *Service) indexForUser(userID int64) (bleve.Index, error) {
 		return nil, err
 	}
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		_ = index.Close()
+		return nil, errSearchServiceClosing
+	}
 	if existing := s.indexes[userID]; existing != nil {
 		s.mu.Unlock()
 		_ = index.Close()
@@ -519,18 +583,46 @@ func (s *Service) IndexMessages(ctx context.Context, documents []MessageIndexDoc
 			batch.Index(strconv.FormatInt(document.Message.ID, 10), buildMessageDocument(document.Message, document.Attachments))
 		}
 		writer := s.writerForUser(userID)
-		err = func() error {
-			if err := lockWriter(ctx, writer); err != nil {
-				return err
-			}
-			defer writer.Unlock()
-			return index.Batch(batch)
-		}()
+		err = s.commitBatch(ctx, writer, index, batch)
 		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// commitBatch transfers the writer lock to the goroutine running Bleve's
+// synchronous Batch call. Bleve does not accept a context, so the caller must
+// be able to stop waiting while that goroutine retains exclusive ownership of
+// the index until the underlying commit actually returns.
+func (s *Service) commitBatch(ctx context.Context, writer *sync.Mutex, index bleve.Index, batch *bleve.Batch) error {
+	return s.runWriterOperation(ctx, writer, func() error { return index.Batch(batch) })
+}
+
+func (s *Service) runWriterOperation(ctx context.Context, writer *sync.Mutex, operation func() error) error {
+	if err := s.beginWrite(); err != nil {
+		return err
+	}
+	if err := lockWriter(ctx, writer); err != nil {
+		s.writes.Done()
+		return err
+	}
+	result := make(chan error, 1)
+	go func() {
+		defer s.writes.Done()
+		defer writer.Unlock()
+		if err := ctx.Err(); err != nil {
+			result <- err
+			return
+		}
+		result <- operation()
+	}()
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // buildMessageDocument centralizes the SQLite-to-Bleve projection so single and
@@ -646,17 +738,13 @@ func (s *Service) DeleteMessagesWithProgress(ctx context.Context, userID int64, 
 		}
 		committed := 0
 		writer := s.writerForUser(userID)
-		err = func() error {
-			if err := lockWriter(ctx, writer); err != nil {
-				return err
-			}
-			defer writer.Unlock()
+		err = s.runWriterOperation(ctx, writer, func() error {
 			if !s.perUser {
 				userQuery := bleve.NewTermQuery(strconv.FormatInt(userID, 10))
 				userQuery.SetField("user_id")
 				docQuery := bleve.NewDocIDQuery(deleteIDs)
 				request := bleve.NewSearchRequestOptions(bleve.NewConjunctionQuery(userQuery, docQuery), len(deleteIDs), 0, false)
-				result, searchErr := index.Search(request)
+				result, searchErr := index.SearchInContext(ctx, request)
 				if searchErr != nil {
 					return searchErr
 				}
@@ -677,7 +765,7 @@ func (s *Service) DeleteMessagesWithProgress(ctx context.Context, userID int64, 
 			}
 			committed = len(deleteIDs)
 			return nil
-		}()
+		})
 		if err != nil {
 			return err
 		}
@@ -707,7 +795,7 @@ func (s *Service) CountMailboxMessages(ctx context.Context, userID, mailboxID in
 	if err != nil {
 		return 0, err
 	}
-	res, err := index.Search(mailboxSearchRequest(userID, mailboxID, 0, 0))
+	res, err := index.SearchInContext(ctx, mailboxSearchRequest(userID, mailboxID, 0, 0))
 	if err != nil {
 		return 0, err
 	}
@@ -742,7 +830,7 @@ func (s *Service) MessageIDsIndexed(ctx context.Context, userID int64, messageID
 	userQuery.SetField("user_id")
 	docQuery := bleve.NewDocIDQuery(docIDs)
 	req := bleve.NewSearchRequestOptions(bleve.NewConjunctionQuery(userQuery, docQuery), len(docIDs), 0, false)
-	res, err := index.Search(req)
+	res, err := index.SearchInContext(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -773,7 +861,7 @@ func (s *Service) MailboxMessageIDs(ctx context.Context, userID, mailboxID int64
 			return nil, ctx.Err()
 		default:
 		}
-		res, err := index.Search(mailboxSearchRequest(userID, mailboxID, pageSize, offset))
+		res, err := index.SearchInContext(ctx, mailboxSearchRequest(userID, mailboxID, pageSize, offset))
 		if err != nil {
 			return nil, err
 		}
@@ -815,7 +903,7 @@ func (s *Service) PurgeMailboxWithProgress(ctx context.Context, userID, mailboxI
 			return deleted, ctx.Err()
 		default:
 		}
-		res, err := index.Search(mailboxSearchRequest(userID, mailboxID, batchSize, 0))
+		res, err := index.SearchInContext(ctx, mailboxSearchRequest(userID, mailboxID, batchSize, 0))
 		if err != nil {
 			return deleted, err
 		}
@@ -827,13 +915,7 @@ func (s *Service) PurgeMailboxWithProgress(ctx context.Context, userID, mailboxI
 			batch.Delete(hit.ID)
 		}
 		writer := s.writerForUser(userID)
-		err = func() error {
-			if err := lockWriter(ctx, writer); err != nil {
-				return err
-			}
-			defer writer.Unlock()
-			return index.Batch(batch)
-		}()
+		err = s.commitBatch(ctx, writer, index, batch)
 		if err != nil {
 			return deleted, err
 		}
@@ -875,7 +957,7 @@ func (s *Service) CountUserMessages(ctx context.Context, userID int64) (int, err
 	if err != nil {
 		return 0, err
 	}
-	res, err := index.Search(req)
+	res, err := index.SearchInContext(ctx, req)
 	if err != nil {
 		return 0, err
 	}
@@ -996,7 +1078,7 @@ func (s *Service) explainMessageIDsWithOptions(ctx context.Context, userID int64
 	if err != nil {
 		return ExplanationResult{}, false, err
 	}
-	res, err := index.Search(req)
+	res, err := index.SearchInContext(ctx, req)
 	if err != nil {
 		return ExplanationResult{}, false, err
 	}
@@ -1041,7 +1123,7 @@ func (s *Service) search(ctx context.Context, userID int64, queryText string, li
 	if err != nil {
 		return nil, err
 	}
-	return index.Search(req)
+	return index.SearchInContext(ctx, req)
 }
 
 // buildQuery is the high-level search grammar bridge. It turns Gmail-like filters

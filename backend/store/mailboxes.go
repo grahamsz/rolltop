@@ -793,6 +793,7 @@ func (s *Store) MessageExistsByUIDForGeneration(ctx context.Context, userID, acc
 	err := db.QueryRowContext(ctx, `SELECT uidvalidity, EXISTS(
 		SELECT 1 FROM messages
 		WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND uid = ? AND uid_validity = ?
+			AND import_completed_at > 0
 	) FROM mailboxes WHERE user_id = ? AND account_id = ? AND id = ?`,
 		userID, accountID, mailboxID, uid, expectedUIDValidity,
 		userID, accountID, mailboxID).Scan(&currentUIDValidity, &exists)
@@ -825,7 +826,8 @@ func (s *Store) mailboxGenerationScopeError(ctx context.Context, db *sql.DB, use
 
 // MessageUIDsForMailbox returns the local UID set for one user-owned account mailbox.
 func (s *Store) MessageUIDsForMailbox(ctx context.Context, userID, accountID, mailboxID int64) ([]uint32, error) {
-	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT uid FROM messages WHERE user_id = ? AND account_id = ? AND mailbox_id = ? ORDER BY uid`,
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT uid FROM messages
+		WHERE user_id = ? AND account_id = ? AND mailbox_id = ? AND import_completed_at > 0 ORDER BY uid`,
 		userID, accountID, mailboxID)
 	if err != nil {
 		return nil, err

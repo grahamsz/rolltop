@@ -369,13 +369,6 @@ func (s *Service) completeCopiedMessageLocally(ctx context.Context, userID int64
 	if err := searchBatch.Flush(ctx); err != nil {
 		return err
 	}
-	if mailboxReceivesNewMailNotifications(dest) {
-		if err := s.recordInboxArrival(ctx, userID, 0, copied, fetched, nil); err != nil {
-			return err
-		}
-	} else if err := s.Store.TerminalizeMessageTransferWithoutArrival(ctx, userID, transferID); err != nil {
-		return err
-	}
 	// A copied message is a new local row and should receive the same advisory
 	// post-index classification as a normally fetched message. Run it only after
 	// essential copy state is durable; plugin discovery and classifier failures
@@ -384,6 +377,19 @@ func (s *Service) completeCopiedMessageLocally(ctx context.Context, userID int64
 		log.Printf("copied message classifiers unavailable user_id=%d message_id=%d error_type=%T", userID, copied.ID, hookErr)
 	} else {
 		s.classifyStoredMessage(ctx, classifiers, copied, parsed)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.Store.MarkMessagesImportCompleted(ctx, userID, []int64{copied.ID}); err != nil {
+		return err
+	}
+	if mailboxReceivesNewMailNotifications(dest) {
+		if err := s.recordInboxArrival(ctx, userID, 0, copied, fetched, nil); err != nil {
+			return err
+		}
+	} else if err := s.Store.TerminalizeMessageTransferWithoutArrival(ctx, userID, transferID); err != nil {
+		return err
 	}
 	s.notify(userID)
 	return nil

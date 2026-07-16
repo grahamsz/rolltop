@@ -121,6 +121,7 @@ func (s *Service) storeFetchedMessage(ctx context.Context, userID int64, account
 		HasAttachments:   len(parsed.Files) > 0,
 		IsEncrypted:      parsed.IsEncrypted,
 		IsSigned:         parsed.IsSigned,
+		ImportPending:    true,
 	})
 	if err != nil {
 		_, cleanupErr := s.deleteUnreferencedBlob(ctx, userID, blobRec.ID, blobPath)

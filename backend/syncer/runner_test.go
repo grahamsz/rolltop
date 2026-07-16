@@ -403,7 +403,7 @@ func TestRunnerMailboxMaintenanceBlocksSyncUntilFinished(t *testing.T) {
 	}
 }
 
-func TestGenerationRecoveryGateWaitsForActiveMailboxMaintenance(t *testing.T) {
+func TestGenerationRecoveryCancelsActiveMailboxMaintenance(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
@@ -429,15 +429,12 @@ func TestGenerationRecoveryGateWaitsForActiveMailboxMaintenance(t *testing.T) {
 	r := NewRunnerWithContext(ctx, &Service{Store: db})
 	r.replayGenerationRecovery = func(generationRecoveryReplay) {}
 	started := make(chan struct{})
-	release := make(chan struct{})
-	_, ok, err := r.StartMailboxMaintenance(user.ID, mailbox, "Maintenance", func(ctx context.Context, _ int64, _ *store.SyncProgress) error {
+	canceled := make(chan struct{})
+	run, ok, err := r.StartMailboxMaintenance(user.ID, mailbox, "Maintenance", func(ctx context.Context, _ int64, _ *store.SyncProgress) error {
 		close(started)
-		select {
-		case <-release:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		<-ctx.Done()
+		close(canceled)
+		return ctx.Err()
 	})
 	if err != nil || !ok {
 		t.Fatalf("start maintenance ok=%t err=%v", ok, err)
@@ -448,17 +445,24 @@ func TestGenerationRecoveryGateWaitsForActiveMailboxMaintenance(t *testing.T) {
 		t.Fatal("maintenance did not start")
 	}
 	r.SignalMailboxGenerationRecovery(user.ID)
-	time.Sleep(20 * time.Millisecond)
-	if !r.MailboxGenerationRecoveryActive(user.ID) {
-		t.Fatal("recovery gate cleared while mailbox maintenance was active")
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("generation recovery did not cancel mailbox maintenance")
 	}
-	close(release)
 	deadline := time.Now().Add(2 * time.Second)
-	for r.MailboxGenerationRecoveryActive(user.ID) {
+	for r.IsAccountMailboxRunning(user.ID, account.ID, mailbox.Name) {
 		if time.Now().After(deadline) {
-			t.Fatal("recovery gate did not clear after mailbox maintenance released")
+			t.Fatal("mailbox maintenance reservation was not released after recovery cancellation")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	saved, err := db.GetSyncRunForUser(ctx, user.ID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != "interrupted" {
+		t.Fatalf("maintenance status=%q, want interrupted", saved.Status)
 	}
 }
 
@@ -1233,6 +1237,156 @@ func TestOrdinaryMailboxSyncWaitsForCanceledAttachmentWorker(t *testing.T) {
 			}
 			waitForRunnerUserIdle(t, r, user.ID)
 		})
+	}
+}
+
+func TestLiveInboxSyncTimeoutReleasesReservation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, account, mailbox := createRunnerMailboxFixture(t, ctx, db, "bounded-inbox@example.test")
+	fetcher := &recoveryHealthyAccountFetcher{
+		moveTestFetcher: &moveTestFetcher{},
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	runner := NewRunnerWithContext(ctx, &Service{Store: db, Fetcher: fetcher})
+	runner.liveInboxSyncTimeout = 25 * time.Millisecond
+	if !runner.StartAccountMailboxes(user.ID, account.ID, []string{mailbox.Name}) {
+		t.Fatal("Inbox sync did not start")
+	}
+	select {
+	case <-fetcher.started:
+	case <-time.After(time.Second):
+		t.Fatal("Inbox fetch did not start")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for runner.IsAccountMailboxRunning(user.ID, account.ID, mailbox.Name) {
+		if time.Now().After(deadline) {
+			close(fetcher.release)
+			t.Fatal("Inbox reservation remained after its bounded turn")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(fetcher.release)
+}
+
+func TestGenerationRecoveryReplayKeepsTimedOutInboxPending(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, account, mailbox := createRunnerMailboxFixture(t, ctx, db, "bounded-replay@example.test")
+	if err := db.UpdateMailboxRemoteStatus(ctx, user.ID, mailbox.ID, 0, 0, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &recoveryHealthyAccountFetcher{
+		moveTestFetcher: &moveTestFetcher{},
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	runner := NewRunnerWithContext(ctx, &Service{Store: db, Fetcher: fetcher})
+	runner.liveInboxSyncTimeout = 25 * time.Millisecond
+	runner.mu.Lock()
+	runner.generationRecoveryReplay[user.ID] = true
+	runner.mu.Unlock()
+
+	result := make(chan bool, 1)
+	go func() {
+		result <- runner.runGenerationRecoveryReplayAccountMailbox(user.ID, deferredAccountMailbox{
+			accountID: account.ID,
+			mailbox:   mailbox.Name,
+		})
+	}()
+	select {
+	case <-fetcher.started:
+	case <-time.After(time.Second):
+		t.Fatal("replayed Inbox fetch did not start")
+	}
+	select {
+	case completed := <-result:
+		if completed {
+			t.Fatal("timed-out Inbox replay was treated as complete")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed-out Inbox replay did not return")
+	}
+	close(fetcher.release)
+	if runner.IsAccountMailboxRunning(user.ID, account.ID, mailbox.Name) {
+		t.Fatal("timed-out Inbox replay retained its reservation")
+	}
+}
+
+func TestGenerationRecoverySignalCancelsBroadMailboxTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, _, mailbox := createRunnerMailboxFixture(t, ctx, db, "yield-broad@example.test")
+	fetcher := &recoveryHealthyAccountFetcher{
+		moveTestFetcher: &moveTestFetcher{},
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	runner := NewRunnerWithContext(ctx, &Service{Store: db, Fetcher: fetcher})
+	if !runner.StartMailboxes(user.ID, []string{mailbox.Name}) {
+		t.Fatal("broad Inbox sync did not start")
+	}
+	select {
+	case <-fetcher.started:
+	case <-time.After(time.Second):
+		t.Fatal("broad Inbox fetch did not start")
+	}
+
+	runner.SignalMailboxGenerationRecovery(user.ID)
+	deadline := time.Now().Add(time.Second)
+	for runner.IsMailboxRunning(user.ID, mailbox.Name) {
+		if time.Now().After(deadline) {
+			close(fetcher.release)
+			t.Fatal("broad mailbox turn ignored recovery cancellation")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(fetcher.release)
+}
+
+func TestSenderStatsRefreshHasBoundedTurn(t *testing.T) {
+	runner := NewRunnerWithContext(context.Background(), &Service{Store: &store.Store{}})
+	runner.senderStatsTimeout = 25 * time.Millisecond
+	started := make(chan struct{})
+	runner.refreshSenderStatsForUser = func(ctx context.Context, _ int64) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	start := time.Now()
+	runner.RefreshSenderStats(7)
+	select {
+	case <-started:
+	default:
+		t.Fatal("sender stats refresh did not start")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("sender stats refresh exceeded bounded turn: %s", elapsed)
+	}
+	runner.mu.Lock()
+	pending := runner.senderStatsPending[7]
+	running := runner.senderStatsRunning[7]
+	runner.mu.Unlock()
+	if !pending || running {
+		t.Fatalf("sender stats pending=%t running=%t after timeout", pending, running)
 	}
 }
 

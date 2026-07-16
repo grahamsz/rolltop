@@ -30,8 +30,40 @@ type fetchedSearchIndexBatch struct {
 	items   []pendingFetchedSearchIndex
 }
 
+type messageImportCompletionBatch struct {
+	service    *Service
+	userID     int64
+	messageIDs []int64
+}
+
 func newFetchedSearchIndexBatch(service *Service) *fetchedSearchIndexBatch {
 	return &fetchedSearchIndexBatch{service: service}
+}
+
+func newMessageImportCompletionBatch(service *Service, userID int64) *messageImportCompletionBatch {
+	return &messageImportCompletionBatch{service: service, userID: userID}
+}
+
+func (b *messageImportCompletionBatch) Add(messageID int64) {
+	if b == nil || messageID <= 0 {
+		return
+	}
+	b.messageIDs = append(b.messageIDs, messageID)
+}
+
+func (b *messageImportCompletionBatch) Empty() bool {
+	return b == nil || len(b.messageIDs) == 0
+}
+
+func (b *messageImportCompletionBatch) Flush(ctx context.Context) error {
+	if b.Empty() {
+		return nil
+	}
+	if err := b.service.Store.MarkMessagesImportCompleted(ctx, b.userID, b.messageIDs); err != nil {
+		return err
+	}
+	b.messageIDs = b.messageIDs[:0]
+	return nil
 }
 
 // Add queues one prepared message and flushes when the batch reaches the

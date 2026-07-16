@@ -15,6 +15,7 @@ import (
 
 const generationRecoveryQueueStatusRepeatInterval = 2 * time.Minute
 const generationRecoveryQueueStatusTargetLimit = 8
+const generationRecoveryQueueStatusBlockerLimit = 8
 
 type generationRecoveryQueueTarget struct {
 	accountID int64
@@ -31,6 +32,17 @@ type generationRecoveryQueueSnapshot struct {
 	pending                []generationRecoveryQueueTarget
 	active                 *generationRecoveryQueueTarget
 	otherMailboxWorkActive bool
+	blockers               []generationRecoveryBlocker
+}
+
+type generationRecoveryBlocker struct {
+	kind        string
+	key         string
+	phase       string
+	accountID   int64
+	allAccounts bool
+	mailbox     string
+	startedAt   time.Time
 }
 
 // updateGenerationRecoveryQueueStatuses installs one durable marker snapshot
@@ -112,9 +124,10 @@ func (r *Runner) updateGenerationRecoveryQueueStatuses(
 			delete(r.generationRecoveryQueues, userID)
 		}
 		snapshot := r.generationRecoveryQueueSnapshotLocked(userID, pending)
-		status := snapshot.status()
+		status := snapshot.status(now)
 		previous, previouslyLogged := r.generationRecoveryQueueLog[userID]
-		changed := !previouslyLogged || previous.signature != status
+		signature := snapshot.signature()
+		changed := !previouslyLogged || previous.signature != signature
 		repeatDue := previouslyLogged && now.Sub(previous.loggedAt) >= generationRecoveryQueueStatusRepeatInterval
 		if changed || repeatDue {
 			// Do not introduce a zero-state line for users that never had a
@@ -122,7 +135,7 @@ func (r *Runner) updateGenerationRecoveryQueueStatuses(
 			if len(pending) > 0 || hadQueue || previouslyLogged || snapshot.active != nil {
 				lines = append(lines, queuedLog{userID: userID, status: status})
 				r.generationRecoveryQueueLog[userID] = generationRecoveryQueueLogState{
-					signature: status,
+					signature: signature,
 					loggedAt:  now,
 				}
 			}
@@ -140,12 +153,12 @@ func (r *Runner) updateGenerationRecoveryQueueStatuses(
 
 func (r *Runner) generationRecoveryQueueStatusForUser(userID int64) string {
 	if r == nil || userID <= 0 {
-		return "pending_markers=0 active_target=none queued_targets=[] other_mailbox_work_active=false"
+		return "pending_markers=0 active_target=none queued_targets=[] other_mailbox_work_active=false blockers=[]"
 	}
 	r.mu.Lock()
 	snapshot := r.generationRecoveryQueueSnapshotLocked(userID, r.generationRecoveryQueues[userID])
 	r.mu.Unlock()
-	return snapshot.status()
+	return snapshot.status(time.Now())
 }
 
 func (r *Runner) generationRecoveryQueueSnapshotLocked(
@@ -157,17 +170,39 @@ func (r *Runner) generationRecoveryQueueSnapshotLocked(
 		active := generationRecoveryQueueTarget{accountID: activity.accountID, mailbox: activity.mailbox}
 		snapshot.active = &active
 	}
-	snapshot.otherMailboxWorkActive = r.generationRecoveryOtherMailboxWorkActiveLocked(userID)
+	snapshot.blockers = r.generationRecoveryBlockersLocked(userID)
+	snapshot.otherMailboxWorkActive = len(snapshot.blockers) > 0
 	return snapshot
 }
 
-func (r *Runner) generationRecoveryOtherMailboxWorkActiveLocked(userID int64) bool {
-	// Report every user-scoped writer that can keep the next recovery turn from
-	// being admitted, including the small gaps between account-wide folders.
-	if r.autoRunning[userID] || r.autoPlanning[userID] || r.foregroundRunning[userID] > 0 ||
-		r.senderStatsRunning[userID] || r.attachmentDone[userID] != nil {
-		return true
+func (r *Runner) generationRecoveryBlockersLocked(userID int64) []generationRecoveryBlocker {
+	var blockers []generationRecoveryBlocker
+	if r.autoRunning[userID] || r.autoPlanning[userID] {
+		activity := r.workActivities[runnerUserWorkActivityKey(runnerWorkAccountSync, userID)]
+		phase := "mailboxes"
+		if r.autoPlanning[userID] {
+			phase = "planning"
+		}
+		blockers = append(blockers, generationRecoveryBlocker{
+			kind: runnerWorkAccountSync, key: runnerUserWorkActivityKey(runnerWorkAccountSync, userID),
+			phase: phase, startedAt: activity.startedAt,
+		})
 	}
+	if r.foregroundRunning[userID] > 0 {
+		activity := r.workActivities[runnerUserWorkActivityKey(runnerWorkForeground, userID)]
+		blockers = append(blockers, generationRecoveryBlocker{
+			kind: runnerWorkForeground, key: runnerUserWorkActivityKey(runnerWorkForeground, userID),
+			startedAt: activity.startedAt,
+		})
+	}
+	if r.senderStatsRunning[userID] {
+		activity := r.workActivities[runnerUserWorkActivityKey(runnerWorkSenderStats, userID)]
+		blockers = append(blockers, generationRecoveryBlocker{
+			kind: runnerWorkSenderStats, key: runnerUserWorkActivityKey(runnerWorkSenderStats, userID),
+			startedAt: activity.startedAt,
+		})
+	}
+
 	prefix := mailboxKey(userID, "")
 	attachmentKey := mailboxKey(userID, "__attachments__")
 	activeKey := ""
@@ -175,14 +210,52 @@ func (r *Runner) generationRecoveryOtherMailboxWorkActiveLocked(userID int64) bo
 		activeKey = accountMailboxKey(userID, activity.accountID, activity.mailbox)
 	}
 	for key := range r.mailboxRunning {
-		if key != attachmentKey && key != activeKey && strings.HasPrefix(key, prefix) {
-			return true
+		if key == activeKey || !strings.HasPrefix(key, prefix) {
+			continue
 		}
+		activity, tracked := r.workActivities[runnerMailboxWorkActivityKey(key)]
+		if !tracked {
+			activity = fallbackMailboxWorkActivity(userID, key, attachmentKey)
+		}
+		blockers = append(blockers, generationRecoveryBlocker{
+			kind:        activity.kind,
+			key:         key,
+			phase:       activity.phase,
+			accountID:   activity.accountID,
+			allAccounts: activity.accountID == 0 && activity.kind != runnerWorkAttachmentIndex,
+			mailbox:     activity.mailbox,
+			startedAt:   activity.startedAt,
+		})
 	}
-	return false
+	if r.attachmentDone[userID] != nil && !r.mailboxRunning[attachmentKey] {
+		blockers = append(blockers, generationRecoveryBlocker{kind: runnerWorkAttachmentIndex, key: attachmentKey})
+	}
+	sortGenerationRecoveryBlockers(blockers)
+	return blockers
 }
 
-func (s generationRecoveryQueueSnapshot) status() string {
+func fallbackMailboxWorkActivity(userID int64, key, attachmentKey string) runnerWorkActivity {
+	if key == attachmentKey {
+		return runnerWorkActivity{kind: runnerWorkAttachmentIndex, userID: userID}
+	}
+	if parsedUserID, accountID, mailbox, ok := parseAccountMailboxKey(key); ok && parsedUserID == userID {
+		return runnerWorkActivity{kind: runnerWorkMailboxSync, userID: userID, accountID: accountID, mailbox: mailbox}
+	}
+	return runnerWorkActivity{
+		kind: runnerWorkMailboxSync, userID: userID,
+		mailbox: strings.TrimPrefix(key, mailboxKey(userID, "")),
+	}
+}
+
+func (s generationRecoveryQueueSnapshot) status(now time.Time) string {
+	return s.format(now, true)
+}
+
+func (s generationRecoveryQueueSnapshot) signature() string {
+	return s.format(time.Time{}, false)
+}
+
+func (s generationRecoveryQueueSnapshot) format(now time.Time, includeElapsed bool) string {
 	active := "none"
 	if s.active != nil {
 		active = s.active.status()
@@ -207,7 +280,64 @@ func (s generationRecoveryQueueSnapshot) status() string {
 		status += fmt.Sprintf(" queued_targets_omitted=%d", omitted)
 	}
 	status += fmt.Sprintf(" other_mailbox_work_active=%t", s.otherMailboxWorkActive)
+	blockers := s.blockers
+	blockersOmitted := 0
+	if len(blockers) > generationRecoveryQueueStatusBlockerLimit {
+		blockersOmitted = len(blockers) - generationRecoveryQueueStatusBlockerLimit
+		blockers = blockers[:generationRecoveryQueueStatusBlockerLimit]
+	}
+	formattedBlockers := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		formattedBlockers = append(formattedBlockers, blocker.status(now, includeElapsed))
+	}
+	status += fmt.Sprintf(" blockers=[%s]", strings.Join(formattedBlockers, " "))
+	if blockersOmitted > 0 {
+		status += fmt.Sprintf(" blockers_omitted=%d", blockersOmitted)
+	}
 	return status
+}
+
+func (b generationRecoveryBlocker) status(now time.Time, includeElapsed bool) string {
+	parts := []string{"kind=" + b.kind}
+	if b.key != "" {
+		parts = append(parts, "key="+strconv.Quote(b.key))
+	}
+	if b.phase != "" {
+		parts = append(parts, "phase="+b.phase)
+	}
+	if b.allAccounts {
+		parts = append(parts, "account_id=all")
+	} else if b.accountID > 0 {
+		parts = append(parts, fmt.Sprintf("account_id=%d", b.accountID))
+	}
+	if b.mailbox != "" && b.kind != runnerWorkAttachmentIndex {
+		parts = append(parts, "mailbox="+strconv.Quote(b.mailbox))
+	}
+	if includeElapsed {
+		elapsed := "unknown"
+		if !b.startedAt.IsZero() {
+			duration := now.Sub(b.startedAt)
+			if duration < 0 {
+				duration = 0
+			}
+			elapsed = duration.Round(time.Second).String()
+		}
+		parts = append(parts, "elapsed="+elapsed)
+	}
+	return "{" + strings.Join(parts, " ") + "}"
+}
+
+func sortGenerationRecoveryBlockers(blockers []generationRecoveryBlocker) {
+	sort.Slice(blockers, func(i, j int) bool {
+		left, right := blockers[i], blockers[j]
+		if left.kind != right.kind {
+			return left.kind < right.kind
+		}
+		if left.accountID != right.accountID {
+			return left.accountID < right.accountID
+		}
+		return strings.ToLower(left.mailbox) < strings.ToLower(right.mailbox)
+	})
 }
 
 func (t generationRecoveryQueueTarget) status() string {

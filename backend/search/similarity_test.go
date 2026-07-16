@@ -13,9 +13,57 @@ import (
 	"testing"
 	"time"
 
+	"github.com/blevesearch/bleve/v2"
+
 	"rolltop/backend/plugins"
 	"rolltop/backend/store"
 )
+
+type contextBlockingSimilarityIndex struct {
+	delegatedBleveIndex
+	started chan struct{}
+}
+
+func (i *contextBlockingSimilarityIndex) SearchInContext(ctx context.Context, _ *bleve.SearchRequest) (*bleve.SearchResult, error) {
+	close(i.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestSimilaritySearchPropagatesCancellationToBleve(t *testing.T) {
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocking := &contextBlockingSimilarityIndex{delegatedBleveIndex: svc.index, started: make(chan struct{})}
+	svc.index = blocking
+	t.Cleanup(func() { _ = svc.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := svc.searchSimilarMessageIDs(ctx, 1, []int64{1}, []normalizedSimilarityTerm{{
+			field:  plugins.SimilarityFieldSubject,
+			text:   "blocked",
+			weight: 1,
+		}}, 10)
+		result <- err
+	}()
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("similarity search did not enter Bleve with the caller context")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("similarity search error=%v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("similarity search ignored cancellation")
+	}
+}
 
 func TestSimilarMessagesRecentReadCandidatesUseAuthoritativeSQLiteState(t *testing.T) {
 	ctx := context.Background()

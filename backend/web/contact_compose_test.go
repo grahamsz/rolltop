@@ -13,6 +13,7 @@ import (
 
 	"rolltop/backend/blob"
 	"rolltop/backend/plugins"
+	"rolltop/backend/search"
 	"rolltop/backend/smtpclient"
 	"rolltop/backend/store"
 	"rolltop/backend/syncer"
@@ -176,6 +177,45 @@ func TestSendComposeHoldsForegroundDuringSMTP(t *testing.T) {
 	if runner.IsRunning(user.ID) {
 		t.Fatal("compose foreground reservation remained active after send")
 	}
+	if completedAt := sentImportCompletedAtForSubject(t, ctx, server.store, user.ID, "Reserved delivery"); completedAt <= 0 {
+		t.Fatalf("Sent import_completed_at=%d, want completed timestamp", completedAt)
+	}
+}
+
+func TestSendComposeLeavesSentImportPendingWhenSearchIndexFails(t *testing.T) {
+	ctx := context.Background()
+	server, user, fromID, _, _ := setupAutocryptComposeTest(t, ctx, false)
+	searchService, err := search.Open(filepath.Join(t.TempDir(), "sent-search.bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := searchService.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server.search = searchService
+
+	_, err = server.sendCompose(ctx, currentUser{User: user}, composeForm{
+		To:             "recipient@example.test",
+		Subject:        "Pending sent import",
+		Body:           "body",
+		FromIdentityID: fromID,
+	})
+	if err == nil {
+		t.Fatal("sendCompose succeeded with a closed search index")
+	}
+	if completedAt := sentImportCompletedAtForSubject(t, ctx, server.store, user.ID, "Pending sent import"); completedAt != 0 {
+		t.Fatalf("failed Sent import_completed_at=%d, want pending 0", completedAt)
+	}
+}
+
+func sentImportCompletedAtForSubject(t *testing.T, ctx context.Context, db *store.Store, userID int64, subject string) int64 {
+	t.Helper()
+	var completedAt int64
+	if err := db.DB().QueryRowContext(ctx, `SELECT import_completed_at FROM messages
+		WHERE user_id = ? AND subject = ?`, userID, subject).Scan(&completedAt); err != nil {
+		t.Fatal(err)
+	}
+	return completedAt
 }
 
 func TestSendComposeDoesNotSendWhenForegroundReservationIsCanceled(t *testing.T) {
