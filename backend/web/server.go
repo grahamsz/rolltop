@@ -894,10 +894,10 @@ func (s *Server) populateMailboxSearchIndexStats(ctx context.Context, userID int
 	// Count only current SQLite rows whose exact document ID is present and whose
 	// post-commit marker is set; a stale document cannot substitute for a missing
 	// current message merely because the aggregate counts happen to match.
-	// Use the same remote-aware folder total as the local sync meter so the two
-	// percentages are directly comparable in the settings UI. When STATUS has
-	// not been fetched yet, MessageCount falls back to the local count.
-	total := box.MessageCount
+	// Bleve can index only messages represented by current SQLite rows. Keep
+	// this denominator local; remote STATUS is a separate mirror-completeness
+	// metric and may include messages that Rolltop has not fetched yet.
+	total := box.LocalMessageCount
 	percent := boundedPercent(indexed, total)
 	box.SearchIndexedCount = &indexed
 	box.SearchIndexTotal = &total

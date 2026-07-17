@@ -1103,10 +1103,13 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	if box.LocalMessageCount != 2 {
 		t.Fatalf("local message count = %d", box.LocalMessageCount)
 	}
+	if box.RemoteMessageCount != 4 {
+		t.Fatalf("remote message count = %d", box.RemoteMessageCount)
+	}
 	if box.SearchIndexedCount == nil || *box.SearchIndexedCount != 0 {
 		t.Fatalf("search indexed count = %v", box.SearchIndexedCount)
 	}
-	if box.SearchIndexTotal == nil || *box.SearchIndexTotal != 4 {
+	if box.SearchIndexTotal == nil || *box.SearchIndexTotal != 2 {
 		t.Fatalf("search index total = %v", box.SearchIndexTotal)
 	}
 	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 0 {
@@ -1122,7 +1125,7 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	if box.SearchIndexedCount == nil || *box.SearchIndexedCount != 1 {
 		t.Fatalf("search indexed count after current document = %v", box.SearchIndexedCount)
 	}
-	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 25 {
+	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 50 {
 		t.Fatalf("search index percent after current document = %v", box.SearchIndexPercent)
 	}
 }

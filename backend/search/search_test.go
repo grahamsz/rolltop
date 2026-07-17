@@ -179,6 +179,113 @@ func TestWriterOperationsHonorCancellationWhileWaiting(t *testing.T) {
 	}
 }
 
+func TestWriterLockHandsOffToQueuedWaiterBeforeLaterTryLock(t *testing.T) {
+	service := &Service{writerWaitLogAfter: time.Hour}
+	writer := newWriterLock()
+	writer.Lock()
+	mainHeld := true
+
+	acquired := make(chan error, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWaiter := func() { releaseOnce.Do(func() { close(release) }) }
+	defer func() {
+		if mainHeld {
+			writer.Unlock()
+		}
+		releaseWaiter()
+	}()
+	go func() {
+		err := service.lockWriter(context.Background(), writer, bleveErrorContext{Operation: "purge-mailbox-batch", UserID: 1, MailboxID: 10, Documents: 251})
+		acquired <- err
+		if err == nil {
+			<-release
+			writer.Unlock()
+		}
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for writer.queuedWaiters() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("waiter did not enter writer admission queue")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	writer.Unlock()
+	mainHeld = false
+	if writer.TryLock() {
+		writer.Unlock()
+		t.Fatal("later TryLock barged ahead of queued mailbox maintenance")
+	}
+	select {
+	case err := <-acquired:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued mailbox maintenance did not receive writer handoff")
+	}
+	releaseWaiter()
+}
+
+func TestWriterLockReportsOneBoundedWaitDiagnosticWithoutTimingOut(t *testing.T) {
+	service := &Service{writerWaitLogAfter: 10 * time.Millisecond}
+	logs := make(chan string, 2)
+	service.bleveErrorLog = func(format string, args ...any) {
+		logs <- fmt.Sprintf(format, args...)
+	}
+	writer := newWriterLock()
+	writer.Lock()
+	writer.setActive(bleveErrorContext{
+		Operation: "index-batch", UserID: 1, AccountID: 2, MailboxID: 3, Documents: 25,
+	})
+	defer func() {
+		writer.clearActive()
+		writer.Unlock()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- service.lockWriter(ctx, writer, bleveErrorContext{
+			Operation: "purge-mailbox-batch", UserID: 1, AccountID: 2, MailboxID: 4, Documents: 251,
+		})
+	}()
+
+	select {
+	case line := <-logs:
+		for _, want := range []string{
+			`operation="purge-mailbox-batch"`, "user_id=1", "account_id=2", "mailbox_id=4", "documents=251",
+			`active_operation="index-batch"`, "active_mailbox_id=3", "active_documents=25",
+		} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("writer wait diagnostic %q does not contain %q", line, want)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("writer wait diagnostic was not emitted")
+	}
+	select {
+	case line := <-logs:
+		t.Fatalf("writer wait emitted an unbounded repeated diagnostic: %q", line)
+	case <-time.After(30 * time.Millisecond):
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("diagnostic timed out the writer wait: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled writer wait error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled writer wait did not return")
+	}
+}
+
 func TestBleveBatchCancellationDoesNotWaitForUnderlyingWrite(t *testing.T) {
 	for _, test := range []struct {
 		name      string

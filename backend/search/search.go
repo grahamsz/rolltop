@@ -33,13 +33,123 @@ type Service struct {
 	perUser            bool
 	mu                 sync.Mutex
 	indexes            map[int64]bleve.Index
-	writers            map[int64]*sync.Mutex
+	writers            map[int64]*writerLock
 	closing            bool
 	writes             sync.WaitGroup
 	closeDone          chan struct{}
 	closeErr           error
 	closeWriterTimeout time.Duration
+	writerWaitLogAfter time.Duration
 	bleveErrorLog      func(string, ...any)
+}
+
+// writerLock is a context-friendly FIFO gate. Unlike polling sync.Mutex.TryLock,
+// a blocked operation joins an explicit waiter queue, so later Bleve commits
+// cannot repeatedly barge ahead of mailbox maintenance.
+type writerLock struct {
+	mu      sync.Mutex
+	held    bool
+	waiters []*writerWaiter
+
+	active      bleveErrorContext
+	activeSince time.Time
+}
+
+type writerWaiter struct {
+	ready   chan struct{}
+	granted bool
+}
+
+func newWriterLock() *writerLock {
+	return &writerLock{}
+}
+
+func (l *writerLock) Lock() {
+	waiter, acquired := l.acquireOrQueue()
+	if !acquired {
+		<-waiter.ready
+	}
+}
+
+func (l *writerLock) TryLock() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.held || len(l.waiters) > 0 {
+		return false
+	}
+	l.held = true
+	return true
+}
+
+func (l *writerLock) Unlock() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.held {
+		panic("search: unlock of unlocked writer")
+	}
+	if len(l.waiters) == 0 {
+		l.held = false
+		return
+	}
+	waiter := l.waiters[0]
+	l.waiters = l.waiters[1:]
+	waiter.granted = true
+	close(waiter.ready)
+}
+
+func (l *writerLock) acquireOrQueue() (*writerWaiter, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.held && len(l.waiters) == 0 {
+		l.held = true
+		return nil, true
+	}
+	waiter := &writerWaiter{ready: make(chan struct{})}
+	l.waiters = append(l.waiters, waiter)
+	return waiter, false
+}
+
+func (l *writerLock) cancelWaiter(waiter *writerWaiter) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if waiter == nil || waiter.granted {
+		return false
+	}
+	for index, queued := range l.waiters {
+		if queued != waiter {
+			continue
+		}
+		copy(l.waiters[index:], l.waiters[index+1:])
+		l.waiters = l.waiters[:len(l.waiters)-1]
+		return true
+	}
+	return false
+}
+
+func (l *writerLock) queuedWaiters() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.waiters)
+}
+
+func (l *writerLock) setActive(details bleveErrorContext) {
+	l.mu.Lock()
+	l.active = details
+	l.activeSince = time.Now()
+	l.mu.Unlock()
+}
+
+func (l *writerLock) clearActive() {
+	l.mu.Lock()
+	l.active = bleveErrorContext{}
+	l.activeSince = time.Time{}
+	l.mu.Unlock()
+}
+
+func (l *writerLock) activeSnapshot() (bleveErrorContext, time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.active, l.activeSince
 }
 
 type bleveErrorContext struct {
@@ -321,7 +431,7 @@ func ageYears(years int) time.Duration {
 // Open creates or opens a single combined Bleve index. Tests use this mode; the
 // production server uses OpenPerUser so message IDs can overlap safely by user.
 func Open(path string) (*Service, error) {
-	service := &Service{writers: make(map[int64]*sync.Mutex)}
+	service := &Service{writers: make(map[int64]*writerLock)}
 	index, err := openIndex(path)
 	if err != nil {
 		service.reportBleveError(bleveErrorContext{Operation: "open-index"}, err)
@@ -338,7 +448,7 @@ func OpenPerUser(root string) (*Service, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	return &Service{root: root, perUser: true, indexes: make(map[int64]bleve.Index), writers: make(map[int64]*sync.Mutex)}, nil
+	return &Service{root: root, perUser: true, indexes: make(map[int64]bleve.Index), writers: make(map[int64]*writerLock)}, nil
 }
 
 // openIndex either opens an existing Bleve index or creates the Rolltop mapping.
@@ -472,7 +582,7 @@ func (s *Service) closeAfterWrites(done chan struct{}) {
 // writerForUser returns the write mutex for the target Bleve index. Production
 // mode uses one writer per user index; combined-index test mode shares one writer
 // so batch commits and deletes never race on the same underlying index handle.
-func (s *Service) writerForUser(userID int64) *sync.Mutex {
+func (s *Service) writerForUser(userID int64) *writerLock {
 	key := int64(0)
 	if s.perUser {
 		key = userID
@@ -480,10 +590,10 @@ func (s *Service) writerForUser(userID int64) *sync.Mutex {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.writers == nil {
-		s.writers = make(map[int64]*sync.Mutex)
+		s.writers = make(map[int64]*writerLock)
 	}
 	if s.writers[key] == nil {
-		s.writers[key] = &sync.Mutex{}
+		s.writers[key] = newWriterLock()
 	}
 	return s.writers[key]
 }
@@ -498,41 +608,70 @@ func (s *Service) beginWrite() error {
 	return nil
 }
 
-const writerLockRetryInterval = 5 * time.Millisecond
+const defaultWriterWaitLogAfter = 5 * time.Second
 
-// lockWriter waits for one tenant's Bleve writer without making cancellation
-// wait behind another long-running index operation. A final context check after
-// TryLock closes the race where cancellation and lock release happen together.
-func lockWriter(ctx context.Context, writer *sync.Mutex) error {
+func (s *Service) writerWaitWarningAfter() time.Duration {
+	if s != nil && s.writerWaitLogAfter > 0 {
+		return s.writerWaitLogAfter
+	}
+	return defaultWriterWaitLogAfter
+}
+
+func (s *Service) reportBleveWriterWait(waiting, active bleveErrorContext, waited, activeFor time.Duration) {
+	logger := log.Printf
+	if s != nil && s.bleveErrorLog != nil {
+		logger = s.bleveErrorLog
+	}
+	logger("bleve writer wait operation=%q user_id=%d account_id=%d mailbox_id=%d documents=%d waited=%s active_operation=%q active_user_id=%d active_account_id=%d active_mailbox_id=%d active_documents=%d active_for=%s",
+		waiting.Operation, waiting.UserID, waiting.AccountID, waiting.MailboxID, waiting.Documents, waited.Round(time.Second),
+		active.Operation, active.UserID, active.AccountID, active.MailboxID, active.Documents, activeFor.Round(time.Second))
+}
+
+// lockWriter waits in FIFO order for one tenant's Bleve writer while allowing
+// cancellation to interrupt admission. The warning timer only emits diagnostics;
+// it never times out a wait while an uncancellable Bleve batch owns the gate.
+func (s *Service) lockWriter(ctx context.Context, writer *writerLock, details bleveErrorContext) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if writer.TryLock() {
+	waiter, acquired := writer.acquireOrQueue()
+	if acquired {
 		if err := ctx.Err(); err != nil {
 			writer.Unlock()
 			return err
 		}
 		return nil
 	}
-	timer := time.NewTimer(writerLockRetryInterval)
-	defer timer.Stop()
+	waitStarted := time.Now()
+	warning := time.NewTimer(s.writerWaitWarningAfter())
+	defer warning.Stop()
+	warningC := warning.C
 	for {
 		select {
 		case <-ctx.Done():
+			if !writer.cancelWaiter(waiter) {
+				<-waiter.ready
+				writer.Unlock()
+			}
 			return ctx.Err()
-		case <-timer.C:
-		}
-		if writer.TryLock() {
+		case <-warningC:
+			active, activeSince := writer.activeSnapshot()
+			activeFor := time.Duration(0)
+			if !activeSince.IsZero() {
+				activeFor = time.Since(activeSince)
+			}
+			s.reportBleveWriterWait(details, active, time.Since(waitStarted), activeFor)
+			warningC = nil
+		case <-waiter.ready:
 			if err := ctx.Err(); err != nil {
 				writer.Unlock()
 				return err
 			}
 			return nil
 		}
-		timer.Reset(writerLockRetryInterval)
 	}
 }
 
@@ -667,26 +806,30 @@ func (s *Service) IndexMessages(ctx context.Context, documents []MessageIndexDoc
 // synchronous Batch call. Bleve does not accept a context, so the caller must
 // be able to stop waiting while that goroutine retains exclusive ownership of
 // the index until the underlying commit actually returns.
-func (s *Service) commitBatch(ctx context.Context, writer *sync.Mutex, index bleve.Index, batch *bleve.Batch, details bleveErrorContext) error {
-	return s.runWriterOperation(ctx, writer, func() error {
+func (s *Service) commitBatch(ctx context.Context, writer *writerLock, index bleve.Index, batch *bleve.Batch, details bleveErrorContext) error {
+	return s.runWriterOperation(ctx, writer, details, func() error {
 		err := index.Batch(batch)
 		s.reportBleveError(details, err)
 		return err
 	})
 }
 
-func (s *Service) runWriterOperation(ctx context.Context, writer *sync.Mutex, operation func() error) error {
+func (s *Service) runWriterOperation(ctx context.Context, writer *writerLock, details bleveErrorContext, operation func() error) error {
 	if err := s.beginWrite(); err != nil {
 		return err
 	}
-	if err := lockWriter(ctx, writer); err != nil {
+	if err := s.lockWriter(ctx, writer, details); err != nil {
 		s.writes.Done()
 		return err
 	}
+	writer.setActive(details)
 	result := make(chan error, 1)
 	go func() {
 		defer s.writes.Done()
-		defer writer.Unlock()
+		defer func() {
+			writer.clearActive()
+			writer.Unlock()
+		}()
 		if err := ctx.Err(); err != nil {
 			result <- err
 			return
@@ -814,7 +957,9 @@ func (s *Service) DeleteMessagesWithProgress(ctx context.Context, userID int64, 
 		}
 		committed := 0
 		writer := s.writerForUser(userID)
-		err = s.runWriterOperation(ctx, writer, func() error {
+		err = s.runWriterOperation(ctx, writer, bleveErrorContext{
+			Operation: "delete-batch", UserID: userID, Documents: len(deleteIDs),
+		}, func() error {
 			if !s.perUser {
 				userQuery := bleve.NewTermQuery(strconv.FormatInt(userID, 10))
 				userQuery.SetField("user_id")
@@ -981,7 +1126,9 @@ func (s *Service) PurgeMailboxWithProgress(ctx context.Context, userID, mailboxI
 		return 0, err
 	}
 	deleted := 0
-	const batchSize = 500
+	// Keep purge commits short so mailbox rebuild progress remains visible and
+	// other mailbox writers for the same tenant get frequent opportunities.
+	const batchSize = 100
 	for {
 		select {
 		case <-ctx.Done():

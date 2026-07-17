@@ -584,6 +584,12 @@ function mailboxNeedsFullTextRefresh(mailbox: Mailbox) {
   return typeof percent === "number" && percent < 100;
 }
 
+function mailboxNeedsLocalMirrorRefresh(mailbox: Mailbox) {
+  if (mailbox.remote_uid_next <= 0) return false;
+  const local = Math.max(0, mailbox.local_message_count ?? mailbox.message_count);
+  return local < Math.max(0, mailbox.remote_message_count);
+}
+
 /**
  * SettingsView coordinates account data from /api/account with profile, storage,
  * IMAP, SMTP, identity, and folder-sync editors. Each routed section has an
@@ -767,8 +773,12 @@ export function SettingsView({
     }
   }, [loadStorage, syncSelectionToRoute]);
 
-  const needsFullTextRefresh = useMemo(
-    () => folders.some((folder) => mailboxNeedsFullTextRefresh(folder.mailbox)),
+  const needsFolderStatusRefresh = useMemo(
+    () => folders.some((folder) =>
+      folder.is_running ||
+      mailboxNeedsLocalMirrorRefresh(folder.mailbox) ||
+      mailboxNeedsFullTextRefresh(folder.mailbox)
+    ),
     [folders]
   );
 
@@ -777,7 +787,7 @@ export function SettingsView({
   }, [load]);
 
   useEffect(() => {
-    if (!loaded || !needsFullTextRefresh) return;
+    if (!loaded || !needsFolderStatusRefresh) return;
     let cancelled = false;
     let refreshTimer: number | undefined;
 
@@ -812,7 +822,7 @@ export function SettingsView({
       cancelled = true;
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
     };
-  }, [loaded, needsFullTextRefresh]);
+  }, [loaded, needsFolderStatusRefresh]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -1207,13 +1217,23 @@ export function SettingsView({
   }
 
   function rebuildSearchIndexConfirmMessage(folder: SyncFolder) {
-    return [
+    const localCount = Math.max(0, folder.mailbox.local_message_count ?? folder.mailbox.message_count);
+    const remoteCount = Math.max(0, folder.mailbox.remote_message_count);
+    const remoteStatusAvailable = folder.mailbox.remote_uid_next > 0;
+    const lines = [
       `Rebuild the full-text index for ${folder.mailbox.name}?`,
       "",
-      "Rolltop will replace this folder's local search documents from its stored raw messages.",
-      "Messages whose raw data is no longer local will be fetched from your IMAP server.",
-      "This does not change or delete messages on the IMAP server."
-    ].join("\n");
+      `This rebuild covers the ${localCount.toLocaleString()} ${localCount === 1 ? "message" : "messages"} currently mirrored locally.`,
+      "If a mirrored message's raw data is no longer cached, Rolltop may fetch it from IMAP."
+    ];
+    if (remoteStatusAvailable && localCount < remoteCount) {
+      lines.push(
+        "",
+        `${(remoteCount - localCount).toLocaleString()} of ${remoteCount.toLocaleString()} remote messages are not mirrored locally and cannot be included. Sync this folder to restore the remainder.`
+      );
+    }
+    lines.push("", "This does not change or delete messages on the IMAP server.");
+    return lines.join("\n");
   }
 
   function purgeLocalReferencesConfirmMessage(folder: SyncFolder) {
@@ -1379,21 +1399,39 @@ export function SettingsView({
       const folder = folderMap.get(node.mailbox.id);
       if (!folder) return [];
       const localPercent = percentValue(folder.mailbox.local_sync_percent ?? folder.mailbox.sync_percent);
-      const searchPercent = typeof folder.mailbox.search_index_percent === "number"
-        ? percentValue(folder.mailbox.search_index_percent)
-        : null;
+      const localCount = Math.max(0, folder.mailbox.local_message_count ?? folder.mailbox.message_count);
+      const remoteCount = Math.max(0, folder.mailbox.remote_message_count);
+      const remoteStatusAvailable = folder.mailbox.remote_uid_next > 0;
+      const localLabel = remoteStatusAvailable
+        ? `Local ${localCount.toLocaleString()}/${remoteCount.toLocaleString()}`
+        : `Local ${localCount.toLocaleString()} mirrored`;
+      const missingLocalCount = Math.max(0, remoteCount - localCount);
+      let localProgressTitle = `Rolltop has ${localCount.toLocaleString()} locally mirrored messages; the latest remote IMAP count is ${remoteCount.toLocaleString()}.`;
+      if (!remoteStatusAvailable) {
+        localProgressTitle = `Rolltop has ${localCount.toLocaleString()} locally mirrored messages. The remote IMAP count is not available yet.`;
+      } else if (missingLocalCount > 0) {
+        localProgressTitle = `Rolltop has ${localCount.toLocaleString()} locally mirrored messages; the latest remote IMAP count is ${remoteCount.toLocaleString()}. Sync this folder to restore ${missingLocalCount.toLocaleString()} missing local messages.`;
+      }
       const searchIndexedCount = folder.mailbox.search_indexed_count;
       const searchTotalCount = folder.mailbox.search_index_total;
-      const searchCounts = typeof searchIndexedCount === "number" && typeof searchTotalCount === "number"
+      const hasSearchCounts = typeof searchIndexedCount === "number" && typeof searchTotalCount === "number";
+      const searchCounts = hasSearchCounts
         ? `${searchIndexedCount.toLocaleString()}/${searchTotalCount.toLocaleString()}`
         : "count unavailable";
+      const searchPercent = hasSearchCounts
+        ? percentValue(typeof folder.mailbox.search_index_percent === "number"
+          ? folder.mailbox.search_index_percent
+          : searchTotalCount > 0 ? Math.floor((searchIndexedCount * 100) / searchTotalCount) : 0)
+        : null;
       const searchLabel = !folder.mailbox.include_in_search
         ? "Full text off"
         : searchPercent === null
-          ? `Full text n/a · ${searchCounts}`
-          : `Full text ${searchPercent}% · ${searchCounts}`;
+          ? "Full text unavailable"
+          : `Full text ${searchCounts}`;
       const searchProgressTitle = folder.mailbox.include_in_search
-        ? `${searchLabel}. Header and preview search may already work while full-message enrichment continues.`
+        ? searchPercent === null
+          ? "Full-text search coverage is unavailable. Header and preview search may still work."
+          : `${formatStatCount(searchIndexedCount)} of ${formatStatCount(searchTotalCount)} locally mirrored messages have full-text search documents (${searchPercent}%).`
         : "Full-message search is disabled for this folder.";
       const currentRole = folder.mailbox.role || "";
       const currentIcon = folder.mailbox.icon || "folder";
@@ -1415,9 +1453,9 @@ export function SettingsView({
             </div>
             <div className="folder-sync-status">
               <div className="folder-index-meters">
-                <div className="sync-percent" aria-label="Local index progress">
+                <div className="sync-percent" aria-label={localProgressTitle} title={localProgressTitle}>
                   <div><span style={{ width: `${localPercent}%` }} /></div>
-                  <small>Local {localPercent}%</small>
+                  <small>{localLabel}</small>
                 </div>
                 <div className="sync-percent" aria-label={searchProgressTitle} title={searchProgressTitle}>
                   <div><span style={{ width: `${searchPercent ?? 0}%` }} /></div>
