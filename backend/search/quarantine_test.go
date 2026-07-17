@@ -1,6 +1,7 @@
 package search
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,5 +90,44 @@ func TestQuarantinePerUserIndexRejectsSymlinkedTenantDirectory(t *testing.T) {
 	}
 	if _, err := QuarantinePerUserIndex(root, 17, time.Now()); err == nil || !strings.Contains(err.Error(), "not a regular directory") {
 		t.Fatalf("symlinked tenant directory error = %v", err)
+	}
+}
+
+func TestQuarantinePerUserIndexRollsBackWhenRenameCannotBePersisted(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "users")
+	indexPath := filepath.Join(root, "17", "bleve")
+	if err := os.MkdirAll(indexPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(indexPath, "owner"), []byte("owner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	persistErr := errors.New("directory sync failed")
+	syncCalls := 0
+	_, err := quarantinePerUserIndexWithSync(root, 17, time.Now(), func(path string) error {
+		syncCalls++
+		if path != filepath.Dir(indexPath) {
+			t.Fatalf("synced directory = %q, want %q", path, filepath.Dir(indexPath))
+		}
+		if syncCalls == 1 {
+			if _, statErr := os.Stat(indexPath); !os.IsNotExist(statErr) {
+				t.Fatalf("live index existed before quarantine sync: %v", statErr)
+			}
+			return persistErr
+		}
+		return nil
+	})
+	if !errors.Is(err, persistErr) {
+		t.Fatalf("quarantine error = %v, want persistence failure", err)
+	}
+	if syncCalls != 2 {
+		t.Fatalf("directory sync calls = %d, want quarantine and rollback sync", syncCalls)
+	}
+	if raw, statErr := os.ReadFile(filepath.Join(indexPath, "owner")); statErr != nil || string(raw) != "owner" {
+		t.Fatalf("live index was not restored: %q, %v", raw, statErr)
+	}
+	quarantines, globErr := filepath.Glob(indexPath + ".quarantine-*")
+	if globErr != nil || len(quarantines) != 0 {
+		t.Fatalf("quarantine remained after rollback: %v, %v", quarantines, globErr)
 	}
 }

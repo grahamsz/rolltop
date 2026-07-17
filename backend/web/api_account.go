@@ -12,6 +12,7 @@ import (
 	"time"
 
 	mmcrypto "rolltop/backend/crypto"
+	"rolltop/backend/search"
 	"rolltop/backend/store"
 	"rolltop/backend/syncer"
 )
@@ -842,6 +843,7 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			return
 		}
 		run, started, err := s.syncRunner.StartMailboxMaintenance(cu.User.ID, mb, "Rebuilding full-text index", func(ctx context.Context, runID int64, progress *store.SyncProgress) error {
+			ctx = search.WithForegroundIndexing(ctx)
 			log.Printf("rebuild mailbox search index stage=purge user_id=%d account_id=%d mailbox=%q", cu.User.ID, mb.AccountID, mb.Name)
 			purged, err := s.syncer.PurgeMailboxSearchIndexWithProgress(ctx, cu.User.ID, mb.ID, runID, progress)
 			if err != nil {

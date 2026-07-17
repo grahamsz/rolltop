@@ -12,7 +12,7 @@ func normalizeLanguageCode(code string) string {
 	for _, hook := range plugins.Hooks(plugins.LanguageSearch) {
 		normalizer, ok := hook.(plugins.LanguageSearchHook)
 		if ok {
-			return normalizer.NormalizeLanguageCode(code)
+			return boundedLanguageCode(normalizer.NormalizeLanguageCode(code))
 		}
 	}
 	code = strings.ToLower(strings.TrimSpace(code))
@@ -24,5 +24,9 @@ func normalizeLanguageCode(code string) string {
 			return ""
 		}
 	}
-	return code
+	return boundedLanguageCode(code)
+}
+
+func boundedLanguageCode(code string) string {
+	return boundedIndexText(code, maxIndexedLanguageBytes)
 }

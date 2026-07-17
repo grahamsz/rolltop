@@ -210,6 +210,7 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 	if s.Search == nil {
 		return 0, nil
 	}
+	ctx = search.WithBackgroundIndexing(ctx)
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}

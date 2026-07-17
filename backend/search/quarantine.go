@@ -1,6 +1,7 @@
 package search
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,8 +18,13 @@ type IndexQuarantine struct {
 }
 
 // QuarantinePerUserIndex atomically moves one tenant's index to a timestamped
-// sibling. The caller must ensure the Rolltop server is offline before calling.
+// sibling and persists the directory rename before returning. The caller must
+// ensure the Rolltop server is offline before calling.
 func QuarantinePerUserIndex(root string, userID int64, now time.Time) (IndexQuarantine, error) {
+	return quarantinePerUserIndexWithSync(root, userID, now, syncDirectory)
+}
+
+func quarantinePerUserIndexWithSync(root string, userID int64, now time.Time, syncDir func(string) error) (IndexQuarantine, error) {
 	result, exists, err := inspectPerUserIndex(root, userID)
 	if err != nil {
 		return IndexQuarantine{}, err
@@ -37,6 +43,19 @@ func QuarantinePerUserIndex(root string, userID int64, now time.Time) (IndexQuar
 	}
 	if err := os.Rename(indexPath, quarantinePath); err != nil {
 		return IndexQuarantine{}, fmt.Errorf("quarantine user %d search index: %w", userID, err)
+	}
+	userDir := filepath.Dir(indexPath)
+	if err := syncDir(userDir); err != nil {
+		persistErr := fmt.Errorf("persist quarantined user %d search index: %w", userID, err)
+		if rollbackErr := os.Rename(quarantinePath, indexPath); rollbackErr != nil {
+			return IndexQuarantine{}, errors.Join(persistErr,
+				fmt.Errorf("restore user %d search index after persistence failure: %w", userID, rollbackErr))
+		}
+		if rollbackSyncErr := syncDir(userDir); rollbackSyncErr != nil {
+			return IndexQuarantine{}, errors.Join(persistErr,
+				fmt.Errorf("persist restored user %d search index after quarantine failure: %w", userID, rollbackSyncErr))
+		}
+		return IndexQuarantine{}, persistErr
 	}
 	result.QuarantinePath = quarantinePath
 	return result, nil

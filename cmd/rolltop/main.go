@@ -213,11 +213,16 @@ func listenStartupHTTPWith(listen func(network, address string) (net.Listener, e
 }
 
 type appRuntime struct {
-	pluginHost io.Closer
-	db         *store.Store
-	search     *search.Service
-	handler    http.Handler
+	pluginHost      io.Closer
+	db              *store.Store
+	search          *search.Service
+	handler         http.Handler
+	restartRequired <-chan int64
 }
+
+const searchWriterRestartShutdownTimeout = 15 * time.Second
+
+var errSearchWriterRestartShutdownTimeout = errors.New("search writer restart cleanup timed out")
 
 func (a *appRuntime) close() {
 	if a == nil {
@@ -232,6 +237,36 @@ func (a *appRuntime) close() {
 	if a.db != nil {
 		_ = a.db.Close()
 	}
+}
+
+func runSearchWriterRestartShutdown(timeout time.Duration, shutdown func() error) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- shutdown()
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("%w after %s", errSearchWriterRestartShutdownTimeout, timeout)
+	}
+}
+
+func shutdownServingApp(app *appRuntime, server *http.Server, serverErr <-chan error) error {
+	if app.db != nil {
+		if n, err := app.db.MarkRunningSyncRunsInterrupted(context.Background()); err != nil {
+			log.Printf("mark interrupted sync runs during shutdown: %v", err)
+		} else if n > 0 {
+			log.Printf("marked interrupted sync runs during shutdown: %d", n)
+		}
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = server.Shutdown(shutdownCtx)
+	return <-serverErr
 }
 
 // run starts the HTTP listener before backend initialization. That lets slow
@@ -288,7 +323,9 @@ func run() error {
 	}
 	defer lock.Close()
 
-	app, err := startApp(ctx, cfg, startup)
+	appCtx, cancelApp := context.WithCancel(ctx)
+	defer cancelApp()
+	app, err := startApp(appCtx, cfg, startup)
 	if err != nil {
 		startup.fail(err)
 		log.Printf("rolltop startup failed: %v", err)
@@ -302,13 +339,22 @@ func run() error {
 		_ = server.Shutdown(shutdownCtx)
 		return err
 	}
-	defer app.close()
+	restartShutdownOwnsClose := false
+	defer func() {
+		if !restartShutdownOwnsClose {
+			app.close()
+		}
+	}()
 	gate.setHandler(app.handler)
 	startup.ready()
 	log.Printf("rolltop ready on %s", cfg.Addr)
 
+	restartUserID := int64(0)
 	select {
 	case <-ctx.Done():
+	case restartUserID = <-app.restartRequired:
+		log.Printf("search writer restart requested user_id=%d", restartUserID)
+		cancelApp()
 	case err := <-serverErr:
 		if err != nil {
 			return err
@@ -316,17 +362,21 @@ func run() error {
 		return nil
 	}
 
-	if app.db != nil {
-		if n, err := app.db.MarkRunningSyncRunsInterrupted(context.Background()); err != nil {
-			log.Printf("mark interrupted sync runs during shutdown: %v", err)
-		} else if n > 0 {
-			log.Printf("marked interrupted sync runs during shutdown: %d", n)
+	if restartUserID > 0 {
+		restartShutdownOwnsClose = true
+		restartErr := fmt.Errorf("search index writer stalled for user %d; restarting for offline recovery", restartUserID)
+		cleanupErr := runSearchWriterRestartShutdown(searchWriterRestartShutdownTimeout, func() error {
+			shutdownErr := shutdownServingApp(app, server, serverErr)
+			app.close()
+			return shutdownErr
+		})
+		if cleanupErr != nil {
+			log.Printf("search writer restart cleanup: %v", cleanupErr)
+			return errors.Join(restartErr, cleanupErr)
 		}
+		return restartErr
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = server.Shutdown(shutdownCtx)
-	if err := <-serverErr; err != nil {
+	if err := shutdownServingApp(app, server, serverErr); err != nil {
 		return err
 	}
 	return nil
@@ -393,7 +443,8 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 	}
 
 	startup.update("Search", "opening indexes", 0, 1)
-	searchSvc, err := search.OpenPerUser(filepath.Join(cfg.DataDir, "users"))
+	searchRoot := filepath.Join(cfg.DataDir, "users")
+	searchSvc, err := search.OpenPerUser(searchRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -402,6 +453,21 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 			_ = searchSvc.Close()
 		}
 	}()
+	users, err := db.ListUsers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list users for stalled search recovery: %w", err)
+	}
+	startup.update("Search", "checking recovery markers", 0, max(1, len(users)))
+	if _, err := recoverMarkedSearchIndexes(ctx, db, searchSvc, searchRoot, users, time.Now()); err != nil {
+		return nil, err
+	}
+	restartRequired := make(chan int64, 1)
+	searchSvc.SetActiveWriterStallHandler(func(userID int64) {
+		select {
+		case restartRequired <- userID:
+		default:
+		}
+	})
 
 	startup.update("Services", "initializing sync and web services", 0, 1)
 	blobStore := blob.New(cfg.DataDir)
@@ -435,10 +501,6 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 	if err != nil {
 		return nil, err
 	}
-	users, err := db.ListUsers(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list users for pending search maintenance: %w", err)
-	}
 	for _, user := range users {
 		syncRunner.StartAttachmentIndex(user.ID)
 	}
@@ -456,7 +518,10 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 	}
 
 	cleanup = false
-	return &appRuntime{pluginHost: webServer, db: db, search: searchSvc, handler: webServer.Handler()}, nil
+	return &appRuntime{
+		pluginHost: webServer, db: db, search: searchSvc, handler: webServer.Handler(),
+		restartRequired: restartRequired,
+	}, nil
 }
 
 func storageRetention(ctx context.Context, db *store.Store, svc *syncer.Service, retention time.Duration) {

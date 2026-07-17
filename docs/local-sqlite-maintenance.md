@@ -14,9 +14,46 @@ Before making a one-time local database change:
 Disabling a plugin should not drop its data. Data removal should remain an
 explicit admin maintenance action.
 
+## Automatic Tenant Search Recovery
+
+Search writes pass through a shared priority- and byte-aware coordinator. It
+allows bounded concurrency across users, never admits two writes for the same
+tenant, prioritizes direct purge/rebuild work over queued attachment enrichment,
+and ages background jobs so they cannot starve. Before projecting message
+content, each indexing chunk obtains a conservative coordinator reservation
+covering the target chunk plus one maximum-size document. Rolltop then builds a
+soft-target chunk and reconciles that reservation first to its projected string
+payload and then to Bleve's actual batch size. If one active Bleve write does not
+return within two minutes, Rolltop writes
+`data/users/<user-id>/bleve.recovery-required` and requests a controlled process
+restart. The writer-stall path gives normal cleanup 15 seconds, then returns to
+the process entrypoint even if a plugin or database cleanup remains blocked.
+Docker must have a restart policy such as `unless-stopped` for this recovery to
+be hands-off.
+
+During startup, under the normal data-directory lock and before opening the
+marked index, Rolltop performs these steps in order:
+
+1. Mark the tenant's search-visible SQLite message rows pending using a
+   `synchronous=FULL` transaction and full WAL checkpoint.
+2. Rename only `data/users/<user-id>/bleve` to a timestamped quarantine path
+   and persist that directory rename.
+3. Clear the recovery marker and open a fresh derived index.
+4. Queue the normal local indexing worker for all pending rows, including rows
+   in `manual` and `never` sync folders.
+
+This does not delete or alter message rows, IMAP state, or blobs. The rebuild
+uses SQLite and retained local `.eml` blobs; when raw data has expired, normal
+index hydration may contact IMAP. Startup leaves the marker in place if the
+pending-row write or durable quarantine cannot complete safely. If persisting
+marker removal fails after quarantine, startup restores the marker when it can
+and fails; the already-pending rows and durable quarantine keep either crash
+outcome safe for the next start.
+
 ## Tenant Search Index Reset
 
-Use the checked-in offline command instead of deleting Bleve files manually:
+The offline command is the manual fallback for recovery that cannot complete
+automatically. Use it instead of deleting Bleve files manually:
 
 ```sh
 rolltop reset-search --user-id 1 --confirm-offline

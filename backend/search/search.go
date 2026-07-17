@@ -3,6 +3,7 @@
 package search
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,12 +36,16 @@ type Service struct {
 	mu                 sync.Mutex
 	indexes            map[int64]bleve.Index
 	writers            map[int64]*writerLock
+	writeCoordinator   *bleveWriteCoordinator
 	closing            bool
 	writes             sync.WaitGroup
 	closeDone          chan struct{}
 	closeErr           error
 	closeWriterTimeout time.Duration
 	writerWaitLogAfter time.Duration
+	activeStallAfter   time.Duration
+	activeStallHandler func(int64)
+	activeStallOnce    sync.Once
 	bleveErrorLog      func(string, ...any)
 }
 
@@ -153,16 +159,25 @@ func (l *writerLock) activeSnapshot() (bleveErrorContext, time.Time) {
 }
 
 type bleveErrorContext struct {
-	Operation string
-	UserID    int64
-	AccountID int64
-	MailboxID int64
-	Documents int
+	Operation       string
+	UserID          int64
+	AccountID       int64
+	MailboxID       int64
+	Documents       int
+	BatchBytes      uint64
+	FirstDocumentID int64
+	LastDocumentID  int64
+	DocumentIDs     []int64
 }
 
 var errSearchServiceClosing = errors.New("search service is closing")
 
-const searchCloseWriterTimeout = 2 * time.Second
+const (
+	searchCloseWriterTimeout = 2 * time.Second
+	activeWriterStallTimeout = 2 * time.Minute
+	maxStallDocumentIDs      = 8
+	maxBleveStackBytes       = 8 * 1024
+)
 
 // reportBleveError writes operational index failures through Go's standard
 // logger, which Docker captures from stderr. Callers provide IDs and counts only:
@@ -175,8 +190,9 @@ func (s *Service) reportBleveError(details bleveErrorContext, err error) {
 	if s != nil && s.bleveErrorLog != nil {
 		logger = s.bleveErrorLog
 	}
-	logger("bleve error operation=%q user_id=%d account_id=%d mailbox_id=%d documents=%d error_type=%T error=%v",
-		details.Operation, details.UserID, details.AccountID, details.MailboxID, details.Documents, err, err)
+	logger("bleve error operation=%q user_id=%d account_id=%d mailbox_id=%d documents=%d batch_bytes=%d first_document_id=%d last_document_id=%d document_ids=%v error_type=%T error=%v",
+		details.Operation, details.UserID, details.AccountID, details.MailboxID, details.Documents, details.BatchBytes,
+		details.FirstDocumentID, details.LastDocumentID, details.DocumentIDs, err, err)
 }
 
 // AttachmentDoc is transient attachment text passed to IndexMessage after raw message parsing.
@@ -431,7 +447,7 @@ func ageYears(years int) time.Duration {
 // Open creates or opens a single combined Bleve index. Tests use this mode; the
 // production server uses OpenPerUser so message IDs can overlap safely by user.
 func Open(path string) (*Service, error) {
-	service := &Service{writers: make(map[int64]*writerLock)}
+	service := newSearchService()
 	index, err := openIndex(path)
 	if err != nil {
 		service.reportBleveError(bleveErrorContext{Operation: "open-index"}, err)
@@ -448,7 +464,19 @@ func OpenPerUser(root string) (*Service, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	return &Service{root: root, perUser: true, indexes: make(map[int64]bleve.Index), writers: make(map[int64]*writerLock)}, nil
+	service := newSearchService()
+	service.root = root
+	service.perUser = true
+	service.indexes = make(map[int64]bleve.Index)
+	return service, nil
+}
+
+func newSearchService() *Service {
+	service := &Service{writers: make(map[int64]*writerLock)}
+	service.writeCoordinator = newBleveWriteCoordinator(bleveWriteCoordinatorConfig{
+		OnWait: service.reportBleveCoordinatorWait,
+	})
+	return service
 }
 
 // openIndex either opens an existing Bleve index or creates the Rolltop mapping.
@@ -622,9 +650,133 @@ func (s *Service) reportBleveWriterWait(waiting, active bleveErrorContext, waite
 	if s != nil && s.bleveErrorLog != nil {
 		logger = s.bleveErrorLog
 	}
-	logger("bleve writer wait operation=%q user_id=%d account_id=%d mailbox_id=%d documents=%d waited=%s active_operation=%q active_user_id=%d active_account_id=%d active_mailbox_id=%d active_documents=%d active_for=%s",
+	logger("bleve writer wait operation=%q user_id=%d account_id=%d mailbox_id=%d documents=%d waited=%s active_operation=%q active_user_id=%d active_account_id=%d active_mailbox_id=%d active_documents=%d active_batch_bytes=%d active_first_document_id=%d active_last_document_id=%d active_document_ids=%v active_for=%s",
 		waiting.Operation, waiting.UserID, waiting.AccountID, waiting.MailboxID, waiting.Documents, waited.Round(time.Second),
-		active.Operation, active.UserID, active.AccountID, active.MailboxID, active.Documents, activeFor.Round(time.Second))
+		active.Operation, active.UserID, active.AccountID, active.MailboxID, active.Documents, active.BatchBytes,
+		active.FirstDocumentID, active.LastDocumentID, active.DocumentIDs, activeFor.Round(time.Second))
+}
+
+func (s *Service) reportBleveCoordinatorWait(diagnostic bleveWriteWaitDiagnostic) {
+	logger := log.Printf
+	if s != nil && s.bleveErrorLog != nil {
+		logger = s.bleveErrorLog
+	}
+	details := diagnostic.Request.Details
+	logger("bleve coordinator wait operation=%q priority=%q user_id=%d account_id=%d mailbox_id=%d documents=%d batch_bytes=%d waited=%s queue_depth=%d active_writes=%d active_bytes=%d same_user_active=%t",
+		details.Operation, diagnostic.Request.Priority.String(), details.UserID, details.AccountID, details.MailboxID,
+		details.Documents, diagnostic.Request.Bytes, diagnostic.Waited.Round(time.Second), diagnostic.QueueDepth,
+		diagnostic.ActiveWrites, diagnostic.ActiveBytes, diagnostic.SameUserActive)
+}
+
+// SetActiveWriterStallHandler installs the process-restart signal used when a
+// production tenant's synchronous Bleve write exceeds the safety threshold.
+// The handler is invoked at most once for this Service, after the durable
+// recovery marker has been attempted. It must return promptly.
+func (s *Service) SetActiveWriterStallHandler(handler func(userID int64)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.activeStallHandler = handler
+	s.mu.Unlock()
+}
+
+func (s *Service) activeWriterStallAfter() time.Duration {
+	if s != nil && s.activeStallAfter > 0 {
+		return s.activeStallAfter
+	}
+	return activeWriterStallTimeout
+}
+
+// watchActiveWriter is deliberately independent of the caller context. Bleve
+// Batch has no cancellation API, so a canceled HTTP or sync request must not
+// suppress detection of an operation that still owns the writer gate.
+func (s *Service) watchActiveWriter(done <-chan struct{}, details bleveErrorContext) {
+	if s == nil || !s.perUser || details.UserID <= 0 {
+		return
+	}
+	timer := time.NewTimer(s.activeWriterStallAfter())
+	defer timer.Stop()
+	select {
+	case <-done:
+		return
+	case <-timer.C:
+		select {
+		case <-done:
+			return
+		default:
+		}
+	}
+
+	markerErr := s.MarkSearchIndexRecoveryRequired(details.UserID)
+	if markerErr == nil {
+		s.activeStallOnce.Do(func() {
+			s.mu.Lock()
+			handler := s.activeStallHandler
+			s.mu.Unlock()
+			if handler != nil {
+				handler(details.UserID)
+			}
+		})
+	}
+	logger := log.Printf
+	if s.bleveErrorLog != nil {
+		logger = s.bleveErrorLog
+	}
+	logger("bleve active writer stalled operation=%q user_id=%d account_id=%d mailbox_id=%d documents=%d batch_bytes=%d first_document_id=%d last_document_id=%d document_ids=%v threshold=%s marker_written=%t restart_required=%t marker_error_type=%T marker_error=%v",
+		details.Operation, details.UserID, details.AccountID, details.MailboxID, details.Documents, details.BatchBytes,
+		details.FirstDocumentID, details.LastDocumentID, details.DocumentIDs, s.activeWriterStallAfter(), markerErr == nil, markerErr == nil, markerErr, markerErr)
+	if stack := filteredBleveBatchStack(); stack != "" {
+		logger("bleve active writer stack user_id=%d operation=%q\n%s", details.UserID, details.Operation, stack)
+	}
+}
+
+func filteredBleveBatchStack() string {
+	buffer := make([]byte, 64*1024)
+	for {
+		length := runtime.Stack(buffer, true)
+		if length < len(buffer) || len(buffer) >= 1024*1024 {
+			buffer = buffer[:length]
+			break
+		}
+		buffer = make([]byte, len(buffer)*2)
+	}
+	return filterBleveBatchStack(buffer)
+}
+
+func filterBleveBatchStack(stack []byte) string {
+	for _, block := range bytes.Split(stack, []byte("\n\n")) {
+		if !bytes.Contains(block, []byte("github.com/blevesearch/bleve")) ||
+			!bytes.Contains(block, []byte(".(*Scorch).Batch")) {
+			continue
+		}
+		lines := bytes.Split(block, []byte("\n"))
+		filtered := make([]string, 0, len(lines)-1)
+		filteredBytes := 0
+		for index, rawLine := range lines {
+			if index == 0 || len(bytes.TrimSpace(rawLine)) == 0 {
+				continue
+			}
+			line := string(bytes.TrimSpace(rawLine))
+			if strings.HasPrefix(line, "created by ") {
+				line = strings.SplitN(line, " in goroutine ", 2)[0]
+			} else if !bytes.HasPrefix(rawLine, []byte("\t")) {
+				if argumentStart := strings.LastIndex(line, "("); argumentStart >= 0 {
+					line = line[:argumentStart]
+				}
+			} else if offset := strings.Index(line, " +0x"); offset >= 0 {
+				line = line[:offset]
+			}
+			projected := filteredBytes + len(line) + 1
+			if projected > maxBleveStackBytes {
+				break
+			}
+			filtered = append(filtered, line)
+			filteredBytes = projected
+		}
+		return strings.Join(filtered, "\n")
+	}
+	return ""
 }
 
 // lockWriter waits in FIFO order for one tenant's Bleve writer while allowing
@@ -733,23 +885,6 @@ func (s *Service) IndexMessage(ctx context.Context, msg store.MessageRecord, att
 	return s.IndexMessages(ctx, []MessageIndexDocument{{Message: msg, Attachments: attachments}})
 }
 
-func messageIndexBatchScope(documents []MessageIndexDocument) (accountID, mailboxID int64) {
-	if len(documents) == 0 {
-		return 0, 0
-	}
-	accountID = documents[0].Message.AccountID
-	mailboxID = documents[0].Message.MailboxID
-	for _, document := range documents[1:] {
-		if document.Message.AccountID != accountID {
-			accountID = 0
-		}
-		if document.Message.MailboxID != mailboxID {
-			mailboxID = 0
-		}
-	}
-	return accountID, mailboxID
-}
-
 // IndexMessages writes a batch of message documents to Bleve. The production
 // sync path uses this to avoid forcing a separate Bleve commit for every IMAP
 // message body while keeping tenant indexes separated by user ID.
@@ -757,49 +892,93 @@ func (s *Service) IndexMessages(ctx context.Context, documents []MessageIndexDoc
 	if len(documents) == 0 {
 		return nil
 	}
-	groups := make(map[int64][]MessageIndexDocument)
-	order := make([]int64, 0, 1)
-	for _, document := range documents {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		userID := document.Message.UserID
-		if _, ok := groups[userID]; !ok {
-			order = append(order, userID)
-		}
-		groups[userID] = append(groups[userID], document)
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	for _, userID := range order {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+	plans, err := planMessageIndexTenants(ctx, documents)
+	if err != nil {
+		return err
+	}
+	for _, plan := range plans {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		index, err := s.indexForUser(userID)
+		index, err := s.indexForUser(plan.userID)
 		if err != nil {
 			return err
 		}
-		batch := index.NewBatch()
-		accountID, mailboxID := messageIndexBatchScope(groups[userID])
-		for _, document := range groups[userID] {
-			if err := batch.Index(strconv.FormatInt(document.Message.ID, 10), buildMessageDocument(document.Message, document.Attachments)); err != nil {
-				s.reportBleveError(bleveErrorContext{
-					Operation: "prepare-index-batch", UserID: userID, AccountID: accountID, MailboxID: mailboxID, Documents: len(groups[userID]),
-				}, err)
+		writer := s.writerForUser(plan.userID)
+		iterator := newMessageIndexChunkIterator(plan, messageIndexChunkTargetBytes, buildMessageDocument)
+		for iterator.HasNext() {
+			chunk, lease, err := s.prepareNextMessageIndexChunk(ctx, iterator)
+			if err != nil {
+				return err
+			}
+			if err := s.commitPreparedMessageChunk(ctx, writer, index, chunk, lease); err != nil {
 				return err
 			}
 		}
-		writer := s.writerForUser(userID)
-		err = s.commitBatch(ctx, writer, index, batch, bleveErrorContext{
-			Operation: "index-batch", UserID: userID, AccountID: accountID, MailboxID: mailboxID, Documents: len(groups[userID]),
-		})
-		if err != nil {
-			return err
-		}
 	}
 	return nil
+}
+
+// prepareNextMessageIndexChunk obtains a conservative coordinator reservation
+// before projecting any message content, then reconciles it to the chunk's
+// bounded string payload. The returned lease owns one Service write count.
+func (s *Service) prepareNextMessageIndexChunk(ctx context.Context, iterator *messageIndexChunkIterator) (preparedMessageIndexChunk, *bleveWriteLease, error) {
+	if iterator == nil || !iterator.HasNext() {
+		return preparedMessageIndexChunk{}, nil, fmt.Errorf("prepare message index chunk: iterator is exhausted")
+	}
+	details := bleveErrorContext{
+		Operation: "index-batch", UserID: iterator.userID, BatchBytes: iterator.reservationBytes(),
+	}
+	lease, err := s.beginWriterOperation(ctx, details)
+	if err != nil {
+		return preparedMessageIndexChunk{}, nil, err
+	}
+	chunk, ok, err := iterator.Next(ctx)
+	if err != nil {
+		s.finishUnstartedWriterOperation(lease)
+		return preparedMessageIndexChunk{}, nil, err
+	}
+	if !ok {
+		s.finishUnstartedWriterOperation(lease)
+		return preparedMessageIndexChunk{}, nil, fmt.Errorf("prepare message index chunk: iterator produced no chunk")
+	}
+	lease.UpdateBytes(chunk.projectedBytes)
+	return chunk, lease, nil
+}
+
+// commitPreparedMessageChunk maps an admitted projection into a Bleve Batch,
+// then reconciles the lease to Bleve's actual document size before commit.
+func (s *Service) commitPreparedMessageChunk(ctx context.Context, writer *writerLock, index bleve.Index, chunk preparedMessageIndexChunk, lease *bleveWriteLease) error {
+	details := chunk.diagnostics("index-batch")
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		s.finishUnstartedWriterOperation(lease)
+		return err
+	}
+	batch, err := chunk.newBleveBatch(index)
+	if err != nil {
+		details.Operation = "prepare-index-batch"
+		s.reportBleveError(details, err)
+		s.finishUnstartedWriterOperation(lease)
+		return err
+	}
+	details.BatchBytes = batch.TotalDocsSize()
+	lease.UpdateBytes(details.BatchBytes)
+	return s.runAdmittedWriterOperation(ctx, writer, details, lease, func() error {
+		err := index.Batch(batch)
+		s.reportBleveError(details, err)
+		return err
+	})
+}
+
+func (s *Service) finishUnstartedWriterOperation(lease *bleveWriteLease) {
+	lease.Release()
+	s.writes.Done()
 }
 
 // commitBatch transfers the writer lock to the goroutine running Bleve's
@@ -807,6 +986,7 @@ func (s *Service) IndexMessages(ctx context.Context, documents []MessageIndexDoc
 // be able to stop waiting while that goroutine retains exclusive ownership of
 // the index until the underlying commit actually returns.
 func (s *Service) commitBatch(ctx context.Context, writer *writerLock, index bleve.Index, batch *bleve.Batch, details bleveErrorContext) error {
+	details.BatchBytes = batch.TotalDocsSize()
 	return s.runWriterOperation(ctx, writer, details, func() error {
 		err := index.Batch(batch)
 		s.reportBleveError(details, err)
@@ -815,17 +995,52 @@ func (s *Service) commitBatch(ctx context.Context, writer *writerLock, index ble
 }
 
 func (s *Service) runWriterOperation(ctx context.Context, writer *writerLock, details bleveErrorContext, operation func() error) error {
-	if err := s.beginWrite(); err != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lease, err := s.beginWriterOperation(ctx, details)
+	if err != nil {
 		return err
 	}
-	if err := s.lockWriter(ctx, writer, details); err != nil {
+	return s.runAdmittedWriterOperation(ctx, writer, details, lease, operation)
+}
+
+func (s *Service) beginWriterOperation(ctx context.Context, details bleveErrorContext) (*bleveWriteLease, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := s.beginWrite(); err != nil {
+		return nil, err
+	}
+	if s.writeCoordinator == nil {
+		return nil, nil
+	}
+	lease, err := s.writeCoordinator.Acquire(ctx, bleveWriteRequest{
+		Details: details, Priority: blevePriorityForOperation(ctx, details.Operation), Bytes: details.BatchBytes,
+	})
+	if err != nil {
 		s.writes.Done()
+		return nil, err
+	}
+	return lease, nil
+}
+
+func (s *Service) runAdmittedWriterOperation(ctx context.Context, writer *writerLock, details bleveErrorContext, lease *bleveWriteLease, operation func() error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := s.lockWriter(ctx, writer, details); err != nil {
+		s.finishUnstartedWriterOperation(lease)
 		return err
 	}
 	writer.setActive(details)
 	result := make(chan error, 1)
+	operationDone := make(chan struct{})
+	go s.watchActiveWriter(operationDone, details)
 	go func() {
 		defer s.writes.Done()
+		defer lease.Release()
+		defer close(operationDone)
 		defer func() {
 			writer.clearActive()
 			writer.Unlock()
@@ -865,19 +1080,28 @@ func buildMessageDocument(msg store.MessageRecord, attachments []AttachmentDoc) 
 	if msg.IsEncrypted {
 		bodyForIndex = ""
 	}
+	subject := boundedIndexText(msg.Subject, maxIndexedHeaderBytes)
+	fromAddr := boundedIndexText(msg.FromAddr, maxIndexedHeaderBytes)
+	toAddr := boundedIndexText(msg.ToAddr, maxIndexedHeaderBytes)
+	ccAddr := boundedIndexText(msg.CCAddr, maxIndexedHeaderBytes)
+	messageID := boundedIndexText(msg.MessageIDHeader, maxIndexedHeaderBytes)
+	bodyForIndex = boundedIndexText(bodyForIndex, maxIndexedBodyBytes)
+	attachmentNames := boundedIndexJoin(names, maxIndexedNamesBytes)
+	attachmentTypes := boundedIndexJoin(contentTypes, maxIndexedNamesBytes)
+	attachmentText := boundedIndexJoin(texts, maxIndexedAttachmentsBytes)
 	compoundBody := store.MessageBodyPreview(bodyForIndex, maxCompoundFieldBytes/4)
-	compoundAttachments := store.MessageBodyPreview(strings.Join(texts, " "), maxCompoundFieldBytes/4)
+	compoundAttachments := store.MessageBodyPreview(attachmentText, maxCompoundFieldBytes/4)
 	return map[string]any{
 		"user_id":              strconv.FormatInt(msg.UserID, 10),
 		"mailbox_id":           strconv.FormatInt(msg.MailboxID, 10),
-		"subject":              msg.Subject,
-		"subject_compound":     compoundSearchText(msg.Subject),
-		"from":                 msg.FromAddr,
-		"from_compound":        compoundSearchText(msg.FromAddr),
-		"from_domain":          emailDomainTerms(msg.FromAddr),
-		"to":                   msg.ToAddr,
-		"cc":                   msg.CCAddr,
-		"message_id":           msg.MessageIDHeader,
+		"subject":              subject,
+		"subject_compound":     boundedIndexText(compoundSearchText(subject), maxIndexedHeaderBytes),
+		"from":                 fromAddr,
+		"from_compound":        boundedIndexText(compoundSearchText(fromAddr), maxIndexedHeaderBytes),
+		"from_domain":          boundedIndexText(emailDomainTerms(fromAddr), maxIndexedHeaderBytes),
+		"to":                   toAddr,
+		"cc":                   ccAddr,
+		"message_id":           messageID,
 		"body":                 bodyForIndex,
 		"date":                 msg.Date,
 		"is_read":              strconv.FormatBool(msg.IsRead),
@@ -886,19 +1110,19 @@ func buildMessageDocument(msg store.MessageRecord, attachments []AttachmentDoc) 
 		"is_signed":            strconv.FormatBool(msg.IsSigned),
 		"plugin_language_code": normalizeLanguageCode(msg.LanguageCode),
 		"has_attachment":       strconv.FormatBool(hasAttachment),
-		"attachment_names":     strings.Join(names, " "),
-		"attachment_types":     strings.Join(contentTypes, " "),
-		"attachments":          strings.Join(texts, " "),
-		"compound": compoundSearchText(
-			msg.Subject,
-			msg.FromAddr,
-			msg.ToAddr,
-			msg.CCAddr,
-			msg.MessageIDHeader,
+		"attachment_names":     attachmentNames,
+		"attachment_types":     attachmentTypes,
+		"attachments":          attachmentText,
+		"compound": boundedIndexText(compoundSearchText(
+			subject,
+			fromAddr,
+			toAddr,
+			ccAddr,
+			messageID,
 			compoundBody,
-			strings.Join(names, " "),
+			attachmentNames,
 			compoundAttachments,
-		),
+		), maxCompoundFieldBytes),
 	}
 }
 

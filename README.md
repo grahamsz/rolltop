@@ -5,8 +5,8 @@ rolltop is a single-container Go app that mirrors multiple IMAP inboxes per loca
 ## What It Stores
 
 - SQLite metadata at `/data/rolltop.db`
-- Bleve search index at `/data/bleve`
-- Raw `.eml` and attachment blobs under `/data/blobs/users/{user_id}/...`
+- Per-user Bleve search indexes at `/data/users/{user_id}/bleve`
+- Raw `.eml` and attachment blobs under `/data/users/{user_id}/blobs/...`
 - Incremental sync progress in `sync_runs`
 - A compiled React + Vite + TypeScript frontend served by the Go process
 
@@ -86,7 +86,7 @@ test -f .env.rolltop || (
   printf 'ROLLTOP_MASTER_KEY=%s\nROLLTOP_COOKIE_SECURE=false\n' "$(openssl rand -base64 32)" > .env.rolltop
 )
 
-docker run --rm -p 8080:8080 \
+docker run -d --name rolltop --restart unless-stopped -p 8080:8080 \
   --env-file .env.rolltop \
   -v rolltop-data:/data \
   ghcr.io/grahamsz/rolltop:latest
@@ -94,10 +94,34 @@ docker run --rm -p 8080:8080 \
 
 Keep `.env.rolltop` with the same care as the Docker volume. Changing or losing `ROLLTOP_MASTER_KEY` makes stored IMAP passwords undecryptable.
 
+### Automatic Search Index Recovery
+
+Bleve writes pass through a shared priority- and byte-aware coordinator. It
+admits at most one write per user, keeps bounded global concurrency, lets direct
+rebuild/purge work pass queued attachment enrichment, and ages background work
+so it cannot starve. Message projections are also split into bounded byte-sized
+batches before reaching Bleve.
+If an active Bleve write remains stuck for two minutes, Rolltop writes a durable
+tenant recovery marker and starts a controlled shutdown. Cleanup gets a bounded
+15-second grace period so another stuck subsystem cannot prevent process exit. A
+Docker restart policy such as `--restart unless-stopped` (or Compose
+`restart: unless-stopped`) is required for hands-off recovery.
+
+On restart, before opening that tenant's index, Rolltop durably marks the user's
+search-visible SQLite rows pending with a full WAL checkpoint, renames only
+`/data/users/<id>/bleve` to a timestamped quarantine directory, persists that
+rename before clearing the recovery marker, and creates a new derived index.
+The normal local indexing worker rebuilds it from SQLite and retained local
+`.eml` blobs, including folders configured for `manual` or `never` sync. Mail
+rows, IMAP state, and blobs are not deleted. If retained raw data has expired,
+existing indexing behavior may retrieve it from IMAP.
+
 ### Offline Search Index Reset
 
-If one user's full-text index is corrupt or persistently stalled, Rolltop can
-quarantine that tenant's Bleve directory and rebuild it from the local mirror.
+If automatic recovery cannot run, the offline `reset-search` command remains
+the manual fallback. It can also repair a corrupt index that never opened far
+enough to trigger the active-write watchdog. The command quarantines that
+tenant's Bleve directory and rebuilds it from the local mirror.
 The numeric local user ID is the number in `/data/users/<id>` and in log fields
 such as `user_id=1`.
 

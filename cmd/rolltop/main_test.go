@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"rolltop/backend/store"
 )
@@ -84,12 +85,63 @@ func TestAppRuntimeCloseStopsPluginHost(t *testing.T) {
 	}
 }
 
+func TestSearchWriterRestartShutdownReturnsWhenPluginCloseBlocks(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	app := &appRuntime{pluginHost: &blockingRuntimeTestCloser{started: started, release: release}}
+
+	start := time.Now()
+	err := runSearchWriterRestartShutdown(25*time.Millisecond, func() error {
+		defer close(finished)
+		app.close()
+		return nil
+	})
+	if !errors.Is(err, errSearchWriterRestartShutdownTimeout) {
+		t.Fatalf("restart shutdown error = %v, want timeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("restart shutdown returned after %s, want bounded wait", elapsed)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("plugin Close did not start")
+	}
+
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out cleanup did not finish after plugin Close was released")
+	}
+}
+
+func TestSearchWriterRestartShutdownReturnsCleanupError(t *testing.T) {
+	want := errors.New("cleanup failed")
+	err := runSearchWriterRestartShutdown(time.Second, func() error { return want })
+	if !errors.Is(err, want) {
+		t.Fatalf("restart shutdown error = %v, want cleanup error", err)
+	}
+}
+
 type runtimeTestCloser struct {
 	calls int
 }
 
 func (c *runtimeTestCloser) Close() error {
 	c.calls++
+	return nil
+}
+
+type blockingRuntimeTestCloser struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingRuntimeTestCloser) Close() error {
+	close(c.started)
+	<-c.release
 	return nil
 }
 
