@@ -1081,7 +1081,7 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	}
 
 	server := &Server{store: db, search: searchSvc}
-	views := server.syncFolderViews(ctx, user.ID, nil)
+	views := server.syncFolderViews(ctx, user.ID)
 	if len(views) != 2 {
 		t.Fatalf("views = %d", len(views))
 	}
@@ -1124,6 +1124,96 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	}
 	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 25 {
 		t.Fatalf("search index percent after current document = %v", box.SearchIndexPercent)
+	}
+}
+
+func TestSyncFolderViewsUsesUnboundedTenantScopedMailboxHistory(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	owner, err := db.CreateUser(ctx, "folder-history@example.test", "Folder History", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerAccount, err := db.UpsertMailAccount(ctx, store.MailAccount{
+		UserID: owner.ID, Email: owner.Email, Host: "imap.example.test", Port: 993,
+		Username: owner.Email, EncryptedPassword: "secret", UseTLS: true, Mailbox: "*",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.GetOrCreateMailbox(ctx, owner.ID, ownerAccount.ID, "INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.GetOrCreateMailbox(ctx, owner.ID, ownerAccount.ID, "Archive"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateUser(ctx, "other-folder-history@example.test", "Other Folder History", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAccount, err := db.UpsertMailAccount(ctx, store.MailAccount{
+		UserID: other.ID, Email: other.Email, Host: "imap.other.test", Port: 993,
+		Username: other.Email, EncryptedPassword: "secret", UseTLS: true, Mailbox: "*",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertRun := func(userID, accountID int64, mailbox string, updated int64) int64 {
+		t.Helper()
+		result, insertErr := db.DB().ExecContext(ctx, `INSERT INTO sync_runs
+			(user_id, account_id, status, started_at, finished_at, updated_at, current_mailbox, current_uid)
+			VALUES (?, ?, 'ok', ?, ?, ?, ?, ?)`, userID, accountID, updated, updated, updated, mailbox, updated)
+		if insertErr != nil {
+			t.Fatal(insertErr)
+		}
+		id, insertErr := result.LastInsertId()
+		if insertErr != nil {
+			t.Fatal(insertErr)
+		}
+		return id
+	}
+
+	archiveRunID := insertRun(owner.ID, ownerAccount.ID, "Archive", 1)
+	var latestInboxRunID int64
+	for i := int64(0); i < 401; i++ {
+		latestInboxRunID = insertRun(owner.ID, ownerAccount.ID, "INBOX", 100+i)
+	}
+	otherArchiveRunID := insertRun(other.ID, otherAccount.ID, "Archive", 10_000)
+	recent, err := db.ListSyncRunsForUser(ctx, owner.ID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range recent {
+		if run.ID == archiveRunID {
+			t.Fatalf("test premise failed: Archive run %d remained in bounded recent history", archiveRunID)
+		}
+	}
+
+	views := (&Server{store: db}).syncFolderViews(ctx, owner.ID)
+	if len(views) != 2 {
+		t.Fatalf("folder views = %+v, want INBOX and Archive", views)
+	}
+	for _, view := range views {
+		if view.LastRun == nil {
+			t.Fatalf("folder %q has no last run after complete-history lookup", view.Mailbox.Name)
+		}
+		if view.LastRun.UserID != owner.ID {
+			t.Fatalf("folder %q exposed user %d to owner %d", view.Mailbox.Name, view.LastRun.UserID, owner.ID)
+		}
+		switch strings.ToLower(strings.TrimSpace(view.Mailbox.Name)) {
+		case "archive":
+			if view.LastRun.ID != archiveRunID {
+				t.Fatalf("Archive last run = %d, want owner run %d (other user run %d)", view.LastRun.ID, archiveRunID, otherArchiveRunID)
+			}
+		case "inbox":
+			if view.LastRun.ID != latestInboxRunID {
+				t.Fatalf("INBOX last run = %d, want %d", view.LastRun.ID, latestInboxRunID)
+			}
+		}
 	}
 }
 

@@ -22,13 +22,15 @@ type searchRepairBatchFetcher struct {
 	singleCalls int
 	failAfter   int
 	batchErr    error
+	cancelAfter int
+	cancel      context.CancelFunc
 }
 
 func (f *searchRepairBatchFetcher) FetchMailboxWithUIDValidity(context.Context, store.MailAccount, string, uint32, uint32, func(FetchedMessage) error) error {
 	return errors.New("unexpected full mailbox fetch")
 }
 
-func (f *searchRepairBatchFetcher) FetchUIDsWithUIDValidity(_ context.Context, _ store.MailAccount, mailbox string, uids []uint32, expectedUIDValidity uint32, handle func(FetchedMessage) error) error {
+func (f *searchRepairBatchFetcher) FetchUIDsWithUIDValidity(ctx context.Context, _ store.MailAccount, mailbox string, uids []uint32, expectedUIDValidity uint32, handle func(FetchedMessage) error) error {
 	f.calls = append(f.calls, append([]uint32(nil), uids...))
 	if expectedUIDValidity != moveTestSourceUIDValidity {
 		return errors.New("unexpected generation")
@@ -43,6 +45,11 @@ func (f *searchRepairBatchFetcher) FetchUIDsWithUIDValidity(_ context.Context, _
 			InternalDate: time.Now().UTC(), Raw: raw,
 		}); err != nil {
 			return err
+		}
+		if f.cancel != nil && f.cancelAfter > 0 && index+1 >= f.cancelAfter {
+			f.cancel()
+			f.cancel = nil
+			return ctx.Err()
 		}
 	}
 	return nil

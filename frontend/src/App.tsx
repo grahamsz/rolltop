@@ -850,6 +850,7 @@ export default function App() {
           mailboxes={bootstrap.mailboxes || []}
           latestSyncRun={bootstrap.latest_sync_run || null}
           activeSyncRuns={bootstrap.active_sync_runs || []}
+          syncRunning={Boolean(bootstrap.sync_running)}
           mailGeneration={bootstrap.mail_generation || 0}
           swipePreferences={bootstrap.swipe_preferences || defaultSwipePreferences()}
           enabledPlugins={bootstrap.enabled_plugins || []}

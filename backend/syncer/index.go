@@ -218,12 +218,51 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 	if err != nil {
 		return 0, err
 	}
-	batch := newFetchedSearchIndexBatch(s)
+	// Maintenance is routinely preempted by foreground mailbox work. Checkpoint
+	// smaller prefixes so a cancellation cannot repeatedly discard an entire
+	// slow remote-hydration page.
+	batch := newFetchedSearchIndexBatchWithSize(s, maintenanceSearchCheckpointSize)
 	indexed := 0
 	enriched := 0
 	deferred := 0
 	fallback := 0
 	coolingDown := 0
+	type remoteMailboxPage struct {
+		mailbox  store.Mailbox
+		messages []store.MessageRecord
+	}
+	remotePages := map[int64]*remoteMailboxPage{}
+	remotePageOrder := make([]int64, 0)
+	mailboxes := map[int64]store.Mailbox{}
+	_, canBatchRemote := s.Fetcher.(UIDValidityMailboxFetcher)
+	recordEnriched := func(msg store.MessageRecord, item *pendingFetchedSearchIndex) error {
+		if err := batch.Add(ctx, item); err != nil {
+			return err
+		}
+		s.clearAttachmentIndexRetry(userID, msg.ID)
+		indexed++
+		enriched++
+		return nil
+	}
+	recordDeferred := func(msg store.MessageRecord, stage string, cause error, logMessage bool) error {
+		now := time.Now()
+		retryAt := s.deferAttachmentIndexRetry(userID, msg.ID, now)
+		if logMessage {
+			log.Printf("attachment index message deferred user_id=%d account_id=%d mailbox_id=%d message_id=%d uid=%d stage=%s error_type=%T retry_in=%s",
+				userID, msg.AccountID, msg.MailboxID, msg.ID, msg.UID, stage, cause,
+				retryAt.Sub(now).Round(time.Second))
+		}
+		if err := batch.Add(ctx, &pendingFetchedSearchIndex{
+			Document:    search.MessageIndexDocument{Message: msg},
+			KeepPending: true,
+		}); err != nil {
+			return err
+		}
+		indexed++
+		deferred++
+		fallback++
+		return nil
+	}
 	for _, msg := range messages {
 		if err := ctx.Err(); err != nil {
 			return indexed, err
@@ -231,6 +270,38 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 		now := time.Now()
 		if !s.attachmentIndexRetryReady(userID, msg.ID, now) {
 			coolingDown++
+			continue
+		}
+		mailbox, ok := mailboxes[msg.MailboxID]
+		if !ok {
+			mailbox, err = s.Store.GetMailboxForUser(ctx, userID, msg.MailboxID)
+			if err != nil {
+				return indexed, err
+			}
+			mailboxes[msg.MailboxID] = mailbox
+		}
+		if canBatchRemote && mailbox.IncludeInSearch {
+			raw, local, err := s.readLocalRawMessageForIndexRepair(userID, msg)
+			if err != nil {
+				return indexed, err
+			}
+			if local {
+				item, err := s.prepareAttachmentIndexMessageFromRaw(ctx, msg, raw)
+				if err != nil {
+					return indexed, err
+				}
+				if err := recordEnriched(msg, item); err != nil {
+					return indexed, err
+				}
+				continue
+			}
+			page := remotePages[msg.MailboxID]
+			if page == nil {
+				page = &remoteMailboxPage{mailbox: mailbox}
+				remotePages[msg.MailboxID] = page
+				remotePageOrder = append(remotePageOrder, msg.MailboxID)
+			}
+			page.messages = append(page.messages, msg)
 			continue
 		}
 		item, err := s.prepareAttachmentIndexMessage(ctx, msg)
@@ -242,27 +313,27 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 			if ctx.Err() != nil {
 				return indexed, ctx.Err()
 			}
-			retryAt := s.deferAttachmentIndexRetry(userID, msg.ID, now)
-			log.Printf("attachment index message deferred user_id=%d account_id=%d mailbox_id=%d message_id=%d uid=%d stage=%s error_type=%T retry_in=%s",
-				userID, msg.AccountID, msg.MailboxID, msg.ID, msg.UID, deferredErr.stage, deferredErr.err,
-				retryAt.Sub(now).Round(time.Second))
-			if err := batch.Add(ctx, &pendingFetchedSearchIndex{
-				Document:    search.MessageIndexDocument{Message: msg},
-				KeepPending: true,
-			}); err != nil {
+			if err := recordDeferred(msg, deferredErr.stage, deferredErr.err, true); err != nil {
 				return indexed, err
 			}
-			indexed++
-			deferred++
-			fallback++
 			continue
 		}
-		s.clearAttachmentIndexRetry(userID, msg.ID)
-		if err := batch.Add(ctx, item); err != nil {
+		if err := recordEnriched(msg, item); err != nil {
 			return indexed, err
 		}
-		indexed++
-		enriched++
+	}
+	for _, mailboxID := range remotePageOrder {
+		page := remotePages[mailboxID]
+		_, err := s.repairMailboxSearchRemotePage(ctx, userID, page.mailbox, page.messages,
+			func(msg store.MessageRecord, item *pendingFetchedSearchIndex) error {
+				return recordEnriched(msg, item)
+			},
+			func(msg store.MessageRecord) error {
+				return recordDeferred(msg, "raw-fetch-batch", nil, false)
+			})
+		if err != nil {
+			return indexed, err
+		}
 	}
 	if err := batch.Flush(ctx); err != nil {
 		return indexed, err
@@ -497,7 +568,9 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 	indexed := 0
 	deferred := 0
 	var afterID int64
-	batch := newFetchedSearchIndexBatch(s)
+	// Mailbox repair is time-bounded and can be interrupted by the next sync.
+	// Commit small prefixes so each attempt makes durable forward progress.
+	batch := newFetchedSearchIndexBatchWithSize(s, maintenanceSearchCheckpointSize)
 	recordItem := func(msg store.MessageRecord, item *pendingFetchedSearchIndex) error {
 		if err := batch.Add(ctx, item); err != nil {
 			return err

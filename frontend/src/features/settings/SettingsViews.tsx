@@ -573,6 +573,17 @@ function folderVisibilityLabel(mailbox: Pick<Mailbox, "show_in_sidebar" | "show_
   return "Hidden";
 }
 
+function mailboxNeedsFullTextRefresh(mailbox: Mailbox) {
+  if (!mailbox.include_in_search) return false;
+  const indexed = mailbox.search_indexed_count;
+  const total = mailbox.search_index_total;
+  const percent = mailbox.search_index_percent;
+  if (typeof indexed === "number" && typeof total === "number") {
+    return total > 0 && indexed < total;
+  }
+  return typeof percent === "number" && percent < 100;
+}
+
 /**
  * SettingsView coordinates account data from /api/account with profile, storage,
  * IMAP, SMTP, identity, and folder-sync editors. Each routed section has an
@@ -583,7 +594,9 @@ export function SettingsView({
   user,
   swipePreferences,
   mailboxes,
+  latestSyncRun,
   activeSyncRuns,
+  syncRunning,
   availableThemes,
   location,
   navigate,
@@ -596,7 +609,9 @@ export function SettingsView({
   user: User;
   swipePreferences: SwipePreferences;
   mailboxes: Mailbox[];
+  latestSyncRun: SyncRun | null;
   activeSyncRuns: SyncRun[];
+  syncRunning: boolean;
   availableThemes: ThemeDefinition[];
   location: LocationState;
   navigate: (url: string) => void;
@@ -649,6 +664,7 @@ export function SettingsView({
   const selectedAccountIDRef = useRef<number | null>(selectedAccountID);
   const selectedSMTPIDRef = useRef<number | null>(selectedSMTPID);
   const selectedIdentityIDRef = useRef<number | "new" | null>(selectedIdentityID);
+  const folderStatusRefreshInFlight = useRef(false);
 
   locationPathRef.current = location.path;
   selectedAccountIDRef.current = selectedAccountID;
@@ -751,9 +767,52 @@ export function SettingsView({
     }
   }, [loadStorage, syncSelectionToRoute]);
 
+  const needsFullTextRefresh = useMemo(
+    () => folders.some((folder) => mailboxNeedsFullTextRefresh(folder.mailbox)),
+    [folders]
+  );
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!loaded || !needsFullTextRefresh) return;
+    let cancelled = false;
+    let refreshTimer: number | undefined;
+
+    function scheduleRefresh() {
+      if (!cancelled) refreshTimer = window.setTimeout(refreshStatus, 15_000);
+    }
+
+    async function refreshStatus() {
+      if (cancelled) return;
+      if (folderStatusRefreshInFlight.current) {
+        scheduleRefresh();
+        return;
+      }
+      folderStatusRefreshInFlight.current = true;
+      try {
+        const data = await api.account();
+        if (cancelled) return;
+        setRuns(data.sync_runs);
+        setFolders(data.sync_folders);
+        setNotice(data.notice);
+        setAccountNeedsPassword(Boolean(data.account_needs_password));
+      } catch {
+        // This is a quiet progress refresh; the initial load still surfaces errors.
+      } finally {
+        folderStatusRefreshInFlight.current = false;
+        scheduleRefresh();
+      }
+    }
+
+    scheduleRefresh();
+    return () => {
+      cancelled = true;
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+    };
+  }, [loaded, needsFullTextRefresh]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -786,22 +845,32 @@ export function SettingsView({
   useEffect(() => {
     setFolders((current) => current.map((folder) => {
       const mailbox = mailboxes.find((item) => item.id === folder.mailbox.id) || folder.mailbox;
-      const activeRun = activeSyncRuns.find((run) =>
-        run.status === "running" &&
+      const matchesFolder = (run: SyncRun) => (
         run.account_id === folder.mailbox.account_id &&
         run.current_mailbox.trim().toLowerCase() === folder.mailbox.name.trim().toLowerCase()
       );
+      const activeRun = activeSyncRuns.find((run) => run.status === "running" && matchesFolder(run));
+      const latestFolderRun = latestSyncRun && matchesFolder(latestSyncRun) ? latestSyncRun : null;
+      const latestChanged = Boolean(latestFolderRun && (
+        latestFolderRun.id !== folder.last_run?.id ||
+        latestFolderRun.status !== folder.last_run?.status ||
+        latestFolderRun.updated_at !== folder.last_run?.updated_at
+      ));
+      const isRunning = Boolean(activeRun) ||
+        latestFolderRun?.status === "running" ||
+        (!latestChanged && syncRunning && folder.is_running);
       return {
         ...folder,
         mailbox: { ...folder.mailbox, message_count: mailbox.message_count, unread_count: mailbox.unread_count },
-        is_running: Boolean(activeRun),
-        last_run: activeRun || folder.last_run
+        is_running: isRunning,
+        last_run: activeRun || latestFolderRun || folder.last_run
       };
     }));
-    if (activeSyncRuns.length > 0) {
-      setRuns((current) => mergeSyncRuns(activeSyncRuns, current));
+    const liveRuns = mergeSyncRuns(activeSyncRuns, latestSyncRun ? [latestSyncRun] : []);
+    if (liveRuns.length > 0) {
+      setRuns((current) => mergeSyncRuns(liveRuns, current));
     }
-  }, [mailboxes, activeSyncRuns]);
+  }, [mailboxes, latestSyncRun, activeSyncRuns, syncRunning]);
 
   // IMAP form edits keep common onboarding assumptions in sync: email seeds the
   // label/username, and same-as-IMAP mirrors credentials into SMTP fields.
@@ -1313,11 +1382,19 @@ export function SettingsView({
       const searchPercent = typeof folder.mailbox.search_index_percent === "number"
         ? percentValue(folder.mailbox.search_index_percent)
         : null;
+      const searchIndexedCount = folder.mailbox.search_indexed_count;
+      const searchTotalCount = folder.mailbox.search_index_total;
+      const searchCounts = typeof searchIndexedCount === "number" && typeof searchTotalCount === "number"
+        ? `${searchIndexedCount.toLocaleString()}/${searchTotalCount.toLocaleString()}`
+        : "count unavailable";
       const searchLabel = !folder.mailbox.include_in_search
-        ? "Search off"
+        ? "Full text off"
         : searchPercent === null
-          ? "Search n/a"
-          : `Search ${searchPercent}%`;
+          ? `Full text n/a · ${searchCounts}`
+          : `Full text ${searchPercent}% · ${searchCounts}`;
+      const searchProgressTitle = folder.mailbox.include_in_search
+        ? `${searchLabel}. Header and preview search may already work while full-message enrichment continues.`
+        : "Full-message search is disabled for this folder.";
       const currentRole = folder.mailbox.role || "";
       const currentIcon = folder.mailbox.icon || "folder";
       const syncLabel = folderSyncModeLabel(folder.mailbox.sync_mode || "inherit");
@@ -1342,7 +1419,7 @@ export function SettingsView({
                   <div><span style={{ width: `${localPercent}%` }} /></div>
                   <small>Local {localPercent}%</small>
                 </div>
-                <div className="sync-percent" aria-label="Search index progress">
+                <div className="sync-percent" aria-label={searchProgressTitle} title={searchProgressTitle}>
                   <div><span style={{ width: `${searchPercent ?? 0}%` }} /></div>
                   <small>{searchLabel}</small>
                 </div>

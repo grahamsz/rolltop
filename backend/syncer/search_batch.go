@@ -9,7 +9,10 @@ import (
 	"rolltop/backend/store"
 )
 
-const fetchedSearchIndexBatchSize = 25
+const (
+	fetchedSearchIndexBatchSize     = 25
+	maintenanceSearchCheckpointSize = 5
+)
 
 // pendingFetchedSearchIndex carries a Bleve document plus the metadata flag
 // that can only be marked after the document has been committed successfully.
@@ -26,8 +29,9 @@ type pendingFetchedSearchIndex struct {
 // search documents are flushed in small groups; if a flush fails,
 // attachment_indexed_at remains unset so the normal repair path can retry safely.
 type fetchedSearchIndexBatch struct {
-	service *Service
-	items   []pendingFetchedSearchIndex
+	service  *Service
+	maxItems int
+	items    []pendingFetchedSearchIndex
 }
 
 type messageImportCompletionBatch struct {
@@ -37,7 +41,14 @@ type messageImportCompletionBatch struct {
 }
 
 func newFetchedSearchIndexBatch(service *Service) *fetchedSearchIndexBatch {
-	return &fetchedSearchIndexBatch{service: service}
+	return newFetchedSearchIndexBatchWithSize(service, fetchedSearchIndexBatchSize)
+}
+
+func newFetchedSearchIndexBatchWithSize(service *Service, maxItems int) *fetchedSearchIndexBatch {
+	if maxItems <= 0 {
+		maxItems = fetchedSearchIndexBatchSize
+	}
+	return &fetchedSearchIndexBatch{service: service, maxItems: maxItems}
 }
 
 func newMessageImportCompletionBatch(service *Service, userID int64) *messageImportCompletionBatch {
@@ -73,7 +84,7 @@ func (b *fetchedSearchIndexBatch) Add(ctx context.Context, item *pendingFetchedS
 		return nil
 	}
 	b.items = append(b.items, *item)
-	if len(b.items) < fetchedSearchIndexBatchSize {
+	if len(b.items) < b.maxItems {
 		return nil
 	}
 	return b.Flush(ctx)

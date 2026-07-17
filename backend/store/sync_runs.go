@@ -163,6 +163,48 @@ func (s *Store) ListSyncRunsForUser(ctx context.Context, userID int64, limit int
 	return out, rows.Err()
 }
 
+// ListLatestSyncRunsByMailboxForUser returns one latest run for every
+// account/mailbox pair with recorded mailbox progress. Unlike the bounded
+// recent-activity feed, this query considers the user's complete run history so
+// an infrequently synced folder does not appear to have never run.
+func (s *Store) ListLatestSyncRunsByMailboxForUser(ctx context.Context, userID int64) ([]SyncRun, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `WITH ranked AS (
+		SELECT id, user_id, account_id, status, started_at, finished_at, updated_at,
+			messages_seen, messages_stored, messages_skipped, new_messages, latest_new_from, latest_new_subject, latest_new_message_id,
+			messages_total, mailboxes_done, mailboxes_total, current_mailbox, current_uid, error,
+			ROW_NUMBER() OVER (
+				PARTITION BY account_id, lower(trim(current_mailbox))
+				ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, updated_at DESC, id DESC
+			) AS mailbox_rank
+		FROM sync_runs
+		WHERE user_id = ? AND trim(current_mailbox) <> ''
+	)
+	SELECT id, user_id, account_id, status, started_at, finished_at, updated_at,
+		messages_seen, messages_stored, messages_skipped, new_messages, latest_new_from, latest_new_subject, latest_new_message_id,
+		messages_total, mailboxes_done, mailboxes_total, current_mailbox, current_uid, error
+	FROM ranked WHERE mailbox_rank = 1
+	ORDER BY account_id, lower(trim(current_mailbox))`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SyncRun
+	for rows.Next() {
+		var run SyncRun
+		var started, finished, updated int64
+		if err := rows.Scan(&run.ID, &run.UserID, &run.AccountID, &run.Status, &started, &finished, &updated,
+			&run.MessagesSeen, &run.MessagesStored, &run.MessagesSkipped, &run.NewMessages, &run.LatestNewFrom, &run.LatestNewSubject, &run.LatestNewMessageID,
+			&run.MessagesTotal, &run.MailboxesDone, &run.MailboxesTotal, &run.CurrentMailbox, &run.CurrentUID, &run.Error); err != nil {
+			return nil, err
+		}
+		run.StartedAt = unixTime(started)
+		run.FinishedAt = unixTime(finished)
+		run.UpdatedAt = unixTime(updated)
+		out = append(out, run)
+	}
+	return out, rows.Err()
+}
+
 // keepSyncRunInRecentList keeps failure/interruption visibility and useful work history,
 // while collapsing successful no-op runs to the newest row per account/folder.
 func keepSyncRunInRecentList(run SyncRun, seenNoopFolders map[string]bool) bool {

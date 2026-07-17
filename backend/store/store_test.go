@@ -719,6 +719,84 @@ func TestListSyncRunsForUserCollapsesNoopFolderRuns(t *testing.T) {
 	}
 }
 
+func TestListLatestSyncRunsByMailboxForUserIsUnboundedAndTenantScoped(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	owner, ownerAccount, _, _ := testMailbox(t, ctx, db)
+	other, err := db.CreateUser(ctx, "other-runs@example.test", "Other Runs", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAccount, err := db.CreateMailAccount(ctx, MailAccount{
+		UserID: other.ID, Email: other.Email, Host: "imap.other.test", Port: 993,
+		Username: other.Email, EncryptedPassword: "secret", UseTLS: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertRun := func(userID, accountID int64, mailbox string, updated int64) int64 {
+		t.Helper()
+		result, insertErr := db.DB().ExecContext(ctx, `INSERT INTO sync_runs
+			(user_id, account_id, status, started_at, finished_at, updated_at, current_mailbox, current_uid)
+			VALUES (?, ?, 'ok', ?, ?, ?, ?, ?)`, userID, accountID, updated, updated, updated, mailbox, updated)
+		if insertErr != nil {
+			t.Fatal(insertErr)
+		}
+		id, insertErr := result.LastInsertId()
+		if insertErr != nil {
+			t.Fatal(insertErr)
+		}
+		return id
+	}
+
+	archiveRunID := insertRun(owner.ID, ownerAccount.ID, "Archive", 1)
+	var latestInboxRunID int64
+	for i := int64(0); i < 401; i++ {
+		latestInboxRunID = insertRun(owner.ID, ownerAccount.ID, "INBOX", 100+i)
+	}
+	otherArchiveRunID := insertRun(other.ID, otherAccount.ID, "Archive", 10_000)
+
+	recent, err := db.ListSyncRunsForUser(ctx, owner.ID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range recent {
+		if run.ID == archiveRunID {
+			t.Fatalf("test premise failed: old Archive run %d remained in bounded recent history", archiveRunID)
+		}
+	}
+
+	runs, err := db.ListLatestSyncRunsByMailboxForUser(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("latest mailbox runs = %+v, want INBOX and Archive", runs)
+	}
+	var archive, inbox SyncRun
+	for _, run := range runs {
+		if run.UserID != owner.ID {
+			t.Fatalf("latest mailbox runs exposed user %d to owner %d: %+v", run.UserID, owner.ID, runs)
+		}
+		switch strings.ToLower(strings.TrimSpace(run.CurrentMailbox)) {
+		case "archive":
+			archive = run
+		case "inbox":
+			inbox = run
+		}
+	}
+	if archive.ID != archiveRunID {
+		t.Fatalf("Archive latest run = %d, want owner run %d (other user run %d)", archive.ID, archiveRunID, otherArchiveRunID)
+	}
+	if inbox.ID != latestInboxRunID {
+		t.Fatalf("INBOX latest run = %d, want %d", inbox.ID, latestInboxRunID)
+	}
+}
+
 func TestMarkRunningSyncRunsInterruptedSurvivesLateFinish(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "rolltop.db"))

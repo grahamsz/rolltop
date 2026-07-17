@@ -61,6 +61,94 @@ func (f *attachmentIndexQueueFetcher) totalCallCount() int {
 	return total
 }
 
+func TestAttachmentIndexQueueBatchesRemoteRowsByMailbox(t *testing.T) {
+	fixture := newMoveTestFixture(t)
+	ctx := context.Background()
+	searchService, err := search.Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = searchService.Close() })
+	messages := []store.MessageRecord{fixture.message}
+	for uid := fixture.message.UID + 1; uid <= fixture.message.UID+24; uid++ {
+		messages = append(messages, createPendingAttachmentIndexMessage(t, ctx, fixture, uid))
+	}
+	fetcher := &searchRepairBatchFetcher{moveTestFetcher: fixture.fetcher, failAfter: -1}
+	fixture.service.Search = searchService
+	fixture.service.Fetcher = fetcher
+
+	processed, err := fixture.service.IndexPendingAttachmentsForUser(ctx, fixture.userID, len(messages))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed != len(messages) {
+		t.Fatalf("processed=%d, want %d", processed, len(messages))
+	}
+	if len(fetcher.calls) != 1 || len(fetcher.calls[0]) != len(messages) {
+		t.Fatalf("batch calls=%v, want one %d-message fetch", fetcher.calls, len(messages))
+	}
+	if fetcher.singleCalls != 0 {
+		t.Fatalf("single-message fetches=%d, want 0", fetcher.singleCalls)
+	}
+	for _, message := range messages {
+		assertAttachmentIndexPending(t, ctx, fixture.store, fixture.userID, message.ID, false)
+		assertSearchContainsMessage(t, ctx, searchService, fixture.userID,
+			fmt.Sprintf("batched full body %d", message.UID), message.ID)
+	}
+}
+
+func TestAttachmentIndexQueueCheckpointsBeforeForegroundCancellation(t *testing.T) {
+	fixture := newMoveTestFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	searchService, err := search.Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = searchService.Close() })
+	messages := []store.MessageRecord{fixture.message}
+	for uid := fixture.message.UID + 1; uid <= fixture.message.UID+9; uid++ {
+		messages = append(messages, createPendingAttachmentIndexMessage(t, context.Background(), fixture, uid))
+	}
+	fetcher := &searchRepairBatchFetcher{
+		moveTestFetcher: fixture.fetcher,
+		failAfter:       -1,
+		cancelAfter:     maintenanceSearchCheckpointSize + 1,
+		cancel:          cancel,
+	}
+	fixture.service.Search = searchService
+	fixture.service.Fetcher = fetcher
+
+	processed, err := fixture.service.IndexPendingAttachmentsForUser(ctx, fixture.userID, len(messages))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("first maintenance pass error=%v, want context cancellation", err)
+	}
+	if processed != maintenanceSearchCheckpointSize+1 {
+		t.Fatalf("first maintenance pass processed=%d, want %d", processed, maintenanceSearchCheckpointSize+1)
+	}
+	for index, message := range messages {
+		wantPending := index >= maintenanceSearchCheckpointSize
+		assertAttachmentIndexPending(t, context.Background(), fixture.store, fixture.userID, message.ID, wantPending)
+		if !wantPending {
+			assertSearchContainsMessage(t, context.Background(), searchService, fixture.userID,
+				fmt.Sprintf("batched full body %d", message.UID), message.ID)
+		}
+	}
+
+	processed, err = fixture.service.IndexPendingAttachmentsForUser(context.Background(), fixture.userID, len(messages))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed != len(messages)-maintenanceSearchCheckpointSize {
+		t.Fatalf("retry processed=%d, want %d", processed, len(messages)-maintenanceSearchCheckpointSize)
+	}
+	if len(fetcher.calls) != 2 || len(fetcher.calls[0]) != len(messages) || len(fetcher.calls[1]) != len(messages)-maintenanceSearchCheckpointSize {
+		t.Fatalf("remote pages=%v, want initial %d rows then %d pending rows", fetcher.calls, len(messages), len(messages)-maintenanceSearchCheckpointSize)
+	}
+	for _, message := range messages {
+		assertAttachmentIndexPending(t, context.Background(), fixture.store, fixture.userID, message.ID, false)
+	}
+}
+
 func TestAttachmentIndexFailureDoesNotPinHigherMessageIDs(t *testing.T) {
 	fixture := newMoveTestFixture(t)
 	ctx := context.Background()
@@ -362,8 +450,8 @@ func TestRunnerDelayedContinuationReachesHealthyNextPage(t *testing.T) {
 	}
 
 	waitForAttachmentIndexed(t, fixture.store, fixture.userID, healthy.ID)
-	if got := fetcher.totalCallCount(); got < attachmentIndexBatchSize*2 {
-		t.Fatalf("delayed continuation fetch calls = %d, want at least %d", got, attachmentIndexBatchSize*2)
+	if got := fetcher.totalCallCount(); got <= attachmentIndexBatchSize {
+		t.Fatalf("delayed continuation fetch calls = %d, want progress beyond the failed page", got)
 	}
 }
 

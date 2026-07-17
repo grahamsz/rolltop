@@ -22,6 +22,7 @@ export function RouteView({
   mailboxes,
   latestSyncRun,
   activeSyncRuns,
+  syncRunning,
   mailGeneration,
   swipePreferences,
   enabledPlugins,
@@ -42,6 +43,7 @@ export function RouteView({
   mailboxes: Mailbox[];
   latestSyncRun: SyncRun | null;
   activeSyncRuns: SyncRun[];
+  syncRunning: boolean;
   mailGeneration: number;
   swipePreferences: SwipePreferences;
   enabledPlugins: string[];
@@ -90,7 +92,7 @@ export function RouteView({
     return <ContactsView csrf={csrf} contactPlugins={runtimePlugins.all} addToast={addToast} />;
   }
   if (location.path === "/settings/account" || location.path.startsWith("/settings/account/")) {
-    return <SettingsView key={user.id} csrf={csrf} user={user} mailboxes={mailboxes} swipePreferences={swipePreferences} activeSyncRuns={activeSyncRuns} availableThemes={availableThemes} location={location} navigate={navigate} refreshChrome={refreshChrome} runtimePlugins={runtimePlugins} reloadRuntimePlugins={reloadRuntimePlugins} addToast={addToast} />;
+    return <SettingsView key={user.id} csrf={csrf} user={user} mailboxes={mailboxes} swipePreferences={swipePreferences} latestSyncRun={latestSyncRun} activeSyncRuns={activeSyncRuns} syncRunning={syncRunning} availableThemes={availableThemes} location={location} navigate={navigate} refreshChrome={refreshChrome} runtimePlugins={runtimePlugins} reloadRuntimePlugins={reloadRuntimePlugins} addToast={addToast} />;
   }
   if (location.path === "/admin/users" && user.is_admin) {
     return <AdminUsersView csrf={csrf} refreshChrome={refreshChrome} addToast={addToast} />;

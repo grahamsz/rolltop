@@ -762,14 +762,18 @@ func (s *Server) refreshMailboxStatusesAsync(userID int64) {
 	}()
 }
 
-// syncFolderViews joins mailbox summaries with recent sync runs and search index
-// counts for the settings folder-sync UI.
-func (s *Server) syncFolderViews(ctx context.Context, userID int64, runs []store.SyncRun) []syncFolderView {
+// syncFolderViews joins mailbox summaries with complete per-folder sync history
+// and search index counts for the settings folder-sync UI.
+func (s *Server) syncFolderViews(ctx context.Context, userID int64) []syncFolderView {
 	boxes, err := s.store.ListMailboxesForUser(ctx, userID)
 	if err != nil {
 		return nil
 	}
 	boxes = s.filterDeletingMailboxes(userID, boxes)
+	runs, err := s.store.ListLatestSyncRunsByMailboxForUser(ctx, userID)
+	if err != nil {
+		return nil
+	}
 	lastByFolder := map[string]store.SyncRun{}
 	for _, run := range runs {
 		name := strings.ToLower(strings.TrimSpace(run.CurrentMailbox))

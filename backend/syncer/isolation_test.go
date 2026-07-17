@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +33,13 @@ type fakeFetcher struct {
 type cancelingFetcher struct {
 	*fakeFetcher
 	cancel context.CancelFunc
+}
+
+type blockingStatusFetcher struct {
+	*fakeFetcher
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
 }
 
 func TestDiscoverMailboxesPreservesJunkSpecialUseRole(t *testing.T) {
@@ -322,6 +330,16 @@ func (f *fakeFetcher) MailboxStatus(ctx context.Context, account store.MailAccou
 		uidValidity = configured
 	}
 	return syncer.MailboxStatus{Messages: count, UIDNext: highest + 1, UIDValidity: uidValidity}, nil
+}
+
+func (f *blockingStatusFetcher) MailboxStatus(ctx context.Context, account store.MailAccount, mailbox string) (syncer.MailboxStatus, error) {
+	f.once.Do(func() { close(f.entered) })
+	select {
+	case <-f.release:
+		return f.fakeFetcher.MailboxStatus(ctx, account, mailbox)
+	case <-ctx.Done():
+		return syncer.MailboxStatus{}, ctx.Err()
+	}
 }
 
 func (f *fakeFetcher) UIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error) {
@@ -1249,6 +1267,77 @@ func TestCanceledSyncRunIsMarkedInterrupted(t *testing.T) {
 	}
 	if saved.FinishedAt.IsZero() {
 		t.Fatalf("finished_at was not set: %+v", saved)
+	}
+}
+
+func TestTargetedSyncAttributesRunBeforeRemoteStatusReturns(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	key := []byte("12345678901234567890123456789012")
+	enc, err := mmcrypto.EncryptString(key, "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := db.CreateUser(ctx, "targeted-progress@example.test", "Targeted Progress", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountRecord, err := db.UpsertMailAccount(ctx, account(user.ID, enc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &blockingStatusFetcher{
+		fakeFetcher: &fakeFetcher{messages: map[int64][]syncer.FetchedMessage{user.ID: {}}},
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	released := false
+	defer func() {
+		if !released {
+			close(fetcher.release)
+		}
+	}()
+	service := &syncer.Service{Store: db, Blobs: blob.New(dir), Fetcher: fetcher}
+	type syncResult struct {
+		run store.SyncRun
+		err error
+	}
+	result := make(chan syncResult, 1)
+	go func() {
+		run, syncErr := service.SyncUserAccountMailboxes(ctx, user.ID, accountRecord.ID, []string{"Gmail Forward"})
+		result <- syncResult{run: run, err: syncErr}
+	}()
+
+	select {
+	case <-fetcher.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("targeted sync did not reach remote mailbox status")
+	}
+	runs, err := db.ListSyncRunsForUser(ctx, user.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("running sync rows=%+v, want one", runs)
+	}
+	if runs[0].Status != "running" || runs[0].CurrentMailbox != "Gmail Forward" || runs[0].MailboxesTotal != 1 {
+		t.Fatalf("early targeted progress=%+v, want running Gmail Forward attribution", runs[0])
+	}
+
+	close(fetcher.release)
+	released = true
+	select {
+	case completed := <-result:
+		if completed.err != nil {
+			t.Fatal(completed.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("targeted sync did not complete after releasing mailbox status")
 	}
 }
 

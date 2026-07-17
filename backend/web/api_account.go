@@ -83,7 +83,7 @@ func (s *Server) apiAccount(w http.ResponseWriter, r *http.Request) {
 		"identities":             apiMailIdentitiesFromStore(identities),
 		"me_contacts":            apiContactsFromStore(meContacts),
 		"sync_runs":              apiSyncRuns(runs),
-		"sync_folders":           apiSyncFolders(s.syncFolderViews(r.Context(), cu.User.ID, runs)),
+		"sync_folders":           apiSyncFolders(s.syncFolderViews(r.Context(), cu.User.ID)),
 		"notice":                 notice,
 		"account_needs_password": needsPassword,
 	})

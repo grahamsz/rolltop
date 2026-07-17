@@ -420,6 +420,12 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 	}
 
 	progress := store.SyncProgress{}
+	if len(requestedMailboxes) == 1 {
+		progress.CurrentMailbox = strings.TrimSpace(requestedMailboxes[0])
+		if progress.CurrentMailbox != "" {
+			progress.MailboxesTotal = 1
+		}
+	}
 	status := "ok"
 	errText := ""
 	defer func() {
@@ -432,6 +438,13 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		}
 		s.notify(userID)
 	}()
+	if progress.CurrentMailbox != "" {
+		if err := s.updateSyncProgress(ctx, userID, run.ID, progress); err != nil {
+			status = "failed"
+			errText = err.Error()
+			return run, err
+		}
+	}
 
 	generationRecoveryPhase(ctx, "mailbox-selection", "")
 	mailboxNames, err := s.mailboxesToSync(ctx, account, requestedMailboxes)
