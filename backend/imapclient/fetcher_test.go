@@ -211,6 +211,8 @@ func TestFetcherCommandTimeoutUsesBoundedDefault(t *testing.T) {
 func TestFetchUIDsDoesNotApplyCommandDeadlineToMessageHandler(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	serverDone := make(chan error, 1)
+	serverRelease := make(chan struct{})
+	defer close(serverRelease)
 	go func() {
 		defer serverConn.Close()
 		if _, err := io.WriteString(serverConn, "* OK [CAPABILITY IMAP4rev1] test server ready\r\n"); err != nil {
@@ -246,6 +248,7 @@ func TestFetchUIDsDoesNotApplyCommandDeadlineToMessageHandler(t *testing.T) {
 			}
 		}
 		serverDone <- nil
+		<-serverRelease
 	}()
 
 	c, err := client.New(clientConn)
