@@ -5,7 +5,9 @@ package search
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -34,13 +36,45 @@ type blockingBatchIndex struct {
 	startOnce   sync.Once
 	releaseOnce sync.Once
 	finishOnce  sync.Once
+	err         error
 }
 
 func (i *blockingBatchIndex) Batch(*bleve.Batch) error {
 	i.startOnce.Do(func() { close(i.started) })
 	<-i.release
 	i.finishOnce.Do(func() { close(i.finished) })
-	return nil
+	return i.err
+}
+
+type failingBleveIndex struct {
+	delegatedBleveIndex
+	batchErr  error
+	searchErr error
+}
+
+func (i *failingBleveIndex) Batch(*bleve.Batch) error {
+	return i.batchErr
+}
+
+func (i *failingBleveIndex) SearchInContext(context.Context, *bleve.SearchRequest) (*bleve.SearchResult, error) {
+	return nil, i.searchErr
+}
+
+type capturedBleveLogs struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *capturedBleveLogs) Printf(format string, args ...any) {
+	l.mu.Lock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+	l.mu.Unlock()
+}
+
+func (l *capturedBleveLogs) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.lines, "\n")
 }
 
 func (i *blockingBatchIndex) unblock() {
@@ -174,6 +208,152 @@ func TestBleveBatchCancellationDoesNotWaitForUnderlyingWrite(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			assertCanceledBleveBatch(t, test.prepare, test.operation)
 		})
+	}
+}
+
+func TestBleveFailuresAreLoggedWithoutSearchOrMessageContent(t *testing.T) {
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &capturedBleveLogs{}
+	svc.bleveErrorLog = logs.Printf
+	failing := &failingBleveIndex{
+		delegatedBleveIndex: svc.index,
+		batchErr:            errors.New("injected index storage failure"),
+	}
+	svc.index = failing
+	t.Cleanup(func() { _ = svc.Close() })
+
+	if err := svc.IndexMessage(context.Background(), store.MessageRecord{
+		ID: 17, UserID: 41, MailboxID: 23,
+		Subject:  "private subject must not be logged",
+		BodyText: "private body must not be logged",
+		Date:     time.Now(),
+	}, nil); err == nil {
+		t.Fatal("index failure was not returned")
+	}
+	failing.batchErr = nil
+	failing.searchErr = errors.New("injected query storage failure")
+	if _, err := svc.Search(context.Background(), 41, "private query must not be logged", 10, 0); err == nil {
+		t.Fatal("search failure was not returned")
+	}
+
+	output := logs.String()
+	for _, want := range []string{
+		`bleve error operation="index-batch" user_id=41`,
+		"documents=1",
+		"injected index storage failure",
+		`bleve error operation="search" user_id=41`,
+		"injected query storage failure",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("Bleve diagnostics %q do not contain %q", output, want)
+		}
+	}
+	for _, private := range []string{"private subject", "private body", "private query"} {
+		if strings.Contains(output, private) {
+			t.Fatalf("Bleve diagnostics exposed private content %q: %q", private, output)
+		}
+	}
+}
+
+func TestBleveRequestCancellationDoesNotPolluteOperationalLogs(t *testing.T) {
+	for _, canceledErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		logs := &capturedBleveLogs{}
+		svc.bleveErrorLog = logs.Printf
+		svc.index = &failingBleveIndex{delegatedBleveIndex: svc.index, searchErr: canceledErr}
+		if _, err := svc.Search(context.Background(), 12, "canceled query", 10, 0); !errors.Is(err, canceledErr) {
+			t.Fatalf("search error=%v, want %v", err, canceledErr)
+		}
+		if output := logs.String(); output != "" {
+			t.Fatalf("routine cancellation produced Bleve diagnostics: %q", output)
+		}
+		_ = svc.Close()
+	}
+}
+
+func TestDetachedBleveBatchFailureIsLoggedAfterCallerCancellation(t *testing.T) {
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &capturedBleveLogs{}
+	svc.bleveErrorLog = logs.Printf
+	blocking := &blockingBatchIndex{
+		delegatedBleveIndex: svc.index,
+		started:             make(chan struct{}),
+		release:             make(chan struct{}),
+		finished:            make(chan struct{}),
+		err:                 errors.New("injected detached storage failure"),
+	}
+	svc.index = blocking
+	t.Cleanup(func() {
+		blocking.unblock()
+		_ = svc.Close()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- svc.IndexMessage(ctx, store.MessageRecord{
+			ID: 1, UserID: 9, MailboxID: 4, Subject: "detached write", Date: time.Now(),
+		}, nil)
+	}()
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("Bleve batch did not start")
+	}
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller error=%v, want context cancellation", err)
+	}
+	blocking.unblock()
+	select {
+	case <-blocking.finished:
+	case <-time.After(time.Second):
+		t.Fatal("detached Bleve batch did not finish")
+	}
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(logs.String(), "injected detached storage failure") {
+		if time.Now().After(deadline) {
+			t.Fatalf("detached Bleve failure was not logged: %q", logs.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if output := logs.String(); !strings.Contains(output, `operation="index-batch" user_id=9`) {
+		t.Fatalf("detached Bleve diagnostics missing safe scope: %q", output)
+	}
+}
+
+func TestLazyPerUserOpenLogsOriginalBleveCorruption(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "users")
+	corruptPath := filepath.Join(root, "73", "bleve")
+	if err := os.MkdirAll(corruptPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := OpenPerUser(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &capturedBleveLogs{}
+	svc.bleveErrorLog = logs.Printf
+	t.Cleanup(func() { _ = svc.Close() })
+
+	if _, err := svc.Search(context.Background(), 73, "anything", 10, 0); !errors.Is(err, bleve.ErrorIndexMetaMissing) {
+		t.Fatalf("lazy corrupt-index error=%v, want original Bleve metadata error", err)
+	}
+	output := logs.String()
+	if !strings.Contains(output, `operation="open-index" user_id=73`) || !strings.Contains(output, "metadata missing") {
+		t.Fatalf("corrupt Bleve open was not logged with its original cause: %q", output)
+	}
+	if strings.Contains(output, "path already exists") {
+		t.Fatalf("corrupt Bleve open was replaced by a create error: %q", output)
 	}
 }
 

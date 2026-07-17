@@ -187,6 +187,9 @@ func (s *Service) searchSimilarMessageIDs(ctx context.Context, userID int64, can
 	}
 	result, err := index.SearchInContext(ctx, req)
 	if err != nil {
+		s.reportBleveError(bleveErrorContext{
+			Operation: "similarity-search", UserID: userID, Documents: len(candidateIDs),
+		}, err)
 		return nil, err
 	}
 	hits := make([]similarityHit, 0, len(result.Hits))

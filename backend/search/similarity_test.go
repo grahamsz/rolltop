@@ -10,6 +10,7 @@ import (
 	"math"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +63,36 @@ func TestSimilaritySearchPropagatesCancellationToBleve(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("similarity search ignored cancellation")
+	}
+}
+
+func TestSimilarityBleveFailureIsLoggedWhenPluginCallerTreatsItAsOptional(t *testing.T) {
+	svc, err := Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &capturedBleveLogs{}
+	svc.bleveErrorLog = logs.Printf
+	svc.index = &failingBleveIndex{
+		delegatedBleveIndex: svc.index,
+		searchErr:           errors.New("injected similarity index failure"),
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	_, err = svc.searchSimilarMessageIDs(context.Background(), 81, []int64{1, 2}, []normalizedSimilarityTerm{{
+		field: plugins.SimilarityFieldSubject, text: "private similarity term", weight: 1,
+	}}, 10)
+	if err == nil {
+		t.Fatal("similarity failure was not returned")
+	}
+	output := logs.String()
+	if !strings.Contains(output, `operation="similarity-search" user_id=81`) ||
+		!strings.Contains(output, "documents=2") ||
+		!strings.Contains(output, "injected similarity index failure") {
+		t.Fatalf("similarity Bleve failure was not logged: %q", output)
+	}
+	if strings.Contains(output, "private similarity term") {
+		t.Fatalf("similarity diagnostics exposed query terms: %q", output)
 	}
 }
 

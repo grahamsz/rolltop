@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -38,11 +39,35 @@ type Service struct {
 	closeDone          chan struct{}
 	closeErr           error
 	closeWriterTimeout time.Duration
+	bleveErrorLog      func(string, ...any)
+}
+
+type bleveErrorContext struct {
+	Operation string
+	UserID    int64
+	AccountID int64
+	MailboxID int64
+	Documents int
 }
 
 var errSearchServiceClosing = errors.New("search service is closing")
 
 const searchCloseWriterTimeout = 2 * time.Second
+
+// reportBleveError writes operational index failures through Go's standard
+// logger, which Docker captures from stderr. Callers provide IDs and counts only:
+// query text and indexed message content must never enter these diagnostics.
+func (s *Service) reportBleveError(details bleveErrorContext, err error) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errSearchServiceClosing) {
+		return
+	}
+	logger := log.Printf
+	if s != nil && s.bleveErrorLog != nil {
+		logger = s.bleveErrorLog
+	}
+	logger("bleve error operation=%q user_id=%d account_id=%d mailbox_id=%d documents=%d error_type=%T error=%v",
+		details.Operation, details.UserID, details.AccountID, details.MailboxID, details.Documents, err, err)
+}
 
 // AttachmentDoc is transient attachment text passed to IndexMessage after raw message parsing.
 type AttachmentDoc struct {
@@ -296,11 +321,14 @@ func ageYears(years int) time.Duration {
 // Open creates or opens a single combined Bleve index. Tests use this mode; the
 // production server uses OpenPerUser so message IDs can overlap safely by user.
 func Open(path string) (*Service, error) {
+	service := &Service{writers: make(map[int64]*sync.Mutex)}
 	index, err := openIndex(path)
 	if err != nil {
+		service.reportBleveError(bleveErrorContext{Operation: "open-index"}, err)
 		return nil, err
 	}
-	return &Service{index: index, writers: make(map[int64]*sync.Mutex)}, nil
+	service.index = index
+	return service, nil
 }
 
 // OpenPerUser creates a lazy per-user index service. Each tenant gets
@@ -321,31 +349,35 @@ func openIndex(path string) (bleve.Index, error) {
 		return nil, err
 	}
 	index, err := bleve.Open(path)
+	if err == nil {
+		return index, nil
+	}
+	if !errors.Is(err, bleve.ErrorIndexPathDoesNotExist) {
+		return nil, fmt.Errorf("open Bleve index: %w", err)
+	}
+	mapping := bleve.NewIndexMapping()
+	mapping.StoreDynamic = false
+	doc := bleve.NewDocumentMapping()
+	userField := keywordField()
+	doc.AddFieldMappingsAt("user_id", userField)
+	doc.AddFieldMappingsAt("mailbox_id", userField)
+	doc.AddFieldMappingsAt("has_attachment", userField)
+	doc.AddFieldMappingsAt("is_read", userField)
+	doc.AddFieldMappingsAt("is_starred", userField)
+	doc.AddFieldMappingsAt("is_encrypted", userField)
+	doc.AddFieldMappingsAt("is_signed", userField)
+	doc.AddFieldMappingsAt("plugin_language_code", userField)
+	for _, field := range []string{
+		"subject", "subject_compound", "from", "from_compound", "from_domain", "to", "cc",
+		"message_id", "body", "attachment_names", "attachment_types", "attachments", "compound",
+	} {
+		doc.AddFieldMappingsAt(field, textField())
+	}
+	doc.AddFieldMappingsAt("date", dateField())
+	mapping.DefaultMapping = doc
+	index, err = bleve.New(path, mapping)
 	if err != nil {
-		mapping := bleve.NewIndexMapping()
-		mapping.StoreDynamic = false
-		doc := bleve.NewDocumentMapping()
-		userField := keywordField()
-		doc.AddFieldMappingsAt("user_id", userField)
-		doc.AddFieldMappingsAt("mailbox_id", userField)
-		doc.AddFieldMappingsAt("has_attachment", userField)
-		doc.AddFieldMappingsAt("is_read", userField)
-		doc.AddFieldMappingsAt("is_starred", userField)
-		doc.AddFieldMappingsAt("is_encrypted", userField)
-		doc.AddFieldMappingsAt("is_signed", userField)
-		doc.AddFieldMappingsAt("plugin_language_code", userField)
-		for _, field := range []string{
-			"subject", "subject_compound", "from", "from_compound", "from_domain", "to", "cc",
-			"message_id", "body", "attachment_names", "attachment_types", "attachments", "compound",
-		} {
-			doc.AddFieldMappingsAt(field, textField())
-		}
-		doc.AddFieldMappingsAt("date", dateField())
-		mapping.DefaultMapping = doc
-		index, err = bleve.New(path, mapping)
-		if err != nil {
-			return nil, err
-		}
+		return nil, fmt.Errorf("create Bleve index: %w", err)
 	}
 	return index, nil
 }
@@ -395,30 +427,40 @@ func (s *Service) Close() error {
 		s.mu.Unlock()
 		return err
 	case <-timer.C:
-		return errors.New("search index writer did not stop before close")
+		err := errors.New("search index writer did not stop before close")
+		s.reportBleveError(bleveErrorContext{Operation: "close-wait"}, err)
+		return err
 	}
 }
 
 func (s *Service) closeAfterWrites(done chan struct{}) {
 	s.writes.Wait()
 	var first error
+	type userIndex struct {
+		userID int64
+		index  bleve.Index
+	}
 	s.mu.Lock()
 	combined := s.index
 	s.index = nil
-	indexes := make([]bleve.Index, 0, len(s.indexes))
-	for _, index := range s.indexes {
-		indexes = append(indexes, index)
+	indexes := make([]userIndex, 0, len(s.indexes))
+	for userID, index := range s.indexes {
+		indexes = append(indexes, userIndex{userID: userID, index: index})
 	}
 	s.indexes = map[int64]bleve.Index{}
 	s.mu.Unlock()
 	if combined != nil {
 		if err := combined.Close(); err != nil {
+			s.reportBleveError(bleveErrorContext{Operation: "close-index"}, err)
 			first = err
 		}
 	}
-	for _, index := range indexes {
-		if err := index.Close(); err != nil && first == nil {
-			first = err
+	for _, item := range indexes {
+		if err := item.index.Close(); err != nil {
+			s.reportBleveError(bleveErrorContext{Operation: "close-index", UserID: item.userID}, err)
+			if first == nil {
+				first = err
+			}
 		}
 	}
 	s.mu.Lock()
@@ -522,17 +564,22 @@ func (s *Service) indexForUser(userID int64) (bleve.Index, error) {
 
 	index, err := openIndex(filepath.Join(s.root, strconv.FormatInt(userID, 10), "bleve"))
 	if err != nil {
+		s.reportBleveError(bleveErrorContext{Operation: "open-index", UserID: userID}, err)
 		return nil, err
 	}
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
-		_ = index.Close()
+		if err := index.Close(); err != nil {
+			s.reportBleveError(bleveErrorContext{Operation: "close-raced-index", UserID: userID}, err)
+		}
 		return nil, errSearchServiceClosing
 	}
 	if existing := s.indexes[userID]; existing != nil {
 		s.mu.Unlock()
-		_ = index.Close()
+		if err := index.Close(); err != nil {
+			s.reportBleveError(bleveErrorContext{Operation: "close-duplicate-index", UserID: userID}, err)
+		}
 		return existing, nil
 	}
 	s.indexes[userID] = index
@@ -545,6 +592,23 @@ func (s *Service) indexForUser(userID int64) (bleve.Index, error) {
 // filter fields, attachment text extracted from raw .eml, and plugin language data.
 func (s *Service) IndexMessage(ctx context.Context, msg store.MessageRecord, attachments []AttachmentDoc) error {
 	return s.IndexMessages(ctx, []MessageIndexDocument{{Message: msg, Attachments: attachments}})
+}
+
+func messageIndexBatchScope(documents []MessageIndexDocument) (accountID, mailboxID int64) {
+	if len(documents) == 0 {
+		return 0, 0
+	}
+	accountID = documents[0].Message.AccountID
+	mailboxID = documents[0].Message.MailboxID
+	for _, document := range documents[1:] {
+		if document.Message.AccountID != accountID {
+			accountID = 0
+		}
+		if document.Message.MailboxID != mailboxID {
+			mailboxID = 0
+		}
+	}
+	return accountID, mailboxID
 }
 
 // IndexMessages writes a batch of message documents to Bleve. The production
@@ -579,11 +643,19 @@ func (s *Service) IndexMessages(ctx context.Context, documents []MessageIndexDoc
 			return err
 		}
 		batch := index.NewBatch()
+		accountID, mailboxID := messageIndexBatchScope(groups[userID])
 		for _, document := range groups[userID] {
-			batch.Index(strconv.FormatInt(document.Message.ID, 10), buildMessageDocument(document.Message, document.Attachments))
+			if err := batch.Index(strconv.FormatInt(document.Message.ID, 10), buildMessageDocument(document.Message, document.Attachments)); err != nil {
+				s.reportBleveError(bleveErrorContext{
+					Operation: "prepare-index-batch", UserID: userID, AccountID: accountID, MailboxID: mailboxID, Documents: len(groups[userID]),
+				}, err)
+				return err
+			}
 		}
 		writer := s.writerForUser(userID)
-		err = s.commitBatch(ctx, writer, index, batch)
+		err = s.commitBatch(ctx, writer, index, batch, bleveErrorContext{
+			Operation: "index-batch", UserID: userID, AccountID: accountID, MailboxID: mailboxID, Documents: len(groups[userID]),
+		})
 		if err != nil {
 			return err
 		}
@@ -595,8 +667,12 @@ func (s *Service) IndexMessages(ctx context.Context, documents []MessageIndexDoc
 // synchronous Batch call. Bleve does not accept a context, so the caller must
 // be able to stop waiting while that goroutine retains exclusive ownership of
 // the index until the underlying commit actually returns.
-func (s *Service) commitBatch(ctx context.Context, writer *sync.Mutex, index bleve.Index, batch *bleve.Batch) error {
-	return s.runWriterOperation(ctx, writer, func() error { return index.Batch(batch) })
+func (s *Service) commitBatch(ctx context.Context, writer *sync.Mutex, index bleve.Index, batch *bleve.Batch, details bleveErrorContext) error {
+	return s.runWriterOperation(ctx, writer, func() error {
+		err := index.Batch(batch)
+		s.reportBleveError(details, err)
+		return err
+	})
 }
 
 func (s *Service) runWriterOperation(ctx context.Context, writer *sync.Mutex, operation func() error) error {
@@ -746,6 +822,9 @@ func (s *Service) DeleteMessagesWithProgress(ctx context.Context, userID int64, 
 				request := bleve.NewSearchRequestOptions(bleve.NewConjunctionQuery(userQuery, docQuery), len(deleteIDs), 0, false)
 				result, searchErr := index.SearchInContext(ctx, request)
 				if searchErr != nil {
+					s.reportBleveError(bleveErrorContext{
+						Operation: "delete-lookup", UserID: userID, Documents: len(deleteIDs),
+					}, searchErr)
 					return searchErr
 				}
 				deleteIDs = deleteIDs[:0]
@@ -761,6 +840,9 @@ func (s *Service) DeleteMessagesWithProgress(ctx context.Context, userID int64, 
 				batch.Delete(id)
 			}
 			if err := index.Batch(batch); err != nil {
+				s.reportBleveError(bleveErrorContext{
+					Operation: "delete-batch", UserID: userID, Documents: len(deleteIDs),
+				}, err)
 				return err
 			}
 			committed = len(deleteIDs)
@@ -797,6 +879,7 @@ func (s *Service) CountMailboxMessages(ctx context.Context, userID, mailboxID in
 	}
 	res, err := index.SearchInContext(ctx, mailboxSearchRequest(userID, mailboxID, 0, 0))
 	if err != nil {
+		s.reportBleveError(bleveErrorContext{Operation: "count-mailbox", UserID: userID, MailboxID: mailboxID}, err)
 		return 0, err
 	}
 	return int(res.Total), nil
@@ -832,6 +915,7 @@ func (s *Service) MessageIDsIndexed(ctx context.Context, userID int64, messageID
 	req := bleve.NewSearchRequestOptions(bleve.NewConjunctionQuery(userQuery, docQuery), len(docIDs), 0, false)
 	res, err := index.SearchInContext(ctx, req)
 	if err != nil {
+		s.reportBleveError(bleveErrorContext{Operation: "lookup-message-ids", UserID: userID, Documents: len(docIDs)}, err)
 		return nil, err
 	}
 	for _, hit := range res.Hits {
@@ -863,6 +947,7 @@ func (s *Service) MailboxMessageIDs(ctx context.Context, userID, mailboxID int64
 		}
 		res, err := index.SearchInContext(ctx, mailboxSearchRequest(userID, mailboxID, pageSize, offset))
 		if err != nil {
+			s.reportBleveError(bleveErrorContext{Operation: "list-mailbox-ids", UserID: userID, MailboxID: mailboxID}, err)
 			return nil, err
 		}
 		if len(res.Hits) == 0 {
@@ -905,6 +990,7 @@ func (s *Service) PurgeMailboxWithProgress(ctx context.Context, userID, mailboxI
 		}
 		res, err := index.SearchInContext(ctx, mailboxSearchRequest(userID, mailboxID, batchSize, 0))
 		if err != nil {
+			s.reportBleveError(bleveErrorContext{Operation: "purge-mailbox-lookup", UserID: userID, MailboxID: mailboxID}, err)
 			return deleted, err
 		}
 		if len(res.Hits) == 0 {
@@ -915,7 +1001,9 @@ func (s *Service) PurgeMailboxWithProgress(ctx context.Context, userID, mailboxI
 			batch.Delete(hit.ID)
 		}
 		writer := s.writerForUser(userID)
-		err = s.commitBatch(ctx, writer, index, batch)
+		err = s.commitBatch(ctx, writer, index, batch, bleveErrorContext{
+			Operation: "purge-mailbox-batch", UserID: userID, MailboxID: mailboxID, Documents: len(res.Hits),
+		})
 		if err != nil {
 			return deleted, err
 		}
@@ -959,6 +1047,7 @@ func (s *Service) CountUserMessages(ctx context.Context, userID int64) (int, err
 	}
 	res, err := index.SearchInContext(ctx, req)
 	if err != nil {
+		s.reportBleveError(bleveErrorContext{Operation: "count-user", UserID: userID}, err)
 		return 0, err
 	}
 	return int(res.Total), nil
@@ -1080,6 +1169,7 @@ func (s *Service) explainMessageIDsWithOptions(ctx context.Context, userID int64
 	}
 	res, err := index.SearchInContext(ctx, req)
 	if err != nil {
+		s.reportBleveError(bleveErrorContext{Operation: "explain", UserID: userID, Documents: len(docIDs)}, err)
 		return ExplanationResult{}, false, err
 	}
 	if len(res.Hits) == 0 {
@@ -1123,7 +1213,12 @@ func (s *Service) search(ctx context.Context, userID int64, queryText string, li
 	if err != nil {
 		return nil, err
 	}
-	return index.SearchInContext(ctx, req)
+	result, err := index.SearchInContext(ctx, req)
+	if err != nil {
+		s.reportBleveError(bleveErrorContext{Operation: "search", UserID: userID}, err)
+		return nil, err
+	}
+	return result, nil
 }
 
 // buildQuery is the high-level search grammar bridge. It turns Gmail-like filters
