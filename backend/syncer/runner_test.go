@@ -1949,6 +1949,124 @@ func TestMailboxMaintenanceWaitsForCanceledAttachmentWorker(t *testing.T) {
 	waitForRunnerUserIdle(t, r, user.ID)
 }
 
+func TestMailboxMaintenanceWithSetupFailureReleasesReservation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, _, mailbox := createRunnerMailboxFixture(t, ctx, db, "maintenance-setup@example.test")
+	r := NewRunnerWithContext(ctx, &Service{Store: db})
+	setupErr := errors.New("settings setup failed")
+	maintenanceCalled := false
+	run, started, err := r.StartMailboxMaintenanceWithSetup(user.ID, mailbox, "Enable search",
+		func(context.Context) error { return setupErr },
+		func(context.Context, int64, *store.SyncProgress) error {
+			maintenanceCalled = true
+			return nil
+		},
+	)
+	if !started || !errors.Is(err, setupErr) || run.ID <= 0 {
+		t.Fatalf("setup failure result run=%+v started=%t err=%v", run, started, err)
+	}
+	if maintenanceCalled {
+		t.Fatal("maintenance ran after its synchronous setup failed")
+	}
+	storedRun, err := db.GetSyncRunForUser(ctx, user.ID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRun.Status != "failed" || storedRun.Error != setupErr.Error() {
+		t.Fatalf("setup failure run=%+v", storedRun)
+	}
+	if r.IsAccountMailboxRunning(user.ID, mailbox.AccountID, mailbox.Name) {
+		t.Fatal("setup failure retained the mailbox reservation")
+	}
+
+	retryRun, retryStarted, err := r.StartMailboxMaintenance(user.ID, mailbox, "Retry", func(context.Context, int64, *store.SyncProgress) error {
+		return nil
+	})
+	if err != nil || !retryStarted || retryRun.ID <= 0 {
+		t.Fatalf("retry maintenance run=%+v started=%t err=%v", retryRun, retryStarted, err)
+	}
+	waitForRunnerUserIdle(t, r, user.ID)
+}
+
+func TestMailboxMaintenanceWithCommittedSetupFinishesAcrossGenerationRecovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, _, mailbox := createRunnerMailboxFixture(t, ctx, db, "maintenance-setup-recovery@example.test")
+	r := NewRunnerWithContext(ctx, &Service{Store: db})
+	r.replayGenerationRecovery = func(generationRecoveryReplay) {}
+	setupStarted := make(chan struct{})
+	setupCanceled := make(chan struct{})
+	releaseSetup := make(chan struct{})
+	maintenanceCalled := make(chan struct{})
+	type maintenanceResult struct {
+		run     store.SyncRun
+		started bool
+		err     error
+	}
+	result := make(chan maintenanceResult, 1)
+	go func() {
+		run, started, err := r.StartMailboxMaintenanceWithSetup(user.ID, mailbox, "Disable search",
+			func(setupCtx context.Context) error {
+				close(setupStarted)
+				<-setupCtx.Done()
+				close(setupCanceled)
+				<-releaseSetup
+				// Model a SQLite transaction that committed at the same instant
+				// recovery cancellation arrived.
+				return nil
+			},
+			func(workCtx context.Context, _ int64, _ *store.SyncProgress) error {
+				if err := workCtx.Err(); err != nil {
+					return err
+				}
+				close(maintenanceCalled)
+				return nil
+			},
+		)
+		result <- maintenanceResult{run: run, started: started, err: err}
+	}()
+	select {
+	case <-setupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance setup did not start")
+	}
+	r.SignalMailboxGenerationRecovery(user.ID)
+	select {
+	case <-setupCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("generation recovery did not reach the pre-commit setup context")
+	}
+	close(releaseSetup)
+	var got maintenanceResult
+	select {
+	case got = <-result:
+		if got.err != nil || !got.started || got.run.ID <= 0 {
+			t.Fatalf("setup handoff result=%+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("maintenance setup did not hand off")
+	}
+	select {
+	case <-maintenanceCalled:
+	case <-time.After(time.Second):
+		t.Fatal("committed setup did not finish its matching maintenance after recovery signal")
+	}
+	if saved := waitForRunnerSyncRun(t, ctx, db, user.ID, got.run.ID); saved.Status != "ok" {
+		t.Fatalf("committed setup maintenance run=%+v", saved)
+	}
+}
+
 func TestMailboxMaintenanceCancellationReleasesReservationWhileWaitingForAttachment(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))

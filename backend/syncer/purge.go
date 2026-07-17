@@ -36,6 +36,13 @@ func (s *Service) PurgeMailboxSearchIndexWithProgress(ctx context.Context, userI
 			return 0, err
 		}
 	}
+	// Persist conservative intent before deleting Bleve documents. If deletion
+	// is interrupted, progress remains under-counted and the next folder sync or
+	// explicit rebuild repairs the mailbox instead of claiming stale coverage.
+	if err := s.Store.MarkMailboxSearchIndexPurged(ctx, userID, mailboxID); err != nil {
+		return 0, err
+	}
+	s.notify(userID)
 	deleted, err := s.Search.PurgeMailboxWithProgress(ctx, userID, mailboxID, func(n int) error {
 		if progress == nil {
 			return nil
@@ -45,9 +52,6 @@ func (s *Service) PurgeMailboxSearchIndexWithProgress(ctx context.Context, userI
 	})
 	if err != nil {
 		return deleted, err
-	}
-	if deleted > 0 {
-		s.notify(userID)
 	}
 	return deleted, nil
 }

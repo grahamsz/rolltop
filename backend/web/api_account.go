@@ -36,6 +36,54 @@ type accountSettingsInput struct {
 	SyncIntervalMinutes int    `json:"sync_interval_minutes"`
 }
 
+const slowSettingsRequestThreshold = 500 * time.Millisecond
+
+type settingsRequestStage struct {
+	name     string
+	duration time.Duration
+}
+
+type settingsRequestTimer struct {
+	started time.Time
+	last    time.Time
+	stages  []settingsRequestStage
+}
+
+func newSettingsRequestTimer() *settingsRequestTimer {
+	now := time.Now()
+	return &settingsRequestTimer{started: now, last: now}
+}
+
+func (t *settingsRequestTimer) mark(name string) {
+	now := time.Now()
+	t.stages = append(t.stages, settingsRequestStage{name: name, duration: now.Sub(t.last)})
+	t.last = now
+}
+
+func (t *settingsRequestTimer) writeServerTiming(w http.ResponseWriter) {
+	parts := make([]string, 0, len(t.stages))
+	for _, stage := range t.stages {
+		milliseconds := float64(stage.duration) / float64(time.Millisecond)
+		parts = append(parts, stage.name+";dur="+strconv.FormatFloat(milliseconds, 'f', 1, 64))
+	}
+	if len(parts) > 0 {
+		w.Header().Set("Server-Timing", strings.Join(parts, ", "))
+	}
+}
+
+func (t *settingsRequestTimer) logIfSlow(endpoint string, userID int64) {
+	total := time.Since(t.started)
+	if total < slowSettingsRequestThreshold {
+		return
+	}
+	parts := make([]string, 0, len(t.stages))
+	for _, stage := range t.stages {
+		parts = append(parts, stage.name+"="+stage.duration.Round(time.Millisecond).String())
+	}
+	log.Printf("slow settings request endpoint=%s user_id=%d total=%s stages=%s",
+		endpoint, userID, total.Round(time.Millisecond), strings.Join(parts, ","))
+}
+
 // apiAccount is the settings dashboard endpoint. It returns the account graph
 // needed by the React settings page; writes happen through the IMAP/SMTP/identity
 // endpoints so account-server editing stays explicit.
@@ -48,45 +96,87 @@ func (s *Server) apiAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	timer := newSettingsRequestTimer()
+	defer timer.logIfSlow("account", cu.User.ID)
 	accounts, err := s.store.ListMailAccountsForUser(r.Context(), cu.User.ID)
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
+	timer.mark("imap-accounts")
 	accounts = s.filterDeletingAccounts(cu.User.ID, accounts)
-	if len(accounts) > 0 && s.syncer != nil && s.syncer.Fetcher != nil {
-		s.refreshMailboxStatusesAsync(cu.User.ID)
-	}
+	refreshMailboxStatuses := len(accounts) > 0 && s.syncer != nil && s.syncer.Fetcher != nil
 	smtpAccounts, err := s.store.ListSMTPAccountsForUser(r.Context(), cu.User.ID)
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
+	timer.mark("smtp-accounts")
 	identities, err := s.store.ListCachedMailIdentitiesForUser(r.Context(), cu.User.ID)
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
+	timer.mark("identities")
 	meContacts, err := s.store.ListMeContactsForUser(r.Context(), cu.User.ID)
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
+	timer.mark("me-contacts")
 	runs, err := s.store.ListSyncRunsForUser(r.Context(), cu.User.ID, 20)
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
+	timer.mark("recent-runs")
 	needsPassword, notice := s.accountCredentialNotice(r.Context(), cu.User.ID)
+	timer.mark("credential-notice")
+	folders, err := s.syncFolderViews(r.Context(), cu.User.ID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	timer.mark("folders")
+	timer.writeServerTiming(w)
 	writeJSONCached(w, r, map[string]any{
 		"imap_accounts":          apiAccountsFromStore(accounts),
 		"smtp_accounts":          apiSMTPAccountsFromStore(smtpAccounts),
 		"identities":             apiMailIdentitiesFromStore(identities),
 		"me_contacts":            apiContactsFromStore(meContacts),
 		"sync_runs":              apiSyncRuns(runs),
-		"sync_folders":           apiSyncFolders(s.syncFolderViews(r.Context(), cu.User.ID)),
+		"sync_folders":           apiSyncFolders(folders),
 		"notice":                 notice,
 		"account_needs_password": needsPassword,
+	})
+	if refreshMailboxStatuses {
+		s.refreshMailboxStatusesAsync(cu.User.ID)
+	}
+}
+
+// apiAccountFolderProgress returns only the counters that can change during a
+// sync or index rebuild. It is intentionally local-only: polling settings must
+// never start an IMAP request or reload the full account/credential graph.
+func (s *Server) apiAccountFolderProgress(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	timer := newSettingsRequestTimer()
+	defer timer.logIfSlow("folder-progress", cu.User.ID)
+	folders, err := s.syncFolderProgressViews(r.Context(), cu.User.ID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	timer.mark("folders")
+	timer.writeServerTiming(w)
+	writeJSONCached(w, r, map[string]any{
+		"folders": apiFolderProgressFromViews(folders),
 	})
 }
 
@@ -763,14 +853,43 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			return
 		}
 		previousInclude := mb.IncludeInSearch
-		if err := s.store.UpdateMailboxSettings(r.Context(), cu.User.ID, mailboxID, store.MailboxSettings{
+		settings := store.MailboxSettings{
 			SyncMode:        in.SyncMode,
 			Role:            in.Role,
 			Icon:            in.Icon,
 			ShowInSidebar:   in.ShowInSidebar,
 			ShowInAllMail:   in.ShowInAllMail,
 			IncludeInSearch: in.IncludeInSearch,
-		}); err != nil {
+		}
+		var run store.SyncRun
+		queued := false
+		if previousInclude != in.IncludeInSearch {
+			if s.syncer == nil || s.syncer.Search == nil || s.syncRunner == nil {
+				writeAPIError(w, http.StatusServiceUnavailable, "Search indexing is not configured.")
+				return
+			}
+			label := "Disabling full-text search"
+			if in.IncludeInSearch {
+				label = "Enabling full-text search"
+			}
+			var started bool
+			run, started, err = s.syncRunner.StartMailboxMaintenanceWithSetup(cu.User.ID, mb, label,
+				func(ctx context.Context) error {
+					return s.store.UpdateMailboxSettings(ctx, cu.User.ID, mailboxID, settings)
+				},
+				func(ctx context.Context, _ int64, _ *store.SyncProgress) error {
+					return s.syncer.ReconcileMailboxSearchIndex(search.WithForegroundIndexing(ctx), cu.User.ID, mailboxID, in.IncludeInSearch)
+				},
+			)
+			if !started && err == nil {
+				writeAPIError(w, http.StatusConflict, "Sync or search-index maintenance is already running for this folder.")
+				return
+			}
+			queued = err == nil
+		} else {
+			err = s.store.UpdateMailboxSettings(r.Context(), cu.User.ID, mailboxID, settings)
+		}
+		if err != nil {
 			if errors.Is(err, store.ErrDuplicateMailboxRole) {
 				writeAPIError(w, http.StatusConflict, err.Error())
 				return
@@ -782,18 +901,13 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			s.serverError(w, err)
 			return
 		}
-		if previousInclude != in.IncludeInSearch && s.syncer != nil {
-			go func(userID, mailboxID int64, include bool) {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-				defer cancel()
-				if err := s.syncer.ReconcileMailboxSearchIndex(ctx, userID, mailboxID, include); err != nil {
-					log.Printf("reconcile mailbox search index user_id=%d mailbox_id=%d include=%t: %v", userID, mailboxID, include, err)
-				}
-				s.notifyUserChanged(userID)
-			}(cu.User.ID, mailboxID, in.IncludeInSearch)
-		}
 		s.notifyUserChanged(cu.User.ID)
-		writeJSON(w, map[string]any{"ok": true})
+		response := map[string]any{"ok": true}
+		if queued {
+			response["queued"] = true
+			response["run_id"] = run.ID
+		}
+		writeJSON(w, response)
 	case "sync":
 		effectiveMode := mb.SyncMode
 		if effectiveMode == "inherit" {

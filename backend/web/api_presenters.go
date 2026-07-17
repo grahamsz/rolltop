@@ -83,6 +83,8 @@ func apiMailboxFromSummary(box store.MailboxSummary) apiMailbox {
 		SearchIndexedCount: box.SearchIndexedCount,
 		SearchIndexTotal:   box.SearchIndexTotal,
 		SearchIndexPercent: box.SearchIndexPercent,
+		SearchIndexPurged:  box.SearchIndexPurged,
+		SearchIndexKnown:   box.SearchIndexKnown,
 	}
 }
 
@@ -547,6 +549,32 @@ func apiSyncFolders(views []syncFolderView) []apiSyncFolder {
 			IsRunning:  view.IsRunning,
 			LastRun:    apiSyncRunPtr(view.LastRun),
 			CanSyncNow: view.CanSyncNow,
+		})
+	}
+	return out
+}
+
+func apiFolderProgressFromViews(views []syncFolderView) []apiFolderProgress {
+	out := make([]apiFolderProgress, 0, len(views))
+	for _, view := range views {
+		box := view.Mailbox
+		out = append(out, apiFolderProgress{
+			MailboxID:          box.ID,
+			MessageCount:       box.MessageCount,
+			UnreadCount:        box.UnreadCount,
+			LastUID:            box.LastUID,
+			RemoteMessageCount: box.RemoteMessageCount,
+			RemoteUnreadCount:  box.RemoteUnreadCount,
+			RemoteUIDNext:      box.RemoteUIDNext,
+			SyncPercent:        box.SyncPercent,
+			LocalMessageCount:  box.LocalMessageCount,
+			LocalSyncPercent:   box.LocalSyncPercent,
+			SearchIndexedCount: box.SearchIndexedCount,
+			SearchIndexTotal:   box.SearchIndexTotal,
+			SearchIndexPercent: box.SearchIndexPercent,
+			SearchIndexPurged:  box.SearchIndexPurged,
+			SearchIndexKnown:   box.SearchIndexKnown,
+			IsRunning:          view.IsRunning,
 		})
 	}
 	return out

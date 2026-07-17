@@ -995,7 +995,7 @@ func TestStorageStatsReportsCurrentUserOnly(t *testing.T) {
 	}
 }
 
-func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
+func TestSyncFolderViewsUsesCommittedSearchMarkers(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
@@ -1064,8 +1064,9 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	if err := db.MarkMessageAttachmentIndexed(ctx, user.ID, first.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	// Simulate an old-generation document whose SQLite row was purged. Its raw
-	// Bleve count matches the one current committed row, but the IDs do not.
+	// Simulate an old-generation document whose SQLite row was purged. Settings
+	// progress intentionally reads only the durable SQLite commit marker; exact
+	// missing/stale document reconciliation belongs to background index repair.
 	stale := first
 	stale.ID += 1_000_000
 	stale.UID += 1_000_000
@@ -1081,7 +1082,10 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	}
 
 	server := &Server{store: db, search: searchSvc}
-	views := server.syncFolderViews(ctx, user.ID)
+	views, err := server.syncFolderViews(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(views) != 2 {
 		t.Fatalf("views = %d", len(views))
 	}
@@ -1106,28 +1110,35 @@ func TestSyncFolderViewsIncludesSearchIndexStats(t *testing.T) {
 	if box.RemoteMessageCount != 4 {
 		t.Fatalf("remote message count = %d", box.RemoteMessageCount)
 	}
-	if box.SearchIndexedCount == nil || *box.SearchIndexedCount != 0 {
+	if box.SearchIndexedCount == nil || *box.SearchIndexedCount != 1 {
 		t.Fatalf("search indexed count = %v", box.SearchIndexedCount)
 	}
 	if box.SearchIndexTotal == nil || *box.SearchIndexTotal != 2 {
 		t.Fatalf("search index total = %v", box.SearchIndexTotal)
 	}
-	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 0 {
+	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 50 {
 		t.Fatalf("search index percent = %v", box.SearchIndexPercent)
 	}
 	if emptyBox.SearchIndexPercent == nil || *emptyBox.SearchIndexPercent != 0 {
 		t.Fatalf("empty search index percent = %v", emptyBox.SearchIndexPercent)
 	}
-	if err := searchSvc.IndexMessage(ctx, first, nil); err != nil {
+	if _, err := db.DB().ExecContext(ctx, `UPDATE mailboxes SET search_index_state_known = 0 WHERE user_id = ? AND id = ?`, user.ID, mailbox.ID); err != nil {
 		t.Fatal(err)
 	}
-	server.populateMailboxSearchIndexStats(ctx, user.ID, &box)
-	if box.SearchIndexedCount == nil || *box.SearchIndexedCount != 1 {
-		t.Fatalf("search indexed count after current document = %v", box.SearchIndexedCount)
+	views, err = server.syncFolderViews(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if box.SearchIndexPercent == nil || *box.SearchIndexPercent != 50 {
-		t.Fatalf("search index percent after current document = %v", box.SearchIndexPercent)
+	for _, view := range views {
+		if view.Mailbox.ID == mailbox.ID {
+			if view.Mailbox.SearchIndexKnown || view.Mailbox.SearchIndexedCount != nil || view.Mailbox.SearchIndexPercent != nil {
+				t.Fatalf("unverified search progress = known:%t indexed:%v percent:%v",
+					view.Mailbox.SearchIndexKnown, view.Mailbox.SearchIndexedCount, view.Mailbox.SearchIndexPercent)
+			}
+			return
+		}
 	}
+	t.Fatal("unverified mailbox view was not returned")
 }
 
 func TestSyncFolderViewsUsesUnboundedTenantScopedMailboxHistory(t *testing.T) {
@@ -1196,7 +1207,10 @@ func TestSyncFolderViewsUsesUnboundedTenantScopedMailboxHistory(t *testing.T) {
 		}
 	}
 
-	views := (&Server{store: db}).syncFolderViews(ctx, owner.ID)
+	views, err := (&Server{store: db}).syncFolderViews(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(views) != 2 {
 		t.Fatalf("folder views = %+v, want INBOX and Archive", views)
 	}

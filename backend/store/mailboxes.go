@@ -336,7 +336,7 @@ func (s *Store) GetMailboxByRoleForAccount(ctx context.Context, userID, accountI
 // ListMailboxesForUser returns folder summaries with local, remote, and indexing counters for chrome/settings.
 func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]MailboxSummary, error) {
 	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT mb.id, mb.user_id, mb.account_id, mb.name, mb.sync_mode, mb.role, mb.icon,
-			mb.show_in_sidebar, mb.show_in_all_mail, mb.include_in_search, mb.uidvalidity, mb.last_uid, mb.created_at, mb.updated_at,
+			mb.show_in_sidebar, mb.show_in_all_mail, mb.include_in_search, mb.search_index_purged, mb.search_index_state_known, mb.uidvalidity, mb.last_uid, mb.created_at, mb.updated_at,
 			mb.remote_message_count, mb.remote_unread_count, mb.remote_uid_next, mb.status_checked_at,
 				ma.email, ma.label,
 				count(m.id),
@@ -362,7 +362,7 @@ func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]Mailb
 		var created, updated, statusChecked int64
 		var localMessages, localUnread, hiddenMessages, hiddenUnread int
 		if err := rows.Scan(&ms.ID, &ms.UserID, &ms.AccountID, &ms.Name, &ms.SyncMode, &ms.Role, &ms.Icon,
-			&ms.ShowInSidebar, &ms.ShowInAllMail, &ms.IncludeInSearch, &ms.UIDValidity, &ms.LastUID, &created, &updated,
+			&ms.ShowInSidebar, &ms.ShowInAllMail, &ms.IncludeInSearch, &ms.SearchIndexPurged, &ms.SearchIndexKnown, &ms.UIDValidity, &ms.LastUID, &created, &updated,
 			&ms.RemoteMessageCount, &ms.RemoteUnreadCount, &ms.RemoteUIDNext, &statusChecked, &ms.AccountEmail, &ms.AccountLabel,
 			&localMessages, &localUnread, &hiddenMessages, &hiddenUnread); err != nil {
 			return nil, err
@@ -435,7 +435,8 @@ func (s *Store) UpdateMailboxSettings(ctx context.Context, userID, mailboxID int
 	}
 	var accountID int64
 	var mailboxName string
-	if err := tx.QueryRowContext(ctx, `SELECT account_id, name FROM mailboxes WHERE user_id = ? AND id = ?`, userID, mailboxID).Scan(&accountID, &mailboxName); err != nil {
+	var previousIncludeInSearch bool
+	if err := tx.QueryRowContext(ctx, `SELECT account_id, name, include_in_search FROM mailboxes WHERE user_id = ? AND id = ?`, userID, mailboxID).Scan(&accountID, &mailboxName, &previousIncludeInSearch); err != nil {
 		_ = tx.Rollback()
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
@@ -476,6 +477,20 @@ func (s *Store) UpdateMailboxSettings(ctx context.Context, userID, mailboxID int
 	if n == 0 {
 		_ = tx.Rollback()
 		return ErrNotFound
+	}
+	if !previousIncludeInSearch && settings.IncludeInSearch {
+		if _, err := tx.ExecContext(ctx, `UPDATE messages
+			SET attachment_indexed_at = 0
+			WHERE user_id = ? AND mailbox_id = ? AND attachment_indexed_at > 0`, userID, mailboxID); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE mailboxes
+			SET search_index_purged = 0, search_index_state_known = 0
+			WHERE user_id = ? AND id = ?`, userID, mailboxID); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
 	}
 	return tx.Commit()
 }

@@ -769,15 +769,46 @@ func (s *Server) refreshMailboxStatusesAsync(userID int64) {
 
 // syncFolderViews joins mailbox summaries with complete per-folder sync history
 // and search index counts for the settings folder-sync UI.
-func (s *Server) syncFolderViews(ctx context.Context, userID int64) []syncFolderView {
+func (s *Server) syncFolderViews(ctx context.Context, userID int64) ([]syncFolderView, error) {
+	return s.buildSyncFolderViews(ctx, userID, true, true)
+}
+
+// syncFolderProgressViews skips static effective-mode resolution and historical
+// sync-run ranking because the polling DTO contains only changing counters and
+// current runner state. The full account response still supplies both.
+func (s *Server) syncFolderProgressViews(ctx context.Context, userID int64) ([]syncFolderView, error) {
+	return s.buildSyncFolderViews(ctx, userID, false, false)
+}
+
+func (s *Server) buildSyncFolderViews(ctx context.Context, userID int64, includeCanSyncNow, includeLastRuns bool) ([]syncFolderView, error) {
 	boxes, err := s.store.ListMailboxesForUser(ctx, userID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	boxes = s.filterDeletingMailboxes(userID, boxes)
-	runs, err := s.store.ListLatestSyncRunsByMailboxForUser(ctx, userID)
-	if err != nil {
-		return nil
+	var runs []store.SyncRun
+	if includeLastRuns {
+		runs, err = s.store.ListLatestSyncRunsByMailboxForUser(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var searchCounts map[int64]int
+	if s.search != nil {
+		searchCounts = map[int64]int{}
+		needsSearchCounts := false
+		for _, box := range boxes {
+			if box.IncludeInSearch && box.SearchIndexKnown {
+				needsSearchCounts = true
+				break
+			}
+		}
+		if needsSearchCounts {
+			searchCounts, err = s.store.CountSearchIndexedMessagesByMailbox(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	lastByFolder := map[string]store.SyncRun{}
 	for _, run := range runs {
@@ -792,16 +823,22 @@ func (s *Server) syncFolderViews(ctx context.Context, userID int64) []syncFolder
 	}
 	out := make([]syncFolderView, 0, len(boxes))
 	for _, box := range boxes {
-		s.populateMailboxSearchIndexStats(ctx, userID, &box)
-		effectiveMode := box.SyncMode
-		if effectiveMode == "inherit" {
-			if mode, err := s.store.EffectiveMailboxSyncMode(ctx, userID, box.AccountID, box.Mailbox); err == nil {
-				effectiveMode = mode
+		if searchCounts != nil {
+			setMailboxSearchIndexStats(&box, searchCounts[box.ID], box.SearchIndexPurged)
+		}
+		canSyncNow := false
+		if includeCanSyncNow {
+			effectiveMode := box.SyncMode
+			if effectiveMode == "inherit" {
+				if mode, err := s.store.EffectiveMailboxSyncMode(ctx, userID, box.AccountID, box.Mailbox); err == nil {
+					effectiveMode = mode
+				}
 			}
+			canSyncNow = effectiveMode != "never"
 		}
 		view := syncFolderView{
 			Mailbox:    box,
-			CanSyncNow: effectiveMode != "never",
+			CanSyncNow: canSyncNow,
 		}
 		if s.syncRunner != nil {
 			view.IsRunning = s.syncRunner.IsAccountMailboxRunning(userID, box.AccountID, box.Name)
@@ -812,7 +849,7 @@ func (s *Server) syncFolderViews(ctx context.Context, userID int64) []syncFolder
 		}
 		out = append(out, view)
 	}
-	return out
+	return out, nil
 }
 
 func (s *Server) markDeletingIMAPAccount(userID, accountID int64) {
@@ -868,45 +905,22 @@ func (s *Server) filterDeletingMailboxes(userID int64, boxes []store.MailboxSumm
 	return out
 }
 
-func (s *Server) populateMailboxSearchIndexStats(ctx context.Context, userID int64, box *store.MailboxSummary) {
-	if s.search == nil || box == nil || !box.IncludeInSearch {
+func setMailboxSearchIndexStats(box *store.MailboxSummary, indexed int, purged bool) {
+	if box == nil || !box.IncludeInSearch {
 		return
 	}
-	bleveIDs, err := s.search.MailboxMessageIDs(ctx, userID, box.ID)
-	if err != nil {
-		log.Printf("list search index messages user_id=%d mailbox_id=%d: %v", userID, box.ID, err)
+	if !box.SearchIndexKnown {
 		return
 	}
-	indexed := 0
-	var afterID int64
-	for {
-		committedIDs, err := s.store.ListSearchIndexedMessageIDsForMailbox(ctx, userID, box.ID, afterID, 1000)
-		if err != nil {
-			log.Printf("list committed search rows user_id=%d mailbox_id=%d: %v", userID, box.ID, err)
-			return
-		}
-		for _, messageID := range committedIDs {
-			afterID = messageID
-			if bleveIDs[messageID] {
-				indexed++
-			}
-		}
-		if len(committedIDs) < 1000 {
-			break
-		}
-	}
-	// Bleve can retain documents from an interrupted mailbox-generation reset.
-	// Count only current SQLite rows whose exact document ID is present and whose
-	// post-commit marker is set; a stale document cannot substitute for a missing
-	// current message merely because the aggregate counts happen to match.
-	// Bleve can index only messages represented by current SQLite rows. Keep
-	// this denominator local; remote STATUS is a separate mirror-completeness
-	// metric and may include messages that Rolltop has not fetched yet.
+	// The marker is written only after a successful Bleve commit. Exact missing
+	// and stale-document reconciliation remains in background index repair; this
+	// settings counter deliberately avoids opening or enumerating the index.
 	total := box.LocalMessageCount
 	percent := boundedPercent(indexed, total)
 	box.SearchIndexedCount = &indexed
 	box.SearchIndexTotal = &total
 	box.SearchIndexPercent = &percent
+	box.SearchIndexPurged = purged
 }
 
 func boundedPercent(done, total int) int {

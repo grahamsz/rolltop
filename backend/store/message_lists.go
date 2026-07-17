@@ -127,6 +127,56 @@ func (s *Store) ListSearchIndexedMessageIDsForMailbox(ctx context.Context, userI
 	return ids, rows.Err()
 }
 
+// CountSearchIndexedMessagesByMailbox returns the durable post-Bleve-commit
+// marker count for each of a user's mailboxes. Settings uses this inexpensive
+// aggregate for progress; exact missing/stale document reconciliation remains
+// part of search-index repair rather than a blocking browser request.
+func (s *Store) CountSearchIndexedMessagesByMailbox(ctx context.Context, userID int64) (map[int64]int, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT mailbox_id, COUNT(*)
+		FROM messages
+		WHERE user_id = ? AND attachment_indexed_at > 0
+			AND mailbox_id NOT IN (
+				SELECT id FROM mailboxes WHERE user_id = ? AND search_index_purged = 1
+			)
+		GROUP BY mailbox_id`, userID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[int64]int{}
+	for rows.Next() {
+		var mailboxID int64
+		var count int
+		if err := rows.Scan(&mailboxID, &count); err != nil {
+			return nil, err
+		}
+		counts[mailboxID] = count
+	}
+	return counts, rows.Err()
+}
+
+// ListPurgedSearchIndexMailboxIDs returns tenant-owned mailboxes whose local
+// full-text documents were deliberately purged and are waiting for a folder
+// sync or explicit rebuild.
+func (s *Store) ListPurgedSearchIndexMailboxIDs(ctx context.Context, userID int64) (map[int64]bool, error) {
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, `SELECT id
+		FROM mailboxes
+		WHERE user_id = ? AND search_index_purged = 1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	purged := map[int64]bool{}
+	for rows.Next() {
+		var mailboxID int64
+		if err := rows.Scan(&mailboxID); err != nil {
+			return nil, err
+		}
+		purged[mailboxID] = true
+	}
+	return purged, rows.Err()
+}
+
 // CountSearchEnabledMessagesForUser counts local messages in folders included in
 // full-text search. Settings storage uses this alongside Bleve's document count
 // to show whether SQLite mail and the search index are in the same ballpark.

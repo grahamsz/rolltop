@@ -1078,6 +1078,159 @@ func TestListSearchIndexedMessageIDsForMailboxIsTenantAndMailboxScoped(t *testin
 			}
 		})
 	}
+
+	ownerCounts, err := db.CountSearchIndexedMessagesByMailbox(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ownerCounts) != 2 || ownerCounts[ownerInbox.ID] != 1 || ownerCounts[ownerArchive.ID] != 1 {
+		t.Fatalf("owner committed search counts = %v", ownerCounts)
+	}
+	if _, exposed := ownerCounts[otherInbox.ID]; exposed {
+		t.Fatalf("owner committed search counts exposed other mailbox %d: %v", otherInbox.ID, ownerCounts)
+	}
+	otherCounts, err := db.CountSearchIndexedMessagesByMailbox(ctx, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(otherCounts) != 1 || otherCounts[otherInbox.ID] != 2 {
+		t.Fatalf("other committed search counts = %v", otherCounts)
+	}
+
+	mailboxSettings := func(mailbox Mailbox, include bool) MailboxSettings {
+		return MailboxSettings{
+			SyncMode:        mailbox.SyncMode,
+			Role:            mailbox.Role,
+			Icon:            mailbox.Icon,
+			ShowInSidebar:   mailbox.ShowInSidebar,
+			ShowInAllMail:   mailbox.ShowInAllMail,
+			IncludeInSearch: include,
+		}
+	}
+	if err := db.UpdateMailboxSettings(ctx, owner.ID, ownerArchive.ID, mailboxSettings(ownerArchive, false)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxSettings(ctx, owner.ID, ownerArchive.ID, mailboxSettings(ownerArchive, true)); err != nil {
+		t.Fatal(err)
+	}
+	ownerCounts, err = db.CountSearchIndexedMessagesByMailbox(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ownerCounts) != 1 || ownerCounts[ownerInbox.ID] != 1 {
+		t.Fatalf("owner counts after enabling search = %v, want archive pending", ownerCounts)
+	}
+	if err := db.MarkMailboxSearchIndexPurged(ctx, owner.ID, otherInbox.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("owner marking other mailbox purged error = %v, want not found", err)
+	}
+	if err := db.MarkMailboxSearchIndexPurged(ctx, owner.ID, ownerInbox.ID); err != nil {
+		t.Fatal(err)
+	}
+	ownerMailboxes, err := db.ListMailboxesForUser(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundPurgedSummary := false
+	foundKnownSummary := false
+	for _, mailbox := range ownerMailboxes {
+		if mailbox.ID == ownerInbox.ID {
+			foundPurgedSummary = mailbox.SearchIndexPurged
+			foundKnownSummary = mailbox.SearchIndexKnown
+		}
+	}
+	if !foundPurgedSummary {
+		t.Fatal("owner mailbox summary did not carry explicit search purge state")
+	}
+	if !foundKnownSummary {
+		t.Fatal("explicitly purged owner mailbox was not marked as a known state")
+	}
+	purgedMailboxIDs, err := db.ListPurgedSearchIndexMailboxIDs(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(purgedMailboxIDs) != 1 || !purgedMailboxIDs[ownerInbox.ID] {
+		t.Fatalf("owner purged mailbox IDs = %v, want only %d", purgedMailboxIDs, ownerInbox.ID)
+	}
+	otherPurgedMailboxIDs, err := db.ListPurgedSearchIndexMailboxIDs(ctx, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(otherPurgedMailboxIDs) != 0 {
+		t.Fatalf("owner purge exposed to other tenant: %v", otherPurgedMailboxIDs)
+	}
+	ownerCounts, err = db.CountSearchIndexedMessagesByMailbox(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ownerCounts) != 0 {
+		t.Fatalf("owner counts after explicit purge = %v, want no committed progress", ownerCounts)
+	}
+	indexedIDs, err := db.ListSearchIndexedMessageIDsForMailbox(ctx, owner.ID, ownerInbox.ID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(indexedIDs, []int64{indexedInbox.ID}) {
+		t.Fatalf("durable markers after explicit purge = %v, want [%d]", indexedIDs, indexedInbox.ID)
+	}
+	pending, err := db.ListMessagesNeedingAttachmentIndex(ctx, owner.ID, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range pending {
+		if message.MailboxID == ownerInbox.ID {
+			t.Fatalf("explicitly purged mailbox message %d was queued for attachment recovery", message.ID)
+		}
+	}
+	prepared, err := db.PreparePurgedMailboxSearchIndexRepair(ctx, owner.ID, ownerInbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !prepared {
+		t.Fatal("purged mailbox repair was not prepared")
+	}
+	indexedIDs, err = db.ListSearchIndexedMessageIDsForMailbox(ctx, owner.ID, ownerInbox.ID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(indexedIDs, []int64{indexedInbox.ID}) {
+		t.Fatalf("durable markers after repair preparation = %v, want surviving marker %d preserved", indexedIDs, indexedInbox.ID)
+	}
+	prepared, err = db.PreparePurgedMailboxSearchIndexRepair(ctx, owner.ID, ownerInbox.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared {
+		t.Fatal("mailbox repair preparation consumed purge state twice")
+	}
+	purgedMailboxIDs, err = db.ListPurgedSearchIndexMailboxIDs(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(purgedMailboxIDs) != 0 {
+		t.Fatalf("purged mailbox state after repair preparation = %v, want empty", purgedMailboxIDs)
+	}
+	if err := db.MarkMailboxSearchIndexActive(ctx, owner.ID, otherInbox.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("owner marking other mailbox search active error = %v, want not found", err)
+	}
+	if err := db.MarkMailboxSearchIndexActive(ctx, owner.ID, ownerInbox.ID); err != nil {
+		t.Fatal(err)
+	}
+	ownerMailboxes, err = db.ListMailboxesForUser(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mailbox := range ownerMailboxes {
+		if mailbox.ID == ownerInbox.ID && (mailbox.SearchIndexPurged || !mailbox.SearchIndexKnown) {
+			t.Fatalf("active mailbox search state = purged:%t known:%t", mailbox.SearchIndexPurged, mailbox.SearchIndexKnown)
+		}
+	}
+	otherCounts, err = db.CountSearchIndexedMessagesByMailbox(ctx, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(otherCounts) != 1 || otherCounts[otherInbox.ID] != 2 {
+		t.Fatalf("owner marker reset changed other tenant counts = %v", otherCounts)
+	}
 }
 
 func TestOnboardingMailboxDefaultsDiscoverAllButAutoSyncInboxOnly(t *testing.T) {

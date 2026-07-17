@@ -73,18 +73,3 @@ func TestMessageImportCompletionMigrationBackfillsExistingRows(t *testing.T) {
 		t.Fatalf("messages not checked: %v", want)
 	}
 }
-
-func TestUser027IsLatestRegisteredUserMigration(t *testing.T) {
-	sets := currentUserMigrationSetsForUpgradeTest()
-	if len(sets) < 2 {
-		t.Fatalf("registered user migrations=%d, want at least 2", len(sets))
-	}
-	latest := sets[len(sets)-1]
-	predecessor := sets[len(sets)-2]
-	if latest.Version != UserSchemaVersion027 {
-		t.Fatalf("latest user migration=%q, want %q", latest.Version, UserSchemaVersion027)
-	}
-	if predecessor.Version != UserSchemaVersion026 {
-		t.Fatalf("user-027 predecessor=%q, want %q", predecessor.Version, UserSchemaVersion026)
-	}
-}

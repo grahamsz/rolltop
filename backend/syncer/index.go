@@ -520,6 +520,9 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 		_, err := s.Search.PurgeMailbox(ctx, userID, mailbox.ID)
 		return 0, err
 	}
+	if _, err := s.Store.PreparePurgedMailboxSearchIndexRepair(ctx, userID, mailbox.ID); err != nil {
+		return 0, err
+	}
 	indexedIDs, err := s.Search.MailboxMessageIDs(ctx, userID, mailbox.ID)
 	if err != nil {
 		return 0, err
@@ -562,6 +565,9 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 			if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
 				return 0, err
 			}
+		}
+		if err := s.Store.MarkMailboxSearchIndexActive(ctx, userID, mailbox.ID); err != nil {
+			return 0, err
 		}
 		return 0, nil
 	}
@@ -627,6 +633,9 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 				if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
 					return indexed, err
 				}
+			}
+			if err := s.Store.MarkMailboxSearchIndexActive(ctx, userID, mailbox.ID); err != nil {
+				return indexed, err
 			}
 			return indexed, nil
 		}
@@ -720,7 +729,10 @@ func (s *Service) ReconcileMailboxSearchIndex(ctx context.Context, userID, mailb
 		}
 		if len(messages) == 0 {
 			if batch != nil {
-				return batch.Flush(ctx)
+				if err := batch.Flush(ctx); err != nil {
+					return err
+				}
+				return s.Store.MarkMailboxSearchIndexActive(ctx, userID, mailboxID)
 			}
 			return nil
 		}

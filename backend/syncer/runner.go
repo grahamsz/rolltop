@@ -362,6 +362,22 @@ func (r *Runner) QueueAccountMailboxes(userID, accountID int64, mailboxes []stri
 // Work on another mailbox of the same account may continue concurrently. A
 // pending generation recovery blocks admission and cancels active maintenance.
 func (r *Runner) StartMailboxMaintenance(userID int64, mailbox store.Mailbox, label string, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
+	return r.startMailboxMaintenance(userID, mailbox, label, nil, fn)
+}
+
+// StartMailboxMaintenanceWithSetup reserves one account/mailbox, waits for any
+// attachment-index worker to stop, and then applies setup synchronously while
+// the reservation is held. This is for settings changes that must become
+// visible before their asynchronous maintenance starts without leaving a race
+// window for sync, purge, or rebuild work on the same mailbox.
+func (r *Runner) StartMailboxMaintenanceWithSetup(userID int64, mailbox store.Mailbox, label string, setup func(context.Context) error, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
+	if setup == nil {
+		return store.SyncRun{}, false, fmt.Errorf("maintenance setup function is required")
+	}
+	return r.startMailboxMaintenance(userID, mailbox, label, setup, fn)
+}
+
+func (r *Runner) startMailboxMaintenance(userID int64, mailbox store.Mailbox, label string, setup func(context.Context) error, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
 	ctx := r.context()
 	if ctx.Err() != nil {
 		return store.SyncRun{}, false, nil
@@ -380,24 +396,64 @@ func (r *Runner) StartMailboxMaintenance(userID int64, mailbox store.Mailbox, la
 	if !ok {
 		return store.SyncRun{}, false, nil
 	}
+	// A setup-backed maintenance task changes durable state before its
+	// asynchronous body starts. Register its ordinary cancellation before that
+	// mutation so a pending generation-recovery signal is observed. Once setup
+	// commits, the body is deliberately handed to a root-scoped context: it must
+	// finish the matching index transition instead of yielding halfway between
+	// the SQLite setting and Bleve.
+	var finishSetupContext func()
+	if setup != nil {
+		ctx, finishSetupContext = r.ordinaryMailboxContext(userID, keys, false)
+		if err := ctx.Err(); err != nil {
+			finishSetupContext()
+			r.releaseMailboxMaintenanceReservation(userID, mailbox.AccountID, mailboxes, keys)
+			r.StartAttachmentIndex(userID)
+			return store.SyncRun{}, true, err
+		}
+	}
+	finishSetup := func() {
+		if finishSetupContext != nil {
+			finishSetupContext()
+			finishSetupContext = nil
+		}
+	}
 	if err := r.waitForAttachmentIndex(ctx, userID); err != nil {
+		finishSetup()
 		r.releaseMailboxMaintenanceReservation(userID, mailbox.AccountID, mailboxes, keys)
 		return store.SyncRun{}, true, err
 	}
 	run, err := r.Service.Store.CreateSyncRun(context.Background(), userID, mailbox.AccountID)
 	if err != nil {
+		finishSetup()
 		r.releaseMailboxMaintenanceReservation(userID, mailbox.AccountID, mailboxes, keys)
 		r.StartAttachmentIndex(userID)
 		return store.SyncRun{}, true, err
 	}
 	progress := store.SyncProgress{MailboxesTotal: 1, CurrentMailbox: mailbox.Name, LatestNewFrom: "rolltop:maintenance", LatestNewSubject: label}
 	if err := r.Service.Store.UpdateSyncRunProgress(context.Background(), userID, run.ID, progress); err != nil {
+		finishSetup()
 		r.releaseMailboxMaintenanceReservation(userID, mailbox.AccountID, mailboxes, keys)
 		r.StartAttachmentIndex(userID)
 		return store.SyncRun{}, true, err
 	}
+	if setup != nil {
+		if err := setup(ctx); err != nil {
+			finishErr := r.Service.Store.FinishSyncRun(context.Background(), userID, run.ID, "failed", progress, err.Error())
+			finishSetup()
+			r.releaseMailboxMaintenanceReservation(userID, mailbox.AccountID, mailboxes, keys)
+			r.StartAttachmentIndex(userID)
+			r.Service.notify(userID)
+			return run, true, errors.Join(err, finishErr)
+		}
+		finishSetup()
+	}
 	r.Service.notify(userID)
-	go r.runReservedMailboxMaintenance(userID, mailbox.AccountID, mailboxes, keys, run.ID, progress, fn)
+	if setup != nil {
+		go r.runReservedCommittedMailboxMaintenance(userID, mailbox.AccountID, mailboxes, keys, run.ID, progress, fn)
+	} else {
+		go r.runReservedMailboxMaintenance(userID, mailbox.AccountID, mailboxes, keys, run.ID, progress, fn)
+	}
 	return run, true, nil
 }
 
@@ -450,6 +506,16 @@ func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount
 }
 
 func (r *Runner) runReservedMailboxMaintenance(userID, accountID int64, mailboxes []string, keys []string, runID int64, progress store.SyncProgress, fn func(context.Context, int64, *store.SyncProgress) error) {
+	ctx, finishContext := r.ordinaryMailboxContext(userID, keys, false)
+	r.runReservedMailboxMaintenanceWithContext(ctx, finishContext, userID, accountID, mailboxes, keys, runID, progress, fn)
+}
+
+func (r *Runner) runReservedCommittedMailboxMaintenance(userID, accountID int64, mailboxes []string, keys []string, runID int64, progress store.SyncProgress, fn func(context.Context, int64, *store.SyncProgress) error) {
+	ctx, finishContext := context.WithCancel(r.context())
+	r.runReservedMailboxMaintenanceWithContext(ctx, finishContext, userID, accountID, mailboxes, keys, runID, progress, fn)
+}
+
+func (r *Runner) runReservedMailboxMaintenanceWithContext(ctx context.Context, finishContext func(), userID, accountID int64, mailboxes []string, keys []string, runID int64, progress store.SyncProgress, fn func(context.Context, int64, *store.SyncProgress) error) {
 	status := "ok"
 	errText := ""
 	defer func() {
@@ -470,7 +536,6 @@ func (r *Runner) runReservedMailboxMaintenance(userID, accountID int64, mailboxe
 		}
 		r.StartAttachmentIndex(userID)
 	}()
-	ctx, finishContext := r.ordinaryMailboxContext(userID, keys, false)
 	defer finishContext()
 	r.setMailboxWorkActivitiesPhase(keys, "maintenance")
 	if err := fn(ctx, runID, &progress); err != nil {

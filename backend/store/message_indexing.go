@@ -158,13 +158,21 @@ func (s *Store) ListMessagesNeedingAttachmentIndexAfter(ctx context.Context, use
 func (s *Store) listMessagesNeedingAttachmentIndexRange(ctx context.Context, userID, messageID int64, limit int, throughCursor bool) ([]MessageRecord, error) {
 	query := `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
 			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
-		FROM messages WHERE user_id = ? AND attachment_indexed_at = 0 AND id > ? ORDER BY id LIMIT ?`
+		FROM messages WHERE user_id = ? AND attachment_indexed_at = 0
+			AND mailbox_id NOT IN (
+				SELECT id FROM mailboxes WHERE user_id = ? AND search_index_purged = 1
+			)
+			AND id > ? ORDER BY id LIMIT ?`
 	if throughCursor {
 		query = `SELECT id, user_id, account_id, mailbox_id, blob_id, message_id_header, in_reply_to, references_header, thread_key, subject, language_code, from_addr, to_addr, cc_addr,
 			date_unix, internal_date_unix, uid, size, blob_path, body_text, body_html, is_read, read_sync_pending, is_starred, star_sync_pending, has_attachments, is_encrypted, is_signed, attachment_indexed_at, created_at, updated_at
-		FROM messages WHERE user_id = ? AND attachment_indexed_at = 0 AND id <= ? ORDER BY id LIMIT ?`
+		FROM messages WHERE user_id = ? AND attachment_indexed_at = 0
+			AND mailbox_id NOT IN (
+				SELECT id FROM mailboxes WHERE user_id = ? AND search_index_purged = 1
+			)
+			AND id <= ? ORDER BY id LIMIT ?`
 	}
-	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, query, userID, messageID, limit)
+	rows, err := s.mustDataDB(ctx, userID).QueryContext(ctx, query, userID, userID, messageID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +232,79 @@ func (s *Store) MarkMessageAttachmentIndexed(ctx context.Context, userID, messag
 func (s *Store) MarkMessageAttachmentIndexPending(ctx context.Context, userID, messageID int64) error {
 	result, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages SET attachment_indexed_at = 0, updated_at = ?
 		WHERE user_id = ? AND id = ?`, nowUnix(), userID, messageID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkMailboxSearchIndexPurged records a completed explicit Bleve purge without
+// scheduling ordinary attachment recovery. The next folder sync or explicit
+// rebuild clears this state before repairing the mailbox.
+func (s *Store) MarkMailboxSearchIndexPurged(ctx context.Context, userID, mailboxID int64) error {
+	result, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE mailboxes
+		SET search_index_purged = 1, search_index_state_known = 1
+		WHERE user_id = ? AND id = ?`, userID, mailboxID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// PreparePurgedMailboxSearchIndexRepair atomically re-enables exact repair for
+// an explicitly purged mailbox. Existing per-message commit markers are kept:
+// repair diffs SQLite against Bleve directly, so surviving documents from a
+// partial purge must not be needlessly re-indexed. The returned bool reports
+// whether purge state was consumed.
+func (s *Store) PreparePurgedMailboxSearchIndexRepair(ctx context.Context, userID, mailboxID int64) (bool, error) {
+	tx, err := s.mustDataDB(ctx, userID).BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var purged bool
+	if err := tx.QueryRowContext(ctx, `SELECT search_index_purged FROM mailboxes
+		WHERE user_id = ? AND id = ?`, userID, mailboxID).Scan(&purged); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, ErrNotFound
+		}
+		return false, err
+	}
+	if !purged {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE mailboxes
+		SET search_index_purged = 0, search_index_state_known = 0
+		WHERE user_id = ? AND id = ?`, userID, mailboxID); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// MarkMailboxSearchIndexActive records that exact mailbox repair completed.
+// It is the only transition from migration-time unknown state to verified
+// active state, so settings never guesses current Bleve coverage from markers.
+func (s *Store) MarkMailboxSearchIndexActive(ctx context.Context, userID, mailboxID int64) error {
+	result, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE mailboxes
+		SET search_index_purged = 0, search_index_state_known = 1
+		WHERE user_id = ? AND id = ?`, userID, mailboxID)
 	if err != nil {
 		return err
 	}

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../api";
 import type { DatePrefs, LocationState, Toast } from "../../appTypes";
-import type { Account, AccountPurgeEstimate, Bootstrap, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SwipeAction, SwipePreferences, SwipeSnoozePreset, SyncFolder, SyncRun, ThemeDefinition, User } from "../../types";
+import type { Account, AccountPurgeEstimate, Bootstrap, FolderProgress, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SwipeAction, SwipePreferences, SwipeSnoozePreset, SyncFolder, SyncRun, ThemeDefinition, User } from "../../types";
 import { Icon } from "../../components/Icon";
 import { Field, Stat } from "../../components/common";
 import { emptyAccountForm, accountToForm } from "../../lib/accountForm";
@@ -574,7 +574,7 @@ function folderVisibilityLabel(mailbox: Pick<Mailbox, "show_in_sidebar" | "show_
 }
 
 function mailboxNeedsFullTextRefresh(mailbox: Mailbox) {
-  if (!mailbox.include_in_search) return false;
+  if (!mailbox.include_in_search || mailbox.search_index_purged || mailbox.search_index_state_known === false) return false;
   const indexed = mailbox.search_indexed_count;
   const total = mailbox.search_index_total;
   const percent = mailbox.search_index_percent;
@@ -588,6 +588,74 @@ function mailboxNeedsLocalMirrorRefresh(mailbox: Mailbox) {
   if (mailbox.remote_uid_next <= 0) return false;
   const local = Math.max(0, mailbox.local_message_count ?? mailbox.message_count);
   return local < Math.max(0, mailbox.remote_message_count);
+}
+
+function newerSyncRun(current: SyncRun | null, incoming: SyncRun | null): SyncRun | null {
+  if (!current) return incoming;
+  if (!incoming) return current;
+  if (current.id !== incoming.id) return current.id > incoming.id ? current : incoming;
+  const currentUpdated = Date.parse(current.updated_at) || 0;
+  const incomingUpdated = Date.parse(incoming.updated_at) || 0;
+  if (currentUpdated !== incomingUpdated) return currentUpdated > incomingUpdated ? current : incoming;
+  const currentFinished = current.status !== "running";
+  const incomingFinished = incoming.status !== "running";
+  if (currentFinished !== incomingFinished) return currentFinished ? current : incoming;
+  const currentProgress = current.messages_seen + current.messages_stored + current.current_uid;
+  const incomingProgress = incoming.messages_seen + incoming.messages_stored + incoming.current_uid;
+  return currentProgress > incomingProgress ? current : incoming;
+}
+
+function mergeUpdatedSyncRuns(current: SyncRun[], incoming: SyncRun[]): SyncRun[] {
+  const byID = new Map(current.map((run) => [run.id, run]));
+  incoming.forEach((run) => byID.set(run.id, newerSyncRun(byID.get(run.id) || null, run) || run));
+  return Array.from(byID.values())
+    .sort((left, right) => {
+      const running = Number(right.status === "running") - Number(left.status === "running");
+      if (running !== 0) return running;
+      const updated = (Date.parse(right.updated_at) || 0) - (Date.parse(left.updated_at) || 0);
+      return updated !== 0 ? updated : right.id - left.id;
+    })
+    .slice(0, 20);
+}
+
+function mergeFolderProgress(folder: SyncFolder, progress: FolderProgress, preserveLiveSyncState: boolean): SyncFolder {
+  const searchCounts = typeof progress.search_indexed_count === "number"
+    ? {
+        search_indexed_count: progress.search_indexed_count,
+        search_index_total: progress.search_index_total,
+        search_index_percent: progress.search_index_percent
+      }
+    : {};
+  if (preserveLiveSyncState) {
+    const currentPurged = Boolean(folder.mailbox.search_index_purged);
+    const currentKnown = folder.mailbox.search_index_state_known !== false;
+    if (currentPurged !== progress.search_index_purged || currentKnown !== progress.search_index_state_known) {
+      return folder;
+    }
+    return {
+      ...folder,
+      mailbox: { ...folder.mailbox, ...searchCounts }
+    };
+  }
+  return {
+    ...folder,
+    mailbox: {
+      ...folder.mailbox,
+      message_count: progress.message_count,
+      unread_count: progress.unread_count,
+      last_uid: progress.last_uid,
+      remote_message_count: progress.remote_message_count,
+      remote_unread_count: progress.remote_unread_count,
+      remote_uid_next: progress.remote_uid_next,
+      sync_percent: progress.sync_percent,
+      local_message_count: progress.local_message_count,
+      local_sync_percent: progress.local_sync_percent,
+      search_index_purged: progress.search_index_purged,
+      search_index_state_known: progress.search_index_state_known,
+      ...searchCounts
+    },
+    is_running: progress.is_running
+  };
 }
 
 /**
@@ -662,6 +730,7 @@ export function SettingsView({
     mailboxID: number;
     action: "rebuild" | "purge-index" | "purge-references";
   } | null>(null);
+  const [folderRunRefreshAccounts, setFolderRunRefreshAccounts] = useState<Set<number>>(() => new Set());
   const [savingIdentity, setSavingIdentity] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
@@ -671,11 +740,16 @@ export function SettingsView({
   const selectedSMTPIDRef = useRef<number | null>(selectedSMTPID);
   const selectedIdentityIDRef = useRef<number | "new" | null>(selectedIdentityID);
   const folderStatusRefreshInFlight = useRef(false);
+  const folderLiveStateVersion = useRef(0);
+  const folderAccountDataVersion = useRef(0);
+  const accountLoadInFlight = useRef(false);
+  const folderAccountIDsRef = useRef(new Map<number, number>());
 
   locationPathRef.current = location.path;
   selectedAccountIDRef.current = selectedAccountID;
   selectedSMTPIDRef.current = selectedSMTPID;
   selectedIdentityIDRef.current = selectedIdentityID;
+  folderAccountIDsRef.current = new Map(folders.map((folder) => [folder.mailbox.id, folder.mailbox.account_id]));
 
   const loadStorage = useCallback(async () => {
     setStorageLoading(true);
@@ -743,10 +817,14 @@ export function SettingsView({
   // mutations. Route changes only select from the cached records, avoiding a
   // second request and loader flash for every settings tab or browser-back step.
   const load = useCallback(async (path = locationPathRef.current) => {
+    const loadVersion = folderAccountDataVersion.current + 1;
+    folderAccountDataVersion.current = loadVersion;
+    accountLoadInFlight.current = true;
     setLoading(true);
     setLoadError("");
     try {
       const data = await api.account();
+      if (folderAccountDataVersion.current !== loadVersion) return false;
       const accounts = data.imap_accounts || [];
       const smtp = data.smtp_accounts || [];
       const nextIdentities = data.identities || [];
@@ -766,25 +844,74 @@ export function SettingsView({
         void loadStorage();
       }
       setLoaded(true);
+      return true;
     } catch (err) {
-      setLoadError(messageFromError(err));
+      if (folderAccountDataVersion.current === loadVersion) setLoadError(messageFromError(err));
+      return false;
     } finally {
-      setLoading(false);
+      if (folderAccountDataVersion.current === loadVersion) {
+        accountLoadInFlight.current = false;
+        folderAccountDataVersion.current += 1;
+        setLoading(false);
+      }
     }
   }, [loadStorage, syncSelectionToRoute]);
 
+  // A completed run needs one fresh per-folder history snapshot if SSE was
+  // missed. Keep this refresh away from editable account/identity form state.
+  const refreshFolderHistory = useCallback(async () => {
+    const refreshVersion = folderAccountDataVersion.current + 1;
+    folderAccountDataVersion.current = refreshVersion;
+    accountLoadInFlight.current = true;
+    try {
+      const data = await api.account();
+      if (folderAccountDataVersion.current !== refreshVersion) return false;
+      setRuns((current) => mergeUpdatedSyncRuns(current, data.sync_runs));
+      const incomingFolders = new Map(data.sync_folders.map((folder) => [folder.mailbox.id, folder]));
+      setFolders((current) => current.map((folder) => {
+        const incoming = incomingFolders.get(folder.mailbox.id);
+        if (!incoming) return folder;
+        const lastRun = newerSyncRun(folder.last_run, incoming.last_run);
+        return lastRun === folder.last_run ? folder : { ...folder, last_run: lastRun };
+      }));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (folderAccountDataVersion.current === refreshVersion) {
+        accountLoadInFlight.current = false;
+        folderAccountDataVersion.current += 1;
+      }
+    }
+  }, []);
+
   const needsFolderStatusRefresh = useMemo(
-    () => folders.some((folder) =>
-      folder.is_running ||
-      mailboxNeedsLocalMirrorRefresh(folder.mailbox) ||
-      mailboxNeedsFullTextRefresh(folder.mailbox)
+    () => route.kind === "imap" && !route.isNew && selectedAccountID !== null && (
+      folderRunRefreshAccounts.has(selectedAccountID) || folders.some((folder) =>
+        folder.mailbox.account_id === selectedAccountID && (
+          folder.is_running ||
+          mailboxNeedsLocalMirrorRefresh(folder.mailbox) ||
+          mailboxNeedsFullTextRefresh(folder.mailbox)
+        )
+      )
     ),
-    [folders]
+    [folderRunRefreshAccounts, folders, route.isNew, route.kind, selectedAccountID]
   );
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    const runningAccountIDs = new Set(folders.filter((folder) => folder.is_running).map((folder) => folder.mailbox.account_id));
+    if (runningAccountIDs.size === 0) return;
+    setFolderRunRefreshAccounts((current) => {
+      if (Array.from(runningAccountIDs).every((accountID) => current.has(accountID))) return current;
+      const next = new Set(current);
+      runningAccountIDs.forEach((accountID) => next.add(accountID));
+      return next;
+    });
+  }, [folders]);
 
   useEffect(() => {
     if (!loaded || !needsFolderStatusRefresh) return;
@@ -797,18 +924,36 @@ export function SettingsView({
 
     async function refreshStatus() {
       if (cancelled) return;
-      if (folderStatusRefreshInFlight.current) {
+      if (folderStatusRefreshInFlight.current || accountLoadInFlight.current) {
         scheduleRefresh();
         return;
       }
       folderStatusRefreshInFlight.current = true;
       try {
-        const data = await api.account();
-        if (cancelled) return;
-        setRuns(data.sync_runs);
-        setFolders(data.sync_folders);
-        setNotice(data.notice);
-        setAccountNeedsPassword(Boolean(data.account_needs_password));
+        const liveStateVersion = folderLiveStateVersion.current;
+        const accountDataVersion = folderAccountDataVersion.current;
+        const data = await api.folderProgress();
+        if (cancelled || accountDataVersion !== folderAccountDataVersion.current) return;
+        const preserveLiveSyncState = liveStateVersion !== folderLiveStateVersion.current;
+        const progressByMailbox = new Map(data.folders.map((item) => [item.mailbox_id, item]));
+        setFolders((current) => current.map((folder) => {
+          const progress = progressByMailbox.get(folder.mailbox.id);
+          return progress ? mergeFolderProgress(folder, progress, preserveLiveSyncState) : folder;
+        }));
+        const selectedID = selectedAccountIDRef.current;
+        if (selectedID !== null && folderRunRefreshAccounts.has(selectedID)) {
+          const selectedStillRunning = data.folders.some((item) =>
+            folderAccountIDsRef.current.get(item.mailbox_id) === selectedID && item.is_running
+          );
+          if (!selectedStillRunning && await refreshFolderHistory()) {
+            setFolderRunRefreshAccounts((current) => {
+              if (!current.has(selectedID)) return current;
+              const next = new Set(current);
+              next.delete(selectedID);
+              return next;
+            });
+          }
+        }
       } catch {
         // This is a quiet progress refresh; the initial load still surfaces errors.
       } finally {
@@ -822,7 +967,7 @@ export function SettingsView({
       cancelled = true;
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
     };
-  }, [loaded, needsFolderStatusRefresh]);
+  }, [folderRunRefreshAccounts, loaded, needsFolderStatusRefresh, refreshFolderHistory]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -853,6 +998,7 @@ export function SettingsView({
   }, [swipePreferences, user.id]);
 
   useEffect(() => {
+    folderLiveStateVersion.current += 1;
     setFolders((current) => current.map((folder) => {
       const mailbox = mailboxes.find((item) => item.id === folder.mailbox.id) || folder.mailbox;
       const matchesFolder = (run: SyncRun) => (
@@ -871,7 +1017,20 @@ export function SettingsView({
         (!latestChanged && syncRunning && folder.is_running);
       return {
         ...folder,
-        mailbox: { ...folder.mailbox, message_count: mailbox.message_count, unread_count: mailbox.unread_count },
+        mailbox: {
+          ...folder.mailbox,
+          message_count: mailbox.message_count,
+          unread_count: mailbox.unread_count,
+          last_uid: mailbox.last_uid,
+          remote_message_count: mailbox.remote_message_count,
+          remote_unread_count: mailbox.remote_unread_count,
+          remote_uid_next: mailbox.remote_uid_next,
+          sync_percent: mailbox.sync_percent,
+          local_message_count: mailbox.local_message_count,
+          local_sync_percent: mailbox.local_sync_percent,
+          search_index_purged: mailbox.search_index_purged,
+          search_index_state_known: mailbox.search_index_state_known
+        },
         is_running: isRunning,
         last_run: activeRun || latestFolderRun || folder.last_run
       };
@@ -1173,8 +1332,9 @@ export function SettingsView({
   // so each small UI control can optimistically patch the same mailbox object.
   async function saveFolderSettings(folder: SyncFolder, patch: Partial<Mailbox>): Promise<boolean> {
     const next = { ...folder.mailbox, ...patch };
+    const enablingSearch = !folder.mailbox.include_in_search && next.include_in_search;
     try {
-      await api.saveFolderSettings(csrf, folder.mailbox.id, {
+      const result = await api.saveFolderSettings(csrf, folder.mailbox.id, {
         sync_mode: next.sync_mode,
         role: next.role || "",
         icon: next.icon || "folder",
@@ -1182,9 +1342,40 @@ export function SettingsView({
         show_in_all_mail: next.show_in_all_mail,
         include_in_search: next.include_in_search
       });
-      setFolders((current) => current.map((item) => item.mailbox.id === folder.mailbox.id ? { ...item, mailbox: next } : item));
+      const optimisticMailbox = enablingSearch ? {
+        ...next,
+        search_index_purged: false,
+        search_index_state_known: false,
+        search_indexed_count: undefined,
+        search_index_total: undefined,
+        search_index_percent: undefined
+      } : next;
+      setFolders((current) => current.map((item) => item.mailbox.id === folder.mailbox.id
+        ? { ...item, mailbox: optimisticMailbox, is_running: result.queued || item.is_running }
+        : item));
+      if (result.queued) {
+        setFolderRunRefreshAccounts((current) => {
+          const nextAccounts = new Set(current);
+          nextAccounts.add(folder.mailbox.account_id);
+          return nextAccounts;
+        });
+      }
       addToast(`${folder.mailbox.name} updated.`);
       await refreshChrome();
+      if (result.queued) {
+        try {
+          const liveStateVersion = folderLiveStateVersion.current;
+          const progress = await api.folderProgress();
+          const preserveLiveSyncState = liveStateVersion !== folderLiveStateVersion.current;
+          const progressByMailbox = new Map(progress.folders.map((item) => [item.mailbox_id, item]));
+          setFolders((current) => current.map((item) => {
+            const snapshot = progressByMailbox.get(item.mailbox.id);
+            return snapshot ? mergeFolderProgress(item, snapshot, preserveLiveSyncState) : item;
+          }));
+        } catch {
+          // The queued run and regular compact poll still provide recovery.
+        }
+      }
       return true;
     } catch (err) {
       addToast(messageFromError(err), "error");
@@ -1414,7 +1605,9 @@ export function SettingsView({
       }
       const searchIndexedCount = folder.mailbox.search_indexed_count;
       const searchTotalCount = folder.mailbox.search_index_total;
-      const hasSearchCounts = typeof searchIndexedCount === "number" && typeof searchTotalCount === "number";
+      const searchIndexPurged = Boolean(folder.mailbox.search_index_purged);
+      const searchIndexKnown = folder.mailbox.search_index_state_known !== false;
+      const hasSearchCounts = searchIndexKnown && typeof searchIndexedCount === "number" && typeof searchTotalCount === "number";
       const searchCounts = hasSearchCounts
         ? `${searchIndexedCount.toLocaleString()}/${searchTotalCount.toLocaleString()}`
         : "count unavailable";
@@ -1425,13 +1618,21 @@ export function SettingsView({
         : null;
       const searchLabel = !folder.mailbox.include_in_search
         ? "Full text off"
-        : searchPercent === null
-          ? "Full text unavailable"
-          : `Full text ${searchCounts}`;
+        : searchIndexPurged
+          ? "Full text purged"
+          : !searchIndexKnown
+            ? "Full text unverified"
+            : searchPercent === null
+              ? "Full text unavailable"
+              : `Full text ${searchCounts}`;
       const searchProgressTitle = folder.mailbox.include_in_search
-        ? searchPercent === null
-          ? "Full-text search coverage is unavailable. Header and preview search may still work."
-          : `${formatStatCount(searchIndexedCount)} of ${formatStatCount(searchTotalCount)} locally mirrored messages have full-text search documents (${searchPercent}%).`
+        ? searchIndexPurged
+          ? "This folder's local full-text documents were deliberately purged. The next folder sync or an explicit rebuild will restore them."
+          : !searchIndexKnown
+            ? "Current full-text coverage has not been verified since this Rolltop upgrade. The next folder sync or an explicit rebuild will verify and repair it."
+            : searchPercent === null
+              ? "Full-text search coverage is unavailable. Header and preview search may still work."
+              : `${formatStatCount(searchIndexedCount)} of ${formatStatCount(searchTotalCount)} locally mirrored messages completed a full-text indexing commit (${searchPercent}%). Background repair verifies current index contents.`
         : "Full-message search is disabled for this folder.";
       const currentRole = folder.mailbox.role || "";
       const currentIcon = folder.mailbox.icon || "folder";

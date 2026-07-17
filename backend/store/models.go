@@ -148,6 +148,8 @@ type MailboxSummary struct {
 	SearchIndexedCount *int
 	SearchIndexTotal   *int
 	SearchIndexPercent *int
+	SearchIndexPurged  bool
+	SearchIndexKnown   bool
 }
 
 // AccountPurgeEstimate is the local data footprint shown before deleting an

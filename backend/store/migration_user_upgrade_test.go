@@ -533,6 +533,7 @@ func currentUserMigrationSetsForUpgradeTest() []migrationSet {
 		userBlobCleanupQueueMigrationSet(),
 		userMailboxGenerationArrivalFloorMigrationSet(),
 		userMessageImportCompletionMigrationSet(),
+		userSearchProgressIndexMigrationSet(),
 	)
 }
 

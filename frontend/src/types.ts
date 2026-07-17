@@ -63,6 +63,8 @@ export type Mailbox = {
   search_indexed_count?: number;
   search_index_total?: number;
   search_index_percent?: number;
+  search_index_purged?: boolean;
+  search_index_state_known?: boolean;
 };
 
 /** Message is the API's compact message record used in lists and thread cards. */
@@ -437,6 +439,26 @@ export type SyncFolder = {
   is_running: boolean;
   last_run: SyncRun | null;
   can_sync_now: boolean;
+};
+
+/** FolderProgress is the small, frequently refreshed subset of a settings row. */
+export type FolderProgress = {
+  mailbox_id: number;
+  message_count: number;
+  unread_count: number;
+  last_uid: number;
+  remote_message_count: number;
+  remote_unread_count: number;
+  remote_uid_next: number;
+  sync_percent: number;
+  local_message_count: number;
+  local_sync_percent: number;
+  search_indexed_count?: number;
+  search_index_total?: number;
+  search_index_percent?: number;
+  search_index_purged: boolean;
+  search_index_state_known: boolean;
+  is_running: boolean;
 };
 
 /** StorageStats is a flexible storage usage payload keyed by backend stat names. */

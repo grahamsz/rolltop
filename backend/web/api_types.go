@@ -64,6 +64,8 @@ type apiMailbox struct {
 	SearchIndexedCount *int   `json:"search_indexed_count,omitempty"`
 	SearchIndexTotal   *int   `json:"search_index_total,omitempty"`
 	SearchIndexPercent *int   `json:"search_index_percent,omitempty"`
+	SearchIndexPurged  bool   `json:"search_index_purged"`
+	SearchIndexKnown   bool   `json:"search_index_state_known"`
 }
 
 type apiAccount struct {
@@ -347,6 +349,28 @@ type apiSyncFolder struct {
 	IsRunning  bool        `json:"is_running"`
 	LastRun    *apiSyncRun `json:"last_run"`
 	CanSyncNow bool        `json:"can_sync_now"`
+}
+
+// apiFolderProgress is the changing subset of a settings folder row. Keeping
+// this separate avoids polling credentials, identities, contacts, and every
+// other account setting while sync/index work is running.
+type apiFolderProgress struct {
+	MailboxID          int64  `json:"mailbox_id"`
+	MessageCount       int    `json:"message_count"`
+	UnreadCount        int    `json:"unread_count"`
+	LastUID            uint32 `json:"last_uid"`
+	RemoteMessageCount int    `json:"remote_message_count"`
+	RemoteUnreadCount  int    `json:"remote_unread_count"`
+	RemoteUIDNext      uint32 `json:"remote_uid_next"`
+	SyncPercent        int    `json:"sync_percent"`
+	LocalMessageCount  int    `json:"local_message_count"`
+	LocalSyncPercent   int    `json:"local_sync_percent"`
+	SearchIndexedCount *int   `json:"search_indexed_count,omitempty"`
+	SearchIndexTotal   *int   `json:"search_index_total,omitempty"`
+	SearchIndexPercent *int   `json:"search_index_percent,omitempty"`
+	SearchIndexPurged  bool   `json:"search_index_purged"`
+	SearchIndexKnown   bool   `json:"search_index_state_known"`
+	IsRunning          bool   `json:"is_running"`
 }
 
 type apiPluginSetting struct {

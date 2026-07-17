@@ -11,6 +11,7 @@ import type {
   ComposeForm,
   ComposeIdentity,
   Conversation,
+  FolderProgress,
   MailListResponse,
   Mailbox,
   MailIdentity,
@@ -431,6 +432,7 @@ export const api = {
       notice: string;
       account_needs_password?: boolean;
     }>("/api/account"),
+  folderProgress: () => getJSON<{ folders: FolderProgress[] }>("/api/account/folders/progress"),
   storage: () => getJSON<StorageStats>("/api/storage"),
   plugins: () => getJSON<{ enabled: string[] }>("/api/plugins"),
   saveProfile: (csrf: string, profile: {
@@ -472,7 +474,7 @@ export const api = {
   setFolderMode: (csrf: string, id: number, syncMode: string) =>
     postJSON<{ ok: boolean }>(`/api/account/folders/${id}/mode`, csrf, { sync_mode: syncMode }),
   saveFolderSettings: (csrf: string, id: number, settings: Record<string, unknown>) =>
-    postJSON<{ ok: boolean }>(`/api/account/folders/${id}/settings`, csrf, settings),
+    postJSON<{ ok: boolean; queued?: boolean; run_id?: number }>(`/api/account/folders/${id}/settings`, csrf, settings),
   syncFolder: (csrf: string, id: number) => postJSON<{ ok: boolean }>(`/api/account/folders/${id}/sync`, csrf),
   rebuildFolderSearchIndex: (csrf: string, id: number) =>
     postJSON<{ ok: boolean; queued: boolean; run_id: number }>(`/api/account/folders/${id}/search-index/rebuild`, csrf),

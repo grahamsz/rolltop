@@ -95,3 +95,70 @@ func TestPurgeMailboxSearchIndexReportsIncrementalProgressAt251Documents(t *test
 		t.Fatalf("progress snapshots=%+v, want %+v", snapshots, want)
 	}
 }
+
+func TestPurgeMailboxSearchIndexHidesProgressWithoutRequeueingAttachments(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchService, err := search.OpenPerUser(filepath.Join(dir, "users"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchService.Close()
+	user, err := db.CreateUser(ctx, "purge-marker@example.test", "Purge marker", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.UpsertMailAccount(ctx, store.MailAccount{
+		UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993,
+		Username: user.Email, EncryptedPassword: "encrypted", UseTLS: true, Mailbox: "INBOX",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "INBOX")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := db.CreateBlob(ctx, store.BlobRecord{
+		UserID: user.ID, Kind: "message", Path: "messages/purge-marker.eml", SHA256: "purge-marker", Size: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := db.CreateMessage(ctx, store.CreateMessage{
+		UserID: user.ID, AccountID: account.ID, MailboxID: mailbox.ID, BlobID: blob.ID,
+		UID: 1, Date: time.Now(), InternalDate: time.Now(), Subject: "purge marker",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := searchService.IndexMessage(ctx, message, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkMessageAttachmentIndexed(ctx, user.ID, message.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: db, Search: searchService}
+	if deleted, err := service.PurgeMailboxSearchIndex(ctx, user.ID, mailbox.ID); err != nil || deleted != 1 {
+		t.Fatalf("purge deleted=%d err=%v, want 1, nil", deleted, err)
+	}
+	counts, err := db.CountSearchIndexedMessagesByMailbox(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[mailbox.ID] != 0 {
+		t.Fatalf("committed progress after purge = %v, want mailbox explicitly purged", counts)
+	}
+	indexedIDs, err := db.ListSearchIndexedMessageIDsForMailbox(ctx, user.ID, mailbox.ID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(indexedIDs, []int64{message.ID}) {
+		t.Fatalf("post-commit markers after purge = %v, want [%d] so ordinary attachment recovery does not rebuild", indexedIDs, message.ID)
+	}
+}

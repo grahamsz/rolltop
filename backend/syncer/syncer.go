@@ -643,6 +643,16 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				return run, err
 			}
 		}
+		// Consume an explicit purge before fetching the incremental delta. Newly
+		// fetched documents then retain their post-commit markers while the repair
+		// pass below restores only missing historical documents.
+		if s.Search != nil && mailbox.IncludeInSearch && !generationRebuildPending && !options.deferOrdinaryMaintenanceNow() {
+			if _, err := s.Store.PreparePurgedMailboxSearchIndexRepair(ctx, userID, mailbox.ID); err != nil {
+				status = "failed"
+				errText = err.Error()
+				return run, err
+			}
+		}
 		generationRecoveryPhase(ctx, "plugin-hook-discovery", "")
 		classifiers, storedHooks, err := s.postStorePluginHooks(ctx)
 		if err != nil {
