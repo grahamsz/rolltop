@@ -335,7 +335,7 @@ func (f *Fetcher) loginByContext(ctx context.Context, account store.MailAccount)
 		go func() {
 			result := <-results
 			if result.client != nil {
-				_ = result.client.Terminate()
+				_ = terminateClient(result.client)
 			}
 		}()
 		return nil, ctx.Err()

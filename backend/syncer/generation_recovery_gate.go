@@ -31,6 +31,7 @@ type generationRecoveryActivity struct {
 	mailbox     string
 	startedAt   time.Time
 	diagnostics *generationRecoveryDiagnostics
+	cancel      context.CancelFunc
 }
 
 // SignalMailboxGenerationRecovery closes the tenant gate as soon as a normal
@@ -343,12 +344,12 @@ func (r *Runner) runGenerationRecoveryReplay(replay generationRecoveryReplay) {
 			continue
 		}
 		if r.foregroundRunning[prepared.userID] > 0 {
+			// Foreground release will pick up any pending derived work. Clear the
+			// replay ownership before returning so foreground acquisition cannot
+			// race the replay goroutine's final handoff.
+			delete(r.generationRecoveryReplay, prepared.userID)
 			r.mu.Unlock()
-			if waitForGenerationRecoveryReplay(r.context(), 10*time.Millisecond) != nil {
-				return
-			}
-			replay = generationRecoveryReplay{userID: prepared.userID}
-			continue
+			return
 		}
 		// Search indexing and sender statistics are derived maintenance. Release
 		// the broad replay gate before running either one so a slow Bleve writer
@@ -533,11 +534,24 @@ func (r *Runner) reserveGenerationRecoveryReplayAccountMailboxes(userID, account
 func (r *Runner) generationRecoveryInterrupted(userID int64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.generationRecoveryUsers[userID] || !r.generationRecoveryReplay[userID]
+	return r.generationRecoveryUsers[userID] || r.foregroundRunning[userID] > 0 ||
+		!r.generationRecoveryReplay[userID]
 }
 
 func (r *Runner) pauseGenerationRecoveryReplay(replay generationRecoveryReplay) {
 	r.mu.Lock()
+	if r.foregroundRunning[replay.userID] > 0 {
+		if replay.auto {
+			r.foregroundDeferredAuto[replay.userID] = true
+		}
+		r.deferForegroundMailboxesLocked(replay.userID, replay.mailboxes)
+		for _, request := range replay.accountMailboxes {
+			r.deferForegroundAccountMailboxesLocked(replay.userID, request.accountID, []string{request.mailbox})
+		}
+		delete(r.generationRecoveryReplay, replay.userID)
+		r.mu.Unlock()
+		return
+	}
 	if replay.auto {
 		r.generationRecoveryAuto[replay.userID] = true
 	}
@@ -815,6 +829,25 @@ func (r *Runner) generationRecoveryDiagnosticsForUser(userID int64) *generationR
 	return r.generationRecoveryActive[userID].diagnostics
 }
 
+func (r *Runner) registerGenerationRecoveryCancellation(userID int64, cancel context.CancelFunc) {
+	if r == nil || userID <= 0 || cancel == nil {
+		return
+	}
+	r.mu.Lock()
+	activity, active := r.generationRecoveryActive[userID]
+	if active && r.generationRecoveryRuns[userID] {
+		activity.cancel = cancel
+		r.generationRecoveryActive[userID] = activity
+	}
+	foreground := r.foregroundRunning[userID] > 0
+	r.mu.Unlock()
+	// A foreground operation may have claimed the tenant between recovery
+	// reservation and context construction. Honor it before remote work begins.
+	if active && foreground {
+		cancel()
+	}
+}
+
 func (r *Runner) releaseGenerationRecoveryMailbox(userID int64, keys []string) {
 	r.mu.Lock()
 	for _, key := range keys {
@@ -853,7 +886,8 @@ func (r *Runner) ordinaryMailboxSyncRunningLocked(userID int64) bool {
 }
 
 func (r *Runner) mailboxWriterRunningLocked(userID int64) bool {
-	if r.generationRecoveryRuns[userID] || r.autoPlanning[userID] {
+	if r.generationRecoveryRuns[userID] || r.generationRecoveryReplay[userID] || r.autoPlanning[userID] ||
+		(r.foregroundDeferredAuto[userID] && r.autoRunning[userID]) {
 		return true
 	}
 	prefix := mailboxKey(userID, "")

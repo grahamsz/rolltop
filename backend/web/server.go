@@ -58,6 +58,9 @@ type Options struct {
 	SessionTTL   time.Duration
 	CookieSecure bool
 	WebhookToken string
+	// DisableBackgroundWorkers is used by focused embeddings and tests that
+	// explicitly drive scheduler behavior themselves.
+	DisableBackgroundWorkers bool
 }
 
 // Server owns HTTP handlers, shared services, session settings, event fanout, and lightweight caches.
@@ -330,9 +333,11 @@ func New(opts Options) (*Server, error) {
 	}
 	srv.startAutoStartBackendPlugins(context.Background())
 	srv.warmAllMailFirstPages(context.Background())
-	srv.resumeNewMailWebPushAsync()
-	srv.resumeSnoozeReminderWebPushAsync()
-	srv.startSnoozeScheduler()
+	if !opts.DisableBackgroundWorkers {
+		srv.resumeNewMailWebPushAsync()
+		srv.resumeSnoozeReminderWebPushAsync()
+		srv.startSnoozeScheduler()
+	}
 	return srv, nil
 }
 

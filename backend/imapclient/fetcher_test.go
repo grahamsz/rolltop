@@ -390,6 +390,60 @@ func TestTerminateClientOnContextUnblocksStalledCommand(t *testing.T) {
 	}
 }
 
+func TestTerminateClientSuppressesIntentionalCloseLog(t *testing.T) {
+	c, serverDone := newCleanupTestClient(t)
+	var errorLog bytes.Buffer
+	c.ErrorLog = log.New(&errorLog, "", 0)
+
+	if err := terminateClient(c); err != nil {
+		t.Fatal(err)
+	}
+	<-c.LoggedOut()
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(errorLog.String()); got != "" {
+		t.Fatalf("intentional client close logged an error: %q", got)
+	}
+}
+
+func TestUnmarkedClientCloseStillLogsTransportError(t *testing.T) {
+	c, serverDone := newCleanupTestClient(t)
+	var errorLog bytes.Buffer
+	c.ErrorLog = log.New(&errorLog, "", 0)
+
+	if err := c.Terminate(); err != nil {
+		t.Fatal(err)
+	}
+	<-c.LoggedOut()
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(errorLog.String()); got == "" {
+		t.Fatal("unmarked transport close was unexpectedly suppressed")
+	}
+}
+
+func newCleanupTestClient(t *testing.T) (*client.Client, <-chan error) {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	serverDone := make(chan error, 1)
+	go func() {
+		defer serverConn.Close()
+		if _, err := io.WriteString(serverConn, "* OK [CAPABILITY IMAP4rev1] test server ready\r\n"); err != nil {
+			serverDone <- err
+			return
+		}
+		_, err := io.Copy(io.Discard, serverConn)
+		serverDone <- err
+	}()
+	c, err := client.New(clientConn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, serverDone
+}
+
 func TestProbeCapabilitiesReportsAuthenticatedServerSupport(t *testing.T) {
 	supporter := &fakeCapabilitySupporter{supported: map[string]bool{"IDLE": true}}
 	got, err := probeCapabilities(supporter)

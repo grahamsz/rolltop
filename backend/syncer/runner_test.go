@@ -18,27 +18,64 @@ import (
 type autoForegroundPriorityFetcher struct {
 	*moveTestFetcher
 	firstStarted  chan struct{}
-	releaseFirst  chan struct{}
+	firstCanceled chan struct{}
 	secondStarted chan struct{}
+	inboxCalls    atomic.Int32
+	archiveCalls  atomic.Int32
 }
 
 func (f *autoForegroundPriorityFetcher) MailboxStatus(ctx context.Context, _ store.MailAccount, mailbox string) (MailboxStatus, error) {
 	switch strings.ToLower(strings.TrimSpace(mailbox)) {
 	case "inbox":
+		if f.inboxCalls.Add(1) > 1 {
+			break
+		}
 		select {
 		case f.firstStarted <- struct{}{}:
 		default:
 		}
+		<-ctx.Done()
 		select {
-		case <-f.releaseFirst:
-		case <-ctx.Done():
-			return MailboxStatus{}, ctx.Err()
+		case f.firstCanceled <- struct{}{}:
+		default:
 		}
+		return MailboxStatus{}, ctx.Err()
 	case "archive":
+		f.archiveCalls.Add(1)
 		select {
 		case f.secondStarted <- struct{}{}:
 		default:
 		}
+	}
+	return MailboxStatus{UIDNext: 1, UIDValidity: 1}, nil
+}
+
+type slowReplayYieldFetcher struct {
+	*moveTestFetcher
+	started  chan struct{}
+	canceled chan struct{}
+	release  chan struct{}
+	resumed  chan struct{}
+	calls    atomic.Int32
+}
+
+func (f *slowReplayYieldFetcher) MailboxStatus(ctx context.Context, _ store.MailAccount, _ string) (MailboxStatus, error) {
+	if f.calls.Add(1) == 1 {
+		select {
+		case f.started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		select {
+		case f.canceled <- struct{}{}:
+		default:
+		}
+		<-f.release
+		return MailboxStatus{}, ctx.Err()
+	}
+	select {
+	case f.resumed <- struct{}{}:
+	default:
 	}
 	return MailboxStatus{UIDNext: 1, UIDValidity: 1}, nil
 }
@@ -668,6 +705,7 @@ func TestRunnerForegroundWaitsForActiveGenerationRecoveryReplay(t *testing.T) {
 	}
 	r.mu.Lock()
 	delete(r.mailboxRunning, replayKey)
+	delete(r.generationRecoveryReplay, userID)
 	r.mu.Unlock()
 	startedResult := <-started
 	if startedResult.err != nil {
@@ -677,6 +715,9 @@ func TestRunnerForegroundWaitsForActiveGenerationRecoveryReplay(t *testing.T) {
 		t.Fatal("replay resumed while the foreground operation remained active")
 	}
 	startedResult.finish()
+	r.mu.Lock()
+	r.generationRecoveryReplay[userID] = true
+	r.mu.Unlock()
 	keys, ok := r.reserveGenerationRecoveryReplayAccountMailboxes(userID, 301, []string{"INBOX"})
 	if !ok {
 		t.Fatal("replay did not become ready after the foreground operation finished")
@@ -689,12 +730,23 @@ func TestRunnerForegroundWaitsForActiveGenerationRecoveryReplay(t *testing.T) {
 	r.mu.Unlock()
 }
 
-func TestRunnerForegroundWaitsForActiveGenerationRecoveryRun(t *testing.T) {
+func TestRunnerForegroundPreemptsActiveGenerationRecoveryRun(t *testing.T) {
 	r := NewRunnerWithContext(context.Background(), nil)
 	userID := int64(79)
-	r.mu.Lock()
-	r.generationRecoveryRuns[userID] = true
-	r.mu.Unlock()
+	rebuild := store.PendingMailboxGenerationRebuild{UserID: userID, AccountID: 301, MailboxName: "Gmail Forward"}
+	keys, ok := r.reserveGenerationRecoveryMailbox(rebuild)
+	if !ok {
+		t.Fatal("generation recovery reservation failed")
+	}
+	recoveryCtx, cancelRecovery := context.WithCancel(context.Background())
+	defer cancelRecovery()
+	r.registerGenerationRecoveryCancellation(userID, cancelRecovery)
+	recoveryCanceled := make(chan struct{})
+	go func() {
+		<-recoveryCtx.Done()
+		close(recoveryCanceled)
+		r.releaseGenerationRecoveryMailbox(userID, keys)
+	}()
 
 	type result struct {
 		finish func()
@@ -705,25 +757,69 @@ func TestRunnerForegroundWaitsForActiveGenerationRecoveryRun(t *testing.T) {
 		finish, err := r.BeginForegroundOperation(context.Background(), userID)
 		started <- result{finish: finish, err: err}
 	}()
-	time.Sleep(20 * time.Millisecond)
 	select {
-	case result := <-started:
-		t.Fatalf("foreground operation overlapped generation recovery: %v", result.err)
-	default:
+	case <-recoveryCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("foreground operation did not cancel generation recovery")
 	}
-	r.mu.Lock()
-	delete(r.generationRecoveryRuns, userID)
-	r.mu.Unlock()
-	startedResult := <-started
+	var startedResult result
+	select {
+	case startedResult = <-started:
+	case <-time.After(time.Second):
+		t.Fatal("foreground operation did not acquire after generation recovery yielded")
+	}
 	if startedResult.err != nil {
 		t.Fatal(startedResult.err)
 	}
-	startedResult.finish()
 	r.mu.Lock()
-	foreground := r.foregroundRunning[userID]
+	gateActive := r.generationRecoveryUsers[userID]
 	r.mu.Unlock()
-	if foreground != 0 {
-		t.Fatalf("foreground reservation count after finish=%d, want 0", foreground)
+	if !gateActive {
+		t.Fatal("preemption cleared the durable generation recovery gate")
+	}
+	startedResult.finish()
+	resumedKeys, resumed := r.reserveGenerationRecoveryMailbox(rebuild)
+	if !resumed {
+		t.Fatal("generation recovery was not resumable after foreground release")
+	}
+	r.releaseGenerationRecoveryMailbox(userID, resumedKeys)
+}
+
+func TestRunnerForegroundDoesNotPreemptAnotherTenant(t *testing.T) {
+	r := NewRunnerWithContext(context.Background(), nil)
+	const (
+		foregroundUserID = int64(79)
+		otherUserID      = int64(80)
+		otherAccountID   = int64(301)
+	)
+	mailboxes := []string{"INBOX"}
+	keys := accountMailboxKeys(otherUserID, otherAccountID, mailboxes)
+	r.mu.Lock()
+	for _, key := range keys {
+		r.mailboxRunning[key] = true
+	}
+	r.startMailboxWorkActivitiesLocked(otherUserID, otherAccountID, mailboxes, keys, runnerWorkMailboxSync)
+	r.mu.Unlock()
+	otherCtx, finishOther := r.ordinaryMailboxContext(otherUserID, keys, false)
+	defer func() {
+		finishOther()
+		r.mu.Lock()
+		for _, key := range keys {
+			delete(r.mailboxRunning, key)
+		}
+		r.finishMailboxWorkActivitiesLocked(keys)
+		r.mu.Unlock()
+	}()
+
+	finishForeground, err := r.BeginForegroundOperation(context.Background(), foregroundUserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finishForeground()
+	select {
+	case <-otherCtx.Done():
+		t.Fatalf("foreground operation canceled another tenant's mailbox work: %v", otherCtx.Err())
+	default:
 	}
 }
 
@@ -747,10 +843,25 @@ func TestRunnerCanceledForegroundWaitReleasesReservation(t *testing.T) {
 	}
 	r.mu.Lock()
 	foreground := r.foregroundRunning[userID]
+	r.mu.Unlock()
+	if foreground != 1 {
+		t.Fatalf("foreground reservation count while recovery drains=%d, want 1", foreground)
+	}
+	r.mu.Lock()
 	delete(r.generationRecoveryRuns, userID)
 	r.mu.Unlock()
-	if foreground != 0 {
-		t.Fatalf("canceled foreground reservation count=%d, want 0", foreground)
+	deadline := time.Now().Add(time.Second)
+	for {
+		r.mu.Lock()
+		foreground = r.foregroundRunning[userID]
+		r.mu.Unlock()
+		if foreground == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("drained foreground reservation count=%d, want 0", foreground)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -1015,6 +1126,85 @@ func TestForegroundOperationSerializesExistingAndNewMailboxWriters(t *testing.T)
 	r.releaseAccountMailboxReservations(userID, 202, []string{"INBOX"}, mailbox.keys)
 }
 
+func TestForegroundOperationDoesNotCancelExplicitMailboxMaintenance(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "foreground-maintenance@example.test", "Foreground Maintenance", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, store.MailAccount{
+		UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993,
+		Username: user.Email, EncryptedPassword: "secret", UseTLS: true, Mailbox: "Archive",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunnerWithContext(ctx, &Service{Store: db})
+	maintenanceStarted := make(chan struct{})
+	maintenanceCanceled := make(chan struct{}, 1)
+	releaseMaintenance := make(chan struct{})
+	if _, started, err := r.StartMailboxMaintenance(user.ID, mailbox, "Explicit maintenance", func(workCtx context.Context, _ int64, _ *store.SyncProgress) error {
+		close(maintenanceStarted)
+		select {
+		case <-workCtx.Done():
+			maintenanceCanceled <- struct{}{}
+			return workCtx.Err()
+		case <-releaseMaintenance:
+			return nil
+		}
+	}); err != nil || !started {
+		t.Fatalf("start maintenance: started=%t err=%v", started, err)
+	}
+	select {
+	case <-maintenanceStarted:
+	case <-time.After(time.Second):
+		t.Fatal("explicit maintenance did not start")
+	}
+
+	type foregroundResult struct {
+		finish func()
+		err    error
+	}
+	foregroundStarted := make(chan foregroundResult, 1)
+	go func() {
+		finish, beginErr := r.BeginForegroundOperation(ctx, user.ID)
+		foregroundStarted <- foregroundResult{finish: finish, err: beginErr}
+	}()
+	select {
+	case <-maintenanceCanceled:
+		t.Fatal("foreground operation canceled explicit maintenance")
+	case result := <-foregroundStarted:
+		t.Fatalf("foreground operation overlapped explicit maintenance: %v", result.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseMaintenance)
+	select {
+	case result := <-foregroundStarted:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		result.finish()
+	case <-time.After(time.Second):
+		t.Fatal("foreground operation did not acquire after explicit maintenance finished")
+	}
+	select {
+	case <-maintenanceCanceled:
+		t.Fatal("explicit maintenance reported cancellation")
+	default:
+	}
+	waitForRunnerUserIdle(t, r, user.ID)
+}
+
 func TestForegroundOperationsAreSerializedPerUser(t *testing.T) {
 	r := NewRunner(nil)
 	const userID = int64(85)
@@ -1079,7 +1269,7 @@ func TestForegroundOperationPreemptsNextAutoMailbox(t *testing.T) {
 	fetcher := &autoForegroundPriorityFetcher{
 		moveTestFetcher: &moveTestFetcher{},
 		firstStarted:    make(chan struct{}, 1),
-		releaseFirst:    make(chan struct{}),
+		firstCanceled:   make(chan struct{}, 1),
 		secondStarted:   make(chan struct{}, 1),
 	}
 	r := NewRunnerWithContext(ctx, &Service{Store: db, Fetcher: fetcher})
@@ -1102,11 +1292,10 @@ func TestForegroundOperationPreemptsNextAutoMailbox(t *testing.T) {
 		foregroundStarted <- foregroundResult{finish: finish, err: err}
 	}()
 	select {
-	case result := <-foregroundStarted:
-		t.Fatalf("foreground operation overlapped first auto mailbox: %v", result.err)
-	case <-time.After(30 * time.Millisecond):
+	case <-fetcher.firstCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("foreground operation did not cancel the active auto mailbox")
 	}
-	close(fetcher.releaseFirst)
 
 	var foreground foregroundResult
 	select {
@@ -1131,7 +1320,7 @@ func TestForegroundOperationPreemptsNextAutoMailbox(t *testing.T) {
 	waitForRunnerUserIdle(t, r, user.ID)
 }
 
-func TestAutoMailboxPlanningWaitsForCanceledAttachmentWorker(t *testing.T) {
+func TestForegroundOperationPreemptsAutoPlanningWaitingOnAttachmentWorker(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
@@ -1183,11 +1372,244 @@ func TestAutoMailboxPlanningWaitsForCanceledAttachmentWorker(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("foreground operation did not start after auto planning")
 	}
-	if _, err := db.GetMailbox(ctx, user.ID, account.ID, "Archive"); err != nil {
-		t.Fatalf("foreground operation overlapped unfinished auto planning: %v", err)
+	if _, err := db.GetMailbox(ctx, user.ID, account.ID, "Archive"); !store.IsNotFound(err) {
+		t.Fatalf("canceled auto planning touched mailbox before foreground release: %v", err)
 	}
 	finish()
 	waitForRunnerUserIdle(t, r, user.ID)
+	if _, err := db.GetMailbox(ctx, user.ID, account.ID, "Archive"); err != nil {
+		t.Fatalf("auto planning did not resume after foreground release: %v", err)
+	}
+}
+
+func TestForegroundOperationPreemptsAndReplaysAutoPlanning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "foreground-plan@example.test", "Foreground Plan", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunnerWithContext(ctx, &Service{Store: db})
+	planningCtx, cancelPlanning := context.WithCancel(ctx)
+	planningCanceled := make(chan struct{})
+	r.mu.Lock()
+	r.autoRunning[user.ID] = true
+	r.autoPlanning[user.ID] = true
+	r.autoCancels[user.ID] = cancelPlanning
+	r.mu.Unlock()
+	go func() {
+		<-planningCtx.Done()
+		r.mu.Lock()
+		delete(r.autoPlanning, user.ID)
+		delete(r.autoRunning, user.ID)
+		delete(r.autoCancels, user.ID)
+		r.mu.Unlock()
+		close(planningCanceled)
+	}()
+
+	finish, err := r.BeginForegroundOperation(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-planningCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("foreground operation did not cancel auto planning")
+	}
+	r.mu.Lock()
+	deferred := r.foregroundDeferredAuto[user.ID]
+	r.mu.Unlock()
+	if !deferred {
+		t.Fatal("canceled auto planning was not retained for replay")
+	}
+	finish()
+	waitForRunnerUserIdle(t, r, user.ID)
+	r.mu.Lock()
+	deferred = r.foregroundDeferredAuto[user.ID]
+	r.mu.Unlock()
+	if deferred {
+		t.Fatal("auto planning replay remained deferred after foreground release")
+	}
+}
+
+func TestCanceledForegroundAcquisitionDrainsAndReplaysAutoPlanning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "foreground-timeout-auto@example.test", "Foreground Timeout Auto", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.CreateMailAccount(ctx, store.MailAccount{
+		UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993,
+		Username: user.Email, EncryptedPassword: "secret", UseTLS: true, Mailbox: "Archive",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := db.GetOrCreateMailbox(ctx, user.ID, account.ID, "Archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateMailboxSyncMode(ctx, user.ID, mailbox.ID, "auto"); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &autoForegroundPriorityFetcher{
+		moveTestFetcher: &moveTestFetcher{},
+		firstStarted:    make(chan struct{}, 1),
+		firstCanceled:   make(chan struct{}, 1),
+		secondStarted:   make(chan struct{}, 1),
+	}
+	r := NewRunnerWithContext(ctx, &Service{Store: db, Fetcher: fetcher})
+	planningCtx, cancelPlanning := context.WithCancel(ctx)
+	planningCanceled := make(chan struct{})
+	releasePlanningCleanup := make(chan struct{})
+	r.mu.Lock()
+	r.autoRunning[user.ID] = true
+	r.autoPlanning[user.ID] = true
+	r.autoCancels[user.ID] = cancelPlanning
+	r.mu.Unlock()
+	go func() {
+		<-planningCtx.Done()
+		close(planningCanceled)
+		<-releasePlanningCleanup
+		r.mu.Lock()
+		delete(r.autoPlanning, user.ID)
+		delete(r.autoRunning, user.ID)
+		delete(r.autoCancels, user.ID)
+		r.mu.Unlock()
+	}()
+
+	acquireCtx, cancelAcquire := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer cancelAcquire()
+	started := time.Now()
+	finish, err := r.BeginForegroundOperation(acquireCtx, user.ID)
+	finish()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("foreground acquisition error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("foreground acquisition took %s, want prompt timeout", elapsed)
+	}
+	select {
+	case <-planningCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("foreground acquisition did not cancel auto planning")
+	}
+	r.mu.Lock()
+	foreground := r.foregroundRunning[user.ID]
+	deferred := r.foregroundDeferredAuto[user.ID]
+	r.mu.Unlock()
+	if foreground != 1 || !deferred {
+		t.Fatalf("draining foreground=%d deferred_auto=%t, want 1/true", foreground, deferred)
+	}
+	if got := fetcher.archiveCalls.Load(); got != 0 {
+		t.Fatalf("auto replay calls before cleanup = %d, want 0", got)
+	}
+
+	close(releasePlanningCleanup)
+	select {
+	case <-fetcher.secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("auto planning was not replayed after canceled worker drained")
+	}
+	waitForRunnerUserIdle(t, r, user.ID)
+	if got := fetcher.archiveCalls.Load(); got != 1 {
+		t.Fatalf("auto replay calls = %d, want exactly 1", got)
+	}
+	r.mu.Lock()
+	foreground = r.foregroundRunning[user.ID]
+	deferred = r.foregroundDeferredAuto[user.ID]
+	r.mu.Unlock()
+	if foreground != 0 || deferred {
+		t.Fatalf("drained foreground=%d deferred_auto=%t, want 0/false", foreground, deferred)
+	}
+}
+
+func TestCanceledForegroundAcquisitionDrainsAndReplaysRecoveryMailbox(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	user, err := db.CreateUser(ctx, "foreground-timeout-replay@example.test", "Foreground Timeout Replay", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateMailAccount(ctx, store.MailAccount{
+		UserID: user.ID, Email: user.Email, Host: "imap.example.test", Port: 993,
+		Username: user.Email, EncryptedPassword: "secret", UseTLS: true, Mailbox: "Archive",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &slowReplayYieldFetcher{
+		moveTestFetcher: &moveTestFetcher{},
+		started:         make(chan struct{}, 1),
+		canceled:        make(chan struct{}, 1),
+		release:         make(chan struct{}),
+		resumed:         make(chan struct{}, 1),
+	}
+	r := NewRunnerWithContext(ctx, &Service{Store: db, Fetcher: fetcher})
+	r.mu.Lock()
+	r.generationRecoveryReplay[user.ID] = true
+	r.mu.Unlock()
+	go r.runGenerationRecoveryReplay(generationRecoveryReplay{userID: user.ID, mailboxes: []string{"Archive"}})
+	select {
+	case <-fetcher.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("recovery replay did not start")
+	}
+
+	acquireCtx, cancelAcquire := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer cancelAcquire()
+	finish, err := r.BeginForegroundOperation(acquireCtx, user.ID)
+	finish()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("foreground acquisition error = %v, want deadline exceeded", err)
+	}
+	select {
+	case <-fetcher.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("foreground acquisition did not cancel recovery replay")
+	}
+	r.mu.Lock()
+	foreground := r.foregroundRunning[user.ID]
+	replayActive := r.generationRecoveryReplay[user.ID]
+	r.mu.Unlock()
+	if foreground != 1 || !replayActive {
+		t.Fatalf("draining foreground=%d replay_active=%t, want 1/true", foreground, replayActive)
+	}
+
+	close(fetcher.release)
+	select {
+	case <-fetcher.resumed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("recovery mailbox was not replayed after canceled worker drained")
+	}
+	waitForRunnerUserIdle(t, r, user.ID)
+	if got := fetcher.calls.Load(); got != 2 {
+		t.Fatalf("recovery mailbox status calls = %d, want exactly 2", got)
+	}
+	r.mu.Lock()
+	foreground = r.foregroundRunning[user.ID]
+	replayActive = r.generationRecoveryReplay[user.ID]
+	deferredBoxes := len(r.foregroundDeferredBoxes[user.ID])
+	r.mu.Unlock()
+	if foreground != 0 || replayActive || deferredBoxes != 0 {
+		t.Fatalf("drained foreground=%d replay_active=%t deferred_boxes=%d, want 0/false/0",
+			foreground, replayActive, deferredBoxes)
+	}
 }
 
 func TestForegroundQueueDefersWithoutWaitingOnItsOwnReservation(t *testing.T) {

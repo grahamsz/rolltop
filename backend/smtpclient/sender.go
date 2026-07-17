@@ -70,6 +70,29 @@ type Sender struct {
 	Timeout   time.Duration
 }
 
+type smtpIdleDeadlineConn struct {
+	net.Conn
+	timeout time.Duration
+}
+
+func (c *smtpIdleDeadlineConn) Read(p []byte) (int, error) {
+	if c.timeout > 0 {
+		if err := c.Conn.SetReadDeadline(time.Now().Add(c.timeout)); err != nil {
+			return 0, err
+		}
+	}
+	return c.Conn.Read(p)
+}
+
+func (c *smtpIdleDeadlineConn) Write(p []byte) (int, error) {
+	if c.timeout > 0 {
+		if err := c.Conn.SetWriteDeadline(time.Now().Add(c.timeout)); err != nil {
+			return 0, err
+		}
+	}
+	return c.Conn.Write(p)
+}
+
 // Send builds a MIME message from the compose form and sends it through the configured SMTP account.
 func (s *Sender) Send(ctx context.Context, account store.MailAccount, msg Message) ([]byte, error) {
 	raw, recipients, err := BuildRaw(msg)
@@ -84,6 +107,9 @@ func (s *Sender) Send(ctx context.Context, account store.MailAccount, msg Messag
 
 // SendRaw sends an already-built RFC822 payload to all recipients using the configured SMTP account.
 func (s *Sender) SendRaw(ctx context.Context, account store.MailAccount, recipients []string, raw []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if len(recipients) == 0 {
 		return errors.New("message has no recipients")
 	}
@@ -97,20 +123,33 @@ func (s *Sender) SendRaw(ctx context.Context, account store.MailAccount, recipie
 	}
 	addr := net.JoinHostPort(account.SMTPHost, fmt.Sprintf("%d", account.SMTPPort))
 	dialer := &net.Dialer{Timeout: timeout}
-	var conn net.Conn
-	if account.SMTPUseTLS && account.SMTPPort == 465 {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: account.SMTPHost, MinVersion: tls.VersionTLS12})
-	} else {
-		conn, err = dialer.DialContext(ctx, "tcp", addr)
-	}
+	rawConn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("connect to SMTP server %s: %w", addr, err)
 	}
+	deadlineConn := &smtpIdleDeadlineConn{Conn: rawConn, timeout: timeout}
+	var conn net.Conn = deadlineConn
+	if account.SMTPUseTLS && account.SMTPPort == 465 {
+		// net/smtp recognizes implicit TLS only when it receives the concrete
+		// *tls.Conn. Keep the deadline wrapper underneath the TLS connection.
+		tlsConn := tls.Client(deadlineConn, &tls.Config{ServerName: account.SMTPHost, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = tlsConn.Close()
+			return fmt.Errorf("start SMTP TLS: %w", err)
+		}
+		conn = tlsConn
+	}
+	return sendRawOnConn(ctx, account, password, recipients, raw, conn)
+}
+
+func sendRawOnConn(ctx context.Context, account store.MailAccount, password string, recipients []string, raw []byte, conn net.Conn) error {
 	defer conn.Close()
+	stopContext := watchSMTPContext(ctx, conn)
+	defer stopContext()
 
 	c, err := smtp.NewClient(conn, account.SMTPHost)
 	if err != nil {
-		return fmt.Errorf("initialize SMTP client for %s: %w", addr, err)
+		return fmt.Errorf("initialize SMTP client for %s: %w", account.SMTPHost, err)
 	}
 	defer c.Close()
 	if err := c.Hello("localhost"); err != nil {
@@ -154,7 +193,18 @@ func (s *Sender) SendRaw(ctx context.Context, account store.MailAccount, recipie
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("finish SMTP message: %w", err)
 	}
-	return c.Quit()
+	// A successful DATA close includes the server's final acceptance response.
+	// Closing the session via the deferred client close avoids waiting on QUIT
+	// after delivery and cannot misreport an accepted message as failed.
+	return nil
+}
+
+func watchSMTPContext(ctx context.Context, conn net.Conn) func() {
+	if ctx == nil || conn == nil {
+		return func() {}
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	return func() { stop() }
 }
 
 // BuildRaw constructs the RFC822 message, including text/html alternatives,

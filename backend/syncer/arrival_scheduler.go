@@ -171,6 +171,7 @@ func (r *Runner) startPendingMailboxGenerationRebuild(rebuild store.PendingMailb
 		}
 		turnCtx, cancel := context.WithTimeout(r.context(), timeout)
 		defer cancel()
+		r.registerGenerationRecoveryCancellation(rebuild.UserID, cancel)
 		diagnostics := r.generationRecoveryDiagnosticsForUser(rebuild.UserID)
 		turnCtx = withGenerationRecoveryDiagnostics(turnCtx, diagnostics)
 		generationRecoveryPhase(turnCtx, "sync-plan", "")

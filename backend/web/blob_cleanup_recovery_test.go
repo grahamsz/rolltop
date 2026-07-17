@@ -44,7 +44,9 @@ func TestServerStartupRecoversPendingBlobCleanup(t *testing.T) {
 	}
 
 	service := &syncer.Service{Store: db, Blobs: blob.New(root)}
-	server, err := New(Options{Store: db, Syncer: service, PluginDir: t.TempDir()})
+	server, err := New(Options{
+		Store: db, Syncer: service, PluginDir: t.TempDir(), DisableBackgroundWorkers: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

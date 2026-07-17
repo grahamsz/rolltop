@@ -67,12 +67,12 @@ func (f *Fetcher) OpenSyncDestinationSession(ctx context.Context, account store.
 	selected, err := c.Select(mailbox, true)
 	if err != nil {
 		stopContext()
-		_ = c.Terminate()
+		terminateClient(c)
 		return nil, fmt.Errorf("select mailbox %q read-only for sync destination: %w", mailbox, err)
 	}
 	if err := ctx.Err(); err != nil {
 		stopContext()
-		_ = c.Terminate()
+		terminateClient(c)
 		return nil, err
 	}
 	var uidValidity uint32
@@ -106,7 +106,7 @@ func (s *SyncDestinationSession) Close() error {
 		s.stopContext()
 		s.stopContext = nil
 	}
-	return c.Terminate()
+	return terminateClient(c)
 }
 
 func (s *SyncDestinationSession) ready(ctx context.Context) error {

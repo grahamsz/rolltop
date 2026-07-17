@@ -658,7 +658,7 @@ func guardedUIDFetch(ctx context.Context, c *client.Client, seqset *imap.SeqSet,
 	commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	terminated := make(chan struct{})
 	stopTerminate := context.AfterFunc(commandCtx, func() {
-		_ = c.Terminate()
+		terminateClient(c)
 		close(terminated)
 	})
 	err := c.UidFetch(seqset, items, messages)
@@ -1284,7 +1284,7 @@ func (f *Fetcher) login(account store.MailAccount) (*client.Client, error) {
 			return nil, fmt.Errorf("initialize IMAP client for %s: %w", addr, err)
 		}
 		if err := conn.SetDeadline(time.Time{}); err != nil {
-			_ = c.Terminate()
+			terminateClient(c)
 			return nil, fmt.Errorf("clear IMAP greeting deadline for %s: %w", addr, err)
 		}
 	} else {
@@ -1295,7 +1295,7 @@ func (f *Fetcher) login(account store.MailAccount) (*client.Client, error) {
 	}
 	c.Timeout = timeout
 	if err := c.Login(account.Username, password); err != nil {
-		_ = c.Terminate()
+		terminateClient(c)
 		return nil, fmt.Errorf("login to IMAP server %s: %w", addr, err)
 	}
 	return c, nil
@@ -1324,8 +1324,18 @@ func terminateClientOnContext(ctx context.Context, c *client.Client) func() {
 	stopWatching := watchClientContext(ctx, c)
 	return func() {
 		stopWatching()
-		_ = c.Terminate()
+		terminateClient(c)
 	}
+}
+
+// terminateClient marks a locally initiated close before dropping the socket.
+// go-imap otherwise logs the resulting net.ErrClosed as if the peer failed.
+func terminateClient(c *client.Client) error {
+	if c == nil {
+		return nil
+	}
+	c.SetState(imap.LogoutState, nil)
+	return c.Terminate()
 }
 
 func watchClientContext(ctx context.Context, c *client.Client) func() {
@@ -1337,7 +1347,7 @@ func watchClientContext(ctx context.Context, c *client.Client) func() {
 	}
 	terminated := make(chan struct{})
 	stopTerminate := context.AfterFunc(ctx, func() {
-		_ = c.Terminate()
+		terminateClient(c)
 		close(terminated)
 	})
 	return func() {

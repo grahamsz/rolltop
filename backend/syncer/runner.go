@@ -41,6 +41,7 @@ type Runner struct {
 	accountMailboxPending      map[string]bool
 	foregroundRunning          map[int64]int
 	foregroundDone             map[int64]chan struct{}
+	foregroundDeferredAuto     map[int64]bool
 	foregroundDeferredBoxes    map[int64]map[string]string
 	foregroundDeferredAccts    map[int64]map[string]deferredAccountMailbox
 	attachmentPending          map[int64]bool
@@ -107,6 +108,7 @@ func NewRunnerWithContext(ctx context.Context, service *Service) *Runner {
 		accountMailboxPending:      map[string]bool{},
 		foregroundRunning:          map[int64]int{},
 		foregroundDone:             map[int64]chan struct{}{},
+		foregroundDeferredAuto:     map[int64]bool{},
 		foregroundDeferredBoxes:    map[int64]map[string]string{},
 		foregroundDeferredAccts:    map[int64]map[string]deferredAccountMailbox{},
 		attachmentPending:          map[int64]bool{},
@@ -791,7 +793,7 @@ func (r *Runner) deferForegroundAccountMailboxesLocked(userID, accountID int64, 
 }
 
 func (r *Runner) takeForegroundReplayLocked(userID int64) generationRecoveryReplay {
-	replay := generationRecoveryReplay{userID: userID}
+	replay := generationRecoveryReplay{userID: userID, auto: r.foregroundDeferredAuto[userID]}
 	for _, mailbox := range r.foregroundDeferredBoxes[userID] {
 		replay.mailboxes = append(replay.mailboxes, mailbox)
 	}
@@ -800,6 +802,7 @@ func (r *Runner) takeForegroundReplayLocked(userID int64) generationRecoveryRepl
 	}
 	delete(r.foregroundDeferredBoxes, userID)
 	delete(r.foregroundDeferredAccts, userID)
+	delete(r.foregroundDeferredAuto, userID)
 	return r.coalesceGenerationRecoveryReplay(replay)
 }
 
@@ -978,10 +981,10 @@ func (r *Runner) startAccountMailboxReruns(userID, accountID int64, reruns accou
 
 const attachmentIndexBatchSize = 25
 
-// BeginForegroundOperation pauses low-priority attachment indexing while a
-// direct user operation, such as an IMAP move, changes local message ownership.
-// The returned function is idempotent and resumes pending work when the user is
-// otherwise idle.
+// BeginForegroundOperation asks resumable background writers to checkpoint
+// while a direct user operation, such as send or move, changes remote and local
+// mail state. The returned function is idempotent and replays interrupted work
+// when the user is otherwise idle. Explicit maintenance is allowed to finish.
 func (r *Runner) BeginForegroundOperation(ctx context.Context, userID int64) (func(), error) {
 	if r == nil || userID <= 0 {
 		return func() {}, nil
@@ -1004,7 +1007,7 @@ func (r *Runner) BeginForegroundOperation(ctx context.Context, userID int64) (fu
 			r.foregroundDone[userID] = make(chan struct{})
 			attachmentDone = r.attachmentDone[userID]
 			senderStatsDone = r.senderStatsDone[userID]
-			r.pauseAttachmentIndexLocked(userID)
+			r.preemptResumableWorkForForegroundLocked(userID)
 			r.mu.Unlock()
 			break
 		}
@@ -1047,23 +1050,43 @@ func (r *Runner) BeginForegroundOperation(ctx context.Context, userID int64) (fu
 			}
 		})
 	}
-	for _, done := range []<-chan struct{}{attachmentDone, senderStatsDone} {
+	if err := r.waitForForegroundYield(ctx, userID, attachmentDone, senderStatsDone); err != nil {
+		// Return to the caller promptly, but retain the foreground barrier until
+		// canceled workers have checkpointed and handed their replay state back.
+		// Releasing it immediately can consume an incomplete replay and strand
+		// the remainder when an acquisition timeout races worker cleanup.
+		go func() {
+			_ = r.waitForForegroundYield(r.context(), userID, attachmentDone, senderStatsDone)
+			finish()
+		}()
+		return func() {}, err
+	}
+	return finish, nil
+}
+
+func (r *Runner) waitForForegroundYield(ctx context.Context, userID int64, maintenanceDone ...<-chan struct{}) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for _, done := range maintenanceDone {
 		if done == nil {
 			continue
 		}
 		select {
 		case <-done:
 		case <-ctx.Done():
-			finish()
-			return func() {}, ctx.Err()
+			return ctx.Err()
 		}
 	}
 	for {
 		r.mu.Lock()
+		// A recovery turn can install its cancellation after reserving its
+		// mailbox. Reissue preemption while waiting to close that small race.
+		r.preemptResumableWorkForForegroundLocked(userID)
 		mailboxWriterRunning := r.mailboxWriterRunningLocked(userID)
 		r.mu.Unlock()
 		if !mailboxWriterRunning {
-			break
+			return ctx.Err()
 		}
 		timer := time.NewTimer(10 * time.Millisecond)
 		select {
@@ -1071,12 +1094,10 @@ func (r *Runner) BeginForegroundOperation(ctx context.Context, userID int64) (fu
 			if !timer.Stop() {
 				<-timer.C
 			}
-			finish()
-			return func() {}, ctx.Err()
+			return ctx.Err()
 		case <-timer.C:
 		}
 	}
-	return finish, nil
 }
 
 // StartAttachmentIndex runs after message sync so newly fetched raw .eml data can

@@ -146,6 +146,49 @@ func (r *Runner) cancelOrdinaryMailboxWorkLocked(userID int64) {
 	}
 }
 
+// preemptResumableWorkForForegroundLocked asks background work for one tenant
+// to checkpoint and release its writer reservation. Explicit maintenance is
+// intentionally excluded: those runs have user-visible completion semantics
+// and must either finish or report their own failure.
+func (r *Runner) preemptResumableWorkForForegroundLocked(userID int64) {
+	r.pauseAttachmentIndexLocked(userID)
+	if r.autoPlanning[userID] {
+		// Planning has not reserved a mailbox yet, so cancel the parent account
+		// turn and replay the full automatic plan after foreground release.
+		r.foregroundDeferredAuto[userID] = true
+		if cancel := r.autoCancels[userID]; cancel != nil {
+			cancel()
+		}
+	}
+	if cancel := r.senderStatsCancels[userID]; cancel != nil {
+		cancel()
+	}
+	if activity, active := r.generationRecoveryActive[userID]; active && activity.cancel != nil {
+		activity.cancel()
+	}
+	for key, work := range r.mailboxCancels {
+		if work.userID != userID || work.cancel == nil {
+			continue
+		}
+		activityKey := runnerMailboxWorkActivityKey(key)
+		activity, exists := r.workActivities[activityKey]
+		if !exists || (activity.kind != runnerWorkMailboxSync && activity.kind != runnerWorkRecoveryReplay) {
+			continue
+		}
+		activity.phase = "yielding_to_foreground"
+		r.workActivities[activityKey] = activity
+		if activity.accountID > 0 {
+			if r.accountMailboxPending == nil {
+				r.accountMailboxPending = map[string]bool{}
+			}
+			r.accountMailboxPending[key] = true
+		} else {
+			r.mailboxPending[key] = true
+		}
+		work.cancel()
+	}
+}
+
 func (r *Runner) mailboxGenerationRecoveryPending(userID int64) bool {
 	if r == nil || userID <= 0 {
 		return false

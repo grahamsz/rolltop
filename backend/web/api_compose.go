@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	composeMaxUploadBytes  int64 = 80 << 20
-	composeMaxRequestBytes int64 = 96 << 20
+	composeMaxUploadBytes            int64 = 80 << 20
+	composeMaxRequestBytes           int64 = 96 << 20
+	composeForegroundReservationWait       = 30 * time.Second
 )
 
 func (s *Server) apiCompose(w http.ResponseWriter, r *http.Request) {
@@ -498,13 +499,19 @@ func (s *Server) sendCompose(ctx context.Context, cu currentUser, form composeFo
 }
 
 func (s *Server) beginComposeForegroundOperation(ctx context.Context, userID int64) (func(), error) {
+	return s.beginComposeForegroundOperationWithin(ctx, userID, composeForegroundReservationWait)
+}
+
+func (s *Server) beginComposeForegroundOperationWithin(ctx context.Context, userID int64, wait time.Duration) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return func() {}, err
 	}
 	if s.syncRunner == nil {
 		return func() {}, nil
 	}
-	return s.syncRunner.BeginForegroundOperation(ctx, userID)
+	reservationCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	return s.syncRunner.BeginForegroundOperation(reservationCtx, userID)
 }
 
 func (s *Server) composePublicKeyAttachment(ctx context.Context, userID int64, identity composeIdentity) (smtpclient.Attachment, error) {

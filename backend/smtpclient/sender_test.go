@@ -3,13 +3,148 @@
 package smtpclient
 
 import (
+	"bufio"
 	"bytes"
+	"context"
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
 	"rolltop/backend/buildinfo"
+	"rolltop/backend/store"
 )
+
+func TestSMTPIdleDeadlineConnBoundsBlockedIO(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(net.Conn) error
+	}{
+		{name: "read", run: func(conn net.Conn) error {
+			_, err := conn.Read(make([]byte, 1))
+			return err
+		}},
+		{name: "write", run: func(conn net.Conn) error {
+			_, err := conn.Write([]byte("x"))
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clientConn, serverConn := net.Pipe()
+			defer clientConn.Close()
+			defer serverConn.Close()
+			conn := &smtpIdleDeadlineConn{Conn: clientConn, timeout: 20 * time.Millisecond}
+			started := time.Now()
+			err := test.run(conn)
+			netErr, ok := err.(net.Error)
+			if !ok || !netErr.Timeout() {
+				t.Fatalf("blocked %s error = %v, want network timeout", test.name, err)
+			}
+			if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+				t.Fatalf("blocked %s took %s, want bounded wait", test.name, elapsed)
+			}
+		})
+	}
+}
+
+func TestWatchSMTPContextClosesBlockedConnection(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := watchSMTPContext(ctx, clientConn)
+	defer stop()
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := clientConn.Read(make([]byte, 1))
+		readDone <- err
+	}()
+	cancel()
+	select {
+	case err := <-readDone:
+		if err == nil {
+			t.Fatal("blocked SMTP read succeeded after context cancellation")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("context cancellation did not close blocked SMTP connection")
+	}
+}
+
+func TestSendRawDoesNotWaitForQuitAfterDataAccepted(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	serverDone := make(chan error, 1)
+	go func() {
+		defer serverConn.Close()
+		_ = serverConn.SetDeadline(time.Now().Add(2 * time.Second))
+		serverDone <- serveAcceptedSMTPMessageWithoutQuitResponse(serverConn)
+	}()
+	conn := &smtpIdleDeadlineConn{Conn: clientConn, timeout: time.Second}
+	err := sendRawOnConn(context.Background(), store.MailAccount{
+		Email:    "sender@example.test",
+		SMTPHost: "smtp.example.test",
+	}, "", []string{"recipient@example.test"},
+		[]byte("From: sender@example.test\r\nTo: recipient@example.test\r\n\r\nbody\r\n"), conn)
+	if err != nil {
+		t.Fatalf("SendRaw after accepted DATA = %v, want success without waiting for QUIT", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func serveAcceptedSMTPMessageWithoutQuitResponse(conn net.Conn) error {
+	reader := bufio.NewReader(conn)
+	write := func(response string) error {
+		_, err := fmt.Fprint(conn, response)
+		return err
+	}
+	readPrefix := func(prefix string) error {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		if !strings.HasPrefix(strings.ToUpper(line), prefix) {
+			return fmt.Errorf("SMTP command = %q, want prefix %q", line, prefix)
+		}
+		return nil
+	}
+	if err := write("220 smtp.example.test ready\r\n"); err != nil {
+		return err
+	}
+	for _, exchange := range []struct {
+		command  string
+		response string
+	}{
+		{command: "EHLO ", response: "250 smtp.example.test\r\n"},
+		{command: "MAIL FROM:", response: "250 sender ok\r\n"},
+		{command: "RCPT TO:", response: "250 recipient ok\r\n"},
+		{command: "DATA", response: "354 send message\r\n"},
+	} {
+		if err := readPrefix(exchange.command); err != nil {
+			return err
+		}
+		if err := write(exchange.response); err != nil {
+			return err
+		}
+	}
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		if line == ".\r\n" {
+			break
+		}
+	}
+	if err := write("250 message accepted\r\n"); err != nil {
+		return err
+	}
+	line, err := reader.ReadString('\n')
+	if err == nil {
+		return fmt.Errorf("unexpected SMTP command after accepted DATA: %q", line)
+	}
+	return nil
+}
 
 func TestBuildRawOmitsBccHeaderAndIncludesRecipients(t *testing.T) {
 	oldVersion := buildinfo.Version

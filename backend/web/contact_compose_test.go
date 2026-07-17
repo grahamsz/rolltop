@@ -218,7 +218,7 @@ func sentImportCompletedAtForSubject(t *testing.T, ctx context.Context, db *stor
 	return completedAt
 }
 
-func TestSendComposeDoesNotSendWhenForegroundReservationIsCanceled(t *testing.T) {
+func TestSendComposePreemptsMailboxGenerationRecovery(t *testing.T) {
 	ctx := context.Background()
 	server, user, fromID, sender, _ := setupAutocryptComposeTest(t, ctx, false)
 	accounts, err := server.store.ListMailAccountsForUser(ctx, user.ID)
@@ -268,6 +268,65 @@ func TestSendComposeDoesNotSendWhenForegroundReservationIsCanceled(t *testing.T)
 	defer cancelSend()
 	_, err = server.sendCompose(sendCtx, currentUser{User: user}, composeForm{
 		To:             "recipient@example.test",
+		Subject:        "Foreground delivery",
+		Body:           "body",
+		FromIdentityID: fromID,
+	})
+	if err != nil {
+		t.Fatalf("sendCompose error = %v", err)
+	}
+	if sender.count != 1 {
+		t.Fatalf("SMTP send count = %d, want 1", sender.count)
+	}
+
+	close(releaseRecovery)
+	deadline := time.Now().Add(2 * time.Second)
+	for runner.IsRunning(user.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("mailbox generation recovery did not release")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestBeginComposeForegroundOperationHasBoundedWait(t *testing.T) {
+	const userID = int64(47)
+	runner := syncer.NewRunner(nil)
+	server := &Server{syncRunner: runner}
+	finishFirst, err := runner.BeginForegroundOperation(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finishFirst()
+
+	started := time.Now()
+	finishSecond, err := server.beginComposeForegroundOperationWithin(context.Background(), userID, 25*time.Millisecond)
+	if finishSecond != nil {
+		finishSecond()
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("begin compose foreground operation error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("begin compose foreground operation took %s, want bounded wait", elapsed)
+	}
+}
+
+func TestSendComposeDoesNotSendWhenForegroundReservationIsCanceled(t *testing.T) {
+	ctx := context.Background()
+	server, user, fromID, sender, _ := setupAutocryptComposeTest(t, ctx, false)
+	runner := syncer.NewRunner(nil)
+	server.syncRunner = runner
+	finishBlockingOperation, err := runner.BeginForegroundOperation(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finishBlockingOperation()
+
+	sendCtx, cancelSend := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancelSend()
+	_, err = server.sendCompose(sendCtx, currentUser{User: user}, composeForm{
+		To:             "recipient@example.test",
 		Subject:        "Canceled reservation",
 		Body:           "body",
 		FromIdentityID: fromID,
@@ -280,15 +339,6 @@ func TestSendComposeDoesNotSendWhenForegroundReservationIsCanceled(t *testing.T)
 	}
 	if sender.count != 0 {
 		t.Fatalf("SMTP send count = %d, want 0", sender.count)
-	}
-
-	close(releaseRecovery)
-	deadline := time.Now().Add(2 * time.Second)
-	for runner.IsRunning(user.ID) {
-		if time.Now().After(deadline) {
-			t.Fatal("mailbox generation recovery did not release")
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
 }
 
