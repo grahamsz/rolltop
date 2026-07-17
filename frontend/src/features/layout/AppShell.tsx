@@ -1012,7 +1012,7 @@ function Sidebar({
           </>
         ) : null}
       </div>
-      <SidebarSync csrf={csrf} latest={latestSyncRun} activeRuns={activeSyncRuns} running={syncRunning} refreshChrome={refreshChrome} />
+      <SidebarSync mailboxes={mailboxes} csrf={csrf} latest={latestSyncRun} activeRuns={activeSyncRuns} running={syncRunning} refreshChrome={refreshChrome} />
       {uptimeParts.length > 0 ? (
         <div className="sidebar-uptime" title={uptimeTitle}>
           {uptimeParts.join(" · ")}
@@ -1069,12 +1069,14 @@ function folderExpandKey(mailbox: Mailbox): string {
 }
 
 function SidebarSync({
+  mailboxes,
   csrf,
   latest,
   activeRuns,
   running,
   refreshChrome
 }: {
+  mailboxes: Mailbox[];
   csrf: string;
   latest: SyncRun | null;
   activeRuns: SyncRun[];
@@ -1108,7 +1110,7 @@ function SidebarSync({
       </div>
       <div className="sync-run-list">
         {visibleRuns.map((run) => (
-          <SyncRunMini key={run.id} run={run} />
+          <SyncRunMini key={run.id} run={run} mailbox={syncRunMailbox(run, mailboxes)} />
         ))}
       </div>
     </section>
@@ -1125,18 +1127,56 @@ function stableSyncRunOrder(runs: SyncRun[]) {
   });
 }
 
-/** Render compact sync progress using message progress when available, falling back to folder progress. */
-export function SyncRunMini({ run }: { run: SyncRun }) {
+function syncRunMailbox(run: SyncRun, mailboxes: Mailbox[]): Mailbox | undefined {
+  const name = run.current_mailbox.trim().toLowerCase();
+  if (!name) return undefined;
+  return mailboxes.find((mailbox) =>
+    mailbox.account_id === run.account_id && mailbox.name.trim().toLowerCase() === name
+  );
+}
+
+type MirrorResumeEstimate = {
+  completed: number;
+  total: number;
+  approximate: boolean;
+};
+
+// Mailbox counts and UID checkpoints survive a process restart, unlike the
+// short-lived sync run. Prefer exact IMAP/local counts; UID range is a clearly
+// labelled fallback because IMAP UIDs can have gaps.
+function mirrorResumeEstimate(mailbox: Mailbox | undefined): MirrorResumeEstimate | null {
+  if (!mailbox) return null;
+  const local = Math.max(0, mailbox.local_message_count ?? mailbox.message_count);
+  const remote = Math.max(0, mailbox.remote_message_count);
+  if (remote > 0) {
+    return { completed: Math.min(local, remote), total: remote, approximate: false };
+  }
+  const uidTotal = Math.max(0, mailbox.remote_uid_next - 1);
+  if (uidTotal <= 0) return null;
+  return { completed: Math.min(Math.max(0, mailbox.last_uid), uidTotal), total: uidTotal, approximate: true };
+}
+
+/** Render current-run activity alongside the durable local mirror checkpoint. */
+export function SyncRunMini({ run, mailbox }: { run: SyncRun; mailbox?: Mailbox }) {
   const totalMessages = run.messages_total || 0;
   const totalFolders = run.mailboxes_total || 0;
-  const progress = totalMessages > 0
+  const runProgress = totalMessages > 0
     ? Math.min(100, Math.round((run.messages_seen / totalMessages) * 100))
       : totalFolders > 0
         ? Math.min(100, Math.round((run.mailboxes_done / totalFolders) * 100))
         : run.status === "running" ? 100 : 0;
   const isPurge = run.latest_new_from === "rolltop:maintenance" && run.latest_new_subject.trim().toLowerCase().startsWith("purging");
   const isMove = run.latest_new_from === "rolltop:move";
-  const savedLabel = run.messages_stored > 0 ? `${run.messages_stored.toLocaleString()} saved` : "Syncing...";
+  const isMaintenance = run.latest_new_from === "rolltop:maintenance";
+  const resume = run.status === "running" && !isPurge && !isMove && !isMaintenance ? mirrorResumeEstimate(mailbox) : null;
+  const resumePercent = resume && resume.total > 0 ? Math.round((resume.completed * 100) / resume.total) : 0;
+  const progress = resume ? resumePercent : runProgress;
+  const processedLabel = run.messages_stored > 0 ? `${run.messages_stored.toLocaleString()} processed` : "Syncing...";
+  const resumeLabel = resume
+    ? resume.approximate
+      ? `about ${resume.completed.toLocaleString()} of ${resume.total.toLocaleString()} already mirrored`
+      : `${resume.completed.toLocaleString()} of ${resume.total.toLocaleString()} already mirrored`
+    : "";
   const movedLabel = totalMessages > 0
     ? `${run.messages_seen.toLocaleString()} of ${totalMessages.toLocaleString()} moved`
     : "Moving...";
@@ -1148,15 +1188,15 @@ export function SyncRunMini({ run }: { run: SyncRun }) {
     : isMove
       ? movedLabel
       : run.messages_skipped > 0
-        ? `${savedLabel}, ${run.messages_skipped.toLocaleString()} skipped`
-        : savedLabel;
+        ? `${processedLabel}, ${run.messages_skipped.toLocaleString()} skipped`
+        : processedLabel;
   return (
     <div className="sync-run-mini">
       <div className="sync-run-title">
         <span>{run.current_mailbox || run.status}</span>
         <span>{progress}%</span>
       </div>
-      <div className="sync-run-detail">{detail}</div>
+      <div className="sync-run-detail">{resumeLabel ? `${resumeLabel} · ${detail}` : detail}</div>
       <div className="progress" aria-label={`${run.current_mailbox || "Sync"} progress`}>
         <div style={{ width: `${progress}%` }} />
       </div>
