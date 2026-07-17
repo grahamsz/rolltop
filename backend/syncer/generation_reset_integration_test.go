@@ -137,8 +137,8 @@ func TestSyncResetsMailboxGenerationAndRefetchesReusedUID(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(oldHits) != 1 || len(newHits) != 0 {
-				t.Fatalf("search during bounded reset old=%v new=%v want stale hit/deferred replacement", oldHits, newHits)
+			if len(oldHits) != 0 {
+				t.Fatalf("search during bounded reset retained stale hits=%v", oldHits)
 			}
 			if _, err := service.SyncUser(ctx, user.ID); err != nil {
 				t.Fatal(err)

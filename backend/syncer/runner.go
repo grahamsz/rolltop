@@ -377,6 +377,14 @@ func (r *Runner) StartMailboxMaintenanceWithSetup(userID int64, mailbox store.Ma
 	return r.startMailboxMaintenance(userID, mailbox, label, setup, fn)
 }
 
+// StartMailboxMaintenanceToCompletion runs an explicit user-requested task
+// under a mailbox reservation until it completes or the server stops. Unlike
+// ordinary sync maintenance, mailbox-generation recovery cannot interrupt it
+// midway and turn one requested rebuild into a sequence of fresh attempts.
+func (r *Runner) StartMailboxMaintenanceToCompletion(userID int64, mailbox store.Mailbox, label string, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
+	return r.StartMailboxMaintenanceWithSetup(userID, mailbox, label, func(context.Context) error { return nil }, fn)
+}
+
 func (r *Runner) startMailboxMaintenance(userID int64, mailbox store.Mailbox, label string, setup func(context.Context) error, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
 	ctx := r.context()
 	if ctx.Err() != nil {
@@ -461,6 +469,16 @@ func (r *Runner) startMailboxMaintenance(userID int64, mailbox store.Mailbox, la
 // local maintenance task in the background. It is used for destructive local
 // cache work such as deleting an IMAP account from Rolltop.
 func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount, mailboxes []store.Mailbox, label string, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
+	return r.startAccountMaintenance(userID, account, mailboxes, label, false, fn)
+}
+
+// StartAccountMaintenanceToCompletion is the account-wide counterpart to
+// StartMailboxMaintenanceToCompletion for an explicit user-requested task.
+func (r *Runner) StartAccountMaintenanceToCompletion(userID int64, account store.MailAccount, mailboxes []store.Mailbox, label string, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
+	return r.startAccountMaintenance(userID, account, mailboxes, label, true, fn)
+}
+
+func (r *Runner) startAccountMaintenance(userID int64, account store.MailAccount, mailboxes []store.Mailbox, label string, runToCompletion bool, fn func(context.Context, int64, *store.SyncProgress) error) (store.SyncRun, bool, error) {
 	ctx := r.context()
 	if ctx.Err() != nil {
 		return store.SyncRun{}, false, nil
@@ -501,7 +519,11 @@ func (r *Runner) StartAccountMaintenance(userID int64, account store.MailAccount
 		return store.SyncRun{}, true, err
 	}
 	r.Service.notify(userID)
-	go r.runReservedMailboxMaintenance(userID, account.ID, names, keys, run.ID, progress, fn)
+	if runToCompletion {
+		go r.runReservedCommittedMailboxMaintenance(userID, account.ID, names, keys, run.ID, progress, fn)
+	} else {
+		go r.runReservedMailboxMaintenance(userID, account.ID, names, keys, run.ID, progress, fn)
+	}
 	return run, true, nil
 }
 

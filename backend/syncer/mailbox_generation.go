@@ -39,8 +39,14 @@ func (s *Service) ResetMailboxGenerationIfNeeded(ctx context.Context, userID int
 	if reset && s.MailboxGenerationRecoveryStarted != nil {
 		s.MailboxGenerationRecoveryStarted(userID)
 	}
-	// Search cleanup is derived work. Replacement documents are indexed after
-	// bounded recovery releases its gate; stale generation documents wait for a
-	// normal folder sync or an explicit offline search reset.
+	// A UIDVALIDITY reset makes every existing document for this mailbox stale.
+	// Clearing that bounded mailbox scope prevents reused UIDs from surfacing old
+	// mail. This is not an index audit: the recovered messages are indexed as
+	// they are fetched, while any historical full audit remains explicit.
+	if reset && s.Search != nil {
+		if _, err := s.Search.PurgeMailbox(ctx, userID, mailbox.ID); err != nil {
+			return true, err
+		}
+	}
 	return reset, nil
 }

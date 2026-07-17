@@ -730,6 +730,7 @@ export function SettingsView({
     mailboxID: number;
     action: "rebuild" | "purge-index" | "purge-references";
   } | null>(null);
+  const [accountSearchRebuildID, setAccountSearchRebuildID] = useState<number | null>(null);
   const [folderRunRefreshAccounts, setFolderRunRefreshAccounts] = useState<Set<number>>(() => new Set());
   const [savingIdentity, setSavingIdentity] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -1298,6 +1299,34 @@ export function SettingsView({
     }
   }
 
+  function rebuildAccountSearchIndexConfirmMessage() {
+    const searchable = selectedFolders.filter((folder) => folder.mailbox.include_in_search);
+    const localCount = searchable.reduce((total, folder) => total + Math.max(0, folder.mailbox.local_message_count ?? folder.mailbox.message_count), 0);
+    return [
+      `Rebuild full-text indexes for ${selectedAccountLabel}?`,
+      "",
+      `This replaces the local full-text documents for ${searchable.length.toLocaleString()} ${searchable.length === 1 ? "folder" : "folders"} and ${localCount.toLocaleString()} mirrored ${localCount === 1 ? "message" : "messages"}.`,
+      "If a mirrored message's raw data is no longer cached, Rolltop may fetch it from IMAP.",
+      "",
+      "This does not change or delete messages on the IMAP server."
+    ].join("\n");
+  }
+
+  async function rebuildAccountSearchIndexes() {
+    if (!account || accountSearchRebuildID || folderMaintenance || !window.confirm(rebuildAccountSearchIndexConfirmMessage())) return;
+    setAccountSearchRebuildID(account.id);
+    try {
+      await api.rebuildIMAPAccountSearchIndex(csrf, account.id);
+      addToast(`${selectedAccountLabel} full-text index rebuild started.`);
+      await refreshChrome();
+      await load();
+    } catch (err) {
+      addToast(messageFromError(err), "error");
+    } finally {
+      setAccountSearchRebuildID(null);
+    }
+  }
+
   async function deleteSelectedIMAPAccount() {
     if (!account || deletingAccountID) return;
     setDeletingAccountID(account.id);
@@ -1403,7 +1432,7 @@ export function SettingsView({
       "",
       "This removes only rolltop's local full-text search documents for this folder.",
       "It does not delete local message references or messages from your IMAP server.",
-      "The next sync will rebuild missing full-text entries before fetching new mail."
+      "Use Rebuild full-text index when you want to restore the local full-text documents."
     ].join("\n");
   }
 
@@ -1621,18 +1650,18 @@ export function SettingsView({
         : searchIndexPurged
           ? "Full text purged"
           : !searchIndexKnown
-            ? "Full text unverified"
+            ? "Full text not audited"
             : searchPercent === null
               ? "Full text unavailable"
               : `Full text ${searchCounts}`;
       const searchProgressTitle = folder.mailbox.include_in_search
         ? searchIndexPurged
-          ? "This folder's local full-text documents were deliberately purged. The next folder sync or an explicit rebuild will restore them."
+          ? "This folder's local full-text documents were deliberately purged. Use Rebuild full-text index to restore them."
           : !searchIndexKnown
-            ? "Current full-text coverage has not been verified since this Rolltop upgrade. The next folder sync or an explicit rebuild will verify and repair it."
+            ? "Current full-text coverage has not been audited since this Rolltop upgrade. It remains usable; use Rebuild full-text index to replace and verify it."
             : searchPercent === null
               ? "Full-text search coverage is unavailable. Header and preview search may still work."
-              : `${formatStatCount(searchIndexedCount)} of ${formatStatCount(searchTotalCount)} locally mirrored messages completed a full-text indexing commit (${searchPercent}%). Background repair verifies current index contents.`
+              : `${formatStatCount(searchIndexedCount)} of ${formatStatCount(searchTotalCount)} locally mirrored messages completed a full-text indexing commit (${searchPercent}%).`
         : "Full-message search is disabled for this folder.";
       const currentRole = folder.mailbox.role || "";
       const currentIcon = folder.mailbox.icon || "folder";
@@ -2388,7 +2417,19 @@ export function SettingsView({
         description={route.isNew ? "Connect another incoming mail server." : "Connection, sync scope, folders, and recent activity."}
         backPath="/settings/account/mail"
         navigate={navigate}
-        actions={route.isNew ? null : <button type="button" onClick={syncNow}><Icon name="sync" />Sync all</button>}
+        actions={route.isNew ? null : <>
+          <button type="button" onClick={syncNow}><Icon name="sync" />Sync all</button>
+          <button
+            className="secondary"
+            type="button"
+            disabled={Boolean(accountSearchRebuildID) || Boolean(folderMaintenance) || selectedFolders.some((folder) => folder.is_running)}
+            aria-busy={accountSearchRebuildID === account?.id}
+            onClick={rebuildAccountSearchIndexes}
+            title="Replace the local full-text index for every searchable folder on this IMAP server"
+          >
+            <Icon name="search" />{accountSearchRebuildID === account?.id ? "Starting rebuild..." : "Rebuild full-text indexes"}
+          </button>
+        </>}
       >
         {noticeNode}
         <form className="panel account-settings" onSubmit={save}>

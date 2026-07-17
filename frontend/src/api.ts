@@ -471,6 +471,8 @@ export const api = {
   saveMailIdentity: (csrf: string, identity: Record<string, unknown>) =>
     postJSON<{ ok: boolean; identity: MailIdentity; identities: MailIdentity[] }>("/api/account/identities", csrf, identity),
   syncAccount: (csrf: string) => postJSON<{ ok: boolean }>("/api/account/sync", csrf),
+  rebuildIMAPAccountSearchIndex: (csrf: string, id: number) =>
+    postJSON<{ ok: boolean; queued: boolean; run_id: number }>(`/api/account/imap/${id}/rebuild-search-index`, csrf),
   setFolderMode: (csrf: string, id: number, syncMode: string) =>
     postJSON<{ ok: boolean }>(`/api/account/folders/${id}/mode`, csrf, { sync_mode: syncMode }),
   saveFolderSettings: (csrf: string, id: number, settings: Record<string, unknown>) =>

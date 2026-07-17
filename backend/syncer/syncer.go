@@ -683,12 +683,17 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			return item
 		}
 		storeFetchedItem := func(item FetchedMessage, runStoredHooks bool) (store.MessageRecord, bool, error) {
-			msg, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item, !rebuildInProgress)
+			indexFetched := !rebuildInProgress || generationReset || options.generationRecovery
+			msg, parsed, pendingIndex, err := s.storeFetchedMessage(ctx, userID, account, mailbox, item, indexFetched)
 			if err != nil {
 				return store.MessageRecord{}, false, err
 			}
 			completionBatch.Add(msg.ID)
-			if !rebuildInProgress {
+			// A UIDVALIDITY recovery starts from a clean mailbox document scope, so
+			// each recovered message can be indexed as it is stored. This avoids a
+			// later whole-mailbox audit while never exposing stale documents from
+			// the previous generation.
+			if indexFetched {
 				if err := searchBatch.Add(ctx, pendingIndex); err != nil {
 					return store.MessageRecord{}, false, err
 				}
@@ -1003,20 +1008,10 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			}
 			continue
 		}
-		// Fetch the incremental delta before auditing historical search documents.
-		// A mailbox refresh triggered by a move should surface the relocated message
-		// immediately instead of waiting for an O(mailbox size) repair scan.
-		// Generation rebuilds restore authoritative SQLite rows first. Pending
-		// current rows are indexed after the recovery gate opens; stale documents
-		// from the replaced generation are purged by a later normal folder sync or
-		// the explicit offline search reset.
-		if !generationRebuildPending && !options.deferOrdinaryMaintenanceNow() {
-			if _, err := s.RepairMailboxSearchIndex(ctx, userID, mailbox, run.ID, &progress); err != nil {
-				status = "failed"
-				errText = err.Error()
-				return run, err
-			}
-		}
+		// Ordinary IMAP sync only indexes the messages it fetches. An exact
+		// Bleve/SQLite audit can require a remote raw-message fetch for old mail,
+		// so it is deliberately an explicit folder or account reindex task rather
+		// than surprise background work after an upgrade or restart.
 		if options.deferOrdinaryMaintenanceNow() {
 			log.Printf("defer mailbox metadata reconciliation user_id=%d account_id=%d mailbox=%q reason=mailbox-generation-recovery",
 				userID, account.ID, mailboxName)

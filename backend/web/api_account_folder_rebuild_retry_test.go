@@ -64,7 +64,85 @@ func TestAPIAccountFolderSearchIndexRebuildRequiresBleve(t *testing.T) {
 	}
 }
 
-func TestAPIAccountFolderSearchIndexRebuildRetriesAfterMidRepairInterruption(t *testing.T) {
+func TestAPIAccountSearchIndexRebuildCoversOnlyOwnedSearchableFolders(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	searchService, err := search.Open(filepath.Join(dir, "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchService.Close()
+	blobStore := blob.New(dir)
+	owner, err := db.CreateUser(ctx, "account-rebuild@example.test", "Account Rebuild", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.CreateUser(ctx, "other-account-rebuild@example.test", "Other", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, inbox, inboxMessage := createSearchRebuildMessage(t, ctx, db, blobStore, owner, "INBOX", 1, "account-rebuild-inbox")
+	archive, err := db.GetOrCreateMailbox(ctx, owner.ID, account.ID, "Archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveMessage := createLocalSearchRebuildMessage(t, ctx, db, blobStore, owner, account, archive, 2)
+	otherAccount, otherMailbox, otherMessage := createSearchRebuildMessage(t, ctx, db, blobStore, other, "INBOX", 1, "account-rebuild-other")
+	for _, message := range []store.MessageRecord{inboxMessage, archiveMessage, otherMessage} {
+		if err := searchService.IndexMessage(ctx, message, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runnerContext, cancelRunner := context.WithCancel(context.Background())
+	defer cancelRunner()
+	service := &syncer.Service{Store: db, Blobs: blobStore, Search: searchService}
+	server := &Server{
+		store: db, blobs: blobStore, search: searchService, syncer: service,
+		syncRunner: syncer.NewRunnerWithContext(runnerContext, service),
+		masterKey:  bytes.Repeat([]byte{6}, 32), events: newEventHub(),
+	}
+
+	response := httptest.NewRecorder()
+	server.handleAPI(response, authenticatedFolderActionRequest(t, server, owner,
+		fmt.Sprintf("/api/account/imap/%d/rebuild-search-index", account.ID)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("account rebuild status=%d body=%s", response.Code, response.Body.String())
+	}
+	var queued struct {
+		RunID int64 `json:"run_id"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&queued); err != nil {
+		t.Fatal(err)
+	}
+	run := waitForSearchRebuildRun(t, ctx, db, owner.ID, queued.RunID)
+	if run.Status != "ok" || run.MailboxesDone != 2 || run.MailboxesTotal != 2 {
+		t.Fatalf("account rebuild run=%+v", run)
+	}
+	for _, mailbox := range []store.Mailbox{inbox, archive} {
+		count, err := searchService.CountMailboxMessages(ctx, owner.ID, mailbox.ID)
+		if err != nil || count != 1 {
+			t.Fatalf("owner mailbox %q index count=%d err=%v", mailbox.Name, count, err)
+		}
+	}
+	otherCount, err := searchService.CountMailboxMessages(ctx, other.ID, otherMailbox.ID)
+	if err != nil || otherCount != 1 {
+		t.Fatalf("other user's mailbox count=%d err=%v", otherCount, err)
+	}
+
+	response = httptest.NewRecorder()
+	server.handleAPI(response, authenticatedFolderActionRequest(t, server, owner,
+		fmt.Sprintf("/api/account/imap/%d/rebuild-search-index", otherAccount.ID)))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("cross-user account rebuild status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAPIAccountFolderSearchIndexRebuildFinishesAcrossGenerationRecovery(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "rolltop.db"))
@@ -124,6 +202,7 @@ func TestAPIAccountFolderSearchIndexRebuildRetriesAfterMidRepairInterruption(t *
 		blockUID:    blockedMessage.UID,
 		uidValidity: uidValidity,
 		started:     make(chan struct{}),
+		release:     make(chan struct{}),
 		raw:         []byte("From: Sender <sender@example.test>\r\nTo: rebuild-retry@example.test\r\nSubject: Retried full message\r\nMessage-ID: <rebuild-retry-26@example.test>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nretried-full-body-needle\r\n"),
 	}
 	service := &syncer.Service{Store: db, Blobs: blobStore, Search: searchService, Fetcher: fetcher}
@@ -152,39 +231,25 @@ func TestAPIAccountFolderSearchIndexRebuildRetriesAfterMidRepairInterruption(t *
 		t.Fatal(err)
 	}
 	firstRunner.SignalMailboxGenerationRecovery(user.ID)
+	// Explicit rebuilds use a committed runner context, so generation recovery
+	// must wait for this requested task instead of cancelling it midway.
+	close(fetcher.release)
 	firstRun := waitForSearchRebuildRun(t, ctx, db, user.ID, firstRunID)
-	if firstRun.Status != "interrupted" {
-		t.Fatalf("interrupted rebuild run=%+v", firstRun)
-	}
-	partialCount, err := searchService.CountMailboxMessages(ctx, user.ID, mailbox.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if partialCount != 25 {
-		t.Fatalf("partial rebuild documents=%d, want first committed batch of 25", partialCount)
-	}
-	if _, err := userDB.ExecContext(ctx, `DELETE FROM mailbox_generation_rebuilds
-		WHERE user_id = ? AND account_id = ? AND mailbox_id = ?`, user.ID, account.ID, mailbox.ID); err != nil {
-		t.Fatal(err)
-	}
-	cancelFirstRunner()
-
-	retryRunnerContext, cancelRetryRunner := context.WithCancel(context.Background())
-	defer cancelRetryRunner()
-	server.syncRunner = syncer.NewRunnerWithContext(retryRunnerContext, service)
-	retryRunID := startSearchRebuildRequest(t, server, user, mailbox.ID)
-	retryRun := waitForSearchRebuildRun(t, ctx, db, user.ID, retryRunID)
-	if retryRun.Status != "ok" {
-		t.Fatalf("retried rebuild run=%+v", retryRun)
+	if firstRun.Status != "ok" {
+		t.Fatalf("rebuild run=%+v", firstRun)
 	}
 	rebuiltCount, err := searchService.CountMailboxMessages(ctx, user.ID, mailbox.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rebuiltCount != 26 {
-		t.Fatalf("retried rebuild documents=%d, want 26", rebuiltCount)
+		t.Fatalf("rebuilt documents=%d, want 26", rebuiltCount)
 	}
 	assertSearchMessageIDs(t, ctx, searchService, user.ID, "retried-full-body-needle", []int64{blockedMessage.ID})
+	if _, err := userDB.ExecContext(ctx, `DELETE FROM mailbox_generation_rebuilds
+		WHERE user_id = ? AND account_id = ? AND mailbox_id = ?`, user.ID, account.ID, mailbox.ID); err != nil {
+		t.Fatal(err)
+	}
 	waitForSearchRebuildNotifications(t, server, user.ID)
 }
 
@@ -195,6 +260,7 @@ type interruptOnceSearchRebuildFetcher struct {
 	blockUID    uint32
 	uidValidity uint32
 	started     chan struct{}
+	release     chan struct{}
 	blocked     bool
 	raw         []byte
 }
@@ -211,8 +277,11 @@ func (f *interruptOnceSearchRebuildFetcher) FetchMessage(ctx context.Context, _ 
 	}
 	f.mu.Unlock()
 	if block {
-		<-ctx.Done()
-		return syncer.FetchedMessage{}, ctx.Err()
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return syncer.FetchedMessage{}, ctx.Err()
+		}
 	}
 	return syncer.FetchedMessage{
 		Mailbox: mailbox, UID: uid, UIDValidity: f.uidValidity,

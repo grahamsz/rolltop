@@ -233,6 +233,8 @@ func (s *Server) apiIMAPAccountPath(w http.ResponseWriter, r *http.Request, path
 	switch parts[1] {
 	case "folders":
 		s.apiCreateIMAPFolder(w, r, accountID)
+	case "rebuild-search-index":
+		s.apiRebuildIMAPAccountSearchIndex(w, r, accountID)
 	case "purge-estimate":
 		s.apiIMAPAccountPurgeEstimate(w, r, accountID)
 	case "delete":
@@ -240,6 +242,96 @@ func (s *Server) apiIMAPAccountPath(w http.ResponseWriter, r *http.Request, path
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// apiRebuildIMAPAccountSearchIndex explicitly replaces full-text documents for
+// every search-visible folder on one IMAP account. It is deliberately separate
+// from ordinary sync: old mail can require remote raw-message hydration and
+// should never begin that work merely because a scheduler pass ran.
+func (s *Server) apiRebuildIMAPAccountSearchIndex(w http.ResponseWriter, r *http.Request, accountID int64) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	cu, ok := s.requireAPIAuth(w, r)
+	if !ok {
+		return
+	}
+	if !s.verifyCSRF(w, r) {
+		return
+	}
+	if s.syncer == nil || s.syncer.Search == nil || s.syncRunner == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "Search indexing is not configured.")
+		return
+	}
+	account, err := s.store.GetMailAccountForUser(r.Context(), cu.User.ID, accountID)
+	if store.IsNotFound(err) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	summaries, err := s.store.ListMailboxesForUser(r.Context(), cu.User.ID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	mailboxes := make([]store.Mailbox, 0)
+	for _, summary := range summaries {
+		if summary.AccountID == account.ID && summary.IncludeInSearch {
+			mailboxes = append(mailboxes, summary.Mailbox)
+		}
+	}
+	if len(mailboxes) == 0 {
+		writeAPIError(w, http.StatusBadRequest, "No search-visible folders are available to rebuild.")
+		return
+	}
+	run, started, err := s.syncRunner.StartAccountMaintenanceToCompletion(cu.User.ID, account, mailboxes, "Rebuilding full-text indexes", func(ctx context.Context, runID int64, progress *store.SyncProgress) error {
+		for i, mailbox := range mailboxes {
+			if err := s.rebuildMailboxSearchIndex(ctx, cu.User.ID, mailbox, runID, progress); err != nil {
+				return err
+			}
+			progress.MailboxesDone = i + 1
+			if err := s.store.UpdateSyncRunProgress(ctx, cu.User.ID, runID, *progress); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if !started && err == nil {
+		writeAPIError(w, http.StatusConflict, "Sync or full-text reindexing is already running for this IMAP server.")
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, "could not start full-text reindexing")
+		return
+	}
+	s.notifyUserChanged(cu.User.ID)
+	writeJSON(w, map[string]any{"ok": true, "queued": true, "run_id": run.ID})
+}
+
+// rebuildMailboxSearchIndex replaces one folder's local full-text documents.
+// Callers must already hold the folder's runner reservation.
+func (s *Server) rebuildMailboxSearchIndex(ctx context.Context, userID int64, mailbox store.Mailbox, runID int64, progress *store.SyncProgress) error {
+	ctx = search.WithForegroundIndexing(ctx)
+	log.Printf("rebuild mailbox search index stage=purge user_id=%d account_id=%d mailbox=%q", userID, mailbox.AccountID, mailbox.Name)
+	purged, err := s.syncer.PurgeMailboxSearchIndexWithProgress(ctx, userID, mailbox.ID, runID, progress)
+	if err != nil {
+		return err
+	}
+	progress.LatestNewFrom = "rolltop:maintenance"
+	progress.LatestNewSubject = "Rebuilding full-text index"
+	if err := s.store.UpdateSyncRunProgress(ctx, userID, runID, *progress); err != nil {
+		return err
+	}
+	log.Printf("rebuild mailbox search index stage=repair user_id=%d account_id=%d mailbox=%q purged=%d", userID, mailbox.AccountID, mailbox.Name, purged)
+	indexed, err := s.syncer.RepairMailboxSearchIndex(ctx, userID, mailbox, runID, progress)
+	if err == nil {
+		log.Printf("rebuild mailbox search index complete user_id=%d account_id=%d mailbox=%q purged=%d indexed=%d", userID, mailbox.AccountID, mailbox.Name, purged, indexed)
+	}
+	return err
 }
 
 type createIMAPFolderInput struct {
@@ -956,24 +1048,8 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			writeAPIError(w, http.StatusServiceUnavailable, "Search indexing is not configured.")
 			return
 		}
-		run, started, err := s.syncRunner.StartMailboxMaintenance(cu.User.ID, mb, "Rebuilding full-text index", func(ctx context.Context, runID int64, progress *store.SyncProgress) error {
-			ctx = search.WithForegroundIndexing(ctx)
-			log.Printf("rebuild mailbox search index stage=purge user_id=%d account_id=%d mailbox=%q", cu.User.ID, mb.AccountID, mb.Name)
-			purged, err := s.syncer.PurgeMailboxSearchIndexWithProgress(ctx, cu.User.ID, mb.ID, runID, progress)
-			if err != nil {
-				return err
-			}
-			progress.LatestNewFrom = "rolltop:maintenance"
-			progress.LatestNewSubject = "Rebuilding full-text index"
-			if err := s.store.UpdateSyncRunProgress(ctx, cu.User.ID, runID, *progress); err != nil {
-				return err
-			}
-			log.Printf("rebuild mailbox search index stage=repair user_id=%d account_id=%d mailbox=%q purged=%d", cu.User.ID, mb.AccountID, mb.Name, purged)
-			indexed, err := s.syncer.RepairMailboxSearchIndex(ctx, cu.User.ID, mb, runID, progress)
-			if err == nil {
-				log.Printf("rebuild mailbox search index complete user_id=%d account_id=%d mailbox=%q purged=%d indexed=%d", cu.User.ID, mb.AccountID, mb.Name, purged, indexed)
-			}
-			return err
+		run, started, err := s.syncRunner.StartMailboxMaintenanceToCompletion(cu.User.ID, mb, "Rebuilding full-text index", func(ctx context.Context, runID int64, progress *store.SyncProgress) error {
+			return s.rebuildMailboxSearchIndex(ctx, cu.User.ID, mb, runID, progress)
 		})
 		if !started && err == nil {
 			writeAPIError(w, http.StatusConflict, "Sync or rebuild is already running for this folder.")
