@@ -106,6 +106,27 @@ func (s *Store) FinishSyncRun(ctx context.Context, userID, id int64, status stri
 	return err
 }
 
+// InterruptSyncRunForUser makes a no-longer-desired active run visible as
+// interrupted immediately. The runner's deferred finish cannot overwrite this
+// terminal state, so cancellation is safe even when IMAP needs a moment to
+// notice its context cancellation.
+func (s *Store) InterruptSyncRunForUser(ctx context.Context, userID, id int64, reason string) error {
+	if userID <= 0 || id <= 0 {
+		return fmt.Errorf("sync run and user id must be positive")
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "Cancelled by user."
+	}
+	if len(reason) > 1000 {
+		reason = reason[:1000]
+	}
+	now := nowUnix()
+	_, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE sync_runs
+		SET status = 'interrupted', finished_at = ?, updated_at = ?, error = ?
+		WHERE user_id = ? AND id = ? AND status = 'running'`, now, now, reason, userID, id)
+	return err
+}
+
 // GetSyncRunForUser loads one sync run scoped to the signed-in user.
 func (s *Store) GetSyncRunForUser(ctx context.Context, userID, id int64) (SyncRun, error) {
 	var r SyncRun

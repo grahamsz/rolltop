@@ -129,15 +129,12 @@ func (s *Server) apiStorage(w http.ResponseWriter, r *http.Request) {
 	writeJSONCached(w, r, s.cachedStorageStats(cu.User.ID))
 }
 func (s *Server) apiSyncRun(w http.ResponseWriter, r *http.Request, rest string) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
 	cu, ok := s.requireAPIAuth(w, r)
 	if !ok {
 		return
 	}
-	id, err := strconv.ParseInt(strings.Trim(rest, "/"), 10, 64)
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	id, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil || id <= 0 {
 		http.NotFound(w, r)
 		return
@@ -151,5 +148,43 @@ func (s *Server) apiSyncRun(w http.ResponseWriter, r *http.Request, rest string)
 		s.serverError(w, err)
 		return
 	}
-	writeJSONCached(w, r, map[string]any{"sync_run": apiSyncRunFrom(run)})
+	if len(parts) == 2 && parts[1] == "cancel" {
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		if !s.verifyCSRF(w, r) {
+			return
+		}
+		if run.Status != "running" {
+			writeAPIError(w, http.StatusConflict, "this sync run is already finished")
+			return
+		}
+		active := s.syncRunner != nil && s.syncRunner.CancelSyncRun(cu.User.ID, id)
+		if err := s.store.InterruptSyncRunForUser(r.Context(), cu.User.ID, id, "Cancelled by user."); err != nil {
+			s.serverError(w, err)
+			return
+		}
+		s.events.Notify(cu.User.ID)
+		writeJSON(w, map[string]any{"ok": true, "active_worker_cancelled": active})
+		return
+	}
+	if len(parts) != 1 || r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	live := syncRunLiveDetail{}
+	if s.syncRunner != nil {
+		details := s.syncRunner.SyncRunLiveDetails(cu.User.ID, id)
+		live = syncRunLiveDetail{Active: details.Active, Cancellable: details.Cancellable || run.Status == "running", Phase: details.Phase, Detail: details.Detail, PhaseStartedAt: timeString(details.PhaseStartedAt)}
+	}
+	writeJSONCached(w, r, map[string]any{"sync_run": apiSyncRunFrom(run), "live": live})
+}
+
+type syncRunLiveDetail struct {
+	Active         bool   `json:"active"`
+	Cancellable    bool   `json:"cancellable"`
+	Phase          string `json:"phase"`
+	Detail         string `json:"detail"`
+	PhaseStartedAt string `json:"phase_started_at"`
 }

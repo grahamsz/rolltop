@@ -411,6 +411,9 @@ type syncAccountOptions struct {
 	generationRecovery bool
 	deferPendingFlags  bool
 	deferMaintenance   func() bool
+	runDiagnostics     *syncRunDiagnostics
+	onRunStarted       func(int64)
+	onRunFinished      func(int64)
 }
 
 func (o syncAccountOptions) deferOrdinaryMaintenanceNow() bool {
@@ -418,10 +421,14 @@ func (o syncAccountOptions) deferOrdinaryMaintenanceNow() bool {
 }
 
 func (s *Service) syncAccount(ctx context.Context, userID int64, account store.MailAccount, requestedMailboxes []string, options syncAccountOptions) (store.SyncRun, error) {
+	ctx = withSyncRunDiagnostics(ctx, options.runDiagnostics)
 	generationRecoveryPhase(ctx, "sqlite-create-sync-run", "")
 	run, err := s.Store.CreateSyncRun(ctx, userID, account.ID)
 	if err != nil {
 		return store.SyncRun{}, err
+	}
+	if options.onRunStarted != nil {
+		options.onRunStarted(run.ID)
 	}
 
 	progress := store.SyncProgress{}
@@ -434,6 +441,9 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 	status := "ok"
 	errText := ""
 	defer func() {
+		if options.onRunFinished != nil {
+			defer options.onRunFinished(run.ID)
+		}
 		if ctx.Err() != nil && (status != "ok" || progress.MailboxesDone < progress.MailboxesTotal) {
 			status = "interrupted"
 			errText = "Server stopped before this sync finished."

@@ -434,6 +434,14 @@ export type SyncRun = {
   error: string;
 };
 
+export type SyncRunLiveDetail = {
+  active: boolean;
+  cancellable: boolean;
+  phase: string;
+  detail: string;
+  phase_started_at: string;
+};
+
 /** SyncFolder combines mailbox settings with current/last sync run information. */
 export type SyncFolder = {
   mailbox: Mailbox;

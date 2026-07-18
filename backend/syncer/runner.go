@@ -36,6 +36,7 @@ type Runner struct {
 	autoCancels                map[int64]context.CancelFunc
 	mailboxRunning             map[string]bool
 	mailboxCancels             map[string]runnerMailboxCancellation
+	runControls                map[int64]runnerSyncRunControl
 	workActivities             map[string]runnerWorkActivity
 	mailboxPending             map[string]bool
 	accountMailboxPending      map[string]bool
@@ -103,6 +104,7 @@ func NewRunnerWithContext(ctx context.Context, service *Service) *Runner {
 		autoCancels:                map[int64]context.CancelFunc{},
 		mailboxRunning:             map[string]bool{},
 		mailboxCancels:             map[string]runnerMailboxCancellation{},
+		runControls:                map[int64]runnerSyncRunControl{},
 		workActivities:             map[string]runnerWorkActivity{},
 		mailboxPending:             map[string]bool{},
 		accountMailboxPending:      map[string]bool{},
@@ -950,8 +952,12 @@ func (r *Runner) runReservedMailboxes(userID int64, mailboxes []string, keys []s
 		return err
 	}
 	r.setMailboxWorkActivitiesPhase(keys, "syncing")
+	diagnostics := newSyncRunDiagnostics()
 	if _, err := r.Service.syncUserWithOptions(ctx, userID, mailboxes, syncAccountOptions{
 		deferMaintenance: func() bool { return r.mailboxGenerationRecoveryPending(userID) },
+		runDiagnostics:   diagnostics,
+		onRunStarted:     func(runID int64) { r.registerSyncRunControl(userID, runID, keys, diagnostics) },
+		onRunFinished:    r.unregisterSyncRunControl,
 	}); err != nil {
 		log.Printf("sync user_id=%d mailboxes=%s: %v", userID, strings.Join(mailboxes, ","), err)
 		return err
@@ -1000,10 +1006,14 @@ func (r *Runner) runReservedAccountMailboxes(userID, accountID int64, mailboxes 
 	r.mu.Lock()
 	deferPendingFlags := r.generationRecoveryGatedLocked(userID) || r.generationRecoveryRuns[userID]
 	r.mu.Unlock()
+	diagnostics := newSyncRunDiagnostics()
 	if _, err := r.Service.syncUserAccountMailboxes(ctx, userID, accountID, mailboxes,
 		syncAccountOptions{
 			deferPendingFlags: deferPendingFlags,
 			deferMaintenance:  func() bool { return r.mailboxGenerationRecoveryPending(userID) },
+			runDiagnostics:    diagnostics,
+			onRunStarted:      func(runID int64) { r.registerSyncRunControl(userID, runID, keys, diagnostics) },
+			onRunFinished:     r.unregisterSyncRunControl,
 		}); err != nil {
 		log.Printf("sync user_id=%d account_id=%d mailboxes=%s: %v", userID, accountID, strings.Join(mailboxes, ","), err)
 		return err

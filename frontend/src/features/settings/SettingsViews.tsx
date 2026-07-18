@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../api";
 import type { DatePrefs, LocationState, Toast } from "../../appTypes";
-import type { Account, AccountPurgeEstimate, Bootstrap, FolderProgress, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SwipeAction, SwipePreferences, SwipeSnoozePreset, SyncFolder, SyncRun, ThemeDefinition, User } from "../../types";
+import type { Account, AccountPurgeEstimate, Bootstrap, FolderProgress, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SwipeAction, SwipePreferences, SwipeSnoozePreset, SyncFolder, SyncRun, SyncRunLiveDetail, ThemeDefinition, User } from "../../types";
 import { Icon } from "../../components/Icon";
 import { Field, Stat } from "../../components/common";
 import { emptyAccountForm, accountToForm } from "../../lib/accountForm";
@@ -2322,7 +2322,7 @@ export function SettingsView({
             <tbody>
               {runs.map((run) => (
                 <tr key={run.id}>
-                  <td>{run.status}</td>
+                  <td><button className="link-button" type="button" onClick={() => navigate(`/sync-runs/${run.id}`)}>{run.status}</button></td>
                   <td>{run.current_mailbox}</td>
                   <td>{run.messages_stored} processed, {run.messages_skipped} skipped</td>
                   <td>{displayDateTime(run.updated_at, user)}</td>
@@ -2754,32 +2754,50 @@ export function AdminUsersView({
 
 /** SyncRunView shows a single sync run's latest progress/status details. */
 export function SyncRunView({
+  csrf,
   location,
   navigate,
   datePrefs
 }: {
+  csrf: string;
   location: LocationState;
   navigate: (url: string) => void;
   datePrefs: DatePrefs;
 }) {
   const id = location.path.split("/").pop() || "";
   const [run, setRun] = useState<SyncRun | null>(null);
+  const [live, setLive] = useState<SyncRunLiveDetail | null>(null);
   const [error, setError] = useState("");
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .syncRun(id)
-      .then((data) => {
-        if (!cancelled) setRun(data.sync_run);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(messageFromError(err));
-      });
+    const refresh = () => api.syncRun(id).then((data) => {
+      if (!cancelled) { setRun(data.sync_run); setLive(data.live); }
+    }).catch((err) => { if (!cancelled) setError(messageFromError(err)); });
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 1500);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
   }, [id]);
+
+  const cancel = async () => {
+    if (!run || !live?.cancellable || cancelling) return;
+    setCancelling(true);
+    setError("");
+    try {
+      await api.cancelSyncRun(csrf, run.id);
+      const data = await api.syncRun(id);
+      setRun(data.sync_run);
+      setLive(data.live);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   return (
     <>
@@ -2792,6 +2810,9 @@ export function SyncRunView({
         <section className="panel">
           <dl className="detail-list">
             <dt>Status</dt><dd>{run.status}</dd>
+            <dt>Runner</dt><dd>{live?.active ? "Active on this server" : run.status === "running" ? "No active worker found (likely left by a previous process)" : "Not active"}</dd>
+            <dt>Current step</dt><dd>{live?.phase || "-"}{live?.detail ? ` · ${live.detail}` : ""}</dd>
+            <dt>Step started</dt><dd>{live?.phase_started_at ? displayDateTime(live.phase_started_at, datePrefs) : "-"}</dd>
             <dt>Started</dt><dd>{displayDateTime(run.started_at, datePrefs)}</dd>
             <dt>Updated</dt><dd>{displayDateTime(run.updated_at, datePrefs)}</dd>
             <dt>Finished</dt><dd>{run.finished_at ? displayDateTime(run.finished_at, datePrefs) : "-"}</dd>
@@ -2800,6 +2821,7 @@ export function SyncRunView({
             <dt>Messages</dt><dd>{run.messages_stored} processed, {run.messages_skipped} skipped, {run.messages_seen} seen</dd>
             <dt>Error</dt><dd>{run.error || "-"}</dd>
           </dl>
+          {live?.cancellable ? <button className="danger" type="button" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "Cancelling…" : live.active ? "Cancel this sync" : "Clear this stale sync"}</button> : null}
         </section>
       ) : (
         <div className="panel muted">Loading sync run...</div>

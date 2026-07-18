@@ -79,6 +79,7 @@ func generationRecoveryStartMessage(ctx context.Context, uid uint32) {
 }
 
 func generationRecoveryPhase(ctx context.Context, phase, detail string) {
+	syncRunPhase(ctx, phase, detail)
 	diagnostics := generationRecoveryDiagnosticsFromContext(ctx)
 	if diagnostics == nil {
 		return

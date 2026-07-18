@@ -98,7 +98,7 @@ export function RouteView({
     return <AdminUsersView csrf={csrf} refreshChrome={refreshChrome} addToast={addToast} />;
   }
   if (location.path.startsWith("/sync-runs/")) {
-    return <SyncRunView location={location} navigate={navigate} datePrefs={user} />;
+    return <SyncRunView csrf={csrf} location={location} navigate={navigate} datePrefs={user} />;
   }
   return (
     <MailView

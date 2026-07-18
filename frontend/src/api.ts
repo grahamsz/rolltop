@@ -24,6 +24,7 @@ import type {
   SwipePreferences,
   SyncFolder,
   SyncRun,
+  SyncRunLiveDetail,
   ThreadMessage,
   User
 } from "./types";
@@ -499,5 +500,6 @@ export const api = {
   remoteImageBlocklist: () => getJSON<{ patterns: string[] }>("/api/admin/remote-image-blocklist"),
   saveRemoteImageBlocklist: (csrf: string, patterns: string[]) =>
     postJSON<{ ok: boolean; patterns: string[] }>("/api/admin/remote-image-blocklist", csrf, { patterns }),
-  syncRun: (id: string) => getJSON<{ sync_run: SyncRun }>(`/api/sync-runs/${id}`)
+  syncRun: (id: string) => getJSON<{ sync_run: SyncRun; live: SyncRunLiveDetail }>(`/api/sync-runs/${id}`),
+  cancelSyncRun: (csrf: string, id: number) => postJSON<{ ok: boolean }>(`/api/sync-runs/${id}/cancel`, csrf)
 };
