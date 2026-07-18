@@ -211,6 +211,16 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 		return 0, nil
 	}
 	ctx = search.WithBackgroundIndexing(ctx)
+	// Retention intentionally leaves historical messages without raw .eml data.
+	// Do not re-fetch those messages from IMAP merely to enrich attachment text:
+	// that can turn one upgrade into hours of background network and Bleve work.
+	if !s.AllowBackgroundAttachmentHydration {
+		if skipped, err := s.Store.MarkMessagesWithoutCachedRawAttachmentIndexed(ctx, userID); err != nil {
+			return 0, err
+		} else if skipped > 0 {
+			log.Printf("attachment index skipped uncached historical messages user_id=%d count=%d", userID, skipped)
+		}
+	}
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
@@ -226,7 +236,6 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 	indexed := 0
 	enriched := 0
 	deferred := 0
-	fallback := 0
 	coolingDown := 0
 	type remoteMailboxPage struct {
 		mailbox  store.Mailbox
@@ -245,14 +254,10 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 		enriched++
 		return nil
 	}
-	recordDeferred := func(msg store.MessageRecord, stage string, cause error, logMessage bool) error {
-		now := time.Now()
-		retryAt := s.deferAttachmentIndexRetry(userID, msg.ID, now)
-		if logMessage {
-			log.Printf("attachment index message deferred user_id=%d account_id=%d mailbox_id=%d message_id=%d uid=%d stage=%s error_type=%T retry_in=%s",
-				userID, msg.AccountID, msg.MailboxID, msg.ID, msg.UID, stage, cause,
-				retryAt.Sub(now).Round(time.Second))
-		}
+	recordDeferred := func(msg store.MessageRecord, cause error) error {
+		retryAt := s.deferAttachmentIndexRetry(userID, msg.ID, time.Now())
+		log.Printf("attachment index message deferred user_id=%d account_id=%d mailbox_id=%d message_id=%d uid=%d stage=raw-fetch error_type=%T retry_in=%s",
+			userID, msg.AccountID, msg.MailboxID, msg.ID, msg.UID, cause, time.Until(retryAt).Round(time.Second))
 		if err := batch.Add(ctx, &pendingFetchedSearchIndex{
 			Document:    search.MessageIndexDocument{Message: msg},
 			KeepPending: true,
@@ -261,7 +266,6 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 		}
 		indexed++
 		deferred++
-		fallback++
 		return nil
 	}
 	for _, msg := range messages {
@@ -281,59 +285,67 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 			}
 			mailboxes[msg.MailboxID] = mailbox
 		}
-		if canBatchRemote && mailbox.IncludeInSearch {
-			raw, local, err := s.readLocalRawMessageForIndexRepair(userID, msg)
-			if err != nil {
-				return indexed, err
-			}
-			if local {
-				item, err := s.prepareAttachmentIndexMessageFromRaw(ctx, msg, raw)
-				if err != nil {
+		raw, local, err := s.readLocalRawMessageForIndexRepair(userID, msg)
+		if err != nil {
+			return indexed, err
+		}
+		if !local {
+			if s.AllowBackgroundAttachmentHydration {
+				page := remotePages[msg.MailboxID]
+				if page == nil {
+					page = &remoteMailboxPage{mailbox: mailbox}
+					remotePages[msg.MailboxID] = page
+					remotePageOrder = append(remotePageOrder, msg.MailboxID)
+				}
+				if canBatchRemote && mailbox.IncludeInSearch {
+					page.messages = append(page.messages, msg)
+					continue
+				}
+				item, err := s.prepareAttachmentIndexMessage(ctx, msg)
+				if err == nil {
+					if err := recordEnriched(msg, item); err != nil {
+						return indexed, err
+					}
+					continue
+				}
+				var deferredErr *attachmentIndexDeferredError
+				if !errors.As(err, &deferredErr) {
 					return indexed, err
 				}
-				if err := recordEnriched(msg, item); err != nil {
+				if err := recordDeferred(msg, deferredErr.err); err != nil {
 					return indexed, err
 				}
 				continue
 			}
-			page := remotePages[msg.MailboxID]
-			if page == nil {
-				page = &remoteMailboxPage{mailbox: mailbox}
-				remotePages[msg.MailboxID] = page
-				remotePageOrder = append(remotePageOrder, msg.MailboxID)
+			// A blob path can outlive a deleted file. Commit the existing message
+			// document as-is and complete the derived task rather than hydrating
+			// old mail remotely in the background.
+			if err := batch.Add(ctx, &pendingFetchedSearchIndex{
+				Document:              search.MessageIndexDocument{Message: msg},
+				HasVisibleAttachments: msg.HasAttachments,
+			}); err != nil {
+				return indexed, err
 			}
-			page.messages = append(page.messages, msg)
+			indexed++
 			continue
 		}
-		item, err := s.prepareAttachmentIndexMessage(ctx, msg)
+		item, err := s.prepareAttachmentIndexMessageFromRaw(ctx, msg, raw)
 		if err != nil {
-			var deferredErr *attachmentIndexDeferredError
-			if !errors.As(err, &deferredErr) {
-				return indexed, err
-			}
-			if ctx.Err() != nil {
-				return indexed, ctx.Err()
-			}
-			if err := recordDeferred(msg, deferredErr.stage, deferredErr.err, true); err != nil {
-				return indexed, err
-			}
-			continue
+			return indexed, err
 		}
 		if err := recordEnriched(msg, item); err != nil {
 			return indexed, err
 		}
 	}
-	for _, mailboxID := range remotePageOrder {
-		page := remotePages[mailboxID]
-		_, err := s.repairMailboxSearchRemotePage(ctx, userID, page.mailbox, page.messages,
-			func(msg store.MessageRecord, item *pendingFetchedSearchIndex) error {
-				return recordEnriched(msg, item)
-			},
-			func(msg store.MessageRecord) error {
-				return recordDeferred(msg, "raw-fetch-batch", nil, false)
-			})
-		if err != nil {
-			return indexed, err
+	if s.AllowBackgroundAttachmentHydration {
+		for _, mailboxID := range remotePageOrder {
+			page := remotePages[mailboxID]
+			_, err := s.repairMailboxSearchRemotePage(ctx, userID, page.mailbox, page.messages,
+				func(msg store.MessageRecord, item *pendingFetchedSearchIndex) error { return recordEnriched(msg, item) },
+				func(msg store.MessageRecord) error { return recordDeferred(msg, nil) })
+			if err != nil {
+				return indexed, err
+			}
 		}
 	}
 	if err := batch.Flush(ctx); err != nil {
@@ -342,9 +354,9 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 	if len(messages) > 0 {
 		s.advanceAttachmentIndexCursor(userID, messages[len(messages)-1].ID)
 	}
-	if deferred > 0 || coolingDown > 0 {
-		log.Printf("attachment index batch user_id=%d inspected=%d indexed=%d enriched=%d fallback=%d deferred=%d cooling_down=%d wrapped=%t",
-			userID, len(messages), indexed, enriched, fallback, deferred, coolingDown, wrapped)
+	if coolingDown > 0 {
+		log.Printf("attachment index batch user_id=%d inspected=%d indexed=%d enriched=%d cooling_down=%d wrapped=%t",
+			userID, len(messages), indexed, enriched, coolingDown, wrapped)
 	}
 	if enriched == 0 && deferred+coolingDown == len(messages) && len(messages) == limit &&
 		(!wrapped || deferred > 0) {

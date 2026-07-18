@@ -341,11 +341,13 @@ func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]Mailb
 				ma.email, ma.label,
 				count(m.id),
 				COALESCE(sum(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END), 0),
+				COALESCE(sum(CASE WHEN m.blob_path != '' AND b.kind IN ('message', 'message-cache') AND b.size > 0 THEN 1 ELSE 0 END), 0),
 				COALESCE(sum(CASE WHEN sn.id IS NOT NULL THEN 1 ELSE 0 END), 0),
 				COALESCE(sum(CASE WHEN sn.id IS NOT NULL AND m.is_read = 0 THEN 1 ELSE 0 END), 0)
 			FROM mailboxes mb
 			JOIN mail_accounts ma ON ma.id = mb.account_id AND ma.user_id = mb.user_id
 			LEFT JOIN messages m ON m.user_id = mb.user_id AND m.mailbox_id = mb.id
+			LEFT JOIN blobs b ON b.id = m.blob_id AND b.user_id = m.user_id
 			LEFT JOIN message_snoozes sn ON sn.user_id = m.user_id
 				AND sn.thread_key = COALESCE(NULLIF(m.thread_key, ''), 'id:' || m.id)
 				AND sn.snoozed_until > ?
@@ -360,11 +362,11 @@ func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]Mailb
 	for rows.Next() {
 		var ms MailboxSummary
 		var created, updated, statusChecked int64
-		var localMessages, localUnread, hiddenMessages, hiddenUnread int
+		var localMessages, localUnread, cachedMessages, hiddenMessages, hiddenUnread int
 		if err := rows.Scan(&ms.ID, &ms.UserID, &ms.AccountID, &ms.Name, &ms.SyncMode, &ms.Role, &ms.Icon,
 			&ms.ShowInSidebar, &ms.ShowInAllMail, &ms.IncludeInSearch, &ms.SearchIndexPurged, &ms.SearchIndexKnown, &ms.UIDValidity, &ms.LastUID, &created, &updated,
 			&ms.RemoteMessageCount, &ms.RemoteUnreadCount, &ms.RemoteUIDNext, &statusChecked, &ms.AccountEmail, &ms.AccountLabel,
-			&localMessages, &localUnread, &hiddenMessages, &hiddenUnread); err != nil {
+			&localMessages, &localUnread, &cachedMessages, &hiddenMessages, &hiddenUnread); err != nil {
 			return nil, err
 		}
 		ms.SyncMode = normalizeSyncMode(ms.SyncMode)
@@ -374,6 +376,7 @@ func (s *Store) ListMailboxesForUser(ctx context.Context, userID int64) ([]Mailb
 		ms.CreatedAt = unixTime(created)
 		ms.UpdatedAt = unixTime(updated)
 		ms.LocalMessageCount = localMessages
+		ms.CachedMessageCount = cachedMessages
 		visibleLocalMessages := max(0, localMessages-hiddenMessages)
 		ms.MessageCount = visibleLocalMessages
 		ms.UnreadCount = max(0, localUnread-hiddenUnread)

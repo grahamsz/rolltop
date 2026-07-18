@@ -97,6 +97,32 @@ func TestAttachmentIndexQueueBatchesRemoteRowsByMailbox(t *testing.T) {
 	}
 }
 
+func TestAttachmentIndexSkipsUncachedHistoricalMessagesWithoutRemoteHydration(t *testing.T) {
+	fixture := newMoveTestFixture(t)
+	ctx := context.Background()
+	searchService, err := search.Open(filepath.Join(t.TempDir(), "bleve"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = searchService.Close() })
+	fetcher := &attachmentIndexQueueFetcher{moveTestFetcher: fixture.fetcher}
+	fixture.service.Search = searchService
+	fixture.service.Fetcher = fetcher
+	fixture.service.AllowBackgroundAttachmentHydration = false
+
+	processed, err := fixture.service.IndexPendingAttachmentsForUser(ctx, fixture.userID, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed != 0 {
+		t.Fatalf("processed=%d, want 0 after bulk local completion", processed)
+	}
+	if calls := fetcher.totalCallCount(); calls != 0 {
+		t.Fatalf("background attachment hydration calls=%d, want 0", calls)
+	}
+	assertAttachmentIndexPending(t, ctx, fixture.store, fixture.userID, fixture.message.ID, false)
+}
+
 func TestAttachmentIndexQueueCheckpointsBeforeForegroundCancellation(t *testing.T) {
 	fixture := newMoveTestFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())

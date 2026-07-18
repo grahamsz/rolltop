@@ -59,6 +59,7 @@ export type Mailbox = {
   remote_uid_next: number;
   sync_percent: number;
   local_message_count?: number;
+  cached_message_count?: number;
   local_sync_percent?: number;
   search_indexed_count?: number;
   search_index_total?: number;
@@ -452,6 +453,7 @@ export type FolderProgress = {
   remote_uid_next: number;
   sync_percent: number;
   local_message_count: number;
+  cached_message_count: number;
   local_sync_percent: number;
   search_indexed_count?: number;
   search_index_total?: number;

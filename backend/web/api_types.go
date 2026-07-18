@@ -60,6 +60,7 @@ type apiMailbox struct {
 	RemoteUIDNext      uint32 `json:"remote_uid_next"`
 	SyncPercent        int    `json:"sync_percent"`
 	LocalMessageCount  int    `json:"local_message_count"`
+	CachedMessageCount int    `json:"cached_message_count"`
 	LocalSyncPercent   int    `json:"local_sync_percent"`
 	SearchIndexedCount *int   `json:"search_indexed_count,omitempty"`
 	SearchIndexTotal   *int   `json:"search_index_total,omitempty"`
@@ -364,6 +365,7 @@ type apiFolderProgress struct {
 	RemoteUIDNext      uint32 `json:"remote_uid_next"`
 	SyncPercent        int    `json:"sync_percent"`
 	LocalMessageCount  int    `json:"local_message_count"`
+	CachedMessageCount int    `json:"cached_message_count"`
 	LocalSyncPercent   int    `json:"local_sync_percent"`
 	SearchIndexedCount *int   `json:"search_indexed_count,omitempty"`
 	SearchIndexTotal   *int   `json:"search_index_total,omitempty"`

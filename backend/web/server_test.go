@@ -1044,6 +1044,7 @@ func TestSyncFolderViewsUsesCommittedSearchMarkers(t *testing.T) {
 		Subject:   "Indexed",
 		Date:      time.Now(),
 		UID:       1,
+		BlobPath:  blob.Path,
 		BodyText:  "indexed",
 	})
 	if err != nil {
@@ -1106,6 +1107,9 @@ func TestSyncFolderViewsUsesCommittedSearchMarkers(t *testing.T) {
 	}
 	if box.LocalMessageCount != 2 {
 		t.Fatalf("local message count = %d", box.LocalMessageCount)
+	}
+	if box.CachedMessageCount != 1 {
+		t.Fatalf("cached message count = %d", box.CachedMessageCount)
 	}
 	if box.RemoteMessageCount != 4 {
 		t.Fatalf("remote message count = %d", box.RemoteMessageCount)

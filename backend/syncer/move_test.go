@@ -160,7 +160,7 @@ func newMoveTestFixture(t *testing.T) moveTestFixture {
 	}
 	fetcher := &moveTestFetcher{}
 	return moveTestFixture{
-		store: db, service: &Service{Store: db, Fetcher: fetcher}, fetcher: fetcher,
+		store: db, service: &Service{Store: db, Fetcher: fetcher, AllowBackgroundAttachmentHydration: true}, fetcher: fetcher,
 		userID: user.ID, account: account, source: source, destination: destination, message: message,
 	}
 }

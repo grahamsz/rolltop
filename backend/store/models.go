@@ -143,6 +143,7 @@ type MailboxSummary struct {
 	MessageCount       int
 	UnreadCount        int
 	LocalMessageCount  int
+	CachedMessageCount int
 	LocalSyncPercent   int
 	SyncPercent        int
 	SearchIndexedCount *int

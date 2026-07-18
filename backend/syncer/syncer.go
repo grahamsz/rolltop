@@ -158,8 +158,13 @@ type Service struct {
 	// worker. Direct Service callers retain the synchronous behavior used by
 	// maintenance tools and focused tests.
 	DeferMailboxGenerationRebuilds bool
-	PluginDir                      string
-	MasterKey                      []byte
+	// AllowBackgroundAttachmentHydration preserves the legacy behavior of
+	// fetching uncached historical raw messages solely to enrich attachment text.
+	// It is disabled in production: explicit full-text rebuilds are the opt-in
+	// path for that potentially large remote operation.
+	AllowBackgroundAttachmentHydration bool
+	PluginDir                          string
+	MasterKey                          []byte
 
 	pluginOnce     sync.Once
 	pluginLoadErr  error

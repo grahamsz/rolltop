@@ -1077,6 +1077,12 @@
   display: grid;
   gap: 5px;
   min-width: 0;
+
+  .sync-percent {
+    // Keep all meter fills the same width even when their right-hand labels
+    // have different lengths.
+    grid-template-columns: minmax(0, 1fr) 156px;
+  }
 }
 
 .folder-actions {

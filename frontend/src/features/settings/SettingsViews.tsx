@@ -649,6 +649,7 @@ function mergeFolderProgress(folder: SyncFolder, progress: FolderProgress, prese
       remote_uid_next: progress.remote_uid_next,
       sync_percent: progress.sync_percent,
       local_message_count: progress.local_message_count,
+      cached_message_count: progress.cached_message_count,
       local_sync_percent: progress.local_sync_percent,
       search_index_purged: progress.search_index_purged,
       search_index_state_known: progress.search_index_state_known,
@@ -1620,6 +1621,7 @@ export function SettingsView({
       if (!folder) return [];
       const localPercent = percentValue(folder.mailbox.local_sync_percent ?? folder.mailbox.sync_percent);
       const localCount = Math.max(0, folder.mailbox.local_message_count ?? folder.mailbox.message_count);
+      const cachedCount = Math.max(0, folder.mailbox.cached_message_count ?? 0);
       const remoteCount = Math.max(0, folder.mailbox.remote_message_count);
       const remoteStatusAvailable = folder.mailbox.remote_uid_next > 0;
       const localLabel = remoteStatusAvailable
@@ -1663,6 +1665,9 @@ export function SettingsView({
               ? "Full-text search coverage is unavailable. Header and preview search may still work."
               : `${formatStatCount(searchIndexedCount)} of ${formatStatCount(searchTotalCount)} locally mirrored messages completed a full-text indexing commit (${searchPercent}%).`
         : "Full-message search is disabled for this folder.";
+      const cachePercent = localCount > 0 ? percentValue(Math.floor((cachedCount * 100) / localCount)) : 0;
+      const cacheLabel = `Raw cache ${cachedCount.toLocaleString()}/${localCount.toLocaleString()}`;
+      const cacheProgressTitle = `${cachedCount.toLocaleString()} of ${localCount.toLocaleString()} locally mirrored messages still have their raw RFC 822 message cached on disk.`;
       const currentRole = folder.mailbox.role || "";
       const currentIcon = folder.mailbox.icon || "folder";
       const syncLabel = folderSyncModeLabel(folder.mailbox.sync_mode || "inherit");
@@ -1686,6 +1691,10 @@ export function SettingsView({
                 <div className="sync-percent" aria-label={localProgressTitle} title={localProgressTitle}>
                   <div><span style={{ width: `${localPercent}%` }} /></div>
                   <small>{localLabel}</small>
+                </div>
+                <div className="sync-percent" aria-label={cacheProgressTitle} title={cacheProgressTitle}>
+                  <div><span style={{ width: `${cachePercent}%` }} /></div>
+                  <small>{cacheLabel}</small>
                 </div>
                 <div className="sync-percent" aria-label={searchProgressTitle} title={searchProgressTitle}>
                   <div><span style={{ width: `${searchPercent ?? 0}%` }} /></div>
