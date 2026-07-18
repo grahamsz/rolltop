@@ -211,14 +211,14 @@ func (s *Service) IndexPendingAttachmentsForUser(ctx context.Context, userID int
 		return 0, nil
 	}
 	ctx = search.WithBackgroundIndexing(ctx)
-	// Retention intentionally leaves historical messages without raw .eml data.
-	// Do not re-fetch those messages from IMAP merely to enrich attachment text:
-	// that can turn one upgrade into hours of background network and Bleve work.
+	// New mail is indexed synchronously during IMAP import. Do not turn pending
+	// historical attachment metadata into a whole-mailbox background rebuild:
+	// even local raw retention can make that consume the writer for hours.
 	if !s.AllowBackgroundAttachmentHydration {
-		if skipped, err := s.Store.MarkMessagesWithoutCachedRawAttachmentIndexed(ctx, userID); err != nil {
+		if skipped, err := s.Store.SkipPendingHistoricalAttachmentIndexing(ctx, userID); err != nil {
 			return 0, err
 		} else if skipped > 0 {
-			log.Printf("attachment index skipped uncached historical messages user_id=%d count=%d", userID, skipped)
+			log.Printf("attachment index skipped historical messages user_id=%d count=%d", userID, skipped)
 		}
 	}
 	if limit <= 0 || limit > 500 {

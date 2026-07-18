@@ -97,7 +97,7 @@ func TestAttachmentIndexQueueBatchesRemoteRowsByMailbox(t *testing.T) {
 	}
 }
 
-func TestAttachmentIndexSkipsUncachedHistoricalMessagesWithoutRemoteHydration(t *testing.T) {
+func TestAttachmentIndexSkipsHistoricalMessagesWithoutBackgroundRebuild(t *testing.T) {
 	fixture := newMoveTestFixture(t)
 	ctx := context.Background()
 	searchService, err := search.Open(filepath.Join(t.TempDir(), "bleve"))
@@ -115,7 +115,7 @@ func TestAttachmentIndexSkipsUncachedHistoricalMessagesWithoutRemoteHydration(t 
 		t.Fatal(err)
 	}
 	if processed != 0 {
-		t.Fatalf("processed=%d, want 0 after bulk local completion", processed)
+		t.Fatalf("processed=%d, want 0 after bulk completion", processed)
 	}
 	if calls := fetcher.totalCallCount(); calls != 0 {
 		t.Fatalf("background attachment hydration calls=%d, want 0", calls)

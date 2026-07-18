@@ -133,8 +133,8 @@ func TestRecoverMarkedSearchIndexesQuarantinesOnlyTargetAndQueuesEveryVisibleLoc
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if count, err := searchSvc.CountUserMessages(ctx, owner.ID); err != nil || count != 2 {
-		t.Fatalf("rebuilt owner search documents = %d, %v; want 2, nil", count, err)
+	if count, err := searchSvc.CountUserMessages(ctx, owner.ID); err != nil || count != 0 {
+		t.Fatalf("automatic recovery search documents = %d, %v; want 0, nil", count, err)
 	}
 	assertSearchRecoveryMessagePreserved(t, ctx, db, owner.ID, manual, false)
 	assertSearchRecoveryMessagePreserved(t, ctx, db, owner.ID, never, false)

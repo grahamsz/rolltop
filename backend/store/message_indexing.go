@@ -227,17 +227,17 @@ func (s *Store) MarkMessageAttachmentIndexed(ctx context.Context, userID, messag
 	return nil
 }
 
-// MarkMessagesWithoutCachedRawAttachmentIndexed completes derived attachment
-// work that cannot be performed locally. Raw message retention is deliberately
-// bounded, so historical rows with no blob path must not trigger an unbounded
-// series of IMAP fetches merely to enrich attachment text in the background.
-func (s *Store) MarkMessagesWithoutCachedRawAttachmentIndexed(ctx context.Context, userID int64) (int64, error) {
+// SkipPendingHistoricalAttachmentIndexing completes deferred historical
+// attachment enrichment without doing a whole-mailbox background rebuild.
+// New messages are indexed during their normal IMAP import; historical
+// attachment extraction is deliberately an explicit full-text rebuild task.
+func (s *Store) SkipPendingHistoricalAttachmentIndexing(ctx context.Context, userID int64) (int64, error) {
 	if userID <= 0 {
 		return 0, fmt.Errorf("user id must be positive")
 	}
 	result, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `UPDATE messages
 		SET attachment_indexed_at = ?, updated_at = ?
-		WHERE user_id = ? AND attachment_indexed_at = 0 AND blob_path = ''`, nowUnix(), nowUnix(), userID)
+		WHERE user_id = ? AND attachment_indexed_at = 0`, nowUnix(), nowUnix(), userID)
 	if err != nil {
 		return 0, err
 	}
