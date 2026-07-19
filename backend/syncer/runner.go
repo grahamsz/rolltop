@@ -741,6 +741,12 @@ func (r *Runner) reserveAccountMailboxes(userID, accountID int64, mailboxes []st
 		return nil, false
 	}
 	defer r.mu.Unlock()
+	// An account-wide pass already owns this tenant's sync plan. Let it finish
+	// instead of starting a competing INBOX poll for another account: they share
+	// the same per-user SQLite writer even though their IMAP servers differ.
+	if r.autoRunning[userID] {
+		return nil, false
+	}
 	if r.generationRecoveryAccountMailboxesGatedLocked(userID, accountID, mailboxes) {
 		r.deferGenerationRecoveryAccountMailboxesLocked(userID, accountID, mailboxes)
 		return nil, false
@@ -818,6 +824,15 @@ func (r *Runner) reserveOrQueueAccountMailboxes(userID, accountID int64, mailbox
 		return nil, false
 	}
 	defer r.mu.Unlock()
+	if r.autoRunning[userID] {
+		if r.accountMailboxPending == nil {
+			r.accountMailboxPending = map[string]bool{}
+		}
+		for _, key := range keys {
+			r.accountMailboxPending[key] = true
+		}
+		return nil, false
+	}
 	if r.generationRecoveryAccountMailboxesGatedLocked(userID, accountID, mailboxes) {
 		r.deferGenerationRecoveryAccountMailboxesLocked(userID, accountID, mailboxes)
 		return nil, false
