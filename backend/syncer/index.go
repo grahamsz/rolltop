@@ -636,6 +636,10 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 			}
 			pageIndexed = 0
 		}
+		if indexed > 0 {
+			log.Printf("repair mailbox search index checkpoint user_id=%d account_id=%d mailbox=%q indexed=%d bleve_batch_size=%d",
+				userID, mailbox.AccountID, mailbox.Name, indexed, explicitSearchRepairBatchSize)
+		}
 		return nil
 	}
 	remoteHydrationUnavailable := false

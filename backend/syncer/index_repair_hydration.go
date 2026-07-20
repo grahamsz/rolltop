@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"rolltop/backend/store"
 )
@@ -15,6 +16,12 @@ var (
 	errSearchRepairRemoteBatchIncomplete = errors.New("mailbox search repair remote batch was incomplete")
 	errSearchRepairRemoteGeneration      = errors.New("mailbox search repair remote generation did not match")
 )
+
+// A full-text rebuild may hydrate old remote-only message bodies, but one IMAP
+// page must never hold its explicit rebuild forever. On deadline the caller
+// commits fallback documents and records those messages as eligible for a
+// later explicit enrichment instead.
+const searchRepairRemotePageTimeout = 45 * time.Second
 
 type searchRepairRecordFunc func(store.MessageRecord, *pendingFetchedSearchIndex) error
 type searchRepairFallbackFunc func(store.MessageRecord) error
@@ -88,6 +95,8 @@ func (s *Service) repairMailboxSearchRemotePage(
 	}
 
 	processed := make(map[uint32]bool, len(uids))
+	fetchCtx, cancelFetch := context.WithTimeout(ctx, searchRepairRemotePageTimeout)
+	defer cancelFetch()
 	var callbackErr error
 	handle := func(item FetchedMessage) error {
 		msg, ok := byUID[item.UID]
@@ -116,23 +125,23 @@ func (s *Service) repairMailboxSearchRemotePage(
 	var fetchErr error
 	switch fetcher := s.Fetcher.(type) {
 	case UIDValidityMailboxFetcher:
-		fetchErr = s.fetchUIDsForGeneration(ctx, account, mailbox.Name, uids, expectedUIDValidity, handle)
+		fetchErr = s.fetchUIDsForGeneration(fetchCtx, account, mailbox.Name, uids, expectedUIDValidity, handle)
 	case uidBatchFetcher:
-		fetchErr = fetcher.FetchUIDs(ctx, account, mailbox.Name, uids, handle)
+		fetchErr = fetcher.FetchUIDs(fetchCtx, account, mailbox.Name, uids, handle)
 	case nil:
 		fetchErr = errors.New("mailbox search repair fetcher is not configured")
 	default:
 		failed := 0
 		var firstFetchErr error
 		for _, uid := range uids {
-			item, singleErr := s.Fetcher.FetchMessage(ctx, account, mailbox.Name, uid)
+			item, singleErr := s.Fetcher.FetchMessage(fetchCtx, account, mailbox.Name, uid)
 			if singleErr == nil {
 				singleErr = handle(item)
 			}
 			if callbackErr != nil {
 				return false, callbackErr
 			}
-			if err := ctx.Err(); err != nil {
+			if err := fetchCtx.Err(); err != nil {
 				return false, err
 			}
 			if singleErr != nil {
