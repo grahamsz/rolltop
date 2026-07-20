@@ -713,8 +713,8 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 			remoteHydrationUnavailable = true
 		}
 		// Finish the partial batch at the page boundary before publishing the
-		// matching progress snapshot. A 500-row page therefore makes at most two
-		// ordinary 250-document Bleve commits, not one commit per message.
+		// matching progress snapshot. SQLite/UI updates happen once per 500-row
+		// page while Bleve uses its responsive 25-document commit cadence.
 		if err := checkpointPage(); err != nil {
 			return indexed, err
 		}

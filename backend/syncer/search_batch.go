@@ -12,10 +12,10 @@ import (
 const (
 	fetchedSearchIndexBatchSize     = 25
 	maintenanceSearchCheckpointSize = 5
-	// Explicit rebuilds are user-requested, run under a dedicated mailbox
-	// reservation, and should amortize Bleve's commit cost aggressively. Keep
-	// the batch bounded so one oversized message cannot monopolize the writer.
-	explicitSearchRepairBatchSize = 250
+	// Explicit rebuilds use the same 25-document Bleve cadence as normal import.
+	// Larger batches reduced commit count but performed worse on real mailboxes,
+	// where document projection and Bleve segment merges were less responsive.
+	explicitSearchRepairBatchSize = 25
 )
 
 // pendingFetchedSearchIndex carries a Bleve document plus the metadata flag

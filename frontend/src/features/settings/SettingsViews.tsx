@@ -1625,14 +1625,14 @@ export function SettingsView({
       const remoteCount = Math.max(0, folder.mailbox.remote_message_count);
       const remoteStatusAvailable = folder.mailbox.remote_uid_next > 0;
       const localLabel = remoteStatusAvailable
-        ? `Local ${localCount.toLocaleString()}/${remoteCount.toLocaleString()}`
-        : `Local ${localCount.toLocaleString()} mirrored`;
+		? `Headers ${localCount.toLocaleString()}/${remoteCount.toLocaleString()}`
+		: `Headers ${localCount.toLocaleString()} mirrored`;
       const missingLocalCount = Math.max(0, remoteCount - localCount);
-      let localProgressTitle = `Rolltop has ${localCount.toLocaleString()} locally mirrored messages; the latest remote IMAP count is ${remoteCount.toLocaleString()}.`;
-      if (!remoteStatusAvailable) {
-        localProgressTitle = `Rolltop has ${localCount.toLocaleString()} locally mirrored messages. The remote IMAP count is not available yet.`;
-      } else if (missingLocalCount > 0) {
-        localProgressTitle = `Rolltop has ${localCount.toLocaleString()} locally mirrored messages; the latest remote IMAP count is ${remoteCount.toLocaleString()}. Sync this folder to restore ${missingLocalCount.toLocaleString()} missing local messages.`;
+		let localProgressTitle = `Headers are stored locally for ${localCount.toLocaleString()} messages; the latest remote IMAP count is ${remoteCount.toLocaleString()}.`;
+		if (!remoteStatusAvailable) {
+			localProgressTitle = `Headers are stored locally for ${localCount.toLocaleString()} messages. The remote IMAP count is not available yet.`;
+		} else if (missingLocalCount > 0) {
+			localProgressTitle = `Headers are stored locally for ${localCount.toLocaleString()} messages; the latest remote IMAP count is ${remoteCount.toLocaleString()}. Sync this folder to restore ${missingLocalCount.toLocaleString()} missing headers.`;
       }
       const searchIndexedCount = folder.mailbox.search_indexed_count;
       const searchTotalCount = folder.mailbox.search_index_total;
@@ -1648,14 +1648,14 @@ export function SettingsView({
           : searchTotalCount > 0 ? Math.floor((searchIndexedCount * 100) / searchTotalCount) : 0)
         : null;
       const searchLabel = !folder.mailbox.include_in_search
-        ? "Full text off"
-        : searchIndexPurged
-          ? "Full text purged"
-          : !searchIndexKnown
-            ? "Full text not audited"
-            : searchPercent === null
-              ? "Full text unavailable"
-              : `Full text ${searchCounts}`;
+		? "Full Text Search off"
+		: searchIndexPurged
+		  ? "Full Text Search purged"
+		  : !searchIndexKnown
+			? "Full Text Search not audited"
+			: searchPercent === null
+			  ? "Full Text Search unavailable"
+			  : `Full Text Search ${searchCounts}`;
       const searchProgressTitle = folder.mailbox.include_in_search
         ? searchIndexPurged
           ? "This folder's local full-text documents were deliberately purged. Use Rebuild full-text index to restore them."
@@ -1666,8 +1666,8 @@ export function SettingsView({
               : `${formatStatCount(searchIndexedCount)} of ${formatStatCount(searchTotalCount)} locally mirrored messages completed a full-text indexing commit (${searchPercent}%).`
         : "Full-message search is disabled for this folder.";
       const cachePercent = localCount > 0 ? percentValue(Math.floor((cachedCount * 100) / localCount)) : 0;
-      const cacheLabel = `Raw cache ${cachedCount.toLocaleString()}/${localCount.toLocaleString()}`;
-      const cacheProgressTitle = `${cachedCount.toLocaleString()} of ${localCount.toLocaleString()} locally mirrored messages still have their raw RFC 822 message cached on disk.`;
+		const cacheLabel = `Local Cache ${cachedCount.toLocaleString()}/${localCount.toLocaleString()}`;
+		const cacheProgressTitle = `Local Cache retains the original RFC 822 message for ${cachedCount.toLocaleString()} of ${localCount.toLocaleString()} locally stored headers. This cache is bounded by the retention setting.`;
       const currentRole = folder.mailbox.role || "";
       const currentIcon = folder.mailbox.icon || "folder";
       const syncLabel = folderSyncModeLabel(folder.mailbox.sync_mode || "inherit");
@@ -2080,14 +2080,14 @@ export function SettingsView({
     return (
       <section className="panel">
         <div className="storage-grid">
-          <Stat label="Message Headers" value={formatBytes(storage.DatabaseBytes)} detail={storageEmailDetail(storage.MessageHeaderCount)} />
-          <Stat label="Full Text Index" value={formatBytes(storage.IndexBytes)} detail={storageEmailDetail(storage.IndexMessageCount)} />
-          <Stat label="Message Bodies" value={formatBytes(storage.BlobBytes)} detail={storageEmailDetail(storage.MessageBodyCount)} />
+		  <Stat label="Headers" value={formatBytes(storage.DatabaseBytes)} detail={storageEmailDetail(storage.MessageHeaderCount)} />
+		  <Stat label="Full Text Search" value={formatBytes(storage.IndexBytes)} detail={storageEmailDetail(storage.IndexMessageCount)} />
+		  <Stat label="Local Cache" value={formatBytes(storage.BlobBytes)} detail={storageEmailDetail(storage.MessageBodyCount)} />
           <Stat label="Total" value={formatBytes(storage.TotalBytes)} detail={String(storage.Error || "")} />
         </div>
         {showIndexBreakdown ? (
           <>
-            <h3>Full text index detail</h3>
+			<h3>Full Text Search detail</h3>
             <div className="storage-grid">
               <Stat label="Index segments" value={formatBytes(indexBreakdown.ZapBytes)} detail={`${formatStatCount(indexBreakdown.ZapCount)} files`} />
               <Stat label="Largest segment" value={formatBytes(indexBreakdown.LargestZapBytes)} detail={statDetail(indexBreakdown.LargestZapPath)} />
@@ -2518,7 +2518,7 @@ export function SettingsView({
   } else if (route.kind === "display") {
     page = <SettingsPage title="Display" description="Theme, locale, and date formatting." backPath="/settings/account/general" navigate={navigate}>{noticeNode}{renderDisplaySettings()}</SettingsPage>;
   } else if (route.kind === "storage") {
-    page = <SettingsPage title="Storage" description="Local database, search index, and message-body usage." backPath="/settings/account/general" navigate={navigate}>{renderStorageSettings()}</SettingsPage>;
+	page = <SettingsPage title="Storage" description="Headers, Local Cache, and Full Text Search usage." backPath="/settings/account/general" navigate={navigate}>{renderStorageSettings()}</SettingsPage>;
   } else if (route.kind === "about") {
     page = <SettingsPage title="About Rolltop" description="Software license and source terms." backPath="/settings/account/general" navigate={navigate}>{renderLicenseSettings()}</SettingsPage>;
   } else if (route.kind === "swipes") {
@@ -2579,7 +2579,7 @@ export function SettingsView({
         <SettingsIndex ariaLabel="General settings">
           <SettingsIndexRow icon="group" title="Profile" description="Signed-in identity and password-recovery address." meta={displayName} path="/settings/account/general/profile" navigate={navigate} />
           <SettingsIndexRow icon="settings" title="Display" description="Theme, locale, and date formatting." meta={themeName} path="/settings/account/general/display" navigate={navigate} />
-          <SettingsIndexRow icon="mail" title="Storage" description="Database, search index, and cached message-body usage." meta={storageError ? "Unavailable" : storageLoading ? "Calculating" : formatBytes(storage.TotalBytes)} path="/settings/account/general/storage" navigate={navigate} />
+		  <SettingsIndexRow icon="mail" title="Storage" description="Headers, Local Cache, and Full Text Search usage." meta={storageError ? "Unavailable" : storageLoading ? "Calculating" : formatBytes(storage.TotalBytes)} path="/settings/account/general/storage" navigate={navigate} />
           <SettingsIndexRow icon="file_text" title="About" description="Rolltop license and source terms." meta="AGPL v3+" path="/settings/account/general/about" navigate={navigate} />
         </SettingsIndex>
       </SettingsPage>
