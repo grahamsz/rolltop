@@ -1087,6 +1087,7 @@ function SidebarSync({
   const orderedActiveRuns = useMemo(() => stableSyncRunOrder(activeRuns), [activeRuns]);
   const visibleRuns = orderedActiveRuns.length > 0 ? orderedActiveRuns : latest ? [latest] : [];
   const isActive = activeRuns.length > 0 || running;
+	const checkingOnly = activeRuns.length > 0 && activeRuns.every(isSyncRunChecking);
 
   async function startSync() {
     setBusy(true);
@@ -1101,11 +1102,11 @@ function SidebarSync({
   return (
     <section className={`sidebar-sync ${isActive ? "running" : "idle"}`}>
       <div className="sync-meta">
-        <strong>{isActive ? `Syncing${activeRuns.length > 1 ? ` (${activeRuns.length})` : ""}` : "Sync"}</strong>
+		<strong>{isActive ? `${checkingOnly ? "Checking" : "Syncing"}${activeRuns.length > 1 ? ` (${activeRuns.length})` : ""}` : "Sync"}</strong>
         <span>{latest ? `${latest.status}${latest.current_mailbox ? ` - ${latest.current_mailbox}` : ""}` : "never"}</span>
         <button className="secondary" type="button" disabled={busy || isActive} onClick={startSync}>
           <Icon name="sync" />
-          {isActive ? "Syncing" : "Sync now"}
+			{isActive ? (checkingOnly ? "Checking" : "Syncing") : "Sync now"}
         </button>
       </div>
       <div className="sync-run-list">
@@ -1115,6 +1116,14 @@ function SidebarSync({
       </div>
     </section>
   );
+}
+
+// A run is created before IMAP STATUS has determined whether there are any
+// UIDs to fetch. Calling that short no-op phase "Syncing" made an unchanged
+// INBOX look permanently busy, especially with two IMAP accounts.
+function isSyncRunChecking(run: SyncRun): boolean {
+	return run.status === "running" && run.messages_total === 0 && run.messages_stored === 0 &&
+		run.latest_new_from !== "rolltop:maintenance" && run.latest_new_from !== "rolltop:move";
 }
 
 
@@ -1158,6 +1167,7 @@ function mirrorResumeEstimate(mailbox: Mailbox | undefined): MirrorResumeEstimat
 
 /** Render current-run activity alongside the durable local mirror checkpoint. */
 export function SyncRunMini({ run, mailbox }: { run: SyncRun; mailbox?: Mailbox }) {
+	const isChecking = isSyncRunChecking(run);
   const totalMessages = run.messages_total || 0;
   const totalFolders = run.mailboxes_total || 0;
   const runProgress = totalMessages > 0
@@ -1168,10 +1178,10 @@ export function SyncRunMini({ run, mailbox }: { run: SyncRun; mailbox?: Mailbox 
   const isPurge = run.latest_new_from === "rolltop:maintenance" && run.latest_new_subject.trim().toLowerCase().startsWith("purging");
   const isMove = run.latest_new_from === "rolltop:move";
   const isMaintenance = run.latest_new_from === "rolltop:maintenance";
-  const resume = run.status === "running" && !isPurge && !isMove && !isMaintenance ? mirrorResumeEstimate(mailbox) : null;
+	const resume = run.status === "running" && !isChecking && !isPurge && !isMove && !isMaintenance ? mirrorResumeEstimate(mailbox) : null;
   const resumePercent = resume && resume.total > 0 ? Math.round((resume.completed * 100) / resume.total) : 0;
   const progress = resume ? resumePercent : runProgress;
-  const processedLabel = run.messages_stored > 0 ? `${run.messages_stored.toLocaleString()} processed` : "Syncing...";
+	const processedLabel = run.messages_stored > 0 ? `${run.messages_stored.toLocaleString()} processed` : isChecking ? "Checking IMAP status..." : "Syncing...";
   const resumeLabel = resume
     ? resume.approximate
       ? `about ${resume.completed.toLocaleString()} of ${resume.total.toLocaleString()} already mirrored`
