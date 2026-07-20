@@ -346,6 +346,23 @@ func failRoutineRun(ctx context.Context, db *sql.DB, item routine, message strin
 	return err
 }
 
+// suspendRoutineForCredentialError stops retries that cannot recover on their
+// own. Continuing to dial with an invalid app password creates noisy logs and
+// competes with the main mailbox mirror for SQLite writes.
+func suspendRoutineForCredentialError(ctx context.Context, db *sql.DB, item routine, message string) error {
+	_, err := db.ExecContext(ctx, `UPDATE plugin_remote_imap_sync_routines SET
+		enabled = 0, state = 'needs_credentials', last_error = ?, next_retry_at = 0,
+		updated_at = ?
+		WHERE user_id = ? AND id = ? AND enabled = 1`,
+		message, time.Now().UTC().Unix(), item.UserID, item.ID)
+	return err
+}
+
+func isRemoteAuthenticationError(err error) bool {
+	message := strings.ToLower(sanitizeRemoteError(err))
+	return strings.Contains(message, "authentication failed") || strings.Contains(message, "invalid credentials")
+}
+
 func resetRoutineProgress(ctx context.Context, tx *sql.Tx, userID, routineID int64) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_remote_imap_sync_messages WHERE user_id = ? AND routine_id = ?`, userID, routineID); err != nil {
 		return err

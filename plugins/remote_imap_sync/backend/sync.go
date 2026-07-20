@@ -409,7 +409,19 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 		}
 		message := sanitizeRemoteError(runErr)
 		_ = finishRun(context.Background(), db, item.UserID, runID, "failed", message)
-		_ = failRoutineRun(context.Background(), db, item, message, time.Now().UTC().Add(retryDelay(failureAttempt)))
+		if isRemoteAuthenticationError(runErr) {
+			if err := suspendRoutineForCredentialError(context.Background(), db, item, message); err != nil {
+				// A transient SQLite lock must not leave this routine permanently
+				// active without a future chance to suspend it.
+				_ = failRoutineRun(context.Background(), db, item, message, time.Now().UTC().Add(retryDelay(failureAttempt)))
+			} else {
+				// The manager removes disabled workers on its next reconciliation. Stop
+				// this one immediately so neither its timer nor IDLE loop retries first.
+				w.stopOnce.Do(w.cancel)
+			}
+		} else {
+			_ = failRoutineRun(context.Background(), db, item, message, time.Now().UTC().Add(retryDelay(failureAttempt)))
+		}
 		runStatus.Finish("failed", runErr)
 		return runErr
 	}

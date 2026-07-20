@@ -1085,7 +1085,10 @@ function SidebarSync({
 }) {
   const [busy, setBusy] = useState(false);
   const orderedActiveRuns = useMemo(() => stableSyncRunOrder(activeRuns), [activeRuns]);
-  const visibleRuns = orderedActiveRuns.length > 0 ? orderedActiveRuns : latest ? [latest] : [];
+  // Historical runs belong on the settings history page. The sidebar is live
+  // activity only: falling back to the latest interrupted/no-op row made a
+  // settled mailbox look as though it were perpetually syncing.
+  const visibleRuns = orderedActiveRuns;
   const isActive = activeRuns.length > 0 || running;
 	const checkingOnly = activeRuns.length > 0 && activeRuns.every(isSyncRunChecking);
 
@@ -1103,7 +1106,7 @@ function SidebarSync({
     <section className={`sidebar-sync ${isActive ? "running" : "idle"}`}>
       <div className="sync-meta">
 		<strong>{isActive ? `${checkingOnly ? "Checking" : "Syncing"}${activeRuns.length > 1 ? ` (${activeRuns.length})` : ""}` : "Sync"}</strong>
-        <span>{latest ? `${latest.status}${latest.current_mailbox ? ` - ${latest.current_mailbox}` : ""}` : "never"}</span>
+        <span>{isActive ? (latest ? `${latest.status}${latest.current_mailbox ? ` - ${latest.current_mailbox}` : ""}` : "starting") : "Up to date"}</span>
         <button className="secondary" type="button" disabled={busy || isActive} onClick={startSync}>
           <Icon name="sync" />
 			{isActive ? (checkingOnly ? "Checking" : "Syncing") : "Sync now"}
