@@ -509,8 +509,12 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 	if cfg.SyncInterval > 0 {
 		go scheduledSync(ctx, db, syncRunner, cfg.SyncInterval)
 	}
+	go reconcileStaleSyncRuns(ctx, db, 5*time.Minute)
 	if cfg.InboxPollInterval > 0 {
-		go inboxPoll(ctx, db, syncRunner, cfg.InboxPollInterval)
+		// IMAP IDLE is the primary low-latency path. A separate minute-by-minute
+		// poll used to queue the same INBOX work while the IDLE watcher was healthy,
+		// producing duplicate visible INBOX runs. Scheduled account sync remains
+		// the fallback if IDLE disconnects.
 		go inboxIdle(ctx, db, syncRunner, imapFetcher, cfg.InboxPollInterval)
 	}
 	if cfg.BlobRetention > 0 {
@@ -522,6 +526,27 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 		pluginHost: webServer, db: db, search: searchSvc, handler: webServer.Handler(),
 		restartRequired: restartRequired,
 	}, nil
+}
+
+func reconcileStaleSyncRuns(ctx context.Context, db *store.Store, maxAge time.Duration) {
+	if db == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n, err := db.InterruptStaleSyncRuns(ctx, maxAge)
+			if err != nil {
+				log.Printf("reconcile stale sync runs: %v", err)
+			} else if n > 0 {
+				log.Printf("interrupted stale sync runs count=%d max_age=%s", n, maxAge)
+			}
+		}
+	}
 }
 
 func storageRetention(ctx context.Context, db *store.Store, svc *syncer.Service, retention time.Duration) {

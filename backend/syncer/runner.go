@@ -18,6 +18,12 @@ import (
 // Inbox polling is a freshness path, not an unbounded repair job. Each pass
 // checkpoints incrementally and may resume on the next poll.
 const liveInboxSyncTurnTimeout = 90 * time.Second
+
+// Every ordinary folder sync is incremental and checkpoints its UID after each
+// stored batch. Bound one folder turn so a silent IMAP command cannot keep an
+// account-wide pass (and its visible sync run) alive forever; the next
+// scheduled pass resumes from the durable UID checkpoint.
+const ordinaryMailboxSyncTurnTimeout = 3 * time.Minute
 const senderStatsRefreshTimeout = 2 * time.Minute
 
 type runnerMailboxCancellation struct {
@@ -950,15 +956,16 @@ func (r *Runner) runReservedMailboxes(userID int64, mailboxes []string, keys []s
 	}()
 	ctx, finishContext := r.ordinaryMailboxContext(userID, keys, false)
 	defer finishContext()
+	timeout := ordinaryMailboxSyncTurnTimeout
 	if generationRecoveryInboxBypassAllowed(mailboxes) {
-		timeout := r.liveInboxSyncTimeout
+		timeout = r.liveInboxSyncTimeout
 		if timeout <= 0 {
 			timeout = liveInboxSyncTurnTimeout
 		}
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
 	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -1001,15 +1008,16 @@ func (r *Runner) runReservedAccountMailboxes(userID, accountID int64, mailboxes 
 	ctx, finishContext := r.ordinaryMailboxContext(userID, keys,
 		generationRecoveryInboxBypassAllowed(mailboxes))
 	defer finishContext()
+	timeout := ordinaryMailboxSyncTurnTimeout
 	if generationRecoveryInboxBypassAllowed(mailboxes) {
-		timeout := r.liveInboxSyncTimeout
+		timeout = r.liveInboxSyncTimeout
 		if timeout <= 0 {
 			timeout = liveInboxSyncTurnTimeout
 		}
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
 	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // CreateSyncRun starts a sync progress row for one user/account.
@@ -20,6 +21,44 @@ func (s *Store) CreateSyncRun(ctx context.Context, userID, accountID int64) (Syn
 		return SyncRun{}, err
 	}
 	return s.GetSyncRunForUser(ctx, userID, id)
+}
+
+// InterruptStaleSyncRuns marks a run that has made no durable progress for the
+// supplied age as interrupted. A live runner updates sync_runs throughout each
+// bounded turn; rows older than this are abandoned UI state, not active work.
+func (s *Store) InterruptStaleSyncRuns(ctx context.Context, maxAge time.Duration) (int64, error) {
+	if maxAge <= 0 {
+		return 0, fmt.Errorf("stale sync run age must be positive")
+	}
+	if s.split {
+		users, err := s.ListUsers(ctx)
+		if err != nil {
+			return 0, err
+		}
+		var total int64
+		for _, user := range users {
+			userStore, err := s.UserStore(ctx, user.ID)
+			if err != nil {
+				return total, err
+			}
+			n, err := userStore.InterruptStaleSyncRuns(ctx, maxAge)
+			if err != nil {
+				return total, err
+			}
+			total += n
+		}
+		return total, nil
+	}
+	now := nowUnix()
+	cutoff := time.Now().Add(-maxAge).Unix()
+	result, err := s.db.ExecContext(ctx, `UPDATE sync_runs
+		SET status = 'interrupted', finished_at = ?, updated_at = ?,
+			error = CASE WHEN error = '' THEN 'Sync stopped making progress and was marked interrupted.' ELSE error END
+		WHERE status = 'running' AND updated_at <= ?`, now, now, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // MarkRunningSyncRunsInterrupted marks stale running jobs interrupted during startup recovery.
