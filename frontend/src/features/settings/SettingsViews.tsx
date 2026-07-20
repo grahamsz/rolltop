@@ -2752,7 +2752,68 @@ export function AdminUsersView({
   );
 }
 
-/** SyncRunView shows a single sync run's latest progress/status details. */
+type SyncStage = "inspect" | "prepare" | "transfer" | "index" | "finish";
+
+const syncRunStages: Array<{ id: SyncStage; title: string; detail: string; icon: string }> = [
+  { id: "inspect", title: "Inspect", detail: "Connect and read folder state", icon: "travel_explore" },
+  { id: "prepare", title: "Prepare", detail: "Validate the local checkpoint", icon: "folder_open" },
+  { id: "transfer", title: "Transfer", detail: "Fetch and save new messages", icon: "download" },
+  { id: "index", title: "Index", detail: "Make saved mail searchable", icon: "manage_search" },
+  { id: "finish", title: "Finish", detail: "Checkpoint and update flags", icon: "check_circle" }
+];
+
+function syncStageForPhase(phase: string, run: SyncRun): SyncStage {
+  const value = phase.trim().toLowerCase();
+  if (run.latest_new_from === "rolltop:maintenance") return "index";
+  if (/^(starting|plugin-discovery|sqlite-create-sync-run|mailbox-selection|sqlite-last-uids|imap-mailbox-status|imap-uid-snapshot)/.test(value)) return "inspect";
+  if (/(generation-state|sqlite-get-mailbox|plugin-hook-discovery|prepare|reconcile)/.test(value)) return "prepare";
+  if (/(search|language-detect|plugin-classification)/.test(value)) return "index";
+  if (/(checkpoint|sync-progress|metadata|seen-flags|flagged-flags|complete)/.test(value)) return "finish";
+  return "transfer";
+}
+
+function syncPhaseCopy(phase: string, detail: string, run: SyncRun): { title: string; detail: string } {
+  const value = phase.trim().toLowerCase();
+  const folder = detail || run.current_mailbox || "this folder";
+  if (!value || value === "starting") return { title: "Starting sync", detail: "Preparing the mailbox job." };
+  if (value === "imap-mailbox-status") return { title: "Reading folder status", detail: `Checking remote headers for ${folder}.` };
+  if (value === "imap-uid-snapshot") return { title: "Inspecting message IDs", detail: `Building a safe snapshot for ${folder}.` };
+  if (value === "sqlite-last-uids" || value === "sqlite-generation-state") return { title: "Checking the local checkpoint", detail: "Comparing the remote mailbox with locally stored mail." };
+  if (value === "sqlite-message-exists") return { title: "Saving new mail", detail: "Checking whether this message is already stored." };
+  if (value === "mime-parse") return { title: "Reading message content", detail: "Extracting headers and message text." };
+  if (value === "blob-save" || value === "sqlite-create-blob") return { title: "Saving local cache", detail: "Writing the original message safely to local storage." };
+  if (value.startsWith("search-")) return { title: "Updating full text search", detail: "Adding saved mail to the local search index." };
+  if (value === "language-detect") return { title: "Preparing search", detail: "Detecting message language for better search." };
+  if (value.includes("classification")) return { title: "Applying message checks", detail: "Running enabled local message classifiers." };
+  if (value.includes("checkpoint")) return { title: "Saving progress", detail: "Writing a checkpoint so this sync can resume safely." };
+  if (value.includes("reconcile") || value.includes("flags")) return { title: "Refreshing message state", detail: "Updating read and starred status without changing remote mail." };
+  if (value.includes("fetch")) return { title: "Fetching mail", detail: `Downloading the next messages from ${folder}.` };
+  return { title: "Processing mailbox", detail: detail || "Working through the next safe sync step." };
+}
+
+function syncRunProgress(run: SyncRun): { percent: number | null; label: string } {
+  const total = Math.max(0, run.messages_total || 0);
+  const seen = Math.max(0, run.messages_seen || 0);
+  if (total > 0) {
+    return { percent: Math.min(100, Math.round((seen / total) * 100)), label: `${Math.min(seen, total).toLocaleString()} of ${total.toLocaleString()} messages checked` };
+  }
+  if (run.mailboxes_total > 0) {
+    return { percent: Math.min(100, Math.round((Math.max(0, run.mailboxes_done) / run.mailboxes_total) * 100)), label: `${Math.max(0, run.mailboxes_done)} of ${run.mailboxes_total} folders checked` };
+  }
+  if (run.messages_stored > 0 || run.messages_skipped > 0) {
+    return { percent: null, label: `${run.messages_stored.toLocaleString()} processed · ${run.messages_skipped.toLocaleString()} skipped` };
+  }
+  return { percent: null, label: run.status === "running" ? "Determining what needs syncing" : "No new messages needed processing" };
+}
+
+function syncStatusLabel(status: string): string {
+  const value = status.trim().toLowerCase();
+  if (value === "running") return "In progress";
+  if (value === "ok") return "Complete";
+  return value ? value[0].toUpperCase() + value.slice(1) : "Unknown";
+}
+
+/** SyncRunView shows a single sync run's live activity and durable progress. */
 export function SyncRunView({
   csrf,
   location,
@@ -2799,6 +2860,13 @@ export function SyncRunView({
     }
   };
 
+  const phase = run ? syncPhaseCopy(live?.phase || "", live?.detail || "", run) : null;
+  const activeStage = run ? syncStageForPhase(live?.phase || "", run) : "inspect";
+  const progress = run ? syncRunProgress(run) : null;
+  const progressInfo = progress || { percent: null, label: "Loading sync progress" };
+  const activeStageIndex = syncRunStages.findIndex((stage) => stage.id === activeStage);
+  const isActive = Boolean(run && run.status === "running" && live?.active);
+
   return (
     <>
       <div className="content-head">
@@ -2807,21 +2875,42 @@ export function SyncRunView({
       </div>
       {error ? <div className="error">{error}</div> : null}
       {run ? (
-        <section className="panel">
-          <dl className="detail-list">
-            <dt>Status</dt><dd>{run.status}</dd>
-            <dt>Runner</dt><dd>{live?.active ? "Active on this server" : run.status === "running" ? "No active worker found (likely left by a previous process)" : "Not active"}</dd>
-            <dt>Current step</dt><dd>{live?.phase || "-"}{live?.detail ? ` · ${live.detail}` : ""}</dd>
-            <dt>Step started</dt><dd>{live?.phase_started_at ? displayDateTime(live.phase_started_at, datePrefs) : "-"}</dd>
-            <dt>Started</dt><dd>{displayDateTime(run.started_at, datePrefs)}</dd>
-            <dt>Updated</dt><dd>{displayDateTime(run.updated_at, datePrefs)}</dd>
-            <dt>Finished</dt><dd>{run.finished_at ? displayDateTime(run.finished_at, datePrefs) : "-"}</dd>
-            <dt>Folder</dt><dd>{run.current_mailbox}</dd>
-            <dt>UID</dt><dd>{run.current_uid}</dd>
-            <dt>Messages</dt><dd>{run.messages_stored} processed, {run.messages_skipped} skipped, {run.messages_seen} seen</dd>
-            <dt>Error</dt><dd>{run.error || "-"}</dd>
-          </dl>
-          {live?.cancellable ? <button className="danger" type="button" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "Cancelling…" : live.active ? "Cancel this sync" : "Clear this stale sync"}</button> : null}
+        <section className={`sync-run-detail panel ${isActive ? "running" : ""}`}>
+          <div className="sync-run-hero">
+            <div className={`sync-run-state ${run.status}`}><Icon name={isActive ? "sync" : run.status === "ok" ? "check" : "info"} /></div>
+            <div>
+              <div className={`sync-run-status ${run.status}`}>{syncStatusLabel(run.status)}</div>
+              <h2>{phase?.title}</h2>
+              <p>{phase?.detail}</p>
+            </div>
+            {live?.cancellable ? <button className="danger sync-run-cancel" type="button" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "Cancelling…" : live.active ? "Cancel sync" : "Clear stale run"}</button> : null}
+          </div>
+
+          <div className="sync-run-progress-block">
+            <div className="sync-run-progress-copy"><strong>{progressInfo.label}</strong><span>{progressInfo.percent !== null ? `${progressInfo.percent}%` : "Live"}</span></div>
+            <div className={`sync-run-progress ${progressInfo.percent === null ? "indeterminate" : ""}`}><div style={progressInfo.percent === null ? undefined : { width: `${progressInfo.percent}%` }} /></div>
+          </div>
+
+          <ol className="sync-run-stages" aria-label="Expected sync steps">
+            {syncRunStages.map((stage, index) => {
+              const current = isActive && stage.id === activeStage;
+              const complete = !isActive ? run.status === "ok" : index < activeStageIndex;
+              return <li key={stage.id} className={current ? "current" : complete ? "complete" : ""}>
+                <span className="sync-run-stage-icon"><Icon name={complete ? "check" : stage.icon} /></span>
+                <span><strong>{stage.title}</strong><small>{stage.detail}</small></span>
+              </li>;
+            })}
+          </ol>
+
+          <div className="sync-run-facts">
+            <div><span>Folder</span><strong>{run.current_mailbox || "Account-wide check"}</strong></div>
+            <div><span>Messages</span><strong>{run.messages_stored.toLocaleString()} processed · {run.messages_skipped.toLocaleString()} skipped</strong></div>
+            <div><span>Checkpoint</span><strong>{run.current_uid ? `UID ${run.current_uid.toLocaleString()}` : "Awaiting folder status"}</strong></div>
+            <div><span>Last update</span><strong>{displayDateTime(run.updated_at, datePrefs)}</strong></div>
+          </div>
+
+          {!live?.active && run.status === "running" ? <div className="sync-run-stale">No active worker is attached to this run. It will be marked interrupted automatically, or you can clear it now.</div> : null}
+          {run.error ? <div className="sync-run-error"><Icon name="error" />{run.error}</div> : null}
         </section>
       ) : (
         <div className="panel muted">Loading sync run...</div>
