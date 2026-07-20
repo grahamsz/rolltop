@@ -501,13 +501,20 @@ func startApp(ctx context.Context, cfg config.Config, startup *startupState) (*a
 	if err != nil {
 		return nil, err
 	}
-	for _, user := range users {
-		syncRunner.StartAttachmentIndex(user.ID)
-	}
-
 	go backfillThreadHeaders(ctx, db, cfg.DataDir)
 	if cfg.SyncInterval > 0 {
+		// Do not wait one whole scheduler interval after boot. IDLE only watches
+		// INBOX changes from this point forward; the initial account-wide pass is
+		// what establishes/reconciles every configured folder's UID checkpoint.
+		for _, user := range users {
+			if !syncRunner.Start(user.ID) {
+				log.Printf("startup sync user_id=%d not started", user.ID)
+			}
+		}
 		go scheduledSync(ctx, db, syncRunner, cfg.SyncInterval)
+	}
+	for _, user := range users {
+		syncRunner.StartAttachmentIndex(user.ID)
 	}
 	go reconcileStaleSyncRuns(ctx, db, 5*time.Minute)
 	if cfg.InboxPollInterval > 0 {
