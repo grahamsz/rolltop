@@ -227,6 +227,53 @@ func (s *Store) MarkMessageAttachmentIndexed(ctx context.Context, userID, messag
 	return nil
 }
 
+// MessageAttachmentIndexUpdate is one durable post-Bleve marker update.
+type MessageAttachmentIndexUpdate struct {
+	MessageID      int64
+	HasAttachments bool
+}
+
+// MarkMessagesAttachmentIndexed records one already-committed Bleve batch in a
+// single SQLite transaction. Rebuilds must not turn a 250-document Bleve batch
+// into 250 separate SQLite commits.
+func (s *Store) MarkMessagesAttachmentIndexed(ctx context.Context, userID int64, updates []MessageAttachmentIndexUpdate) error {
+	if userID <= 0 {
+		return fmt.Errorf("user id must be positive")
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	tx, err := s.mustDataDB(ctx, userID).BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statement, err := tx.PrepareContext(ctx, `UPDATE messages SET has_attachments = ?, attachment_indexed_at = ?, updated_at = ?
+		WHERE user_id = ? AND id = ?`)
+	if err != nil {
+		return err
+	}
+	defer statement.Close()
+	now := nowUnix()
+	for _, update := range updates {
+		if update.MessageID <= 0 {
+			return ErrNotFound
+		}
+		result, err := statement.ExecContext(ctx, boolInt(update.HasAttachments), now, now, userID, update.MessageID)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return ErrNotFound
+		}
+	}
+	return tx.Commit()
+}
+
 // SkipPendingHistoricalAttachmentIndexing completes deferred historical
 // attachment enrichment without doing a whole-mailbox background rebuild.
 // New messages are indexed during their normal IMAP import; historical

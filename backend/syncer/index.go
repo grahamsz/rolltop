@@ -587,9 +587,12 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 	indexed := 0
 	deferred := 0
 	var afterID int64
-	// Mailbox repair is time-bounded and can be interrupted by the next sync.
-	// Commit small prefixes so each attempt makes durable forward progress.
-	batch := newFetchedSearchIndexBatchWithSize(s, maintenanceSearchCheckpointSize)
+	// This is an explicit foreground rebuild under a dedicated mailbox
+	// reservation. It is not the preemptible background attachment worker: use
+	// materially larger Bleve batches and checkpoint SQLite/UI progress per page
+	// rather than once per message.
+	batch := newFetchedSearchIndexBatchWithSize(s, explicitSearchRepairBatchSize)
+	pageIndexed := 0
 	recordItem := func(msg store.MessageRecord, item *pendingFetchedSearchIndex) error {
 		if err := batch.Add(ctx, item); err != nil {
 			return err
@@ -601,9 +604,7 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 			progress.CurrentUID = msg.UID
 			progress.MessagesSeen++
 			progress.MessagesStored++
-			if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
-				return err
-			}
+			pageIndexed++
 		}
 		return nil
 	}
@@ -625,6 +626,18 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 		deferred++
 		return nil
 	}
+	checkpointPage := func() error {
+		if err := batch.Flush(ctx); err != nil {
+			return err
+		}
+		if progress != nil && pageIndexed > 0 {
+			if err := s.updateSyncProgress(ctx, userID, runID, *progress); err != nil {
+				return err
+			}
+			pageIndexed = 0
+		}
+		return nil
+	}
 	remoteHydrationUnavailable := false
 	for {
 		messages, err := s.Store.ListMessagesForMailboxIndex(ctx, userID, mailbox.ID, 500, afterID)
@@ -632,7 +645,7 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 			return indexed, err
 		}
 		if len(messages) == 0 {
-			if err := batch.Flush(ctx); err != nil {
+			if err := checkpointPage(); err != nil {
 				return indexed, err
 			}
 			if deferred > 0 {
@@ -675,6 +688,9 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 			s.clearAttachmentIndexRetry(userID, msg.ID)
 		}
 		if len(remoteMessages) == 0 {
+			if err := checkpointPage(); err != nil {
+				return indexed, err
+			}
 			continue
 		}
 		if remoteHydrationUnavailable {
@@ -691,6 +707,12 @@ func (s *Service) RepairMailboxSearchIndex(ctx context.Context, userID int64, ma
 		}
 		if breaker {
 			remoteHydrationUnavailable = true
+		}
+		// Finish the partial batch at the page boundary before publishing the
+		// matching progress snapshot. A 500-row page therefore makes at most two
+		// ordinary 250-document Bleve commits, not one commit per message.
+		if err := checkpointPage(); err != nil {
+			return indexed, err
 		}
 	}
 }

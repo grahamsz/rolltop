@@ -12,6 +12,10 @@ import (
 const (
 	fetchedSearchIndexBatchSize     = 25
 	maintenanceSearchCheckpointSize = 5
+	// Explicit rebuilds are user-requested, run under a dedicated mailbox
+	// reservation, and should amortize Bleve's commit cost aggressively. Keep
+	// the batch bounded so one oversized message cannot monopolize the writer.
+	explicitSearchRepairBatchSize = 250
 )
 
 // pendingFetchedSearchIndex carries a Bleve document plus the metadata flag
@@ -111,6 +115,7 @@ func (b *fetchedSearchIndexBatch) Flush(ctx context.Context) error {
 			return err
 		}
 	}
+	updatesByUser := map[int64][]store.MessageAttachmentIndexUpdate{}
 	for _, item := range b.items {
 		message := item.Document.Message
 		if item.KeepPending {
@@ -125,18 +130,34 @@ func (b *fetchedSearchIndexBatch) Flush(ctx context.Context) error {
 			}
 			continue
 		}
-		generationRecoveryPhase(ctx, "sqlite-mark-search-indexed", "")
-		if err := b.service.Store.MarkMessageAttachmentIndexed(ctx, message.UserID, message.ID, item.HasVisibleAttachments); err != nil {
-			if store.IsNotFound(err) && b.service.Search != nil {
-				// A move can remove the SQLite row while this batch is waiting for
-				// Bleve's writer. Remove the just-committed stale document rather
-				// than resurrecting a message that no longer belongs to the folder.
-				if deleteErr := b.service.Search.DeleteMessage(ctx, message.UserID, message.ID); deleteErr != nil {
-					return deleteErr
-				}
+		updatesByUser[message.UserID] = append(updatesByUser[message.UserID], store.MessageAttachmentIndexUpdate{
+			MessageID: message.ID, HasAttachments: item.HasVisibleAttachments,
+		})
+	}
+	for userID, updates := range updatesByUser {
+		generationRecoveryPhase(ctx, "sqlite-mark-search-indexed", "batch")
+		if err := b.service.Store.MarkMessagesAttachmentIndexed(ctx, userID, updates); err == nil {
+			continue
+		} else if !store.IsNotFound(err) {
+			return err
+		}
+		// A move can remove one row while this batch is waiting for Bleve. Fall
+		// back to the old per-row handling only for that unusual race so the
+		// normal rebuild path retains its single SQLite transaction per batch.
+		for _, item := range b.items {
+			message := item.Document.Message
+			if item.KeepPending || message.UserID != userID {
 				continue
 			}
-			return err
+			if err := b.service.Store.MarkMessageAttachmentIndexed(ctx, message.UserID, message.ID, item.HasVisibleAttachments); err != nil {
+				if store.IsNotFound(err) && b.service.Search != nil {
+					if deleteErr := b.service.Search.DeleteMessage(ctx, message.UserID, message.ID); deleteErr != nil {
+						return deleteErr
+					}
+					continue
+				}
+				return err
+			}
 		}
 	}
 	b.items = b.items[:0]
