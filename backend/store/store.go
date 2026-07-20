@@ -81,14 +81,12 @@ func open(path string, dataDir string, split bool, schema schemaKind, progress M
 	if err != nil {
 		return nil, err
 	}
-	// SQLite permits exactly one writer per database. Rolltop's production data
-	// is one database per user, so a single application connection per store is
-	// both sufficient and important: concurrent IMAP poll/IDLE/folder jobs must
-	// queue here instead of repeatedly failing with "database is locked".
-	// Separate users still have separate Store instances and can proceed in
-	// parallel.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// SQLite permits exactly one writer per database. The sync runner serializes
+	// those writer turns per tenant; retain one additional connection so account
+	// and settings reads can use WAL snapshots instead of queueing behind an
+	// active sync write. Separate users have separate Store instances.
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(2)
 	s := &Store{
 		db:                db,
 		dataDir:           dataDir,

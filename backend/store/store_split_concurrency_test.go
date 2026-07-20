@@ -12,7 +12,7 @@ import (
 	"rolltop/backend/plugins"
 )
 
-func TestOpenServerSerializesEachTenantSQLiteConnection(t *testing.T) {
+func TestOpenServerKeepsReadSlotAlongsideTenantWriter(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")
@@ -27,8 +27,8 @@ func TestOpenServerSerializesEachTenantSQLiteConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := userDB.Stats().MaxOpenConnections; got != 1 {
-		t.Fatalf("user database MaxOpenConnections = %d, want one serialized SQLite writer", got)
+	if got := userDB.Stats().MaxOpenConnections; got != 2 {
+		t.Fatalf("user database MaxOpenConnections = %d, want one writer plus one WAL read slot", got)
 	}
 
 	message, err := st.CreateMessage(ctx, CreateMessage{
