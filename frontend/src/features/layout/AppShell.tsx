@@ -1088,9 +1088,13 @@ function SidebarSync({
   // Historical runs belong on the settings history page. The sidebar is live
   // activity only: falling back to the latest interrupted/no-op row made a
   // settled mailbox look as though it were perpetually syncing.
-  const visibleRuns = orderedActiveRuns;
-  const isActive = activeRuns.length > 0 || running;
-	const checkingOnly = activeRuns.length > 0 && activeRuns.every(isSyncRunChecking);
+  // IMAP STATUS probes are similarly background housekeeping. They can fan out
+  // across every folder while a remote import is active, but they neither copy
+  // mail nor need attention, so keep them out of the chrome altogether.
+  const visibleRuns = orderedActiveRuns.filter((run) => !isSyncRunChecking(run));
+  const isActive = visibleRuns.length > 0 || (running && activeRuns.length === 0);
+  const controlsBusy = busy || running || activeRuns.length > 0;
+  const latestVisible = visibleRuns[visibleRuns.length - 1] || null;
 
   async function startSync() {
     setBusy(true);
@@ -1105,11 +1109,11 @@ function SidebarSync({
   return (
     <section className={`sidebar-sync ${isActive ? "running" : "idle"}`}>
       <div className="sync-meta">
-		<strong>{isActive ? `${checkingOnly ? "Checking" : "Syncing"}${activeRuns.length > 1 ? ` (${activeRuns.length})` : ""}` : "Sync"}</strong>
-        <span>{isActive ? (latest ? `${latest.status}${latest.current_mailbox ? ` - ${latest.current_mailbox}` : ""}` : "starting") : "Up to date"}</span>
-        <button className="secondary" type="button" disabled={busy || isActive} onClick={startSync}>
+        <strong>{isActive ? `Syncing${visibleRuns.length > 1 ? ` (${visibleRuns.length})` : ""}` : "Sync"}</strong>
+        <span>{isActive ? (latestVisible ? `${latestVisible.status}${latestVisible.current_mailbox ? ` - ${latestVisible.current_mailbox}` : ""}` : "starting") : "Up to date"}</span>
+        <button className="secondary" type="button" disabled={controlsBusy} onClick={startSync}>
           <Icon name="sync" />
-			{isActive ? (checkingOnly ? "Checking" : "Syncing") : "Sync now"}
+			{controlsBusy ? "Syncing" : "Sync now"}
         </button>
       </div>
       <div className="sync-run-list">
