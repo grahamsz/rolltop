@@ -29,6 +29,10 @@ const mockedSend = vi.mocked(api.send);
 
 const USER = 12;
 
+function sentResponse(messageID: number) {
+  return { ok: true, queued: true, send_id: messageID, message_id: messageID, status: "queued" };
+}
+
 function formFor(subject: string): ComposeForm {
   return {
     to: "dest@example.test",
@@ -56,7 +60,7 @@ async function resetStores(): Promise<void> {
 
 beforeEach(async () => {
   mockedSend.mockReset();
-  mockedSend.mockResolvedValue({ ok: true, message_id: 1 });
+  mockedSend.mockResolvedValue(sentResponse(1));
   // Restore connectivity in case a prior run left it overridden.
   Object.defineProperty(navigator, "onLine", { configurable: true, value: true });
   await refreshOutboxSnapshot(USER);
@@ -116,7 +120,7 @@ describe("flushOutbox", () => {
     const sentSubjects: string[] = [];
     mockedSend.mockImplementation(async (_csrf, form) => {
       sentSubjects.push(form.subject);
-      return { ok: true, message_id: 5 };
+      return sentResponse(5);
     });
 
     const result = await flushOutbox("csrf-token", USER);
@@ -145,7 +149,7 @@ describe("flushOutbox", () => {
 
     mockedSend.mockImplementation(async (_csrf, form) => {
       if (form.subject === "network fail") throw new TypeError("Failed to fetch");
-      return { ok: true, message_id: 6 };
+      return sentResponse(6);
     });
 
     await flushOutbox("csrf-token", USER);
@@ -161,7 +165,7 @@ describe("flushOutbox", () => {
 
     mockedSend.mockImplementation(async (_csrf, form) => {
       if (form.subject === "rejected") throw new ApiError(400, "invalid recipient");
-      return { ok: true, message_id: 7 };
+      return sentResponse(7);
     });
 
     await flushOutbox("csrf-token", USER);
@@ -209,7 +213,7 @@ describe("flushOutbox", () => {
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-    mockedSend.mockImplementationOnce(() => firstGate.then(() => ({ ok: true, message_id: 8 })));
+    mockedSend.mockImplementationOnce(() => firstGate.then(() => sentResponse(8)));
 
     const first = flushOutbox("csrf-token", USER);
     const second = await flushOutbox("csrf-token", USER);
