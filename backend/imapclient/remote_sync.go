@@ -462,6 +462,11 @@ func (s *SyncDestinationSession) AppendMessageWithSyncMarkerAt(ctx context.Conte
 	if err := s.ready(ctx); err != nil {
 		return syncer.FetchedMessage{}, err
 	}
+	// go-imap v1 commands do not receive a context. Closing this held session
+	// when the caller's per-message deadline expires is the only reliable way
+	// to interrupt a wedged APPEND or marker lookup.
+	stopContext := watchClientContext(ctx, s.client)
+	defer stopContext()
 	marker, err := validateSyncMarker(marker)
 	if err != nil {
 		return syncer.FetchedMessage{}, err

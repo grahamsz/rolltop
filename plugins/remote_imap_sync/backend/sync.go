@@ -20,11 +20,14 @@ import (
 )
 
 const (
-	reconcileInterval                     = 30 * time.Second
-	pollInterval                          = 15 * time.Minute
-	runProgressWriteEvery                 = 25
-	remoteSyncChunkSize                   = 25
-	remoteSyncChunkYield                  = 500 * time.Millisecond
+	reconcileInterval     = 30 * time.Second
+	pollInterval          = 15 * time.Minute
+	runProgressWriteEvery = 25
+	remoteSyncChunkSize   = 25
+	remoteSyncChunkYield  = 500 * time.Millisecond
+	// A source body may be legitimately large, but a single destination APPEND
+	// must never hold this routine's only sync slot forever.
+	remoteSyncAppendTimeout               = 5 * time.Minute
 	mailboxGenerationRecoveryPollInterval = 2 * time.Second
 	remoteSyncForegroundAcquireTimeout    = 90 * time.Second
 )
@@ -262,6 +265,7 @@ type routineWorker struct {
 
 	recoveryPollInterval time.Duration
 	foregroundTimeout    time.Duration
+	appendTimeout        time.Duration
 	retryDelayFunc       func(int) time.Duration
 	watchSourceMailbox   func(context.Context, store.MailAccount, string, func()) error
 	searchSourceMailbox  func(context.Context, store.MailAccount, string, uint32, time.Time) (imapclient.MailboxUIDSearch, error)
@@ -582,8 +586,10 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 			}
 		} else {
 			syncedAt := time.Now().UTC().Truncate(time.Second)
-			appended, err := writer.AppendMessageWithSyncMarkerAt(w.ctx, message.Raw, marker, syncedAt,
+			appendCtx, cancelAppend := context.WithTimeout(w.ctx, w.destinationAppendTimeout())
+			appended, err := writer.AppendMessageWithSyncMarkerAt(appendCtx, message.Raw, marker, syncedAt,
 				message.InternalDate, message.Flags)
+			cancelAppend()
 			if err != nil {
 				return err
 			}
@@ -710,6 +716,13 @@ func (w *routineWorker) foregroundAcquireTimeout() time.Duration {
 		return w.foregroundTimeout
 	}
 	return remoteSyncForegroundAcquireTimeout
+}
+
+func (w *routineWorker) destinationAppendTimeout() time.Duration {
+	if w != nil && w.appendTimeout > 0 {
+		return w.appendTimeout
+	}
+	return remoteSyncAppendTimeout
 }
 
 func (w *routineWorker) retryDelay(failures int) time.Duration {

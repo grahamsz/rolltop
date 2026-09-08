@@ -67,6 +67,17 @@ func TestRemoteSyncRunStatusUpdatesDoNotLogPerMessage(t *testing.T) {
 	}
 }
 
+func TestRemoteSyncDestinationAppendTimeoutIsBoundedAndConfigurable(t *testing.T) {
+	worker := &routineWorker{}
+	if got := worker.destinationAppendTimeout(); got != remoteSyncAppendTimeout {
+		t.Fatalf("default append timeout = %s, want %s", got, remoteSyncAppendTimeout)
+	}
+	worker.appendTimeout = 17 * time.Second
+	if got := worker.destinationAppendTimeout(); got != 17*time.Second {
+		t.Fatalf("configured append timeout = %s, want 17s", got)
+	}
+}
+
 func TestRemoteSyncRunStatusIdentifiesRecoveryDeferral(t *testing.T) {
 	var lines []string
 	status := newRemoteSyncRunStatusWithLogger(context.Background(), 4, 5, 6, "recovery",
