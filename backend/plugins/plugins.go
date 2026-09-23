@@ -21,6 +21,7 @@ const (
 	OneClickUnsubscribe  = "one_click_unsubscribe"
 	ClientSidePGP        = "client_side_pgp"
 	MatrixTheme          = "matrix_theme"
+	CardDAVSync          = "carddav_sync"
 )
 
 const (

@@ -9,7 +9,8 @@ export const pluginIDs = {
   attachmentPreview: "attachment_preview",
   languageSearch: "language_search",
   oneClickUnsubscribe: "one_click_unsubscribe",
-  matrixTheme: "matrix_theme"
+  matrixTheme: "matrix_theme",
+  carddavSync: "carddav_sync"
 } as const;
 
 /** PluginID is the union of frontend-known plugin identifiers. */
