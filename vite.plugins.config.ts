@@ -59,6 +59,10 @@ const pluginConfig: Record<string, { entry: string; outDir: string }> = {
   experimental_spam_filter: {
     entry: "plugins/experimental_spam_filter/frontend/index.tsx",
     outDir: "plugins/experimental_spam_filter/frontend_dist"
+  },
+  calendar_invites: {
+    entry: "plugins/calendar_invites/frontend/index.tsx",
+    outDir: "plugins/calendar_invites/frontend_dist"
   }
 };
 

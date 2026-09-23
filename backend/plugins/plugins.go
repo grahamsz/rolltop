@@ -21,6 +21,7 @@ const (
 	OneClickUnsubscribe  = "one_click_unsubscribe"
 	ClientSidePGP        = "client_side_pgp"
 	MatrixTheme          = "matrix_theme"
+	CalendarInvites      = "calendar_invites"
 )
 
 const (

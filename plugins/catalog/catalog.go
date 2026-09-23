@@ -2,7 +2,8 @@ package catalog
 
 import (
 	"rolltop/backend/plugins"
-	"rolltop/plugins/client_side_pgp/schema"
+	invitesschema "rolltop/plugins/calendar_invites/schema"
+	pgpschema "rolltop/plugins/client_side_pgp/schema"
 )
 
 func init() {
@@ -12,5 +13,11 @@ func init() {
 		Description:  "Adds browser-loaded OpenPGP decrypt, verify, sign, encrypt, Autocrypt, and key-management UI.",
 		Heavy:        true,
 		Experimental: true,
-	}, schema.Migrations()...)
+	}, pgpschema.Migrations()...)
+	plugins.Register(plugins.Definition{
+		ID:           plugins.CalendarInvites,
+		Name:         "Calendar invites",
+		Description:  "Detects calendar invitations in incoming mail, sends RSVP replies, and optionally pushes events to a CalDAV calendar.",
+		Experimental: true,
+	}, invitesschema.Migrations()...)
 }
