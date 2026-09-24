@@ -429,6 +429,23 @@ func (s *Store) UpdateMailboxSyncMode(ctx context.Context, userID, mailboxID int
 	return nil
 }
 
+// DeleteMailbox removes one local folder row. Callers must purge the folder's
+// local messages first; this only drops the mailbox record itself.
+func (s *Store) DeleteMailbox(ctx context.Context, userID, mailboxID int64) error {
+	res, err := s.mustDataDB(ctx, userID).ExecContext(ctx, `DELETE FROM mailboxes WHERE user_id = ? AND id = ?`, userID, mailboxID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // UpdateMailboxSettings updates sync mode, role, icon, and visibility flags for one folder.
 func (s *Store) UpdateMailboxSettings(ctx context.Context, userID, mailboxID int64, settings MailboxSettings) error {
 	settings.SyncMode = normalizeSyncMode(settings.SyncMode)
