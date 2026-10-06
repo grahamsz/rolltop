@@ -36,6 +36,7 @@ import {
   recordMailConversations,
   retainOfflineDataForUser
 } from "./lib/offlineMailCache";
+import { clearOtherCollapsedAccounts } from "./lib/sidebarLocal";
 
 /** Error thrown for non-2xx API responses after the JSON error payload is decoded. */
 export class ApiError extends Error {
@@ -295,6 +296,7 @@ function retainMailCacheForUser(userID: number) {
   }
   clearOtherMailSnapshots(userID);
   void retainOfflineDataForUser(userID);
+  clearOtherCollapsedAccounts(userID);
 }
 
 
