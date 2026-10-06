@@ -37,6 +37,7 @@ type Config struct {
 	PublicBaseURL string
 	// MaxMessageBytes caps the RFC822 size of messages mirrored in full.
 	MaxMessageBytes int64
+	LogLevel        string
 }
 
 // Load reads environment configuration, applies defaults, and validates values needed before services start.
@@ -89,6 +90,12 @@ func Load() (Config, error) {
 	if maxMessageBytes < minMessageBytes {
 		return Config{}, fmt.Errorf("ROLLTOP_MAX_MESSAGE_BYTES must be at least %d bytes", minMessageBytes)
 	}
+	logLevel := strings.ToLower(env("ROLLTOP_LOG_LEVEL", "info"))
+	switch logLevel {
+	case "info", "debug":
+	default:
+		return Config{}, fmt.Errorf("ROLLTOP_LOG_LEVEL must be \"info\" or \"debug\", got %q", logLevel)
+	}
 
 	return Config{
 		Addr:              env("ROLLTOP_ADDR", ":8080"),
@@ -105,6 +112,7 @@ func Load() (Config, error) {
 		WebhookToken:      os.Getenv("ROLLTOP_WEBHOOK_TOKEN"),
 		PublicBaseURL:     publicBaseURL,
 		MaxMessageBytes:   maxMessageBytes,
+		LogLevel:          logLevel,
 	}, nil
 }
 

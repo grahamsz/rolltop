@@ -4,6 +4,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -44,6 +45,17 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 	neutralShell := r.URL.Query().Get("shell") == "1"
 	if !neutralShell && s.store != nil {
 		payload, payloadErr := s.bootstrapPayload(w, r)
+		if errors.Is(payloadErr, errSessionUnavailable) && isPublicAuthRoute(r.URL.Path) {
+			// The login and setup shells are the recovery path for a browser
+			// whose session cookie cannot be resolved (for example a corrupt
+			// session row): render them anonymously so the user can sign in
+			// again and replace the broken cookie.
+			payload, payloadErr = s.bootstrapPayload(w, r.WithContext(context.WithValue(r.Context(), sessionErrorContextKey, nil)))
+		}
+		if errors.Is(payloadErr, errSessionUnavailable) {
+			sessionUnavailable(w)
+			return
+		}
 		if payloadErr != nil {
 			s.serverError(w, payloadErr)
 			return
@@ -176,6 +188,12 @@ func frontendAssetCacheControl(cleanPath string) string {
 		return "no-cache"
 	}
 	return ""
+}
+
+// isPublicAuthRoute names the SPA routes that must stay reachable without a
+// resolvable session so a browser can re-authenticate.
+func isPublicAuthRoute(p string) bool {
+	return p == "/login" || p == "/setup" || p == "/reset-password"
 }
 
 func isAppRoute(p string) bool {
