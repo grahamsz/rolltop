@@ -46,7 +46,7 @@ func (s *Server) apiOutbox(w http.ResponseWriter, r *http.Request) {
 	}
 	jobs, err := s.store.ListOutboxJobsForUser(r.Context(), cu.User.ID, 100)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	messageIDs := make([]int64, 0, len(jobs))
@@ -57,7 +57,7 @@ func (s *Server) apiOutbox(w http.ResponseWriter, r *http.Request) {
 	}
 	messages, err := s.store.ListMessagesByIDsForUser(r.Context(), cu.User.ID, messageIDs)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	subjects := make(map[int64]string, len(messages))
@@ -70,7 +70,7 @@ func (s *Server) apiOutbox(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err := s.store.OutboxSummaryForUser(r.Context(), cu.User.ID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	writeJSONCached(w, r, map[string]any{
@@ -103,13 +103,13 @@ func (s *Server) apiOutboxPath(w http.ResponseWriter, r *http.Request, rest stri
 		return
 	}
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	switch parts[1] {
 	case "acknowledge":
 		if err := s.store.AcknowledgeOutboxJob(r.Context(), cu.User.ID, id); err != nil {
-			s.serverError(w, err)
+			s.serverError(w, r, err)
 			return
 		}
 	case "cancel":

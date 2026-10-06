@@ -7,10 +7,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+)
+
+// Both conditions below are persistent deployment states rather than per-request
+// faults, so each is reported once per process instead of on every poll.
+var (
+	missingFrontendOnce        sync.Once
+	invalidAndroidMetadataOnce sync.Once
 )
 
 const frontendDistDir = "frontend/dist"
@@ -37,6 +46,11 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 	index := filepath.Join(frontendDistDir, "index.html")
 	contents, err := os.ReadFile(index)
 	if err != nil {
+		// A missing build is a deployment state, not a per-request fault: every
+		// navigation would otherwise repeat the same line for one root cause.
+		missingFrontendOnce.Do(func() {
+			logHandlerError(r, fmt.Errorf("read frontend index %s: %w", index, err))
+		})
 		http.Error(w, "frontend has not been built; run npm run build", http.StatusServiceUnavailable)
 		return
 	}
@@ -57,11 +71,12 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if payloadErr != nil {
-			s.serverError(w, payloadErr)
+			s.serverError(w, r, payloadErr)
 			return
 		}
 		injected, injectErr := injectStartupBootstrap(contents, payload)
 		if injectErr != nil {
+			logHandlerError(r, fmt.Errorf("inject startup bootstrap: %w", injectErr))
 			http.Error(w, "frontend startup marker is missing", http.StatusInternalServerError)
 			return
 		}
@@ -127,6 +142,11 @@ func (s *Server) handleAndroidLatest(w http.ResponseWriter, r *http.Request) {
 	}
 	var metadata androidLatestMetadata
 	if err := json.Unmarshal(data, &metadata); err != nil {
+		// Android clients poll this on a schedule, so a corrupt file on disk
+		// would otherwise reprint the same parse error indefinitely.
+		invalidAndroidMetadataOnce.Do(func() {
+			logHandlerError(r, fmt.Errorf("parse android update metadata %s: %w", full, err))
+		})
 		http.Error(w, "invalid android update metadata", http.StatusInternalServerError)
 		return
 	}

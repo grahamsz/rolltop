@@ -127,7 +127,7 @@ func (s *Server) WriteAPIError(w http.ResponseWriter, status int, message string
 }
 
 func (s *Server) ServerError(w http.ResponseWriter, err error) {
-	s.serverError(w, err)
+	s.serverError(w, nil, err)
 }
 
 func (s *Server) MatchMessageSearch(ctx context.Context, userID, messageID int64, query string) (plugins.SearchMatchResult, error) {
@@ -248,7 +248,7 @@ func (s *Server) apiBackendPlugin(w http.ResponseWriter, r *http.Request, rest s
 		return
 	}
 	if _, ok, err := s.startBackendPlugin(r.Context(), pluginID); err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	} else if !ok {
 		writeAPIError(w, http.StatusNotFound, "backend plugin is not available: "+pluginID)

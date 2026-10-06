@@ -100,7 +100,7 @@ func (s *Server) apiAccount(w http.ResponseWriter, r *http.Request) {
 	defer timer.logIfSlow("account", cu.User.ID)
 	accounts, err := s.store.ListMailAccountsForUser(r.Context(), cu.User.ID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	timer.mark("imap-accounts")
@@ -108,25 +108,25 @@ func (s *Server) apiAccount(w http.ResponseWriter, r *http.Request) {
 	refreshMailboxStatuses := len(accounts) > 0 && s.syncer != nil && s.syncer.Fetcher != nil
 	smtpAccounts, err := s.store.ListSMTPAccountsForUser(r.Context(), cu.User.ID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	timer.mark("smtp-accounts")
 	identities, err := s.store.ListCachedMailIdentitiesForUser(r.Context(), cu.User.ID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	timer.mark("identities")
 	meContacts, err := s.store.ListMeContactsForUser(r.Context(), cu.User.ID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	timer.mark("me-contacts")
 	runs, err := s.store.ListSyncRunsForUser(r.Context(), cu.User.ID, 20)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	timer.mark("recent-runs")
@@ -134,7 +134,7 @@ func (s *Server) apiAccount(w http.ResponseWriter, r *http.Request) {
 	timer.mark("credential-notice")
 	folders, err := s.syncFolderViews(r.Context(), cu.User.ID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	timer.mark("folders")
@@ -170,7 +170,7 @@ func (s *Server) apiAccountFolderProgress(w http.ResponseWriter, r *http.Request
 	defer timer.logIfSlow("folder-progress", cu.User.ID)
 	folders, err := s.syncFolderProgressViews(r.Context(), cu.User.ID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	timer.mark("folders")
@@ -212,7 +212,7 @@ func (s *Server) apiIMAPAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.ensureMailAccountOnboarding(r.Context(), cu.User, account); err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	s.clearComposeIdentityCache(cu.User.ID)
@@ -270,12 +270,12 @@ func (s *Server) apiRebuildIMAPAccountSearchIndex(w http.ResponseWriter, r *http
 		return
 	}
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	summaries, err := s.store.ListMailboxesForUser(r.Context(), cu.User.ID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	mailboxes := make([]store.Mailbox, 0)
@@ -305,7 +305,7 @@ func (s *Server) apiRebuildIMAPAccountSearchIndex(w http.ResponseWriter, r *http
 		return
 	}
 	if err != nil {
-		writeAPIError(w, http.StatusBadGateway, "could not start full-text reindexing")
+		s.apiError(w, r, http.StatusBadGateway, "could not start full-text reindexing", err)
 		return
 	}
 	s.notifyUserChanged(cu.User.ID)
@@ -360,7 +360,7 @@ func (s *Server) apiCreateIMAPFolder(w http.ResponseWriter, r *http.Request, acc
 		return
 	}
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	var in createIMAPFolderInput
@@ -398,7 +398,7 @@ func (s *Server) apiIMAPAccountPurgeEstimate(w http.ResponseWriter, r *http.Requ
 			http.NotFound(w, r)
 			return
 		}
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	writeJSON(w, estimate)
@@ -475,7 +475,7 @@ func (s *Server) apiDeleteIMAPAccount(w http.ResponseWriter, r *http.Request, ac
 			http.NotFound(w, r)
 			return
 		}
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	expected := accountDeleteConfirmationName(account)
@@ -489,7 +489,7 @@ func (s *Server) apiDeleteIMAPAccount(w http.ResponseWriter, r *http.Request, ac
 	}
 	mailboxes, err := s.store.ListMailboxesForAccount(r.Context(), cu.User.ID, accountID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	for _, mailbox := range mailboxes {
@@ -500,7 +500,7 @@ func (s *Server) apiDeleteIMAPAccount(w http.ResponseWriter, r *http.Request, ac
 	}
 	estimate, err := s.accountPurgeEstimate(r.Context(), cu.User.ID, accountID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	s.markDeletingIMAPAccount(cu.User.ID, accountID)
@@ -526,7 +526,7 @@ func (s *Server) apiDeleteIMAPAccount(w http.ResponseWriter, r *http.Request, ac
 	}
 	if err != nil {
 		s.clearDeletingIMAPAccount(cu.User.ID, accountID)
-		writeAPIError(w, http.StatusBadGateway, "Could not start IMAP server deletion.")
+		s.apiError(w, r, http.StatusBadGateway, "Could not start IMAP server deletion.", err)
 		return
 	}
 	s.notifyUserChanged(cu.User.ID)
@@ -721,7 +721,7 @@ func (s *Server) apiDeleteSMTPAccount(w http.ResponseWriter, r *http.Request, ac
 			writeAPIError(w, http.StatusConflict, "A message is using this SMTP account right now. Wait for the current delivery attempt to finish.")
 			return
 		}
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	for _, messageID := range messageIDs {
@@ -732,7 +732,7 @@ func (s *Server) apiDeleteSMTPAccount(w http.ResponseWriter, r *http.Request, ac
 	for _, blobRecord := range outboxBlobs {
 		deleted, cleanupErr := s.store.DeleteBlobIfUnreferencedForUser(r.Context(), cu.User.ID, blobRecord.ID)
 		if cleanupErr != nil {
-			s.serverError(w, cleanupErr)
+			s.serverError(w, r, cleanupErr)
 			return
 		}
 		if deleted && s.blobs != nil {
@@ -744,7 +744,7 @@ func (s *Server) apiDeleteSMTPAccount(w http.ResponseWriter, r *http.Request, ac
 			http.NotFound(w, r)
 			return
 		}
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	s.clearComposeIdentityCache(cu.User.ID)
@@ -790,7 +790,7 @@ func (s *Server) apiSMTPAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			s.serverError(w, err)
+			s.serverError(w, r, err)
 			return
 		}
 		encrypted = existing.EncryptedPassword
@@ -799,7 +799,7 @@ func (s *Server) apiSMTPAccount(w http.ResponseWriter, r *http.Request) {
 		var err error
 		encrypted, err = mmcrypto.EncryptString(s.masterKey, in.Password)
 		if err != nil {
-			s.serverError(w, err)
+			s.serverError(w, r, err)
 			return
 		}
 	}
@@ -869,7 +869,7 @@ func (s *Server) apiMailIdentity(w http.ResponseWriter, r *http.Request) {
 	s.clearComposeIdentityCache(cu.User.ID)
 	identities, err := s.store.ListMailIdentitiesForUser(r.Context(), cu.User.ID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "identity": apiMailIdentityFromStore(identity), "identities": apiMailIdentitiesFromStore(identities)})
@@ -929,7 +929,7 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 		return
 	}
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	action := parts[1]
@@ -952,7 +952,7 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			return
 		}
 		if err := s.store.UpdateMailboxSyncMode(r.Context(), cu.User.ID, mailboxID, in.SyncMode); err != nil {
-			s.serverError(w, err)
+			s.serverError(w, r, err)
 			return
 		}
 		s.notifyUserChanged(cu.User.ID)
@@ -1015,7 +1015,7 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 				writeAPIError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			s.serverError(w, err)
+			s.serverError(w, r, err)
 			return
 		}
 		s.notifyUserChanged(cu.User.ID)
@@ -1059,7 +1059,7 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			return
 		}
 		if err != nil {
-			writeAPIError(w, http.StatusBadGateway, "could not start search index purge")
+			s.apiError(w, r, http.StatusBadGateway, "could not start search index purge", err)
 			return
 		}
 		s.notifyUserChanged(cu.User.ID)
@@ -1081,7 +1081,7 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			return
 		}
 		if err != nil {
-			writeAPIError(w, http.StatusBadGateway, "could not start search index rebuild")
+			s.apiError(w, r, http.StatusBadGateway, "could not start search index rebuild", err)
 			return
 		}
 		s.notifyUserChanged(cu.User.ID)
@@ -1100,7 +1100,7 @@ func (s *Server) apiAccountFolder(w http.ResponseWriter, r *http.Request, rest s
 			return
 		}
 		if err != nil {
-			writeAPIError(w, http.StatusBadGateway, "could not start local references purge")
+			s.apiError(w, r, http.StatusBadGateway, "could not start local references purge", err)
 			return
 		}
 		s.notifyUserChanged(cu.User.ID)
