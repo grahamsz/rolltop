@@ -904,13 +904,13 @@ export function ComposeBox({
           </div>
         )}
         {inline && showCc ? (
-          <div className="inline-reply-meta">
+          <div className="compose-line inline-reply-recipient">
             <span>Cc</span>
             <RecipientInput value={form.cc} onChange={(value) => setField("cc", value)} />
           </div>
         ) : null}
         {inline && showBcc ? (
-          <div className="inline-reply-meta">
+          <div className="compose-line inline-reply-recipient">
             <span>Bcc</span>
             <RecipientInput value={form.bcc} onChange={(value) => setField("bcc", value)} />
           </div>

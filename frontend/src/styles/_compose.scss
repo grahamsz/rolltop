@@ -98,14 +98,21 @@
   flex-direction: column;
   min-height: 328px;
 
+  .compose-scroll-region {
+    flex: none;
+    overflow: visible;
+  }
+
   .compose-body {
-    flex: 1 1 190px;
+    flex: none;
     min-height: 178px;
+    max-height: 440px;
     padding: 0;
     color: var(--text);
   }
 
   .compose-format {
+    flex: none;
     min-height: 42px;
     margin: 0;
     border-radius: 8px;
@@ -125,6 +132,7 @@
 }
 
 .inline-reply-meta {
+  flex: none;
   min-height: 36px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -244,10 +252,12 @@
 }
 
 .compose-fields {
+  flex: none;
   padding: 0 12px;
 }
 
 .compose-line {
+  flex: none;
   min-height: 44px;
   display: flex;
   align-items: center;
@@ -550,6 +560,7 @@
 }
 
 .compose-attachments {
+  flex: none;
   margin: 0 12px 10px;
   display: grid;
   gap: 8px;
@@ -638,6 +649,7 @@
 }
 
 .compose-format {
+  flex: none;
   min-height: 46px;
   margin: 0 12px;
   border: 1px solid var(--border);
@@ -774,6 +786,7 @@
 }
 
 .compose-sendbar {
+  flex: none;
   min-height: 56px;
   display: flex;
   align-items: center;

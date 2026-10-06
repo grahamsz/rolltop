@@ -1350,6 +1350,9 @@ func (s *Server) threadViewsForMessageTimed(ctx context.Context, cu currentUser,
 			CanReplyAll:              canReplyAll(threadMsg, threadMessages, own),
 		})
 		previousBodies = append(previousBodies, sourceText)
+		if sourceHTML != "" {
+			previousBodies = append(previousBodies, visibleTextFromHTML(sourceHTML))
+		}
 		if threadMsg.ID == msg.ID {
 			msg = displayMsg
 		}

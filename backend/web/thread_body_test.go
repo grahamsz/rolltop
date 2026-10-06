@@ -11,7 +11,7 @@ import (
 
 func TestClipTextQuoteUsesStandardReplyMarker(t *testing.T) {
 	body := "Thanks, that works for me.\n\nOn Tue, Alice <alice@example.test> wrote:\n> The earlier note\n> with quoted details"
-	displayHTML, displayText, hidden := clippedEmailBody("", body, nil)
+	displayHTML, displayText, hidden := clippedEmailBody("", body, []string{"The earlier note\nwith quoted details"})
 	if displayHTML != "" {
 		t.Fatalf("displayHTML = %q", displayHTML)
 	}
@@ -52,7 +52,7 @@ func TestClipTextQuoteSkipsLeadingQuotedPrefaceBeforeFreshReply(t *testing.T) {
 		"> It reads first like a mail order bride, but turn into nigerian sneakiness with a drop of the pant...err, a hat!",
 	}, "\n")
 
-	_, displayText, hidden := clippedEmailBody("", body, nil)
+	_, displayText, hidden := clippedEmailBody("", body, []string{"It reads first like a mail order bride, but turn into nigerian sneakiness with a drop of the pant...err, a hat!"})
 	if !hidden {
 		t.Fatal("expected leading quoted preface to be hidden")
 	}
@@ -143,7 +143,7 @@ func TestClipTextQuoteKeepsInlineCommentAfterReplyQuoteVisible(t *testing.T) {
 
 func TestClipHTMLQuoteKeepsRichPrefix(t *testing.T) {
 	body := `<div><p>Fresh answer with enough text to keep as rich HTML.</p><blockquote type="cite"><p>Older copied text</p></blockquote></div>`
-	displayHTML, _, hidden := clippedEmailBody(body, "Fresh answer with enough text to keep as rich HTML.\n\nOlder copied text", nil)
+	displayHTML, _, hidden := clippedEmailBody(body, "Fresh answer with enough text to keep as rich HTML.\n\nOlder copied text", []string{"Older copied text"})
 	if !hidden {
 		t.Fatal("expected HTML quote to be hidden")
 	}
@@ -165,7 +165,7 @@ func TestClipHTMLQuoteFallsBackToTextForAttributionOnlyInlineReply(t *testing.T)
 		"Inline reply text below the quote.",
 	}, "\n")
 
-	displayHTML, displayText, hidden := clippedEmailBody(bodyHTML, bodyText, nil)
+	displayHTML, displayText, hidden := clippedEmailBody(bodyHTML, bodyText, []string{"Earlier quoted text."})
 	if !hidden {
 		t.Fatal("expected quoted text to remain hidden")
 	}
@@ -210,7 +210,7 @@ func TestClipHTMLQuoteKeepsForwardedHTMLWhenTextQuoteWasClipped(t *testing.T) {
 	if displayHTML != bodyHTML {
 		t.Fatalf("displayHTML = %q", displayHTML)
 	}
-	if !strings.HasPrefix(displayText, "*cracking knuckles*") {
+	if displayText != bodyText {
 		t.Fatalf("displayText = %q", displayText)
 	}
 }
@@ -358,5 +358,47 @@ func TestEmailDocumentRemovesBlockedRemoteImages(t *testing.T) {
 	}
 	if !strings.Contains(doc, "logo.png") {
 		t.Fatalf("legitimate image was removed: %s", doc)
+	}
+}
+
+func TestClippedEmailBodyKeepsOriginalsMissingFromThread(t *testing.T) {
+	for _, tc := range []struct {
+		name, html, text string
+	}{
+		{"text reply", "", "A new reply with some context.\n\nOn Tuesday, Alice <alice@example.test> wrote:\n> Original details that the reader has never received.\n> Please read all the way to the end."},
+		{"Outlook forward", "", "Please see the original below.\n\n-----Original Message-----\nFrom: Alice <alice@example.test>\nTo: Bob <bob@example.test>\nSubject: Original\n\nThese original details are not in the thread."},
+		{"HTML reply", `<p>Please read the original below.</p><div class="gmail_quote"><div>On Tuesday, Alice wrote:</div><blockquote>Original details absent from the thread.</blockquote></div>`, ""},
+		{"Outlook HTML forward", `<p>Please read the original below.</p><div>-----Original Message-----</div><div>From: Alice</div><div>To: Bob</div><p>Original details absent from the thread.</p>`, ""},
+		{"known prefix with missing tail", `<p>Please read the original below.</p><blockquote><p>Known content from an earlier message.</p><p>Additional original details absent from the thread.</p></blockquote>`, ""},
+		{"inline comment after known quote", `<p>Please read my comments below.</p><blockquote>Known content from an earlier message.</blockquote><p>This new comment must stay visible.</p>`, ""},
+		{"comment mentioning a forward", `<p>Please read my comments below.</p><blockquote>Known content from an earlier message.</blockquote><p>This forwarded message needs a correction.</p>`, ""},
+		{"comment resembling a header", `<p>Please read my comments below.</p><blockquote>Known content from an earlier message.</blockquote><p>Subject: New information missing from the original.</p>`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, previous := range [][]string{nil, {"Known content from an earlier message."}} {
+				html, text, hidden := clippedEmailBody(tc.html, tc.text, previous)
+				if hidden || html != tc.html || text != tc.text {
+					t.Fatal("content missing from earlier cards must remain visible")
+				}
+			}
+		})
+	}
+}
+
+func TestClippedEmailBodyFoldsRepeatedForwardInReply(t *testing.T) {
+	previousHTML := `<div>---------- Forwarded message ---------</div><div>From: Alice</div><div>To: Bob</div><p>The original forwarded content is already available in the preceding card.</p>`
+	body := `<p>Thanks, I have read the forwarded message.</p><div class="gmail_quote"><div>On Tuesday, Bob wrote:</div><blockquote>` + previousHTML + `</blockquote></div>`
+	html, _, hidden := clippedEmailBody(body, "", []string{visibleTextFromHTML(previousHTML)})
+	if !hidden || !strings.Contains(html, "Thanks, I have read") || strings.Contains(html, "original forwarded content") {
+		t.Fatal("reply should fold the forwarded content already present in the thread")
+	}
+}
+
+func TestClippedEmailBodyMatchesWrappedQuotedText(t *testing.T) {
+	previous := "The original details wrap differently on a narrow screen.\nPlease read all the way to the end."
+	body := "Thanks, that answers my question.\n\nOn Tuesday, Alice <alice@example.test> wrote:\n> The original details wrap differently\n> on a narrow screen. Please read all\n> the way to the end."
+	_, text, hidden := clippedEmailBody("", body, []string{previous})
+	if !hidden || text != "Thanks, that answers my question." {
+		t.Fatal("line wrapping should not prevent duplicate quotes from folding")
 	}
 }

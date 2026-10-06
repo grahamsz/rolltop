@@ -508,6 +508,17 @@
     margin-right: 12px;
   }
 
+  .thread-actions {
+    margin: 14px 12px 18px;
+    flex-wrap: wrap;
+  }
+
+  .thread-action {
+    flex: 1 1 auto;
+    justify-content: center;
+    padding-inline: 10px;
+  }
+
   .reported-authentication {
     width: fit-content;
     max-width: 100%;
@@ -626,7 +637,8 @@
   }
 
   .compose-format {
-    flex: 0 0 42px;
+    flex: none;
+    flex-wrap: wrap;
     min-height: 42px;
     margin: 0 8px;
     padding: 5px 6px;
@@ -650,28 +662,20 @@
   }
 
   .compose-sendbar {
-    flex: 0 0 54px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 40px 36px;
+    flex: none;
     min-height: 54px;
     gap: 6px;
     padding: 6px 8px;
-    overflow: hidden;
   }
 
   .compose-send-actions {
-    min-width: 0;
-    flex: 1 1 auto;
-    flex-wrap: nowrap;
-    gap: 4px;
-    overflow-x: auto;
-    scrollbar-width: none;
-
-    &::-webkit-scrollbar {
-      display: none;
-    }
+    display: contents;
   }
 
   .send-button {
-    min-width: 116px;
+    min-width: 0;
     min-height: 40px;
     flex: 1 0 116px;
   }
@@ -690,11 +694,16 @@
   }
 
   .compose-lower-tools {
-    flex-wrap: nowrap;
-    gap: 2px;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    flex-wrap: wrap;
+    gap: 4px;
   }
 
   .compose-sendbar > button.ghost {
+    grid-column: 3;
+    grid-row: 1;
     min-width: 36px;
     width: 36px;
     min-height: 40px;
@@ -703,13 +712,20 @@
   }
 
   .inline-reply-row {
-    grid-template-columns: 40px minmax(0, 1fr);
-    gap: 10px;
-    padding: 14px;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+  }
+
+  .inline-reply-avatar {
+    display: none;
   }
 
   .inline-reply {
     margin: 0;
+  }
+
+  .inline-reply .compose-body {
+    max-height: min(440px, 50dvh);
   }
 
   // Give the reply editor real typing room on phones; the fixed 224px desktop

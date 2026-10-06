@@ -14,7 +14,7 @@ import { displayDateTime, displaySnoozeUntil, displayTime, formatBytes } from ".
 import { trashMailboxesByAccount } from "../../lib/folders";
 import { shouldIgnoreMailShortcut } from "../../lib/keyboard";
 import { getCachedThread, recordThreadPayload, type OfflineThreadPayload } from "../../lib/offlineMailCache";
-import { HighlightedText, highlightEmailDocument } from "../../lib/searchHighlight";
+import { HighlightedText } from "../../lib/searchHighlight";
 import { messageBackURL, messageHighlightQuery, messageHighlightTerms, messageSearchHitID } from "../../lib/routes";
 import { ComposeBox } from "../compose/ComposeViews";
 import { AttachmentPreviewSlot } from "../../plugins/attachmentPreview";
@@ -28,6 +28,7 @@ import { TrustImageSourceAction } from "../../plugins/trustedImageSources/TrustI
 import type { RuntimeMessageDetailsPlugin, RuntimePlugin } from "../../plugins/runtime";
 import { threadSecurityPlugin, type ThreadSecurityDecryptedAttachment, type ThreadSecurityGossipKey, type ThreadSecurityOpenResult, type ThreadSecuritySignatureStatus } from "../../plugins/threadSecurity";
 import { SnoozeControl } from "./SnoozeControl";
+import { EmailFrame } from "./EmailFrame";
 
 type MessageLoadStatus = {
   conversation: number;
@@ -2286,81 +2287,5 @@ function QuotedDetails({
       <summary>...</summary>
       {open ? <EmailFrame srcDoc={srcDoc} highlightQuery={highlightQuery} highlightTerms={highlightTerms} full /> : null}
     </details>
-  );
-}
-
-function currentEmailDocumentTheme(): "classic" | "classic_dark" | "matrix" {
-  const theme = document.documentElement.dataset.theme;
-  return theme === "classic_dark" || theme === "matrix" ? theme : "classic";
-}
-
-function themedEmailSrcDoc(srcDoc: string): string {
-  const theme = currentEmailDocumentTheme();
-  if (theme === "classic") return srcDoc;
-  return srcDoc.replace(/<html(\s|>)/i, `<html data-rolltop-theme="${theme}"$1`);
-}
-
-function applyEmailDocumentTheme(doc: Document | null | undefined) {
-  if (!doc) return;
-  const theme = currentEmailDocumentTheme();
-  if (theme === "classic") {
-    doc.documentElement.removeAttribute("data-rolltop-theme");
-    return;
-  }
-  doc.documentElement.setAttribute("data-rolltop-theme", theme);
-}
-
-// EmailFrame isolates message HTML in a sandboxed iframe, applies the active
-// Rolltop theme, highlights search terms inside the iframe document, and
-// repeatedly measures height because images/fonts can settle after load.
-function EmailFrame({
-  srcDoc,
-  highlightQuery = "",
-  highlightTerms = [],
-  full = false
-}: {
-  srcDoc: string;
-  highlightQuery?: string;
-  highlightTerms?: string[];
-  full?: boolean;
-}) {
-  const ref = useRef<HTMLIFrameElement | null>(null);
-  const [height, setHeight] = useState(full ? 220 : 96);
-  const highlightKey = `${highlightQuery}:${highlightTerms.join(",")}`;
-  const themedSrcDoc = themedEmailSrcDoc(srcDoc);
-
-  useEffect(() => {
-    setHeight(full ? 220 : 96);
-  }, [srcDoc, highlightKey, full]);
-
-  function resize() {
-    const doc = ref.current?.contentDocument;
-    const body = doc?.body;
-    const html = doc?.documentElement;
-    if (!body || !html) return;
-    const next = Math.max(body.scrollHeight, body.offsetHeight, html.scrollHeight, html.offsetHeight, full ? 180 : 84) + 12;
-    setHeight(next);
-  }
-
-  return (
-    <iframe
-      ref={ref}
-      className={`email-frame ${full ? "full" : ""}`}
-      srcDoc={themedSrcDoc}
-      title="Email body"
-      sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-      scrolling="no"
-      style={{ height }}
-      onLoad={() => {
-        const doc = ref.current?.contentDocument;
-        applyEmailDocumentTheme(doc);
-        highlightEmailDocument(doc, highlightQuery, highlightTerms);
-        resize();
-        window.requestAnimationFrame(resize);
-        window.setTimeout(resize, 120);
-        window.setTimeout(resize, 600);
-        window.setTimeout(resize, 1600);
-      }}
-    />
   );
 }

@@ -15,10 +15,91 @@ type normalizedLine struct {
 	original int
 }
 
-// clippedEmailBody chooses the visible body for a thread card. It clips ordinary
-// quoted replies, preserves forwarded-message content, and can prefer text over
-// HTML when clipped HTML would show only an attribution stub.
+// clippedEmailBody folds quotes only when their content is already available in
+// an earlier card. A quote marker alone does not prove the reader has the original
+// message (for example, Outlook forwards use the same boundary as replies).
 func clippedEmailBody(bodyHTML, bodyText string, previousBodies []string) (string, string, bool) {
+	displayHTML, displayText, hidden := candidateClippedEmailBody(bodyHTML, bodyText, previousBodies)
+	if !hidden {
+		return bodyHTML, bodyText, false
+	}
+	var omitted []string
+	if displayHTML != "" {
+		source := strings.ReplaceAll(bodyHTML, "\x00", "")
+		if !strings.HasPrefix(source, displayHTML) {
+			return bodyHTML, bodyText, false
+		}
+		quote := visibleTextFromHTML(source[len(displayHTML):])
+		if strings.TrimSpace(quote) == "" {
+			return bodyHTML, bodyText, false
+		}
+		omitted = []string{quote}
+	} else {
+		start := strings.Index(bodyText, displayText)
+		if start < 0 || displayText == "" {
+			return bodyHTML, bodyText, false
+		}
+		omitted = []string{bodyText[:start], bodyText[start+len(displayText):]}
+	}
+	for _, quote := range omitted {
+		if strings.TrimSpace(quote) != "" && !quoteAlreadyInThread(quote, previousBodies) {
+			return bodyHTML, bodyText, false
+		}
+	}
+	return displayHTML, displayText, true
+}
+
+func quoteAlreadyInThread(quote string, previousBodies []string) bool {
+	content := normalizedQuoteContent(quote)
+	if content == "" {
+		return false
+	}
+	for _, previous := range previousBodies {
+		if strings.Contains(normalizedQuoteContent(previous), content) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedQuoteContent(body string) string {
+	lines := splitBodyLines(body)
+	for i := range lines {
+		lines[i] = normalizeBodyLine(lines[i])
+	}
+	content := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		marker := strings.Trim(line, "-_: ")
+		if isReplyAttributionLine(line) || marker == "forwarded message" || marker == "begin forwarded message" || marker == "original message" || isDividerLine(line) {
+			continue
+		}
+		if isMessageHeaderLine(line) && headerBlockFollows(lines, i) {
+			for i+1 < len(lines) && isMessageHeaderLine(lines[i+1]) {
+				i++
+			}
+			continue
+		}
+		// Plain-text clients often wrap the date and sender onto separate lines.
+		if strings.HasPrefix(line, "on ") {
+			attribution := line
+			for j := i + 1; j < len(lines) && j <= i+3; j++ {
+				attribution += " " + lines[j]
+				if isReplyAttributionLine(attribution) {
+					i = j
+					line = ""
+					break
+				}
+			}
+		}
+		content = append(content, line)
+	}
+	return strings.Join(strings.Fields(strings.Join(content, " ")), " ")
+}
+
+// Find conventional quote boundaries before checking whether the hidden text
+// really duplicates a previous message.
+func candidateClippedEmailBody(bodyHTML, bodyText string, previousBodies []string) (string, string, bool) {
 	displayText, textHidden := clipTextQuote(bodyText, previousBodies)
 	displayHTML, htmlHidden := clipHTMLQuote(bodyHTML)
 	if strings.TrimSpace(bodyHTML) == "" {
@@ -71,18 +152,14 @@ func isAttributionOnlyPreview(value string) bool {
 	return strings.HasSuffix(lower, " wrote:") && len([]rune(lower)) <= 180
 }
 
-// clipHTMLQuote removes common HTML quote containers only when there is enough
-// original content before the cut and the surrounding content does not look like a
-// forwarded message that should remain visible.
+// clipHTMLQuote finds common HTML quote containers after original content.
+// clippedEmailBody checks the omitted text before accepting this boundary.
 func clipHTMLQuote(bodyHTML string) (string, bool) {
 	bodyHTML = strings.ReplaceAll(bodyHTML, "\x00", "")
 	if strings.TrimSpace(bodyHTML) == "" {
 		return bodyHTML, false
 	}
 	lower := strings.ToLower(bodyHTML)
-	if htmlContainsForwardedMessage(lower) {
-		return bodyHTML, false
-	}
 	markers := []string{
 		`class="gmail_quote`,
 		`class='gmail_quote`,
@@ -111,9 +188,6 @@ func clipHTMLQuote(bodyHTML string) (string, bool) {
 				cut = tagStart
 			}
 		}
-		if preservesForwardedHTMLSection(marker, bodyHTML, cut) {
-			continue
-		}
 		if !hasSubstantialPrefix(bodyHTML[:cut]) {
 			continue
 		}
@@ -125,24 +199,6 @@ func clipHTMLQuote(bodyHTML string) (string, bool) {
 		return bodyHTML, false
 	}
 	return strings.TrimSpace(bodyHTML[:best]), true
-}
-
-func preservesForwardedHTMLSection(marker, bodyHTML string, cut int) bool {
-	switch marker {
-	case `<blockquote`, `type="cite"`, `type='cite'`, `class="gmail_quote`, `class='gmail_quote`, `class="yahoo_quoted`, `class='yahoo_quoted`, `id="yahoo_quoted`, `id='yahoo_quoted`:
-	default:
-		return false
-	}
-	start := cut - 1000
-	if start < 0 {
-		start = 0
-	}
-	end := cut + 4000
-	if end > len(bodyHTML) {
-		end = len(bodyHTML)
-	}
-	nearbyText := strings.ToLower(cleanSnippetText(bodyHTML[start:end], 4000))
-	return strings.Contains(nearbyText, "forwarded message") || strings.Contains(nearbyText, "begin forwarded message")
 }
 
 func htmlContainsForwardedMessage(lowerHTML string) bool {
