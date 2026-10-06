@@ -5,7 +5,6 @@ package syncer
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
@@ -99,6 +98,10 @@ type MailboxPlan struct {
 	Status  MailboxStatus
 	LastUID uint32
 	Pending int
+	// StatusErr carries the IMAP STATUS probe failure for a degraded plan
+	// entry. The per-folder step fails with this original error in isolation
+	// (with backoff) instead of aborting the whole account plan.
+	StatusErr error
 }
 
 // FetchedMessage is a raw message body plus IMAP metadata streamed from Fetcher to Service.
@@ -191,6 +194,11 @@ type Service struct {
 	attachmentIndexContinueAt map[int64]time.Time
 	// attachmentIndexContinuationDelay is overridden only by focused tests.
 	attachmentIndexContinuationDelay time.Duration
+	// mailboxSyncBackoff tracks consecutive per-folder sync failures so a
+	// throttled or failing folder backs off while the remaining folders keep
+	// syncing. In-memory only: a restart simply retries every folder once.
+	mailboxBackoffMu sync.Mutex
+	mailboxBackoff   map[mailboxBackoffKey]mailboxBackoffState
 }
 
 const (
@@ -498,7 +506,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		return run, err
 	}
 	generationRecoveryPhase(ctx, "imap-mailbox-status", "")
-	plan, planErr := s.planMailboxes(ctx, account, mailboxNames, lastUIDs)
+	plan := s.planMailboxes(ctx, account, mailboxNames, lastUIDs)
 	requestedSet := requestedMailboxSet(requestedMailboxes)
 	progress.MailboxesTotal = len(plan)
 	for _, item := range plan {
@@ -523,14 +531,44 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			return run, err
 		}
 	}
-	if planErr != nil {
-		status = "failed"
-		errText = planErr.Error()
-		return run, planErr
+
+	// mailboxFailures collects per-folder remote IMAP errors (STATUS probes and
+	// message fetches). A failing folder no longer aborts the whole account
+	// run: the error is recorded (with backoff) and the remaining folders
+	// still sync. Local store and plugin errors still abort the run: they
+	// indicate a local problem that isolation cannot route around, and callers
+	// depend on the returned error (errors.Is) to schedule retries. Only a
+	// cancelled turn context stops the run so the deferred finish marks it
+	// interrupted.
+	var mailboxFailures []string
+	mailboxFailed := func(mailboxName string, err error) bool {
+		if ctx.Err() != nil {
+			status = "failed"
+			errText = err.Error()
+			return true
+		}
+		mailboxFailures = append(mailboxFailures, mailboxName+": "+err.Error())
+		log.Printf("mailbox sync user_id=%d account_id=%d mailbox=%q: %v", userID, account.ID, mailboxName, err)
+		s.recordMailboxSyncFailure(userID, account.ID, mailboxName)
+		return false
 	}
 
 	for _, planned := range plan {
 		mailboxName := planned.Name
+		if !options.generationRecovery && s.mailboxSyncDelayed(userID, account.ID, mailboxName) {
+			log.Printf("skip mailbox sync user_id=%d account_id=%d mailbox=%q reason=mailbox-backoff",
+				userID, account.ID, mailboxName)
+			continue
+		}
+		if planned.StatusErr != nil {
+			// The IMAP STATUS probe for this folder failed during planning.
+			// Fail the folder in isolation with the original error (and
+			// backoff) instead of aborting the remaining folders.
+			if mailboxFailed(mailboxName, planned.StatusErr) {
+				return run, planned.StatusErr
+			}
+			continue
+		}
 		mailboxLastUIDAtStart := planned.LastUID
 		generationRecoveryCheckpoint(ctx, mailboxLastUIDAtStart)
 		progress.CurrentMailbox = mailboxName
@@ -596,7 +634,8 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			// An ordinary Inbox bypass may discover a second UIDVALIDITY change
 			// while another mailbox is recovering. Persist the STATUS snapshot,
 			// then leave all message fetches to the per-tenant recovery worker so
-			// this sync cannot start another untracked rebuild inline.
+			// this sync cannot start another untracked rebuild inline. The
+			// remaining folders still sync; only this folder's fetch is deferred.
 			if err := s.Store.UpdateMailboxRemoteStatusForGeneration(ctx, userID, account.ID, mailbox.ID,
 				int(planned.Status.Messages), int(planned.Status.Unseen), planned.Status.UIDNext,
 				planned.Status.UIDValidity); err != nil {
@@ -618,7 +657,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			if !generationReset && s.MailboxGenerationRecoveryStarted != nil {
 				s.MailboxGenerationRecoveryStarted(userID)
 			}
-			return run, nil
+			continue
 		}
 		rebuildInProgress := generationReset || generationRebuildPending
 		isPostRebuildArrival := func(item FetchedMessage) bool {
@@ -640,9 +679,10 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			return !rebuildInProgress && shouldCancelSnoozeForNewMessage(mailbox, mailboxLastUIDAtStart, item)
 		}
 		if planned.Status.UIDValidity == 0 {
+			err := errors.New("mailbox sync requires a known UIDVALIDITY")
 			status = "failed"
-			errText = "mailbox sync requires a known UIDVALIDITY"
-			return run, errors.New(errText)
+			errText = err.Error()
+			return run, err
 		}
 		if err := s.Store.UpdateMailboxRemoteStatusForGeneration(ctx, userID, account.ID, mailbox.ID,
 			int(planned.Status.Messages), int(planned.Status.Unseen), planned.Status.UIDNext, planned.Status.UIDValidity); err != nil {
@@ -707,9 +747,10 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		completionBatch := newMessageImportCompletionBatch(s, userID)
 		if rebuildInProgress {
 			if _, ok := s.Fetcher.(UIDValidityMailboxFetcher); !ok {
+				err := errors.New("mailbox generation rebuild requires a generation-bound fetcher")
 				status = "failed"
-				errText = "mailbox generation rebuild requires a generation-bound fetcher"
-				return run, errors.New(errText)
+				errText = err.Error()
+				return run, err
 			}
 		}
 		prepareFetchedItem := func(item FetchedMessage) FetchedMessage {
@@ -1004,11 +1045,19 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			err = s.fetchMailboxForGeneration(ctx, account, mailboxName, mailboxLastUIDAtStart,
 				planned.Status.UIDValidity, handleFetchedItem)
 		}
-		if err != nil {
-			status = "failed"
-			errText = err.Error()
-			return run, err
+		fetchErr := err
+		if fetchErr != nil && ctx.Err() != nil {
+			// The turn was cancelled (deadline or shutdown). Stop the run so the
+			// deferred finish marks it interrupted; flushing against a cancelled
+			// context cannot succeed.
+			return run, fetchErr
 		}
+		// Flush the import batches after both successful and failed fetches so a
+		// throttled turn still makes durable the messages, index documents, and
+		// UID checkpoint for everything it stored before the failure. A flush
+		// failure is a local problem: it aborts the run instead of being
+		// isolated, because callers depend on the returned error to retry the
+		// incomplete import.
 		if err := searchBatch.Flush(ctx); err != nil {
 			status = "failed"
 			errText = err.Error()
@@ -1037,6 +1086,18 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			generationRecoveryCheckpoint(ctx, pendingImportUID)
 			pendingImportUID = 0
 		}
+		if fetchErr != nil && generationRebuildPending {
+			// A recovery fetch failed. The checkpoint and index batch above are
+			// durable. Propagate the original error: the serialized recovery
+			// worker keys its retry interval on the returned error, and callers
+			// use errors.Is to distinguish retryable failures. No backoff is
+			// recorded: the recovery worker owns the retry schedule and bypasses
+			// backoff, and an ordinary sync that re-attempts the folder either
+			// defers to the worker or becomes a recovery turn itself.
+			status = "failed"
+			errText = fetchErr.Error()
+			return run, fetchErr
+		}
 		if generationRebuildPending && !generationRecoveryComplete {
 			// The checkpoint and index batch are durable. End this scheduler turn
 			// without finalizing the marker so another account can run before the
@@ -1054,6 +1115,10 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		// Bleve/SQLite audit can require a remote raw-message fetch for old mail,
 		// so it is deliberately an explicit folder or account reindex task rather
 		// than surprise background work after an upgrade or restart.
+		// Metadata reconciliation runs even when the fetch above failed, so
+		// server-side moves and deletes are reflected locally without waiting
+		// for a fully successful fetch turn. Reconciliation errors stay
+		// advisory: the folder is only marked failed for its fetch error.
 		if options.deferOrdinaryMaintenanceNow() {
 			log.Printf("defer mailbox metadata reconciliation user_id=%d account_id=%d mailbox=%q reason=mailbox-generation-recovery",
 				userID, account.ID, mailboxName)
@@ -1069,6 +1134,22 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			}
 		} else {
 			log.Printf("defer large-folder metadata reconciliation user_id=%d mailbox=%s messages=%d threshold=%d", userID, mailboxName, planned.Status.Messages, inlineMetadataSyncLimit)
+		}
+		if fetchErr != nil {
+			// A concurrent generation change is a correctness signal, not a
+			// transport failure: the folder's UIDVALIDITY changed mid-fetch,
+			// so the turn aborts instead of isolating the folder.
+			if errors.Is(fetchErr, store.ErrMailboxGenerationChanged) {
+				status = "failed"
+				errText = fetchErr.Error()
+				return run, fetchErr
+			}
+			// Only this folder failed; the checkpoint and reconciliation above
+			// are durable, and the remaining folders still sync.
+			if mailboxFailed(mailboxName, fetchErr) {
+				return run, fetchErr
+			}
+			continue
 		}
 		if planned.Status.UIDValidity > 0 {
 			if err := s.Store.FinalizeMailboxGenerationRebuild(ctx, userID, account.ID, mailbox.ID, planned.Status.UIDValidity); err != nil {
@@ -1092,6 +1173,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			}
 		}
 		progress.MailboxesDone++
+		s.recordMailboxSyncSuccess(userID, account.ID, mailboxName)
 		progress.CurrentMailbox = mailboxName
 		progress.CurrentUID = lastUIDs[mailboxName]
 		s.updateSyncProgress(ctx, userID, run.ID, progress)
@@ -1105,6 +1187,17 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				log.Printf("defer mailbox generation blob cleanup user_id=%d account_id=%d mailbox=%s: %v",
 					userID, account.ID, mailboxName, err)
 			}
+		}
+	}
+	if len(mailboxFailures) > 0 {
+		status = "failed"
+		errText = "mailbox sync failures: " + strings.Join(mailboxFailures, "; ")
+		// Generation recovery callers (the runner) key retry timing on the
+		// returned error: a failed recovery turn must not look successful, or
+		// the runner treats it as progress and re-scans immediately instead
+		// of waiting for the retry interval.
+		if options.generationRecovery {
+			return run, errors.New(errText)
 		}
 	}
 	return run, nil
@@ -1372,13 +1465,19 @@ func maxUID(uids []uint32) uint32 {
 // planMailboxes makes progress meaningful before the first message arrives.
 // IMAP STATUS is cheap compared with fetching bodies, and UIDNEXT lets us
 // estimate remaining work per folder without mutating the remote mailbox.
-func (s *Service) planMailboxes(ctx context.Context, account store.MailAccount, names []string, lastUIDs map[string]uint32) ([]MailboxPlan, error) {
+// planMailboxes issues one IMAP STATUS per folder to learn the remote UID
+// range. A folder whose STATUS fails (for example a throttled login) keeps a
+// degraded plan entry instead of aborting the whole account plan; the
+// per-folder step then fails that folder in isolation, with backoff, once it
+// detects the missing UIDVALIDITY.
+func (s *Service) planMailboxes(ctx context.Context, account store.MailAccount, names []string, lastUIDs map[string]uint32) []MailboxPlan {
 	plans := make([]MailboxPlan, 0, len(names))
 	for _, name := range names {
 		status, err := s.Fetcher.MailboxStatus(ctx, account, name)
 		if err != nil {
-			plans = append(plans, MailboxPlan{Name: name, LastUID: lastUIDs[name]})
-			return plans, fmt.Errorf("read IMAP status for mailbox %q: %w", name, err)
+			log.Printf("plan mailbox status account_id=%d mailbox=%q: %v", account.ID, name, err)
+			plans = append(plans, MailboxPlan{Name: name, LastUID: lastUIDs[name], StatusErr: err})
+			continue
 		}
 		pending := 0
 		if status.UIDNext > 0 {
@@ -1389,7 +1488,7 @@ func (s *Service) planMailboxes(ctx context.Context, account store.MailAccount, 
 		}
 		plans = append(plans, MailboxPlan{Name: name, Status: status, LastUID: lastUIDs[name], Pending: pending})
 	}
-	return plans, nil
+	return plans
 }
 
 // updateSyncProgress persists a progress snapshot and immediately notifies the

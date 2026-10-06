@@ -283,19 +283,39 @@ func TestGenerationRecoveryDefersTenantPendingFlagUploads(t *testing.T) {
 	}
 
 	// A regular sync still drains pending local flag changes before fetching.
-	if _, err := fixture.service.SyncUserAccountMailboxes(context.Background(), fixture.userID,
-		fixture.account.ID, []string{fixture.source.Name}); err == nil {
-		t.Fatal("regular sync unexpectedly succeeded with the refusing test fetcher")
+	// The refusing fetcher's STATUS probe fails, but that remote failure is
+	// isolated to the folder: the run is marked failed without an error.
+	run, err := fixture.service.SyncUserAccountMailboxes(context.Background(), fixture.userID,
+		fixture.account.ID, []string{fixture.source.Name})
+	if err != nil {
+		t.Fatalf("regular sync error=%v, want nil (STATUS failure is isolated)", err)
+	}
+	persisted, err := fixture.store.GetSyncRunForUser(context.Background(), fixture.userID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != "failed" {
+		t.Fatalf("regular sync run status=%q, want failed", persisted.Status)
 	}
 	if fetcher.seenWriteCalls != 1 {
 		t.Fatalf("regular sync Seen writes=%d, want 1", fetcher.seenWriteCalls)
 	}
+	// Clear the STATUS backoff so the next turn exercises the folder again.
+	fixture.service.recordMailboxSyncSuccess(fixture.userID, fixture.account.ID, fixture.source.Name)
 
 	// An unrelated account-qualified poll admitted during recovery uses the
 	// normal fetch path but must not drain tenant-wide pending flags.
-	if _, err := fixture.service.syncUserAccountMailboxes(context.Background(), fixture.userID,
-		fixture.account.ID, []string{fixture.source.Name}, syncAccountOptions{deferPendingFlags: true}); err == nil {
-		t.Fatal("deferred-flag sync unexpectedly succeeded with the refusing test fetcher")
+	run, err = fixture.service.syncUserAccountMailboxes(context.Background(), fixture.userID,
+		fixture.account.ID, []string{fixture.source.Name}, syncAccountOptions{deferPendingFlags: true})
+	if err != nil {
+		t.Fatalf("deferred-flag sync error=%v, want nil (STATUS failure is isolated)", err)
+	}
+	persisted, err = fixture.store.GetSyncRunForUser(context.Background(), fixture.userID, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != "failed" {
+		t.Fatalf("deferred-flag sync run status=%q, want failed", persisted.Status)
 	}
 	if fetcher.seenWriteCalls != 1 {
 		t.Fatalf("deferred-flag sync performed pending Seen writes: calls=%d, want 1", fetcher.seenWriteCalls)
@@ -303,6 +323,8 @@ func TestGenerationRecoveryDefersTenantPendingFlagUploads(t *testing.T) {
 
 	// A generation-recovery turn must start fetching the requested mailbox
 	// without first performing up to 500 unrelated writes for the tenant.
+	// The recovery worker bypasses backoff and reports the folder failure as
+	// an error so the runner waits for its retry interval.
 	if _, err := fixture.service.RecoverUserAccountMailboxGeneration(context.Background(), fixture.userID,
 		fixture.account.ID, fixture.source.Name); err == nil {
 		t.Fatal("generation recovery unexpectedly succeeded with the refusing test fetcher")

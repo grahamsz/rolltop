@@ -239,7 +239,7 @@ func TestMailboxGenerationRecoveryFailureWaitsForRetryInterval(t *testing.T) {
 	}
 }
 
-func TestMailboxStatusFailureEndsSyncWithOriginalError(t *testing.T) {
+func TestMailboxStatusFailureFailsFolderWithOriginalError(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "rolltop.db"))
 	if err != nil {
@@ -258,9 +258,12 @@ func TestMailboxStatusFailureEndsSyncWithOriginalError(t *testing.T) {
 	fetcher := &recoveryFailingFetcher{moveTestFetcher: &moveTestFetcher{}}
 	service := &Service{Store: db, Fetcher: fetcher}
 
+	// A folder whose IMAP STATUS probe fails no longer aborts the run with an
+	// error return. The run completes, is marked failed, and carries the
+	// original status error for the folder.
 	run, err := service.SyncUserAccountMailboxes(ctx, user.ID, account.ID, []string{mailbox.Name})
-	if err == nil || !strings.Contains(err.Error(), "recovery IMAP unavailable") {
-		t.Fatalf("sync error = %v, want original mailbox status failure", err)
+	if err != nil {
+		t.Fatalf("sync error = %v, want nil with a failed run", err)
 	}
 	saved, err := db.GetSyncRunForUser(ctx, user.ID, run.ID)
 	if err != nil {
