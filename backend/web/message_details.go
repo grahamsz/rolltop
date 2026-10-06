@@ -109,19 +109,18 @@ func (s *Server) performOneClickUnsubscribe(ctx context.Context, target *url.URL
 		return errOneClickUnavailable
 	}
 	targetStr := target.String()
-	// Log only scheme://host/path: query parameters and userinfo can carry
-	// per-recipient unsubscribe capability tokens that do not belong in logs.
-	redactedTarget := (&url.URL{Scheme: target.Scheme, Host: target.Host, Path: target.Path}).String()
+	// Capability tokens can appear in paths as well as query strings.
+	redactedTarget := (&url.URL{Scheme: target.Scheme, Host: target.Host}).String()
 	logging.Debugf("one-click unsubscribe post target=%s", redactedTarget)
 	if err := validateOutboundHTTPS(ctx, target); err != nil {
 		// Always log outbound-guard rejections: they are the only record of a
 		// blocked unsubscribe target and matter for security review.
-		log.Printf("one-click unsubscribe validation failed target=%s err=%v", redactedTarget, err)
+		logUnsubscribeFailure("validation", target, err)
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetStr, strings.NewReader("List-Unsubscribe=One-Click"))
 	if err != nil {
-		logging.Debugf("one-click unsubscribe request build failed target=%s err=%v", redactedTarget, err)
+		logUnsubscribeFailure("request build", target, err)
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -143,7 +142,7 @@ func (s *Server) performOneClickUnsubscribe(ctx context.Context, target *url.URL
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("one-click unsubscribe transport failed target=%s err=%v", redactedTarget, err)
+		logUnsubscribeFailure("transport", target, err)
 		return err
 	}
 	defer resp.Body.Close()
@@ -153,6 +152,12 @@ func (s *Server) performOneClickUnsubscribe(ctx context.Context, target *url.URL
 		return errors.New("unsubscribe endpoint returned non-2xx")
 	}
 	return nil
+}
+
+func logUnsubscribeFailure(stage string, target *url.URL, err error) {
+	// Even the nested error may quote a redirect URL or malformed Location.
+	// Log its type, never its raw text, to keep recipient capabilities private.
+	log.Printf("one-click unsubscribe %s failed host=%q error_type=%T", stage, target.Host, err)
 }
 
 func (s *Server) rawMessageHeader(ctx context.Context, userID int64, msg store.MessageRecord) mail.Header {

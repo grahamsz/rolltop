@@ -71,8 +71,10 @@ func TestServerErrorTreatsClientDisconnectsAsRoutine(t *testing.T) {
 			logs := testlog.Capture(t)
 			s := &Server{}
 			rec := httptest.NewRecorder()
-
-			s.serverError(rec, httptest.NewRequest(http.MethodGet, "/api/mail", nil), err)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			r := httptest.NewRequest(http.MethodGet, "/api/mail", nil).WithContext(ctx)
+			s.serverError(rec, r, err)
 
 			if rec.Code != http.StatusRequestTimeout {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestTimeout)
@@ -120,7 +122,10 @@ func TestAPIErrorDoesNotLogClientDisconnects(t *testing.T) {
 	s := &Server{}
 	rec := httptest.NewRecorder()
 
-	s.apiError(rec, httptest.NewRequest(http.MethodPost, "/api/messages/move", nil),
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := httptest.NewRequest(http.MethodPost, "/api/messages/move", nil).WithContext(ctx)
+	s.apiError(rec, r,
 		http.StatusServiceUnavailable, "could not schedule message move", context.Canceled)
 
 	if rec.Code != http.StatusServiceUnavailable {
@@ -128,5 +133,16 @@ func TestAPIErrorDoesNotLogClientDisconnects(t *testing.T) {
 	}
 	if logs.Len() != 0 {
 		t.Fatalf("client disconnect was logged: %q", logs.String())
+	}
+}
+
+func TestServerErrorLogsInternalTimeoutWhileRequestIsLive(t *testing.T) {
+	logs := testlog.Capture(t)
+	s := &Server{}
+	rec := httptest.NewRecorder()
+	s.serverError(rec, httptest.NewRequest(http.MethodGet, "/api/mail", nil),
+		errors.Join(errors.New("database timeout"), context.DeadlineExceeded))
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(logs.String(), "database timeout") {
+		t.Fatalf("internal timeout hidden: status=%d log=%q", rec.Code, logs.String())
 	}
 }

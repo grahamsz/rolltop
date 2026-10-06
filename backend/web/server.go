@@ -470,7 +470,7 @@ func (s *Server) withCurrentUser(next http.Handler) http.Handler {
 				r = r.WithContext(context.WithValue(r.Context(), userContextKey, cu))
 			case store.IsNotFound(err):
 				// Missing or expired session row: genuinely signed out.
-			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			case isClientDisconnect(r, err):
 				// The client abandoned the request mid-lookup; stay anonymous
 				// without logging so ordinary tab closes do not read like
 				// store failures.
@@ -1141,7 +1141,7 @@ func (s *Server) csrfForBase(base string) string {
 // failure funnels through here, so this is the one place that decides what the
 // operator gets to see.
 func (s *Server) serverError(w http.ResponseWriter, r *http.Request, err error) {
-	if isClientDisconnect(err) {
+	if isClientDisconnect(r, err) {
 		http.Error(w, "request canceled", http.StatusRequestTimeout)
 		return
 	}
@@ -1160,8 +1160,9 @@ func (s *Server) apiError(w http.ResponseWriter, r *http.Request, status int, me
 // isClientDisconnect reports whether err is the ordinary result of a client
 // abandoning a request rather than a server-side failure. A closed tab must not
 // read like a store failure in the operator log.
-func isClientDisconnect(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+func isClientDisconnect(r *http.Request, err error) bool {
+	return r != nil && r.Context().Err() != nil &&
+		(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 }
 
 // logHandlerError records a handler failure together with the request that
@@ -1170,7 +1171,7 @@ func isClientDisconnect(err error) bool {
 // Line separators are escaped because a decoded request path may contain them,
 // which would otherwise let a caller forge additional log records.
 func logHandlerError(r *http.Request, err error) {
-	if err == nil || isClientDisconnect(err) {
+	if err == nil || isClientDisconnect(r, err) {
 		return
 	}
 	if r == nil {
