@@ -164,14 +164,15 @@ export async function putJSON<T>(url: string, csrf: string, body: unknown = {}, 
 }
 
 /** DELETE JSON from a mutating endpoint with the current CSRF token. */
-export async function deleteJSON<T>(url: string, csrf: string): Promise<T> {
+export async function deleteJSON<T>(url: string, csrf: string, options: MutationRequestOptions = {}): Promise<T> {
   return parse<T>(
     await mutationWithFreshCSRFRetry((token) => fetch(url, {
       method: "DELETE",
       headers: {
         Accept: "application/json",
         "X-CSRF-Token": token
-      }
+      },
+      ...(options.keepalive ? { keepalive: true } : {})
     }), csrf)
   );
 }
@@ -322,8 +323,8 @@ export const api = {
   snoozes: (page: number) => getJSON<SnoozeListResponse>(`/api/snoozes?${new URLSearchParams({ page: String(page) })}`),
   snoozeMessage: (csrf: string, id: number, until: Date, options?: MutationRequestOptions) =>
     putJSON<{ ok: boolean; snoozed: boolean; snooze: MessageSnooze }>(`/api/messages/${id}/snooze`, csrf, { until: until.toISOString() }, options),
-  unsnoozeMessage: (csrf: string, id: number) =>
-    deleteJSON<{ ok: boolean; snoozed: boolean }>(`/api/messages/${id}/snooze`, csrf),
+  unsnoozeMessage: (csrf: string, id: number, options?: MutationRequestOptions) =>
+    deleteJSON<{ ok: boolean; snoozed: boolean }>(`/api/messages/${id}/snooze`, csrf, options),
   search: (query: string, page: number) =>
     getJSON<{ conversations: Conversation[]; page: number; has_prev: boolean; has_next: boolean }>(searchListURL(query, page)),
   prefetchSearch: (query: string, page: number) =>

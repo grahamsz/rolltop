@@ -11,7 +11,9 @@ import { Icon } from "../../components/Icon";
 import { ListHeader } from "../../components/common";
 import { androidNativeAvailable } from "../../lib/androidNative";
 import { isNetworkError, messageFromError } from "../../lib/errors";
-import { displaySnoozeUntil, displayTime } from "../../lib/format";
+import { displaySnoozeUntil, displayTime, messageCountLabel } from "../../lib/format";
+import { trashMailboxForAccount } from "../../lib/folders";
+import { executeMailboxMove, removeMovedMessages } from "../../lib/mailboxMoves";
 import { shouldIgnoreMailShortcut } from "../../lib/keyboard";
 import { buildRecentOfflinePage } from "../../lib/offlineMailCache";
 import { offlineSearch } from "../../lib/offlineSearch";
@@ -348,10 +350,7 @@ export function MailView({
   }
 
   function removeMovedConversations(messageIDs: number[]) {
-    const moved = new Set(messageIDs);
-    setConversations((current) => current.filter((conversation) =>
-      !conversationTransferMessageIDs(conversation).some((id) => moved.has(id))
-    ));
+    setConversations((current) => removeMovedMessages(current, messageIDs));
   }
 
   async function startFolderSync() {
@@ -424,6 +423,7 @@ export function MailView({
                 conversations={displayConversations}
                 hiddenMessageIDs={hiddenMessageIDs}
                 mailboxes={mailboxes}
+                currentMailboxID={mailbox?.id || 0}
                 swipePreferences={swipePreferences}
                 highlightMessageIDs={newMessageIDs}
                 showRecipients={mailbox?.role === "sent" || mailbox?.role === "drafts"}
@@ -527,10 +527,7 @@ export function SnoozedView({
   }
 
   function removeMovedConversations(messageIDs: number[]) {
-    const moved = new Set(messageIDs);
-    setConversations((current) => current.filter((conversation) =>
-      !conversationTransferMessageIDs(conversation).some((id) => moved.has(id))
-    ));
+    setConversations((current) => removeMovedMessages(current, messageIDs));
   }
 
   const pageURL = (nextPage: number) => `/snoozes${nextPage > 1 ? `?page=${nextPage}` : ""}`;
@@ -836,10 +833,7 @@ export function SearchView({
   }
 
   function removeMovedConversations(messageIDs: number[]) {
-    const moved = new Set(messageIDs);
-    setConversations((current) => current.filter((conversation) =>
-      !conversationTransferMessageIDs(conversation).some((id) => moved.has(id))
-    ));
+    setConversations((current) => removeMovedMessages(current, messageIDs));
   }
 
   return (
@@ -1005,7 +999,7 @@ function messageDragPreview(conversations: Conversation[], ids: number[]) {
   const count = ids.length;
   const title = document.createElement("div");
   title.className = "message-drag-preview-count";
-  title.textContent = count === 1 ? "1 message" : `${count.toLocaleString()} messages`;
+  title.textContent = messageCountLabel(count);
   preview.appendChild(title);
   rows.slice(0, 4).forEach((conversation) => {
     const line = document.createElement("div");
@@ -1046,6 +1040,13 @@ type ConversationReadState = {
   read: boolean;
 };
 
+/** TrashMoveGroup collects the selected rows headed for one Trash mailbox. */
+type TrashMoveGroup = {
+  target: Mailbox;
+  messageIDs: number[];
+  items: { rowID: number; messageIDs: number[] }[];
+};
+
 const messageSwipeMaxDistance = 112;
 const messageSwipeCommitDistance = 68;
 const messageSwipeCommitHoldMS = 170;
@@ -1084,7 +1085,7 @@ function messageSwipeAffordanceStyle(state: MessageSwipeState): CSSProperties | 
 
 // MessageList is shared by mailbox and search pages. It owns local row selection,
 // shift-select ranges, drag payloads, optimistic star updates, and message links.
-function MessageList({
+export function MessageList({
   csrf,
   conversations,
   hiddenMessageIDs,
@@ -1103,6 +1104,7 @@ function MessageList({
   onReadStatesChange,
   onMessagesMoved,
   snoozedView = false,
+  currentMailboxID = 0,
   emptyState
 }: {
   csrf: string;
@@ -1123,12 +1125,17 @@ function MessageList({
   onReadStatesChange: (states: ConversationReadState[]) => void;
   onMessagesMoved: (messageIDs: number[]) => void;
   snoozedView?: boolean;
+  /** The mailbox this list is showing, so Delete can skip rows already in it. */
+  currentMailboxID?: number;
   emptyState?: ReactNode;
 }) {
   const [selectedIDs, setSelectedIDs] = useState<Set<number>>(() => new Set());
   const [dismissedIDs, setDismissedIDs] = useState<Set<number>>(() => new Set());
   const [readStateBusy, setReadStateBusy] = useState(false);
   const [snoozeBusy, setSnoozeBusy] = useState(false);
+  // A counter rather than a boolean: deferred delete commits can overlap when
+  // a second selection is deleted during the first commit's undo window.
+  const [trashOps, setTrashOps] = useState(0);
   const [swipeActionBusy, setSwipeActionBusy] = useState(false);
   const [pendingSwipeMoveIDs, setPendingSwipeMoveIDs] = useState<Set<number>>(() => new Set());
   const [pendingSwipeSnoozeIDs, setPendingSwipeSnoozeIDs] = useState<Set<number>>(() => new Set());
@@ -1144,6 +1151,9 @@ function MessageList({
   const keyboardIndexRef = useRef<number | null>(null);
   const swipeSession = useRef<{ id: number; startX: number; startY: number; lastX: number; lastY: number; active: boolean; blocked: boolean } | null>(null);
   const suppressRowClickUntil = useRef(0);
+  // selectionBusy gates every bulk row mutation (toolbar buttons, swipes, drags)
+  // so concurrent moves cannot race each other on the same rows.
+  const selectionBusy = readStateBusy || snoozeBusy || swipeActionBusy || trashOps > 0;
   const visible = conversations
     .filter((conversation) => !dismissedIDs.has(conversation.message.id))
     .map((conversation) => {
@@ -1182,12 +1192,12 @@ function MessageList({
     setDismissedIDs((current) => {
       const next = new Set<number>();
       current.forEach((id) => {
-        if (sourceMessageIDs.has(id) && (hiddenMessageIDs.has(id) || pendingSwipeMoveIDs.has(id) || pendingSwipeSnoozeIDs.has(id))) next.add(id);
+        if ((sourceIDs.has(id) || sourceMessageIDs.has(id)) && (hiddenMessageIDs.has(id) || pendingSwipeMoveIDs.has(id) || pendingSwipeSnoozeIDs.has(id))) next.add(id);
       });
       return next.size === current.size ? current : next;
     });
     setPendingSwipeMoveIDs((current) => {
-      const next = new Set(Array.from(current).filter((id) => sourceMessageIDs.has(id)));
+      const next = new Set(Array.from(current).filter((id) => sourceIDs.has(id) || sourceMessageIDs.has(id)));
       return next.size === current.size ? current : next;
     });
     setPendingSwipeSnoozeIDs((current) => {
@@ -1278,6 +1288,10 @@ function MessageList({
 
   function startMessageDrag(event: DragEvent<HTMLDivElement>, conversation: Conversation) {
     const selected = selectedDragConversations(conversation);
+    if (selectionBusy || selected.some((item) => pendingSwipeActionIDs.current.has(item.message.id))) {
+      event.preventDefault();
+      return;
+    }
     const ids = uniquePositiveIDs(selected.flatMap(conversationTransferMessageIDs));
     const accountIDs = uniquePositiveIDs(selected.flatMap(conversationTransferAccountIDs));
     event.dataTransfer.effectAllowed = "copyMove";
@@ -1330,7 +1344,7 @@ function MessageList({
   async function markSelectedRead(read: boolean) {
     const selected = visible.filter((conversation) => selectedIDs.has(conversation.message.id));
     const messageIDs = uniquePositiveIDs(selected.flatMap(conversationTransferMessageIDs));
-    if (messageIDs.length === 0 || readStateBusy || snoozeBusy || swipeActionBusy) return;
+    if (messageIDs.length === 0 || selectionBusy) return;
     const previous = selected.map((conversation) => ({ id: conversation.message.id, read: conversation.is_read }));
     onReadStatesChange(selected.map((conversation) => ({ id: conversation.message.id, read })));
     setReadStateBusy(true);
@@ -1342,6 +1356,123 @@ function MessageList({
     } finally {
       setReadStateBusy(false);
     }
+  }
+
+  // Deleting moves the selection into each account's Trash mailbox through the
+  // same IMAP-mirrored move APIs as drag and swipe. The mutation is deferred
+  // behind an undo toast; the commit tracks per-message progress so a partial
+  // failure only restores rows whose messages did not move.
+  function deleteSelected() {
+    if (selectionBusy) return;
+    const selected = visible.filter((conversation) =>
+      selectedIDs.has(conversation.message.id) && !pendingSwipeActionIDs.current.has(conversation.message.id));
+    if (selected.length === 0) {
+      if (selectedIDs.size > 0) addToast("Selected messages are still finishing another action.", "error");
+      return;
+    }
+    const groups = new Map<number, TrashMoveGroup>();
+    const skippedTrashNames = new Set<string>();
+    let alreadyInTrash = 0;
+    for (const conversation of selected) {
+      const accountIDs = conversationTransferAccountIDs(conversation);
+      if (accountIDs.length !== 1) {
+        addToast("Cannot delete a conversation containing messages from multiple accounts.", "error");
+        return;
+      }
+      const target = trashMailboxForAccount(mailboxes, accountIDs[0]);
+      if (!target) {
+        addToast("Choose a Trash folder for this account before deleting messages.", "error");
+        return;
+      }
+      const messageIDs = conversationTransferMessageIDs(conversation);
+      // Skip rows that are certainly already in Trash: any row while viewing
+      // that Trash folder, or a single-message row whose message lives there.
+      // Multi-message threads elsewhere still move — their representative
+      // message may sit in Trash while older messages remain in the Inbox.
+      if (target.id === currentMailboxID || (messageIDs.length === 1 && messageIDs[0] === conversation.message.id && conversation.message.mailbox_id === target.id)) {
+        alreadyInTrash++;
+        skippedTrashNames.add(target.name);
+        continue;
+      }
+      const group = groups.get(target.id) || { target, messageIDs: [], items: [] };
+      group.items.push({ rowID: conversation.message.id, messageIDs });
+      group.messageIDs.push(...messageIDs);
+      groups.set(target.id, group);
+    }
+    const skippedLabel = skippedTrashNames.size === 1 ? Array.from(skippedTrashNames)[0] : "Trash";
+    if (groups.size === 0) {
+      addToast(alreadyInTrash === 1 ? `Message is already in ${skippedLabel}.` : `Messages are already in ${skippedLabel}.`);
+      return;
+    }
+    const entries = Array.from(groups.values());
+    for (const entry of entries) entry.messageIDs = uniquePositiveIDs(entry.messageIDs);
+    const destLabel = entries.length === 1 ? entries[0].target.name : "Trash";
+    const rowIDs = entries.flatMap((entry) => entry.items.map((item) => item.rowID));
+    // Dismiss every thread message ID too, so sibling rows of the same thread
+    // are hidden and locked during the undo window, matching the swipe path.
+    const dismissIDs = uniquePositiveIDs([...rowIDs, ...entries.flatMap((entry) => entry.messageIDs)]);
+    const totalMessages = entries.reduce((sum, entry) => sum + entry.messageIDs.length, 0);
+    const registered = deferSwipeMutation(
+      dismissIDs,
+      `Moved ${messageCountLabel(totalMessages)} to ${destLabel}.`,
+      () => {
+        removePendingSwipeMoveIDs(dismissIDs);
+        restoreDismissed(dismissIDs);
+        setSelectedIDs((current) => new Set([...current, ...rowIDs]));
+      },
+      (keepalive) => commitTrashMove(entries, dismissIDs, destLabel, keepalive)
+    );
+    if (!registered) return;
+    if (alreadyInTrash > 0) addToast(`Skipped ${messageCountLabel(alreadyInTrash)} already in ${skippedLabel}.`);
+    setPendingSwipeMoveIDs((current) => new Set([...current, ...dismissIDs]));
+    optimisticallyDismiss(dismissIDs);
+    clearSelection();
+  }
+
+  async function commitTrashMove(entries: TrashMoveGroup[], dismissIDs: number[], destLabel: string, keepalive: boolean) {
+    const movedMessageIDs: number[] = [];
+    const movedRowIDs: number[] = [];
+    const restoreIDs: number[] = [];
+    const reselectRowIDs: number[] = [];
+    let queuedMessages = 0;
+    let firstError: unknown;
+    setTrashOps((count) => count + 1);
+    try {
+      await Promise.all(entries.map(async (entry) => {
+        const { movedIDs, queuedCount, error } = await executeMailboxMove(csrf, entry.target.id, entry.messageIDs, keepalive);
+        if (error !== undefined && firstError === undefined) firstError = error;
+        queuedMessages += queuedCount;
+        movedMessageIDs.push(...movedIDs);
+        const movedSet = new Set(movedIDs);
+        for (const item of entry.items) {
+          if (item.messageIDs.every((id) => movedSet.has(id))) {
+            movedRowIDs.push(item.rowID);
+          } else {
+            restoreIDs.push(item.rowID, ...item.messageIDs);
+            reselectRowIDs.push(item.rowID);
+          }
+        }
+      }));
+    } finally {
+      setTrashOps((count) => Math.max(0, count - 1));
+    }
+    // Only dismiss reminders after the corresponding moves were accepted.
+    // Failed or partially moved conversations retain their reminders.
+    if (snoozedView && movedRowIDs.length > 0) {
+      const results = await Promise.allSettled(movedRowIDs.map((rowID) =>
+        api.unsnoozeMessage(csrf, rowID, keepalive ? { keepalive: true } : undefined)));
+      if (results.some((result) => result.status === "rejected")) {
+        addToast("Messages moved, but some snooze reminders could not be cleared.", "error");
+      }
+    }
+    if (movedMessageIDs.length > 0) onMessagesMoved(movedMessageIDs);
+    removePendingSwipeMoveIDs(dismissIDs);
+    if (restoreIDs.length > 0) {
+      restoreDismissed(uniquePositiveIDs(restoreIDs));
+      setSelectedIDs((current) => new Set([...current, ...reselectRowIDs]));
+    }
+    if (queuedMessages > 0) addToast(`Move to ${destLabel} started for ${messageCountLabel(queuedMessages)}.`);
+    if (firstError !== undefined) addToast(`Delete failed: ${messageFromError(firstError)}`, "error");
   }
 
   function optimisticallyDismiss(ids: number[]) {
@@ -1441,19 +1572,21 @@ function MessageList({
   }
 
   function deferSwipeMutation(
-    conversationID: number,
+    conversationID: number | number[],
     message: string,
     onUndo: () => void,
     onCommit: (keepalive: boolean) => Promise<void>
   ): boolean {
-    if (pendingSwipeActionIDs.current.has(conversationID)) return false;
-    pendingSwipeActionIDs.current.add(conversationID);
+    const ids = Array.isArray(conversationID) ? conversationID : [conversationID];
+    if (ids.some((id) => pendingSwipeActionIDs.current.has(id))) return false;
+    ids.forEach((id) => pendingSwipeActionIDs.current.add(id));
+    const unlock = () => ids.forEach((id) => pendingSwipeActionIDs.current.delete(id));
     let settled = false;
     addToast(message, "success", {
       onUndo: () => {
         if (settled) return;
         settled = true;
-        pendingSwipeActionIDs.current.delete(conversationID);
+        unlock();
         onUndo();
       },
       onCommit: (reason) => {
@@ -1461,7 +1594,7 @@ function MessageList({
         settled = true;
         void onCommit(reason === "background")
           .catch((err) => addToast(`Swipe action failed: ${messageFromError(err)}`, "error"))
-          .finally(() => pendingSwipeActionIDs.current.delete(conversationID));
+          .finally(unlock);
       }
     });
     return true;
@@ -1469,7 +1602,11 @@ function MessageList({
 
   async function snoozeConversations(items: Conversation[], until: Date) {
     const ids = uniquePositiveIDs(items.map((conversation) => conversation.message.id));
-    if (ids.length === 0 || snoozeBusy) return;
+    if (ids.length === 0) return;
+    if (selectionBusy) {
+      addToast("Another action is still running. Try snoozing again in a moment.", "error");
+      return;
+    }
     if (!snoozedView) optimisticallyDismiss(ids);
     clearSelection();
     setSnoozeBusy(true);
@@ -1492,7 +1629,11 @@ function MessageList({
 
   async function unsnoozeConversations(items: Conversation[]) {
     const ids = uniquePositiveIDs(items.map((conversation) => conversation.message.id));
-    if (ids.length === 0 || snoozeBusy) return;
+    if (ids.length === 0) return;
+    if (selectionBusy) {
+      addToast("Another action is still running. Try unsnoozing again in a moment.", "error");
+      return;
+    }
     optimisticallyDismiss(ids);
     clearSelection();
     setSnoozeBusy(true);
@@ -1593,7 +1734,7 @@ function MessageList({
     }
     const accountID = accountIDs[0];
     const target = action === "trash"
-      ? mailboxes.find((mailbox) => mailbox.account_id === accountID && mailbox.role === "trash")
+      ? trashMailboxForAccount(mailboxes, accountID)
       : (() => {
           const preference = effectiveSwipePreferences.archive_mailboxes.find((item) => item.account_id === accountID);
           return preference
@@ -1617,36 +1758,24 @@ function MessageList({
     const dismissedIDs = messageIDs;
     const registered = deferSwipeMutation(
       conversation.message.id,
-      `Moved ${messageIDs.length === 1 ? "message" : `${messageIDs.length.toLocaleString()} messages`} to ${target.name}.`,
+      `Moved ${messageCountLabel(messageIDs.length)} to ${target.name}.`,
       () => {
         cancelSwipeDismiss(conversation.message.id);
         removePendingSwipeMoveIDs(dismissedIDs);
         restoreDismissed(dismissedIDs);
       },
       async (keepalive) => {
-        const movedIDs: number[] = [];
-        try {
-          if (keepalive) {
-            await api.bulkMoveMessages(csrf, messageIDs, target.id, { keepalive: true });
-            movedIDs.push(...messageIDs);
-          } else {
-            for (const messageID of messageIDs) {
-              await api.moveMessage(csrf, messageID, target.id);
-              movedIDs.push(messageID);
-            }
-          }
+        const { movedIDs, error } = await executeMailboxMove(csrf, target.id, messageIDs, keepalive);
+        removePendingSwipeMoveIDs(dismissedIDs);
+        if (error === undefined) {
           onMessagesMoved(messageIDs);
-          removePendingSwipeMoveIDs(dismissedIDs);
-        } catch (err) {
-          removePendingSwipeMoveIDs(dismissedIDs);
-          if (movedIDs.length > 0) onMessagesMoved(movedIDs);
-          else {
-            cancelSwipeDismiss(conversation.message.id);
-            restoreDismissed(dismissedIDs);
-          }
-          const partial = movedIDs.length > 0 ? `${movedIDs.length.toLocaleString()} moved, but the remaining action failed` : `${action === "trash" ? "Move to trash" : "Archive"} failed`;
-          addToast(`${partial}: ${messageFromError(err)}`, "error");
+          return;
         }
+        if (movedIDs.length > 0) onMessagesMoved(movedIDs);
+        cancelSwipeDismiss(conversation.message.id);
+        restoreDismissed(dismissedIDs);
+        const partial = movedIDs.length > 0 ? `${movedIDs.length.toLocaleString()} moved, but the remaining action failed` : `${action === "trash" ? "Move to trash" : "Archive"} failed`;
+        addToast(`${partial}: ${messageFromError(error)}`, "error");
       }
     );
     if (!registered) return false;
@@ -1661,7 +1790,7 @@ function MessageList({
     snoozePreset: SwipePreferences["left_snooze_preset"],
     direction: "start" | "end"
   ): Promise<boolean> {
-    if (readStateBusy || snoozeBusy || swipeActionBusy || pendingSwipeActionIDs.current.has(conversation.message.id)) return false;
+    if (selectionBusy || pendingSwipeActionIDs.current.has(conversation.message.id)) return false;
     setSwipeActionBusy(true);
     try {
       switch (action) {
@@ -1684,7 +1813,7 @@ function MessageList({
   }
 
   function startRowSwipe(event: TouchEvent<HTMLDivElement>, conversation: Conversation) {
-    if (readStateBusy || snoozeBusy || swipeActionBusy || swipeState || pendingSwipeActionIDs.current.has(conversation.message.id) || !nativeTouchDrag || event.touches.length !== 1 || (event.target as HTMLElement).closest("button,input,label")) return;
+    if (selectionBusy || swipeState || pendingSwipeActionIDs.current.has(conversation.message.id) || !nativeTouchDrag || event.touches.length !== 1 || (event.target as HTMLElement).closest("button,input,label")) return;
     const touch = event.touches[0];
     swipeSession.current = { id: conversation.message.id, startX: touch.clientX, startY: touch.clientY, lastX: touch.clientX, lastY: touch.clientY, active: false, blocked: false };
   }
@@ -1816,7 +1945,7 @@ function MessageList({
   return (
     <div className={`message-table ${arrivalActive ? "mail-arrival-shift" : ""}`}>
       {selectedConversations.length > 0 ? (
-        <div className="selection-action-bar" role="toolbar" aria-label="Selected message actions" aria-busy={readStateBusy || snoozeBusy || swipeActionBusy}>
+        <div className="selection-action-bar" role="toolbar" aria-label="Selected message actions" aria-busy={selectionBusy}>
           <div className="selection-action-summary">
             <button className="selection-clear" type="button" onClick={clearSelection} title="Clear selection" aria-label="Clear selection">
               <Icon name="close" />
@@ -1832,7 +1961,7 @@ function MessageList({
                 className="selection-page-button"
                 type="button"
                 onClick={selectAllOnPage}
-                disabled={readStateBusy || snoozeBusy || swipeActionBusy}
+                disabled={selectionBusy}
                 title={`Select all ${visible.length.toLocaleString()} messages on this page`}
                 aria-label={`Select all ${visible.length.toLocaleString()} messages on this page`}
               >
@@ -1842,22 +1971,26 @@ function MessageList({
             )}
           </div>
           <div className="selection-actions">
-            <button type="button" disabled={readStateBusy || snoozeBusy || swipeActionBusy || !canMarkRead} onClick={() => void markSelectedRead(true)} title="Mark selected messages read">
+            <button type="button" disabled={selectionBusy || !canMarkRead} onClick={() => void markSelectedRead(true)} title="Mark selected messages read">
               <Icon name="mail_open" />
               <span>Mark read</span>
             </button>
-            <button type="button" disabled={readStateBusy || snoozeBusy || swipeActionBusy || !canMarkUnread} onClick={() => void markSelectedRead(false)} title="Mark selected messages unread">
+            <button type="button" disabled={selectionBusy || !canMarkUnread} onClick={() => void markSelectedRead(false)} title="Mark selected messages unread">
               <Icon name="mail" />
               <span>Mark unread</span>
             </button>
       {snoozedView ? (
-        <button type="button" disabled={readStateBusy || snoozeBusy || swipeActionBusy} onClick={() => void unsnoozeConversations(selectedConversations)} title="Unsnooze selected messages">
+        <button type="button" disabled={selectionBusy} onClick={() => void unsnoozeConversations(selectedConversations)} title="Unsnooze selected messages">
           <Icon name="clock" />
           <span>Unsnooze</span>
         </button>
       ) : (
-        <SnoozeControl datePrefs={datePrefs} disabled={readStateBusy || snoozeBusy || swipeActionBusy} onSnooze={(until) => snoozeConversations(selectedConversations, until)} />
+        <SnoozeControl datePrefs={datePrefs} disabled={selectionBusy} onSnooze={(until) => snoozeConversations(selectedConversations, until)} />
       )}
+            <button type="button" className="selection-delete" disabled={selectionBusy} onClick={() => void deleteSelected()} title="Move selected messages to Trash">
+              <Icon name="delete" />
+              <span>Delete</span>
+            </button>
           </div>
         </div>
       ) : null}
@@ -1982,7 +2115,7 @@ function MessageList({
             </span>
       <span className={`date ${snoozedView ? "snoozed-date" : ""}`}>
         {snoozedView ? (
-          <button className="snooze-row-action" type="button" disabled={snoozeBusy} onClick={() => void unsnoozeConversations([conversation])} title="Unsnooze" aria-label="Unsnooze">
+          <button className="snooze-row-action" type="button" disabled={selectionBusy} onClick={() => void unsnoozeConversations([conversation])} title="Unsnooze" aria-label="Unsnooze">
             <Icon name="clock" />
           </button>
         ) : null}

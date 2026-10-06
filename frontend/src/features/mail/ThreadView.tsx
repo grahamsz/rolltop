@@ -11,6 +11,7 @@ import { Icon } from "../../components/Icon";
 import { androidNativeAvailable } from "../../lib/androidNative";
 import { isNetworkError, messageFromError } from "../../lib/errors";
 import { displayDateTime, displaySnoozeUntil, displayTime, formatBytes } from "../../lib/format";
+import { trashMailboxesByAccount } from "../../lib/folders";
 import { shouldIgnoreMailShortcut } from "../../lib/keyboard";
 import { getCachedThread, recordThreadPayload, type OfflineThreadPayload } from "../../lib/offlineMailCache";
 import { HighlightedText, highlightEmailDocument } from "../../lib/searchHighlight";
@@ -903,7 +904,7 @@ export function ThreadView({
   const securityPlugin = useMemo(() => threadSecurityPlugin(messageSecurityPlugins), [messageSecurityPlugins]);
   const securityEnabled = Boolean(securityPlugin);
   const mailbox = mailboxID ? mailboxes.find((item) => item.id === mailboxID) : null;
-  const trashMailbox = mailboxes.find((item) => item.role === "trash");
+  const trashByAccount = useMemo(() => trashMailboxesByAccount(mailboxes), [mailboxes]);
   const backURL = messageBackURL(location);
   const composeInitial = (composeFrom.match(/[A-Za-z0-9]/)?.[0] || "M").toUpperCase();
   const canExplainSearch = highlightQuery.trim() !== "";
@@ -1454,6 +1455,7 @@ export function ThreadView({
   async function moveToTrash(event: MouseEvent<HTMLButtonElement>, item: ThreadMessage) {
     event.stopPropagation();
     event.currentTarget.closest("details")?.removeAttribute("open");
+    const trashMailbox = trashByAccount.get(item.message.account_id);
     if (!trashMailbox || item.message.mailbox_id === trashMailbox.id) return;
     try {
       await api.moveMessage(csrf, item.message.id, trashMailbox.id);
@@ -1719,6 +1721,7 @@ export function ThreadView({
         <section className="thread-shell">
           {thread.map((item, index) => {
             const isExpanded = expanded.has(item.message.id);
+            const itemTrashMailbox = trashByAccount.get(item.message.account_id);
             const senderVisual = senderVisualURL(item, brandIcons, pluginSet);
             const unsubscribeSent = unsubscribeSentLabel(item);
             const pgpBody = pgpBodies[item.message.id];
@@ -1886,7 +1889,7 @@ export function ThreadView({
                           <Icon name="file_text" />
                           View original
                         </button>
-                        {trashMailbox && item.message.mailbox_id !== trashMailbox.id ? (
+                        {itemTrashMailbox && item.message.mailbox_id !== itemTrashMailbox.id ? (
                           <button type="button" onClick={(event) => void moveToTrash(event, item)}>
                             <Icon name="delete" />
                             Move to trash

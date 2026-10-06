@@ -9,6 +9,7 @@ import type { Bootstrap, Mailbox, SyncRun, User } from "../../types";
 import { Icon, LogoMark } from "../../components/Icon";
 import { androidNativeAvailable, shouldAdvertiseAndroidApp } from "../../lib/androidNative";
 import { folderTree, folderTreeUnreadCount, nodeContainsMailbox, type FolderNode } from "../../lib/folders";
+import { messageCountLabel } from "../../lib/format";
 import { shouldIgnoreMailShortcut } from "../../lib/keyboard";
 import { mailRoute, mailURL, searchRoute, searchURL, currentLocation } from "../../lib/routes";
 import {
@@ -454,7 +455,7 @@ export function AppShell({
             aria-hidden="true"
           >
             <Icon name="mail" weight="bold" />
-            <span>{touchDragPreview.count === 1 ? "1 message" : `${touchDragPreview.count.toLocaleString()} messages`}</span>
+            <span>{messageCountLabel(touchDragPreview.count)}</span>
           </div>
         ) : null}
       </div>
