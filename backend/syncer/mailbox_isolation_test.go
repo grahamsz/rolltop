@@ -10,6 +10,7 @@ package syncer_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -38,8 +39,9 @@ type flakyMailboxFetcher struct {
 	// context mid-turn.
 	onFetch func(mailbox string)
 
-	mu         sync.Mutex
-	fetchCalls []string
+	mu          sync.Mutex
+	fetchCalls  []string
+	statusCalls []string
 }
 
 func (f *flakyMailboxFetcher) noteFetch(mailbox string) {
@@ -107,10 +109,61 @@ func (f *flakyMailboxFetcher) FetchMailboxWithUIDValidity(ctx context.Context, a
 }
 
 func (f *flakyMailboxFetcher) MailboxStatus(ctx context.Context, account store.MailAccount, mailbox string) (syncer.MailboxStatus, error) {
+	f.mu.Lock()
+	f.statusCalls = append(f.statusCalls, mailbox)
+	f.mu.Unlock()
 	if err := f.statusErrByMailbox[strings.ToLower(mailbox)]; err != nil {
 		return syncer.MailboxStatus{}, err
 	}
 	return f.fakeFetcher.MailboxStatus(ctx, account, mailbox)
+}
+
+func TestMailboxLocalBlobFailurePropagatesWithoutBackoff(t *testing.T) {
+	h := newIsolationHarness(t)
+	h.fetcher.messages[h.user.ID] = []syncer.FetchedMessage{testFetchedMessage("INBOX", 1, "local write failure")}
+	blocked := filepath.Join(h.dir, "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("blocked"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	h.service.Blobs = blob.New(blocked)
+	_, err := h.service.SyncUser(h.ctx, h.user.ID)
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("local blob error = %v, want original filesystem error", err)
+	}
+	h.service.Blobs = h.blobs
+	before := h.fetcher.fetchCallsFor("INBOX")
+	if _, err := h.service.SyncUser(h.ctx, h.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if h.fetcher.fetchCallsFor("INBOX") <= before || h.localMessageCount(t, "INBOX") != 1 {
+		t.Fatal("local failure applied provider backoff instead of retrying immediately")
+	}
+}
+
+func TestMailboxBackoffSkipsStatusProbes(t *testing.T) {
+	h := newIsolationHarness(t)
+	h.fetcher.statusErrByMailbox["inbox"] = errors.New("provider throttled")
+	h.sync(t, "INBOX")
+	before := len(h.fetcher.statusCalls)
+	h.sync(t, "INBOX")
+	if len(h.fetcher.statusCalls) != before {
+		t.Fatal("backed-off folder still contacted for STATUS")
+	}
+	if _, err := h.service.DiscoverMailboxes(h.ctx, h.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, mailbox := range h.fetcher.statusCalls[before:] {
+		if strings.EqualFold(mailbox, "INBOX") {
+			t.Fatal("passive discovery bypassed mailbox backoff")
+		}
+	}
+	before = len(h.fetcher.statusCalls)
+	// Recovery has its own retry schedule and must still probe the provider.
+	_, _ = h.service.RecoverUserAccountMailboxGeneration(h.ctx, h.user.ID, h.account.ID, "INBOX")
+	if len(h.fetcher.statusCalls) <= before {
+		t.Fatal("generation recovery did not bypass STATUS backoff")
+	}
 }
 
 func (f *flakyMailboxFetcher) UIDs(ctx context.Context, account store.MailAccount, mailbox string) ([]uint32, error) {

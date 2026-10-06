@@ -162,6 +162,9 @@ type Service struct {
 	ScheduleInboxArrival             func(userID, accountID int64, due time.Time)
 	NotifyRestoredState              func(userID int64)
 	MailboxGenerationRecoveryStarted func(userID int64)
+	// QueueServerDeletedMailbox hands local cleanup to the runner's tracked,
+	// account-scoped maintenance queue instead of purging during UI discovery.
+	QueueServerDeletedMailbox func(userID int64, mailbox store.Mailbox) error
 	// DeferMailboxGenerationRebuilds makes ordinary Runner-scheduled syncs
 	// yield newly discovered generation markers to the serialized recovery
 	// worker. Direct Service callers retain the synchronous behavior used by
@@ -351,6 +354,10 @@ func (s *Service) DiscoverMailboxes(ctx context.Context, userID int64) (int, err
 			if err != nil {
 				return count, err
 			}
+			if s.mailboxSyncDelayed(userID, account.ID, mb.Name) {
+				count++
+				continue
+			}
 			if status, err := s.Fetcher.MailboxStatus(ctx, account, mb.Name); err == nil {
 				s.recordMailboxStatus(ctx, userID, mb, status)
 			} else {
@@ -506,7 +513,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		return run, err
 	}
 	generationRecoveryPhase(ctx, "imap-mailbox-status", "")
-	plan := s.planMailboxes(ctx, account, mailboxNames, lastUIDs)
+	plan := s.planMailboxes(ctx, account, mailboxNames, lastUIDs, options.generationRecovery)
 	requestedSet := requestedMailboxSet(requestedMailboxes)
 	progress.MailboxesTotal = len(plan)
 	for _, item := range plan {
@@ -913,7 +920,15 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			}
 		}
 		var pendingImportUID uint32
-		handleFetchedItem := func(item FetchedMessage) error {
+		var importErr error
+		handleFetchedItem := func(item FetchedMessage) (err error) {
+			// Fetchers return callback errors through the same boundary as IMAP
+			// failures. Keep their origin so local failures never create backoff.
+			defer func() {
+				if err != nil {
+					importErr = err
+				}
+			}()
 			item = prepareFetchedItem(item)
 			prewarmed := prewarmedUIDs[item.UID]
 			if !prewarmed {
@@ -1046,6 +1061,11 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 				planned.Status.UIDValidity, handleFetchedItem)
 		}
 		fetchErr := err
+		if importErr != nil {
+			status = "failed"
+			errText = importErr.Error()
+			return run, importErr
+		}
 		if fetchErr != nil && ctx.Err() != nil {
 			// The turn was cancelled (deadline or shutdown). Stop the run so the
 			// deferred finish marks it interrupted; flushing against a cancelled
@@ -1470,9 +1490,13 @@ func maxUID(uids []uint32) uint32 {
 // degraded plan entry instead of aborting the whole account plan; the
 // per-folder step then fails that folder in isolation, with backoff, once it
 // detects the missing UIDVALIDITY.
-func (s *Service) planMailboxes(ctx context.Context, account store.MailAccount, names []string, lastUIDs map[string]uint32) []MailboxPlan {
+func (s *Service) planMailboxes(ctx context.Context, account store.MailAccount, names []string, lastUIDs map[string]uint32, generationRecovery bool) []MailboxPlan {
 	plans := make([]MailboxPlan, 0, len(names))
 	for _, name := range names {
+		if !generationRecovery && s.mailboxSyncDelayed(account.UserID, account.ID, name) {
+			log.Printf("skip mailbox status user_id=%d account_id=%d mailbox=%q reason=mailbox-backoff", account.UserID, account.ID, name)
+			continue
+		}
 		status, err := s.Fetcher.MailboxStatus(ctx, account, name)
 		if err != nil {
 			log.Printf("plan mailbox status account_id=%d mailbox=%q: %v", account.ID, name, err)

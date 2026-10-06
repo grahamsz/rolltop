@@ -160,6 +160,7 @@ func NewRunnerWithContext(ctx context.Context, service *Service) *Runner {
 		service.DeferMailboxGenerationRebuilds = true
 		service.ScheduleInboxArrival = runner.ScheduleInboxArrival
 		service.MailboxGenerationRecoveryStarted = runner.SignalMailboxGenerationRecovery
+		service.QueueServerDeletedMailbox = runner.queueServerDeletedMailbox
 	}
 	if done := ctx.Done(); done != nil {
 		go func() {
