@@ -40,13 +40,15 @@ func newStoreFailureTestServer(t *testing.T) (*store.Store, *Server, http.Handle
 		t.Fatal(err)
 	}
 	server, err := New(Options{
-		Store:      db,
-		MasterKey:  []byte("12345678901234567890123456789012"),
-		SessionTTL: time.Hour,
+		Store:                    db,
+		MasterKey:                []byte("12345678901234567890123456789012"),
+		SessionTTL:               time.Hour,
+		DisableBackgroundWorkers: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = server.Close() })
 	return db, server, server.Handler(), &http.Cookie{Name: sessionCookie, Value: token}
 }
 

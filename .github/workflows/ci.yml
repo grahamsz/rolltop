@@ -268,7 +268,7 @@ jobs:
       - name: Build Plugin Backends
         run: |
           mkdir -p build-artifacts/plugins
-          plugins='attachment_preview bimi_brand_icons experimental_spam_filter gravatar_sender_icons language_search mail_filters one_click_unsubscribe remote_image_blocklist remote_imap_sync trusted_image_sources client_side_pgp mail_mcp'
+          plugins='attachment_preview bimi_brand_icons experimental_spam_filter gravatar_sender_icons language_search mail_filters one_click_unsubscribe remote_image_blocklist remote_imap_sync trusted_image_sources client_side_pgp mail_mcp calendar_invites'
           for plugin in $plugins; do
             mkdir -p "build-artifacts/plugins/${plugin}/backend"
             CGO_ENABLED=1 GOOS=linux go build -buildmode=plugin -trimpath -ldflags="-s -w" -o "build-artifacts/plugins/${plugin}/backend/${plugin}.so" "./plugins/${plugin}/backend"
@@ -398,6 +398,16 @@ jobs:
             --label "org.opencontainers.image.version=${ROLLTOP_VERSION}" \
             -t "${ROLLTOP_IMAGE}:${ROLLTOP_VERSION}" \
             .
+
+      - name: Verify Docker Calendar Invites Module
+        run: |
+          docker run --rm --entrypoint sh "${ROLLTOP_IMAGE}:${ROLLTOP_VERSION}" -ec '
+            cd /app/plugins/calendar_invites
+            test -s manifest.json
+            test -s backend/calendar_invites.so
+            test -s frontend_dist/index.js
+            test -s frontend_dist/styles.css
+          '
 
       - name: Verify Docker Android Update Feed
         if: steps.android-build.outputs.server_update == 'true'

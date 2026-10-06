@@ -1445,6 +1445,22 @@ func TestForegroundOperationPreemptsAutoPlanningWaitingOnAttachmentWorker(t *tes
 		}
 		foregroundStarted <- finish
 	}()
+	// Establish foreground priority before releasing the worker. Starting a
+	// goroutine alone does not guarantee it has reached the reservation yet.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r.mu.Lock()
+		reserved := r.foregroundRunning[user.ID] > 0
+		r.mu.Unlock()
+		if reserved {
+			break
+		}
+		if time.Now().After(deadline) {
+			releaseAttachment()
+			t.Fatal("foreground operation did not reserve priority")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	releaseAttachment()
 	var finish func()
 	select {
