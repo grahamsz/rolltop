@@ -23,6 +23,7 @@ const (
 	ClientSidePGP        = "client_side_pgp"
 	MatrixTheme          = "matrix_theme"
 	CalendarInvites      = "calendar_invites"
+	CardDAVSync          = "carddav_sync"
 )
 
 const (

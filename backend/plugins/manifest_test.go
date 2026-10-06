@@ -8,7 +8,7 @@ import (
 )
 
 func TestExperimentalMailPluginsAreDisabledByDefault(t *testing.T) {
-	for _, pluginID := range []string{"remote_imap_sync", "experimental_spam_filter", "calendar_invites"} {
+	for _, pluginID := range []string{"remote_imap_sync", "experimental_spam_filter", "calendar_invites", "carddav_sync"} {
 		t.Run(pluginID, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join("..", "..", "plugins", pluginID, "manifest.json"))
 			if err != nil {

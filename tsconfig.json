@@ -16,5 +16,5 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["frontend/src", "plugins/client_side_pgp/frontend", "plugins/calendar_invites/frontend"]
+  "include": ["frontend/src", "plugins/client_side_pgp/frontend", "plugins/calendar_invites/frontend", "plugins/carddav_sync/frontend"]
 }

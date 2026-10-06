@@ -1,0 +1,1 @@
+{"auto_start":true,"backend":{"binary":"backend/carddav_sync.so","kind":"go-plugin"},"description":"Syncs contacts one way from a CardDAV address book into Rolltop with incremental updates.","enabled_by_default":false,"experimental":true,"frontend":{"css":"frontend_dist/styles.css","module":"frontend_dist/index.js"},"id":"carddav_sync","name":"CardDAV sync","version":"1.0.0"}
