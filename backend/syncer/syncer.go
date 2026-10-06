@@ -485,6 +485,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			status = "interrupted"
 			errText = "Server stopped before this sync finished."
 		}
+		syncRunPhase(ctx, "sqlite-finish-sync-run", "Saving the final sync status")
 		if err := s.Store.FinishSyncRun(context.Background(), userID, run.ID, status, progress, errText); err != nil {
 			log.Printf("finish sync run user_id=%d run_id=%d: %v", userID, run.ID, err)
 		}

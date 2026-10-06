@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const syncRunFinishTimeout = 15 * time.Second
+
 // CreateSyncRun starts a sync progress row for one user/account.
 func (s *Store) CreateSyncRun(ctx context.Context, userID, accountID int64) (SyncRun, error) {
 	started := nowUnix()
@@ -136,6 +138,33 @@ func (s *Store) TouchSyncRun(ctx context.Context, userID, id int64) error {
 
 // FinishSyncRun finalizes a sync run with status, progress, and optional error text.
 func (s *Store) FinishSyncRun(ctx context.Context, userID, id int64, status string, p SyncProgress, errText string) error {
+	return s.finishSyncRunWithTimeout(ctx, userID, id, status, p, errText, syncRunFinishTimeout)
+}
+
+func (s *Store) finishSyncRunWithTimeout(ctx context.Context, userID, id int64, status string, p SyncProgress, errText string, timeout time.Duration) error {
+	// Workers finish against a fresh context after cancellation so the terminal
+	// status can be saved. Bound connection-pool waits as well as SQLite writes:
+	// this cleanup must not keep a cancelled worker's scheduler slot forever.
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		err := s.finishSyncRunOnce(ctx, userID, id, status, p, errText)
+		if err == nil || !isSQLiteBusyError(err) {
+			return err
+		}
+		// A transient competing writer should not strand an already completed
+		// job as "running" until the stale-run reaper catches it.
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("finalize sync run: %w: %v", ctx.Err(), err)
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *Store) finishSyncRunOnce(ctx context.Context, userID, id int64, status string, p SyncProgress, errText string) error {
 	if len(errText) > 1000 {
 		errText = errText[:1000]
 	}
