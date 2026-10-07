@@ -2773,9 +2773,14 @@ function syncStageForPhase(phase: string, run: SyncRun): SyncStage {
 }
 
 function syncPhaseCopy(phase: string, detail: string, run: SyncRun): { title: string; detail: string } {
+  // Live phases disappear when workers exit; the durable outcome takes precedence.
+  if (run.status === "ok") return { title: "Sync complete", detail: "This sync run finished successfully." };
+  if (run.status === "failed") return { title: "Sync failed", detail: "This run stopped with an error. See the details below." };
+  if (run.status === "interrupted") return { title: "Sync interrupted", detail: "This run stopped before finishing." };
   const value = phase.trim().toLowerCase();
   const folder = detail || run.current_mailbox || "this folder";
-  if (!value || value === "starting") return { title: "Starting sync", detail: "Preparing the mailbox job." };
+  if (!value) return { title: "Waiting for sync details", detail: "No live step is available for this run." };
+  if (value === "starting") return { title: "Starting sync", detail: "Preparing the mailbox job." };
   if (value === "imap-mailbox-status") return { title: "Reading folder status", detail: `Checking remote headers for ${folder}.` };
   if (value === "imap-uid-snapshot") return { title: "Inspecting message IDs", detail: `Building a safe snapshot for ${folder}.` };
   if (value === "sqlite-last-uids" || value === "sqlite-generation-state") return { title: "Checking the local checkpoint", detail: "Comparing the remote mailbox with locally stored mail." };
@@ -2866,6 +2871,7 @@ export function SyncRunView({
   const progressInfo = progress || { percent: null, label: "Loading sync progress" };
   const activeStageIndex = syncRunStages.findIndex((stage) => stage.id === activeStage);
   const isActive = Boolean(run && run.status === "running" && live?.active);
+  const indeterminate = isActive && progressInfo.percent === null;
 
   return (
     <>
@@ -2883,12 +2889,12 @@ export function SyncRunView({
               <h2>{phase?.title}</h2>
               <p>{phase?.detail}</p>
             </div>
-            {live?.cancellable ? <button className="danger sync-run-cancel" type="button" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "Cancelling…" : live.active ? "Cancel sync" : "Clear stale run"}</button> : null}
+            {run.status === "running" && live?.cancellable ? <button className="danger sync-run-cancel" type="button" onClick={() => void cancel()} disabled={cancelling}>{cancelling ? "Cancelling…" : live.active ? "Cancel sync" : "Clear stale run"}</button> : null}
           </div>
 
           <div className="sync-run-progress-block">
-            <div className="sync-run-progress-copy"><strong>{progressInfo.label}</strong><span>{progressInfo.percent !== null ? `${progressInfo.percent}%` : "Live"}</span></div>
-            <div className={`sync-run-progress ${progressInfo.percent === null ? "indeterminate" : ""}`}><div style={progressInfo.percent === null ? undefined : { width: `${progressInfo.percent}%` }} /></div>
+            <div className="sync-run-progress-copy"><strong>{progressInfo.label}</strong><span>{progressInfo.percent !== null ? `${progressInfo.percent}%` : isActive ? "Live" : syncStatusLabel(run.status)}</span></div>
+            <div className={`sync-run-progress ${indeterminate ? "indeterminate" : ""}`}><div style={indeterminate ? undefined : { width: `${progressInfo.percent ?? (run.status === "ok" ? 100 : 0)}%` }} /></div>
           </div>
 
           <ol className="sync-run-stages" aria-label="Expected sync steps">

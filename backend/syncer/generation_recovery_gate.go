@@ -856,6 +856,7 @@ func (r *Runner) releaseGenerationRecoveryMailbox(userID int64, keys []string) {
 	delete(r.generationRecoveryRuns, userID)
 	delete(r.generationRecoveryActive, userID)
 	r.mu.Unlock()
+	r.notifySyncStateChanged(userID)
 }
 
 func (r *Runner) userWorkRunningLocked(userID int64) bool {

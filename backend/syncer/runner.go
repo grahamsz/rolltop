@@ -294,6 +294,7 @@ func (r *Runner) Start(userID int64) bool {
 			r.finishWorkActivityLocked(runnerUserWorkActivityKey(runnerWorkAccountSync, userID))
 			deferredAccountMailboxes := r.takeAutoDeferredAccountMailboxesLocked(userID)
 			r.mu.Unlock()
+			r.notifySyncStateChanged(userID)
 			for _, request := range deferredAccountMailboxes {
 				r.QueueAccountMailboxes(userID, request.accountID, []string{request.mailbox})
 			}
@@ -1022,6 +1023,7 @@ func (r *Runner) runReservedMailboxes(userID int64, mailboxes []string, keys []s
 			}
 		}
 		r.mu.Unlock()
+		r.notifySyncStateChanged(userID)
 		if len(rerun) > 0 && r.context().Err() == nil {
 			r.StartPriorityMailboxes(userID, rerun)
 		}
@@ -1128,6 +1130,7 @@ type accountMailboxReruns struct {
 }
 
 func (r *Runner) releaseAccountMailboxReservations(userID, accountID int64, mailboxes []string, keys []string) accountMailboxReruns {
+	defer r.notifySyncStateChanged(userID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, key := range keys {
@@ -1239,6 +1242,7 @@ func (r *Runner) BeginForegroundOperation(ctx context.Context, userID int64) (fu
 			replay.senderStats = r.senderStatsPending[userID]
 			replay.attachments = r.attachmentPending[userID]
 			r.mu.Unlock()
+			r.notifySyncStateChanged(userID)
 			r.refreshGenerationRecoveryGateForUser(r.context(), userID)
 			r.wakeMailboxGenerationRebuildRecovery()
 			// Schedule plugin-requested destination refreshes before waking the
@@ -1458,6 +1462,15 @@ func (r *Runner) userForegroundRunningLocked(userID int64) bool {
 		}
 	}
 	return false
+}
+
+// Durable completion is published before the runner releases its reservation.
+// Publish that release too, outside r.mu, so event subscribers see IsRunning
+// become false without waiting for an unrelated mail change.
+func (r *Runner) notifySyncStateChanged(userID int64) {
+	if r.Service != nil {
+		r.Service.notifyProgress(userID)
+	}
 }
 
 // IsRunning reports foreground sync activity for the user, excluding the private
