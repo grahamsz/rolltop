@@ -596,6 +596,9 @@ func (r *Runner) runReservedCommittedMailboxMaintenance(userID, accountID int64,
 }
 
 func (r *Runner) runReservedMailboxMaintenanceWithContext(ctx context.Context, finishContext func(), userID, accountID int64, mailboxes []string, keys []string, runID int64, progress store.SyncProgress, fn func(context.Context, int64, *store.SyncProgress) error) {
+	ctx, stopHeartbeat := r.Service.watchSyncRun(ctx, userID, accountID, runID)
+	defer stopHeartbeat()
+	syncRunPhase(ctx, "mailbox-maintenance", "")
 	status := "ok"
 	errText := ""
 	defer func() {
@@ -606,10 +609,13 @@ func (r *Runner) runReservedMailboxMaintenanceWithContext(ctx context.Context, f
 		if status == "ok" {
 			progress.MailboxesDone = progress.MailboxesTotal
 		}
+		syncRunPhase(ctx, "sqlite-finish-sync-run", "Saving the final sync status")
 		if err := r.Service.Store.FinishSyncRun(context.Background(), userID, runID, status, progress, errText); err != nil {
 			log.Printf("finish mailbox maintenance user_id=%d run_id=%d: %v", userID, runID, err)
 		}
+		syncRunPhase(ctx, "notify-complete", "Notifying clients of the final sync status")
 		r.Service.notify(userID)
+		syncRunPhase(ctx, "runner-release", "Releasing the mailbox worker")
 		r.releaseMailboxMaintenanceReservation(userID, accountID, mailboxes, keys)
 		if status == "ok" {
 			r.RefreshSenderStats(userID)

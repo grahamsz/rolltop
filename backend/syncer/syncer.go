@@ -464,7 +464,10 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 	if err != nil {
 		return store.SyncRun{}, err
 	}
+	ctx, stopHeartbeat := s.watchSyncRun(ctx, userID, account.ID, run.ID)
+	defer stopHeartbeat()
 	if options.onRunStarted != nil {
+		syncRunPhase(ctx, "runner-register", "Registering the mailbox worker")
 		options.onRunStarted(run.ID)
 	}
 
@@ -479,7 +482,10 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 	errText := ""
 	defer func() {
 		if options.onRunFinished != nil {
-			defer options.onRunFinished(run.ID)
+			defer func() {
+				syncRunPhase(ctx, "runner-release", "Releasing the mailbox worker")
+				options.onRunFinished(run.ID)
+			}()
 		}
 		if ctx.Err() != nil && (status != "ok" || progress.MailboxesDone < progress.MailboxesTotal) {
 			status = "interrupted"
@@ -489,6 +495,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		if err := s.Store.FinishSyncRun(context.Background(), userID, run.ID, status, progress, errText); err != nil {
 			log.Printf("finish sync run user_id=%d run_id=%d: %v", userID, run.ID, err)
 		}
+		syncRunPhase(ctx, "notify-complete", "Notifying clients of the final sync status")
 		s.notify(userID)
 	}()
 	if progress.CurrentMailbox != "" {
@@ -528,11 +535,13 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 	} else if options.deferPendingFlags || deferOrdinaryMaintenance {
 		log.Printf("sync user_id=%d account_id=%d phase=defer-pending-flags reason=mailbox-generation-recovery", userID, account.ID)
 	} else {
+		generationRecoveryPhase(ctx, "push-seen-flags", "")
 		if err := s.PushPendingReadState(ctx, userID, 500); err != nil {
 			status = "failed"
 			errText = err.Error()
 			return run, err
 		}
+		generationRecoveryPhase(ctx, "push-flagged-flags", "")
 		if err := s.PushPendingStarState(ctx, userID, 500); err != nil {
 			status = "failed"
 			errText = err.Error()
@@ -923,6 +932,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		var pendingImportUID uint32
 		var importErr error
 		handleFetchedItem := func(item FetchedMessage) (err error) {
+			defer generationRecoveryPhase(ctx, "imap-fetch", mailboxName)
 			// Fetchers return callback errors through the same boundary as IMAP
 			// failures. Keep their origin so local failures never create backoff.
 			defer func() {
@@ -1058,6 +1068,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 					userID, account.ID, mailbox.Name, lastUIDs[mailboxName], generationRecoveryComplete)
 			}
 		} else {
+			generationRecoveryPhase(ctx, "imap-fetch", mailboxName)
 			err = s.fetchMailboxForGeneration(ctx, account, mailboxName, mailboxLastUIDAtStart,
 				planned.Status.UIDValidity, handleFetchedItem)
 		}
@@ -1144,12 +1155,15 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			log.Printf("defer mailbox metadata reconciliation user_id=%d account_id=%d mailbox=%q reason=mailbox-generation-recovery",
 				userID, account.ID, mailboxName)
 		} else if s.shouldSyncInlineMetadata(planned) {
+			generationRecoveryPhase(ctx, "imap-seen-flags", mailboxName)
 			if err := s.syncMailboxReadFlags(ctx, userID, account, mailbox); err != nil {
 				log.Printf("sync seen flags user_id=%d mailbox=%s: %v", userID, mailboxName, err)
 			}
+			generationRecoveryPhase(ctx, "imap-flagged-flags", mailboxName)
 			if err := s.syncMailboxStarFlags(ctx, userID, account, mailbox); err != nil {
 				log.Printf("sync flagged flags user_id=%d mailbox=%s: %v", userID, mailboxName, err)
 			}
+			generationRecoveryPhase(ctx, "mailbox-reconcile", mailboxName)
 			if err := s.reconcileMailboxUIDs(ctx, userID, account, mailbox); err != nil {
 				log.Printf("reconcile mailbox user_id=%d mailbox=%s: %v", userID, mailboxName, err)
 			}
@@ -1173,6 +1187,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 			continue
 		}
 		if planned.Status.UIDValidity > 0 {
+			generationRecoveryPhase(ctx, "sqlite-finalize-generation", "")
 			if err := s.Store.FinalizeMailboxGenerationRebuild(ctx, userID, account.ID, mailbox.ID, planned.Status.UIDValidity); err != nil {
 				status = "failed"
 				errText = err.Error()
@@ -1203,6 +1218,7 @@ func (s *Service) syncAccount(ctx context.Context, userID int64, account store.M
 		// reset must not spend minutes deleting old cache entries before the
 		// newest page can render.
 		if !options.deferOrdinaryMaintenanceNow() {
+			generationRecoveryPhase(ctx, "blob-generation-cleanup", "")
 			if err := s.cleanupMailboxGenerationBlobs(ctx, userID, account.ID, mailbox.ID,
 				mailboxGenerationBlobCleanupBatchSize); err != nil && ctx.Err() == nil {
 				log.Printf("defer mailbox generation blob cleanup user_id=%d account_id=%d mailbox=%s: %v",
@@ -1248,6 +1264,7 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 	if !requested || plan.Status.Messages == 0 {
 		return plan, false, nil
 	}
+	generationRecoveryPhase(ctx, "sqlite-repair-uids", "")
 	localUIDs, err := s.Store.MessageUIDsForMailbox(ctx, userID, account.ID, mailbox.ID)
 	if err != nil {
 		return plan, false, err
@@ -1262,6 +1279,7 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 	if expectedUIDValidity == 0 && mailbox.UIDValidity > 0 && mailbox.UIDValidity <= int64(^uint32(0)) {
 		expectedUIDValidity = uint32(mailbox.UIDValidity)
 	}
+	generationRecoveryPhase(ctx, "imap-uid-snapshot", mailbox.Name)
 	if snapshotFetcher, ok := s.Fetcher.(MailboxUIDSnapshotFetcher); ok {
 		snapshot, err := snapshotFetcher.SnapshotMailboxUIDs(ctx, account, mailbox.Name)
 		if err != nil {
@@ -1324,6 +1342,7 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 	classificationBatch := newMessageClassificationBatch(s, classifiers)
 	completionBatch := newMessageImportCompletionBatch(s, userID)
 	handle := func(item FetchedMessage) error {
+		defer generationRecoveryPhase(ctx, "imap-repair-fetch", mailbox.Name)
 		if item.Mailbox == "" {
 			item.Mailbox = mailbox.Name
 		}
@@ -1414,6 +1433,7 @@ func (s *Service) repairRequestedIncompleteMailbox(ctx context.Context, userID i
 		}
 		return nil
 	}
+	generationRecoveryPhase(ctx, "imap-repair-fetch", mailbox.Name)
 	if snapshotUIDValidity > 0 {
 		if err := s.fetchUIDsForGeneration(ctx, account, mailbox.Name, missing, snapshotUIDValidity, handle); err != nil {
 			return plan, false, err
