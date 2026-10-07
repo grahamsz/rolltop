@@ -182,7 +182,7 @@ function OutboxCard({
       {job.last_error ? (
         <div className="outbox-error">
           <Icon name="report" />
-          <div><strong>{job.retry_may_duplicate ? "Delivery is uncertain" : "Rolltop could not finish this send"}</strong><p>{job.last_error}</p></div>
+          <div><strong>{job.delivery_state === "accepted" ? "Message sent; Sent copy pending" : job.retry_may_duplicate ? "Delivery is uncertain" : "Rolltop could not finish this send"}</strong><p>{job.last_error}</p></div>
         </div>
       ) : null}
 

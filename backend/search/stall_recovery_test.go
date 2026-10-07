@@ -19,7 +19,7 @@ func TestActiveWriterStallSurvivesCallerCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, err := svc.indexForUser(17)
+	base, err := svc.indexForUser(context.Background(), 17)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestActiveWriterWatchdogIgnoresCompletedOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, err := svc.indexForUser(23)
+	base, err := svc.indexForUser(context.Background(), 23)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestActiveWriterStallSignalsBeforeBlockedDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, err := svc.indexForUser(29)
+	base, err := svc.indexForUser(context.Background(), 29)
 	if err != nil {
 		t.Fatal(err)
 	}

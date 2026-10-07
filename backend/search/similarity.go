@@ -181,7 +181,7 @@ func (s *Service) searchSimilarMessageIDs(ctx context.Context, userID int64, can
 	)
 	req := bleve.NewSearchRequestOptions(query, limit, 0, false)
 	req.IncludeLocations = true
-	index, err := s.indexForUser(userID)
+	index, err := s.indexForUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}

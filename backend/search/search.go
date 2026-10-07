@@ -35,6 +35,8 @@ type Service struct {
 	perUser            bool
 	mu                 sync.Mutex
 	indexes            map[int64]bleve.Index
+	opening            map[int64]*indexOpen
+	opens              sync.WaitGroup
 	writers            map[int64]*writerLock
 	writeCoordinator   *bleveWriteCoordinator
 	closing            bool
@@ -486,7 +488,9 @@ func openIndex(path string) (bleve.Index, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	index, err := bleve.Open(path)
+	// A second process must fail promptly rather than hold a sync reservation
+	// forever waiting on Bolt's default unbounded exclusive file-lock wait.
+	index, err := bleve.OpenUsing(path, map[string]interface{}{"bolt_timeout": "5s"})
 	if err == nil {
 		return index, nil
 	}
@@ -572,6 +576,7 @@ func (s *Service) Close() error {
 }
 
 func (s *Service) closeAfterWrites(done chan struct{}) {
+	s.opens.Wait()
 	s.writes.Wait()
 	var first error
 	type userIndex struct {
@@ -834,10 +839,18 @@ func (s *Service) lockWriter(ctx context.Context, writer *writerLock, details bl
 	}
 }
 
-// indexForUser resolves the correct Bleve handle. In per-user mode it lazily opens
-// and caches one index per tenant, with a double-check to avoid duplicate handles
-// during concurrent searches or sync writes.
-func (s *Service) indexForUser(userID int64) (bleve.Index, error) {
+type indexOpen struct {
+	done  chan struct{}
+	index bleve.Index
+	err   error
+}
+
+// indexForUser lazily opens and caches one index per tenant. Concurrent callers
+// share that open while retaining their own cancellation deadlines.
+func (s *Service) indexForUser(ctx context.Context, userID int64) (bleve.Index, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !s.perUser {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -858,31 +871,52 @@ func (s *Service) indexForUser(userID int64) (bleve.Index, error) {
 		s.mu.Unlock()
 		return index, nil
 	}
+	// Bleve owns an exclusive file lock for the lifetime of the open index.
+	// Opening twice and discarding the loser cannot work: the loser waits for
+	// the cached winner to close. Share an in-flight open before releasing mu.
+	pending := s.opening[userID]
+	if pending == nil {
+		pending = &indexOpen{done: make(chan struct{})}
+		if s.opening == nil {
+			s.opening = make(map[int64]*indexOpen)
+		}
+		s.opening[userID] = pending
+		s.opens.Add(1)
+		go s.openUserIndex(userID, pending)
+	}
 	s.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-pending.done:
+		return pending.index, pending.err
+	}
+}
 
+// Disk I/O stays outside the service mutex so another tenant can open or use
+// its index while this tenant waits. Close also waits for unpublished handles.
+func (s *Service) openUserIndex(userID int64, pending *indexOpen) {
+	defer s.opens.Done()
 	index, err := openIndex(filepath.Join(s.root, strconv.FormatInt(userID, 10), "bleve"))
 	if err != nil {
 		s.reportBleveError(bleveErrorContext{Operation: "open-index", UserID: userID}, err)
-		return nil, err
 	}
 	s.mu.Lock()
-	if s.closing {
+	if s.closing && index != nil {
 		s.mu.Unlock()
 		if err := index.Close(); err != nil {
 			s.reportBleveError(bleveErrorContext{Operation: "close-raced-index", UserID: userID}, err)
 		}
-		return nil, errSearchServiceClosing
+		index, err = nil, errSearchServiceClosing
+		s.mu.Lock()
 	}
-	if existing := s.indexes[userID]; existing != nil {
-		s.mu.Unlock()
-		if err := index.Close(); err != nil {
-			s.reportBleveError(bleveErrorContext{Operation: "close-duplicate-index", UserID: userID}, err)
-		}
-		return existing, nil
+	if err == nil {
+		s.indexes[userID] = index
 	}
-	s.indexes[userID] = index
+	delete(s.opening, userID)
+	pending.index, pending.err = index, err
+	close(pending.done)
 	s.mu.Unlock()
-	return index, nil
 }
 
 // IndexMessage turns a stored message into a Bleve document. SQLite keeps the full
@@ -910,7 +944,7 @@ func (s *Service) IndexMessages(ctx context.Context, documents []MessageIndexDoc
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		index, err := s.indexForUser(plan.userID)
+		index, err := s.indexForUser(ctx, plan.userID)
 		if err != nil {
 			return err
 		}
@@ -1167,7 +1201,7 @@ func (s *Service) DeleteMessagesWithProgress(ctx context.Context, userID int64, 
 	if len(unique) == 0 {
 		return nil
 	}
-	index, err := s.indexForUser(userID)
+	index, err := s.indexForUser(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -1249,7 +1283,7 @@ func (s *Service) CountMailboxMessages(ctx context.Context, userID, mailboxID in
 	if userID == 0 || mailboxID == 0 {
 		return 0, nil
 	}
-	index, err := s.indexForUser(userID)
+	index, err := s.indexForUser(ctx, userID)
 	if err != nil {
 		return 0, err
 	}
@@ -1281,7 +1315,7 @@ func (s *Service) MessageIDsIndexed(ctx context.Context, userID int64, messageID
 	if len(docIDs) == 0 {
 		return out, nil
 	}
-	index, err := s.indexForUser(userID)
+	index, err := s.indexForUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1310,7 +1344,7 @@ func (s *Service) MailboxMessageIDs(ctx context.Context, userID, mailboxID int64
 	if userID == 0 || mailboxID == 0 {
 		return out, nil
 	}
-	index, err := s.indexForUser(userID)
+	index, err := s.indexForUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1352,7 +1386,7 @@ func (s *Service) PurgeMailboxWithProgress(ctx context.Context, userID, mailboxI
 	if userID == 0 || mailboxID == 0 {
 		return 0, nil
 	}
-	index, err := s.indexForUser(userID)
+	index, err := s.indexForUser(ctx, userID)
 	if err != nil {
 		return 0, err
 	}
@@ -1419,7 +1453,7 @@ func (s *Service) CountUserMessages(ctx context.Context, userID int64) (int, err
 	q := bleve.NewTermQuery(strconv.FormatInt(userID, 10))
 	q.SetField("user_id")
 	req := bleve.NewSearchRequestOptions(q, 0, 0, false)
-	index, err := s.indexForUser(userID)
+	index, err := s.indexForUser(ctx, userID)
 	if err != nil {
 		return 0, err
 	}
@@ -1541,7 +1575,7 @@ func (s *Service) explainMessageIDsWithOptions(ctx context.Context, userID int64
 	req := bleve.NewSearchRequestOptions(query, 1, 0, false)
 	req.IncludeLocations = true
 	req.Explain = explain
-	index, err := s.indexForUser(userID)
+	index, err := s.indexForUser(ctx, userID)
 	if err != nil {
 		return ExplanationResult{}, false, err
 	}
@@ -1587,7 +1621,7 @@ func (s *Service) search(ctx context.Context, userID int64, queryText string, li
 	query := buildQuery(userID, queryText, opts)
 	req := bleve.NewSearchRequestOptions(query, limit, offset, false)
 	req.IncludeLocations = includeLocations
-	index, err := s.indexForUser(userID)
+	index, err := s.indexForUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}

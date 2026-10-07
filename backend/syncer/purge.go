@@ -24,6 +24,7 @@ func (s *Service) PurgeMailboxSearchIndexWithProgress(ctx context.Context, userI
 	if err != nil {
 		return 0, err
 	}
+	syncRunPhase(ctx, "search-count-mailbox", mailbox.Name)
 	total, err := s.Search.CountMailboxMessages(ctx, userID, mailboxID)
 	if err != nil {
 		return 0, err
@@ -74,6 +75,7 @@ func (s *Service) PurgeMailboxLocalReferencesWithProgress(ctx context.Context, u
 	}
 	searchTotal := 0
 	if s.Search != nil {
+		syncRunPhase(ctx, "search-count-mailbox", mailbox.Name)
 		searchTotal, err = s.Search.CountMailboxMessages(ctx, userID, mailboxID)
 		if err != nil {
 			return 0, err

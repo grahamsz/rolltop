@@ -116,6 +116,7 @@ func (s *Service) pruneServerDeletedMailbox(ctx context.Context, userID int64, c
 	if err != nil {
 		return err
 	}
+	syncRunPhase(ctx, "imap-list-mailboxes", candidate.Name)
 	infos, err := s.Fetcher.ListMailboxes(ctx, account)
 	if err != nil {
 		return err

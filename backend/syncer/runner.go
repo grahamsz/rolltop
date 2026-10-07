@@ -599,7 +599,7 @@ func (r *Runner) runReservedCommittedMailboxMaintenance(userID, accountID int64,
 func (r *Runner) runReservedMailboxMaintenanceWithContext(ctx context.Context, finishContext func(), userID, accountID int64, mailboxes []string, keys []string, runID int64, progress store.SyncProgress, fn func(context.Context, int64, *store.SyncProgress) error) {
 	ctx, stopHeartbeat := r.Service.watchSyncRun(ctx, userID, accountID, runID)
 	defer stopHeartbeat()
-	syncRunPhase(ctx, "mailbox-maintenance", "")
+	syncRunPhase(ctx, "mailbox-maintenance", progress.LatestNewSubject)
 	status := "ok"
 	errText := ""
 	defer func() {
