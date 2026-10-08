@@ -16,7 +16,7 @@ permissions:
 jobs:
   test-and-build:
     name: Test, Build, And Report
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check Out
@@ -71,11 +71,24 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Set Up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          # Google's retired "tools" package is still part of v3's defaults.
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+      - name: Verify Preinstalled Android SDK
+        shell: bash
+        run: |
+          # The pinned runner includes these SDK packages and accepted licenses.
+          # Avoid sdkmanager's network refresh and a redundant tools download.
+          sdk_dir="${ANDROID_HOME:?The runner must provide the Android SDK}"
+          for sdk_file in \
+            platforms/android-35/android.jar \
+            build-tools/35.0.0/aapt \
+            build-tools/35.0.0/apksigner \
+            platform-tools/adb \
+            licenses/android-sdk-license; do
+            if [ ! -s "$sdk_dir/$sdk_file" ]; then
+              echo "::error::Missing preinstalled Android SDK file: $sdk_dir/$sdk_file"
+              exit 1
+            fi
+          done
+          echo "Using preinstalled Android SDK at $sdk_dir"
 
       - name: Set Up Gradle
         uses: gradle/actions/setup-gradle@v5
