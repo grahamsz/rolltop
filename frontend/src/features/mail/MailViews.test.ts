@@ -82,6 +82,19 @@ async function clickDelete() {
   await act(async () => button!.click());
 }
 
+it("decodes sender addresses in the list and warns even when a name hides a lookalike domain", async () => {
+  const normal = conversation(1);
+  normal.participants = normal.message.from_addr = "support@xn--czasnacianie-slc.com";
+  const lookalike = conversation(2);
+  lookalike.participants = "Billing";
+  lookalike.message.from_addr = "Billing <support@аррӏе.com>";
+  await render([normal, lookalike]);
+  expect(container.querySelector(".sender-name")?.textContent).toBe("support@czasnaścianie.com");
+  expect(container.querySelectorAll(".email-address-caution")).toHaveLength(1);
+  expect(container.querySelector(".email-address-caution")?.getAttribute("aria-label")).toContain("lookalike");
+  expect(normal.message.from_addr).toBe("support@xn--czasnacianie-slc.com");
+});
+
 it("offers toolbar Delete, restores selection on Undo, and uses each account's Trash", async () => {
   await render([conversation(1), conversation(2, 2)]);
   expect(container.querySelector('[role="toolbar"]')).toBeNull();

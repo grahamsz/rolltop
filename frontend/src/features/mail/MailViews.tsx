@@ -8,6 +8,7 @@ import { ApiError, api } from "../../api";
 import type { AddToast, DatePrefs, LocationState } from "../../appTypes";
 import type { Bootstrap, Conversation, Mailbox, SwipeAction, SwipePreferences, SyncRun } from "../../types";
 import { Icon } from "../../components/Icon";
+import { EmailAddressText, EmailAddressWarning } from "../../components/EmailAddress";
 import { ListHeader } from "../../components/common";
 import { androidNativeAvailable } from "../../lib/androidNative";
 import { isNetworkError, messageFromError } from "../../lib/errors";
@@ -2088,8 +2089,9 @@ export function MessageList({
             </button>
             <span className="sender">
               <span className="sender-name">
-                <HighlightedText text={participantText} query={searchQuery} terms={matchTerms} />
+                <EmailAddressText value={participantText} query={searchQuery} terms={matchTerms} />
               </span>
+              <EmailAddressWarning value={showRecipients ? msg.to_addr : msg.from_addr} compact />
               {conversation.count > 1 ? <span className="thread-count">({conversation.count})</span> : null}
             </span>
             <span className="subject">

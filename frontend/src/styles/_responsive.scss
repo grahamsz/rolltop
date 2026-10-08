@@ -547,7 +547,7 @@
     position: static;
   }
 
-  .message-details dl {
+  .message-details > dl {
     left: 8px;
     right: 8px;
     top: calc(100% + 5px);

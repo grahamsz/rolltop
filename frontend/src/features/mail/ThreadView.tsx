@@ -8,6 +8,7 @@ import { api } from "../../api";
 import type { DatePrefs, LocationState, SecurityUnlockState, Toast } from "../../appTypes";
 import type { Attachment, AuthenticationResult, Bootstrap, ComposeForm, ComposeIdentity, ContactPGPKey, HeaderDetail, Mailbox, MessageOriginalSource, MessageSecurityIndicators, SearchExplanation, ThreadMessage } from "../../types";
 import { Icon } from "../../components/Icon";
+import { EmailAddressText, EmailAddressWarning } from "../../components/EmailAddress";
 import { androidNativeAvailable } from "../../lib/androidNative";
 import { isNetworkError, messageFromError } from "../../lib/errors";
 import { displayDateTime, displaySnoozeUntil, displayTime, formatBytes } from "../../lib/format";
@@ -218,7 +219,7 @@ function MessageDetailsToggle({
   if (visibleDetails.length === 0 && authenticationResults.length === 0 && pluginRows.length === 0) {
     return (
       <div className="thread-recipients">
-        <HighlightedText text={summary} query={highlightQuery} terms={highlightTerms} />
+        <EmailAddressText value={summary} query={highlightQuery} terms={highlightTerms} />
       </div>
     );
   }
@@ -226,7 +227,7 @@ function MessageDetailsToggle({
     <details className="thread-recipients message-details" onClick={(event) => event.stopPropagation()}>
       <summary>
         <span>
-          <HighlightedText text={summary} query={highlightQuery} terms={highlightTerms} />
+          <EmailAddressText value={summary} query={highlightQuery} terms={highlightTerms} />
         </span>
         <Icon name="expand_more" />
       </summary>
@@ -236,7 +237,8 @@ function MessageDetailsToggle({
           <Fragment key={`${detail.label}:${detail.value}`}>
             <dt>{detail.label}</dt>
             <dd>
-              <HighlightedText text={detail.value} query={highlightQuery} terms={highlightTerms} />
+              <EmailAddressText value={detail.value} query={highlightQuery} terms={highlightTerms} />
+              {["from", "to", "cc", "bcc", "reply-to", "sender", "return-path"].includes(detail.label.toLowerCase()) ? <EmailAddressWarning value={detail.value} /> : null}
             </dd>
           </Fragment>
         ))}
@@ -1794,11 +1796,12 @@ export function ThreadView({
                   <div className="thread-person">
                     <div className="thread-from">
                       <span>
-                        <HighlightedText text={item.sender_name || item.sender_email || "Unknown sender"} query={highlightQuery} terms={highlightTerms} />
+                        <EmailAddressText value={item.sender_name || item.sender_email || "Unknown sender"} query={highlightQuery} terms={highlightTerms} />
                       </span>
                       <span className="thread-email">
-                        <HighlightedText text={item.sender_email} query={highlightQuery} terms={highlightTerms} />
+                        <EmailAddressText value={item.sender_email} query={highlightQuery} terms={highlightTerms} />
                       </span>
+                      <EmailAddressWarning value={item.message.from_addr || item.sender_email} />
                       <MessageSenderSecurityCaution indicators={item.security_indicators} />
                       {annotationNodes}
                       <OneClickUnsubscribeInlineAction

@@ -8,6 +8,7 @@ import { api } from "../../api";
 import type { LocationState, Toast } from "../../appTypes";
 import type { ContactAutocomplete, ComposeAttachmentUpload, ComposeExistingAttachment, ComposeForm, ComposeIdentity } from "../../types";
 import { Icon, LogoMark } from "../../components/Icon";
+import { EmailAddressText, EmailAddressWarning } from "../../components/EmailAddress";
 import { isNetworkError, messageFromError } from "../../lib/errors";
 import { textToHTML } from "../../lib/html";
 import { enqueueOfflineSend } from "../../lib/offlineOutbox";
@@ -1603,7 +1604,8 @@ function RecipientInput({
         <div className="recipient-chip-list">
           {recipients.map((recipient, index) => (
             <span className={`recipient-chip ${recipient.valid ? "" : "invalid"}`} key={`${recipient.emailKey || recipient.raw.toLowerCase()}:${index}`} title={recipient.valid ? recipient.email : "Invalid email address"}>
-              <span>{recipient.name || recipient.email || recipient.raw}</span>
+              <span><EmailAddressText value={recipient.name || recipient.email || recipient.raw} /></span>
+              <EmailAddressWarning value={recipient.raw} compact />
               <button type="button" title={`Remove ${recipient.name || recipient.email || "recipient"}`} aria-label={`Remove ${recipient.name || recipient.email || "recipient"}`} onClick={() => removeRecipient(index)}>
                 <Icon name="close" />
               </button>
@@ -1653,8 +1655,8 @@ function RecipientInput({
               }}
             >
               {contact.iconURL ? <img src={contact.iconURL} alt="" /> : <span>{(contact.name || contact.email).slice(0, 1).toUpperCase()}</span>}
-              <strong>{contact.name || contact.email}</strong>
-              <small>{contact.email}</small>
+              <strong><EmailAddressText value={contact.name || contact.email} /></strong>
+              <small><EmailAddressText value={contact.email} /></small>
             </button>
           ))}
           {nativeAvailable && nativeAccess === "permission_required" ? (
