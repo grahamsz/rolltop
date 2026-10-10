@@ -1,9 +1,63 @@
 package config
 
 import (
+	"net/netip"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
+
+func TestLoadTrustedProxies(t *testing.T) {
+	t.Setenv("ROLLTOP_MASTER_KEY", testMasterKey)
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  []netip.Prefix
+	}{
+		{name: "default"},
+		{name: "whitespace", value: "   "},
+		{
+			name:  "addresses and networks",
+			value: " 127.0.0.1, ::1, 10.2.3.4/8, 2001:db8:1::5/48 ",
+			want: []netip.Prefix{
+				netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("::1/128"),
+				netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("2001:db8:1::/48"),
+			},
+		},
+		{
+			name: "mapped IPv4", value: "::ffff:127.0.0.1, ::ffff:10.2.3.4/104",
+			want: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("10.0.0.0/8")},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ROLLTOP_TRUSTED_PROXIES", tc.value)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(cfg.TrustedProxies, tc.want) {
+				t.Fatalf("trusted proxies = %v, want %v", cfg.TrustedProxies, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidTrustedProxies(t *testing.T) {
+	t.Setenv("ROLLTOP_MASTER_KEY", testMasterKey)
+	for _, value := range []string{
+		"localhost", "*", "127.0.0.1:8080", "10.0.0.0/33", "::1/129",
+		"127.0.0.1,", ",127.0.0.1", "127.0.0.1, ,::1", "127.0.0.1,garbage",
+		"fe80::1%eth0", "::ffff:10.0.0.1/80",
+	} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("ROLLTOP_TRUSTED_PROXIES", value)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ROLLTOP_TRUSTED_PROXIES") {
+				t.Fatalf("Load with trusted proxies %q: err = %v", value, err)
+			}
+		})
+	}
+}
 
 const testMasterKey = "12345678901234567890123456789012"
 

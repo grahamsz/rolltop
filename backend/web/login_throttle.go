@@ -12,8 +12,6 @@
 package web
 
 import (
-	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -67,14 +65,6 @@ func (t *loginThrottle) setDummyVerifier(fn func(password string)) {
 
 func normalizeLoginKey(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
-}
-
-func clientIPFromRequest(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return strings.TrimSpace(r.RemoteAddr)
-	}
-	return host
 }
 
 // allow reports whether a login attempt may proceed right now.

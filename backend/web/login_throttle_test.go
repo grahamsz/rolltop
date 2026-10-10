@@ -88,7 +88,7 @@ func TestLoginThrottleIPFloodCapBlocksAllAccounts(t *testing.T) {
 func TestClientIPFromRequestStripsPort(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/api/login", nil)
 	r.RemoteAddr = "192.0.2.1:55444"
-	if got := clientIPFromRequest(r); got != "192.0.2.1" {
+	if got := (&Server{}).clientIPFromRequest(r); got != "192.0.2.1" {
 		t.Fatalf("client IP = %q", got)
 	}
 }

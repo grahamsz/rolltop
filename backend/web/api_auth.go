@@ -240,8 +240,9 @@ func (s *Server) apiLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	emailKey := normalizeLoginKey(in.Email)
-	ip := clientIPFromRequest(r)
+	ip := s.clientIPFromRequest(r)
 	if s.loginThrottle != nil && !s.loginThrottle.allow(emailKey, ip) {
+		log.Printf("security login_throttled ip=%s", ip)
 		writeAPIError(w, http.StatusTooManyRequests, "Too many sign-in attempts. Try again in a few minutes.")
 		return
 	}
@@ -254,6 +255,7 @@ func (s *Server) apiLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.burnUnknownAccountVerifyWork(in.Password)
+		log.Printf("security login_failed ip=%s", ip)
 		if s.loginThrottle != nil {
 			s.loginThrottle.recordFailure(emailKey, ip)
 		}
@@ -262,6 +264,7 @@ func (s *Server) apiLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ok, err := auth.VerifyPassword(user.PasswordHash, in.Password)
 	if err != nil || !ok {
+		log.Printf("security login_failed ip=%s", ip)
 		if s.loginThrottle != nil {
 			s.loginThrottle.recordFailure(emailKey, ip)
 		}

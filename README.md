@@ -54,6 +54,7 @@ export ROLLTOP_INBOX_POLL_INTERVAL="1m"
 export ROLLTOP_BLOB_RETENTION="336h"
 export ROLLTOP_COOKIE_SECURE="false"
 export ROLLTOP_WEBHOOK_TOKEN=""
+export ROLLTOP_TRUSTED_PROXIES=""
 export ROLLTOP_LOG_LEVEL="info"
 ```
 
@@ -62,6 +63,44 @@ Set `ROLLTOP_COOKIE_SECURE=true` when serving over HTTPS.
 `ROLLTOP_LOG_LEVEL` defaults to `info`, which hides verbose `debug ...` log
 lines (plugin loading, one-click unsubscribe traces). Set it to `debug` to
 include them.
+
+### Reverse proxy client IPs and login logs
+
+`ROLLTOP_TRUSTED_PROXIES` is an optional comma-separated list of proxy IP
+addresses or CIDR ranges (IPv4 or IPv6). It defaults to empty, so forwarding
+headers are ignored. Invalid entries prevent startup. For a reverse proxy
+connecting over loopback, for example:
+
+```sh
+export ROLLTOP_TRUSTED_PROXIES="127.0.0.1,::1"
+```
+
+Use the proxy's actual connection address as seen by Rolltop; container
+networks may use a bridge address instead of loopback. Trust only your proxy
+addresses or dedicated proxy subnets, never all clients. The proxy must set or
+append the actual connecting client address to `X-Forwarded-For`, or overwrite
+`X-Real-IP` with that address.
+
+When the connection comes from a trusted proxy, Rolltop checks
+`X-Forwarded-For` from right to left, skipping trusted proxy hops and using the
+first untrusted address. `X-Real-IP` is used only when `X-Forwarded-For` is
+absent. Malformed forwarding data falls back to the connection address. The
+resolved client IP is used for both login throttling and security logs;
+account-level lockouts continue to apply across IP addresses.
+
+Failed password logins (including unknown accounts) produce a standard log
+line on stderr, available at both log levels, with this stable message after
+the timestamp:
+
+```text
+security login_failed ip=203.0.113.10
+```
+
+Attempts blocked by the built-in throttle instead emit
+`security login_throttled ip=203.0.113.10`. These events contain only the client
+IP, without emails, passwords, or session tokens. Fail2ban can match these
+messages in captured application logs. Successful logins, malformed requests,
+and database failures do not generate `login_failed` events.
 
 ## Run Locally
 

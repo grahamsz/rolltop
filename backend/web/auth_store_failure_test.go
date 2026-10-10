@@ -13,12 +13,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"rolltop/backend/auth"
 	mmcrypto "rolltop/backend/crypto"
 	"rolltop/backend/store"
+	"rolltop/internal/testlog"
 )
 
 func newStoreFailureTestServer(t *testing.T) (*store.Store, *Server, http.Handler, *http.Cookie) {
@@ -130,6 +132,7 @@ func TestUnknownSessionCookieStillMeansSignedOut(t *testing.T) {
 
 func TestLoginStoreFailureIsNotACredentialVerdict(t *testing.T) {
 	db, server, handler, _ := newStoreFailureTestServer(t)
+	logs := testlog.Capture(t)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +143,9 @@ func TestLoginStoreFailureIsNotACredentialVerdict(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /api/login with failing store status = %d body=%s, want 500 rather than an invalid-credentials response", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(logs.String(), "security login_") {
+		t.Fatalf("store failure logged as authentication failure: %q", logs.String())
 	}
 }
 

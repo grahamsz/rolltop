@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/netip"
 	"path"
 	"strconv"
 	"strings"
@@ -62,6 +63,8 @@ type Options struct {
 	// https://mail.example.com) used when building absolute links in outbound
 	// email. When empty, links fall back to the incoming request Host.
 	PublicBaseURL string
+	// TrustedProxies may supply X-Forwarded-For or X-Real-IP client addresses.
+	TrustedProxies []netip.Prefix
 	// DisableBackgroundWorkers is used by focused embeddings and tests that
 	// explicitly drive scheduler behavior themselves.
 	DisableBackgroundWorkers bool
@@ -91,6 +94,7 @@ type Server struct {
 	sessionTTL                time.Duration
 	cookieSecure              bool
 	publicBaseURL             string
+	trustedProxies            []netip.Prefix
 	webhookToken              string
 	events                    *eventHub
 	statusMu                  sync.Mutex
@@ -323,6 +327,7 @@ func New(opts Options) (*Server, error) {
 		sessionTTL:            opts.SessionTTL,
 		cookieSecure:          opts.CookieSecure,
 		publicBaseURL:         strings.TrimSpace(opts.PublicBaseURL),
+		trustedProxies:        append([]netip.Prefix(nil), opts.TrustedProxies...),
 		webhookToken:          strings.TrimSpace(opts.WebhookToken),
 		events:                events,
 

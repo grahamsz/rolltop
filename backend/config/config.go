@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,6 +36,8 @@ type Config struct {
 	// links in outbound email (password resets). When empty, links fall back
 	// to the request Host, which is spoofable behind a misconfigured proxy.
 	PublicBaseURL string
+	// TrustedProxies may supply client IP forwarding headers. Empty trusts none.
+	TrustedProxies []netip.Prefix
 	// MaxMessageBytes caps the RFC822 size of messages mirrored in full.
 	MaxMessageBytes int64
 	LogLevel        string
@@ -92,6 +95,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	trustedProxies, err := parseTrustedProxies(os.Getenv("ROLLTOP_TRUSTED_PROXIES"))
+	if err != nil {
+		return Config{}, err
+	}
 	maxMessageBytes, err := parseInt64("ROLLTOP_MAX_MESSAGE_BYTES", 50*1024*1024)
 	if err != nil {
 		return Config{}, err
@@ -121,9 +128,37 @@ func Load() (Config, error) {
 		BlobRetention:     blobRetention,
 		WebhookToken:      os.Getenv("ROLLTOP_WEBHOOK_TOKEN"),
 		PublicBaseURL:     publicBaseURL,
+		TrustedProxies:    trustedProxies,
 		MaxMessageBytes:   maxMessageBytes,
 		LogLevel:          logLevel,
 	}, nil
+}
+
+func parseTrustedProxies(value string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	var prefixes []netip.Prefix
+	for _, entry := range strings.Split(value, ",") {
+		entry = strings.TrimSpace(entry)
+		if addr, err := netip.ParseAddr(entry); err == nil && addr.Zone() == "" {
+			addr = addr.Unmap()
+			prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+			continue
+		}
+		prefix, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return nil, fmt.Errorf("ROLLTOP_TRUSTED_PROXIES: %q must be an IP address or CIDR", entry)
+		}
+		if prefix.Addr().Is4In6() {
+			if prefix.Bits() < 96 {
+				return nil, fmt.Errorf("ROLLTOP_TRUSTED_PROXIES: %q is not an IPv4-mapped CIDR", entry)
+			}
+			prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }
 
 // ParseMasterKey decodes the encryption key used for IMAP/SMTP secrets and enforces the required key length.
