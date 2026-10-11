@@ -1,5 +1,15 @@
 @use "mixins/components" as *;
 
+.mail-server-discovery {
+  margin: 12px 0 18px;
+  overflow-wrap: anywhere;
+
+  p {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+}
+
 .settings-shell {
   width: min(100%, 1180px);
   min-width: 0;

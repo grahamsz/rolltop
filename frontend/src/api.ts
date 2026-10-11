@@ -3,6 +3,7 @@
 
 import type {
   Account,
+  DiscoveredMailSettings,
   AccountPurgeEstimate,
   Bootstrap,
   Contact,
@@ -496,6 +497,9 @@ export const api = {
     postJSON<{ ok: boolean }>("/api/password-reset/complete", csrf, { token, password }),
   saveIMAPAccount: (csrf: string, account: Record<string, unknown>) =>
     postJSON<{ ok: boolean; account: Account }>("/api/account/imap", csrf, account),
+
+  discoverMailSettings: (csrf: string, email: string) =>
+    postJSON<DiscoveredMailSettings>("/api/account/discover", csrf, { email }),
   imapAccountPurgeEstimate: (id: number) =>
     getJSON<AccountPurgeEstimate>(`/api/account/imap/${id}/purge-estimate`),
   deleteIMAPAccount: (csrf: string, id: number, confirm: string) =>

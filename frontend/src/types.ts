@@ -685,3 +685,16 @@ export type MailIdentity = {
   autocrypt_enabled: boolean;
   is_primary: boolean;
 };
+
+export type DiscoveredMailServer = {
+  host: string;
+  port: number;
+  username: string;
+  security: "tls" | "starttls";
+  source: string;
+};
+
+export type DiscoveredMailSettings = {
+  imap?: DiscoveredMailServer;
+  smtp?: DiscoveredMailServer;
+};

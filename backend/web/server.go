@@ -25,6 +25,7 @@ import (
 	"rolltop/backend/blob"
 	"rolltop/backend/buildinfo"
 	mmcrypto "rolltop/backend/crypto"
+	"rolltop/backend/maildiscovery"
 	"rolltop/backend/mailparse"
 	"rolltop/backend/plugins"
 	"rolltop/backend/search"
@@ -135,6 +136,7 @@ type Server struct {
 	backgroundCancel context.CancelFunc
 	readStatePushes  *readStatePushQueue
 	loginThrottle    *loginThrottle
+	mailDiscovery    mailSettingsDiscoverer
 	dummyVerifyOnce  sync.Once
 	dummyHash        string
 	startedAt        time.Time
@@ -350,6 +352,7 @@ func New(opts Options) (*Server, error) {
 		backgroundCancel:          backgroundCancel,
 		readStatePushes:           newReadStatePushQueue(),
 		loginThrottle:             newLoginThrottle(),
+		mailDiscovery:             maildiscovery.New(),
 		startedAt:                 time.Now().UTC(),
 	}
 	if opts.Syncer != nil {

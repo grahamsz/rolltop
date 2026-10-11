@@ -121,6 +121,54 @@ ROLLTOP_DATA_DIR="./data" go run ./cmd/rolltop
 
 Open `http://localhost:8080`. If no users exist, `/setup` creates the first admin.
 
+### Finding mail server settings
+
+After creating your Rolltop user, enter your mailbox email address and choose
+**Find server settings**. Rolltop looks up incoming IMAP and outgoing SMTP
+settings, shows their source, and lets you select **Use these settings** to
+fill the form. Review the hostnames, enter your mail password or app password,
+and save. Discovery does not save an account or test your credentials. Manual
+configuration remains available, including when only one server is found.
+
+Discovery is also available when editing an IMAP server or adding/editing an
+SMTP server. During initial setup, discovered outgoing settings populate the
+first SMTP server; existing SMTP servers are edited separately. Explicit SMTP
+hostnames and usernames are preserved, even when IMAP and SMTP share a host.
+Leave the initial SMTP password blank to reuse the IMAP password.
+
+Rolltop checks these sources, in preference order, with independent lookups
+running concurrently under a 12-second deadline:
+
+1. Provider-hosted [Thunderbird autoconfig](https://github.com/thunderbird/autoconfig/wiki/The-autoconfig-file)
+   at `https://autoconfig.<domain>/mail/config-v1.1.xml`, then
+   `https://<domain>/.well-known/autoconfig/mail/config-v1.1.xml`.
+2. [Microsoft Autodiscover](https://learn.microsoft.com/en-us/exchange/client-developer/web-service-reference/pox-autodiscover-request-for-exchange)
+   using XML POST requests to `https://<domain>/autodiscover/autodiscover.xml`,
+   then `https://autodiscover.<domain>/autodiscover/autodiscover.xml`, and HTTPS
+   targets advertised by `_autodiscover._tcp` DNS records. HTTP redirects and
+   XML `redirectUrl`/`redirectAddr` responses are followed with strict limits.
+3. [Thunderbird ISPDB](https://github.com/thunderbird/autoconfig/wiki/The-ISP-database)
+   at `https://autoconfig.thunderbird.net/v1.1/<domain>`.
+4. DNS SRV records for `_imaps._tcp`, `_submissions._tcp`, and
+   `_submission._tcp`. MX records are not treated as client mail servers.
+
+Lookups require a signed-in session and CSRF protection. Discovery sends no
+passwords, session cookies, or authorization headers. Autoconfig and ISPDB
+requests disclose only the domain; Microsoft Autodiscover sends the email
+address to the provider's discovery endpoints and any accepted redirects.
+HTTP fetches require HTTPS on port 443, validate certificates, block private
+and reserved network addresses at connection time, and limit response sizes,
+redirects, and concurrent lookups. International domains entered in the web
+form are converted to their ASCII (punycode) form for discovery.
+
+Only configurations compatible with Rolltop's current mail clients are
+suggested: IMAP with implicit TLS, and SMTP with implicit TLS on port 465 or
+STARTTLS on other ports. Plaintext configurations, IMAP STARTTLS, and
+OAuth-only autoconfig entries are skipped. Microsoft support reads IMAP/SMTP
+settings from unauthenticated Outlook XML responses; it does not add Exchange
+EWS/MAPI/ActiveSync, Windows authentication, or OAuth sign-in. Providers that
+require authentication to discover settings may need manual configuration.
+
 ## Docker
 
 ```sh

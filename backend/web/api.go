@@ -68,6 +68,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		s.apiBrandIcons(w, r)
 	case path == "account":
 		s.apiAccount(w, r)
+	case path == "account/discover":
+		s.apiDiscoverMailSettings(w, r)
 	case path == "account/imap":
 		s.apiIMAPAccount(w, r)
 	case strings.HasPrefix(path, "account/imap/"):

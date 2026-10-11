@@ -211,7 +211,7 @@ func (s *Server) apiIMAPAccount(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "Could not save IMAP account.")
 		return
 	}
-	if err := s.ensureMailAccountOnboarding(r.Context(), cu.User, account); err != nil {
+	if err := s.ensureMailAccountOnboarding(r.Context(), cu.User, account, in.SMTPSameAsIMAP); err != nil {
 		s.serverError(w, r, err)
 		return
 	}
@@ -635,12 +635,16 @@ func (s *Server) saveMailAccountFromInput(ctx context.Context, userID int64, in 
 // ensureMailAccountOnboarding fills in the expected single-address startup graph:
 // a matching SMTP server when none exists, a Me contact for the account email, and
 // downstream identity rows through store-level sync helpers.
-func (s *Server) ensureMailAccountOnboarding(ctx context.Context, user store.User, account store.MailAccount) error {
+func (s *Server) ensureMailAccountOnboarding(ctx context.Context, user store.User, account store.MailAccount, deriveSMTP bool) error {
 	smtpAccounts, err := s.store.ListSMTPAccountsForUser(ctx, user.ID)
 	if err != nil {
 		return err
 	}
 	if len(smtpAccounts) == 0 {
+		smtpHost := strings.TrimSpace(account.SMTPHost)
+		if deriveSMTP || smtpHost == "" {
+			smtpHost = inferredSMTPHost(account)
+		}
 		password := account.EncryptedSMTPPassword
 		if strings.TrimSpace(password) == "" {
 			password = account.EncryptedPassword
@@ -649,7 +653,7 @@ func (s *Server) ensureMailAccountOnboarding(ctx context.Context, user store.Use
 			if _, err := s.store.CreateSMTPAccount(ctx, store.SMTPAccount{
 				UserID:            user.ID,
 				Label:             firstNonEmpty(account.Label, account.Email, account.Username),
-				Host:              inferredSMTPHost(account),
+				Host:              smtpHost,
 				Port:              firstPositive(account.SMTPPort, 587),
 				Username:          firstNonEmpty(account.SMTPUsername, account.Username, account.Email),
 				EncryptedPassword: password,

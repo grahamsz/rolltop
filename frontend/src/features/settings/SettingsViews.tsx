@@ -8,7 +8,8 @@ import type { DatePrefs, LocationState, Toast } from "../../appTypes";
 import type { Account, AccountPurgeEstimate, Bootstrap, FolderProgress, MailIdentity, PluginSetting, Mailbox, SMTPAccount, StorageStats, SwipeAction, SwipePreferences, SwipeSnoozePreset, SyncFolder, SyncRun, SyncRunLiveDetail, ThemeDefinition, User } from "../../types";
 import { Icon } from "../../components/Icon";
 import { Field, Stat } from "../../components/common";
-import { emptyAccountForm, accountToForm } from "../../lib/accountForm";
+import { emptyAccountForm, accountToForm, applyDiscoveredMailSettings } from "../../lib/accountForm";
+import { MailServerDiscovery } from "./MailServerDiscovery";
 import { messageFromError } from "../../lib/errors";
 import { displayDateTime, displayTime, formatBytes } from "../../lib/format";
 import { folderParentNames, folderTree, trashMailboxForAccount, type FolderNode } from "../../lib/folders";
@@ -716,6 +717,7 @@ export function SettingsView({
   const [accountNeedsPassword, setAccountNeedsPassword] = useState(false);
   const [form, setForm] = useState(() => emptyAccountForm());
   const [smtpForm, setSMTPForm] = useState(() => emptySMTPForm());
+  const [smtpDiscoveryEmail, setSMTPDiscoveryEmail] = useState(user.email);
   const [profileForm, setProfileForm] = useState(() => profileFormForUser(user, availableThemes));
   const [swipeDraft, setSwipeDraft] = useState(() => cloneSwipePreferences(swipePreferences));
   const [savingSwipePreferences, setSavingSwipePreferences] = useState(false);
@@ -2448,6 +2450,9 @@ export function SettingsView({
               <h3>Connection</h3>
               <Field label="Label" value={form.label} onChange={(value) => setField("label", value)} placeholder="Personal mail, Work archive" />
               <Field label="Email" value={form.email} onChange={(value) => setField("email", value)} type="email" />
+              <MailServerDiscovery key={`${user.id}:${location.path}`} csrf={csrf} email={form.email}
+                kind={!account && smtpAccounts.length === 0 ? "both" : "imap"}
+                onApply={(settings) => setForm((current) => applyDiscoveredMailSettings(current, settings))} />
               <Field label="Host" value={form.host} onChange={(value) => setField("host", value)} />
               <Field label="Port" value={form.port} onChange={(value) => setField("port", value)} type="number" />
               <Field label="Username" value={form.username} onChange={(value) => setField("username", value)} />
@@ -2465,6 +2470,17 @@ export function SettingsView({
               <h3>Sync scope</h3>
               <Field label="Folders" value={form.mailbox} onChange={(value) => setField("mailbox", value)} placeholder="*" />
               <Field label="Interval minutes" value={form.sync_interval_minutes} onChange={(value) => setField("sync_interval_minutes", value)} type="number" />
+              {!account && smtpAccounts.length === 0 && <>
+                <h3>Outgoing mail</h3>
+                <label><input type="checkbox" checked={form.smtp_same_as_imap} onChange={(event) => setField("smtp_same_as_imap", event.target.checked)} /> Derive outgoing settings from IMAP</label>
+                {!form.smtp_same_as_imap && <>
+                  <Field label="SMTP host" value={form.smtp_host} onChange={(value) => setField("smtp_host", value)} />
+                  <Field label="SMTP port" value={form.smtp_port} onChange={(value) => setField("smtp_port", value)} type="number" />
+                  <Field label="SMTP username" value={form.smtp_username} onChange={(value) => setField("smtp_username", value)} />
+                  <Field label="SMTP password" value={form.smtp_password} onChange={(value) => setField("smtp_password", value)} type="password" placeholder="Leave blank to use the IMAP password" />
+                  <label><input type="checkbox" checked={form.smtp_use_tls} onChange={(event) => setField("smtp_use_tls", event.target.checked)} /> Use TLS / STARTTLS</label>
+                </>}
+              </>}
             </section>
           </div>
           <div className="actions split-actions">
@@ -2490,6 +2506,14 @@ export function SettingsView({
         {noticeNode}
         <form className="panel smtp-settings-form" onSubmit={saveSMTP}>
           <h2>SMTP server</h2>
+          <Field label="Email for server lookup" value={smtpDiscoveryEmail} onChange={setSMTPDiscoveryEmail} type="email" />
+          <MailServerDiscovery key={`${user.id}:${location.path}`} csrf={csrf} email={smtpDiscoveryEmail} kind="smtp"
+            onApply={(settings) => {
+              if (settings.smtp) {
+                const found = settings.smtp;
+                setSMTPForm((current) => ({ ...current, host: found.host, port: String(found.port), username: found.username, use_tls: true }));
+              }
+            }} />
           <div className="settings-columns display-settings-grid">
             <section>
               <Field label="Label" value={smtpForm.label} onChange={(value) => setSMTPField("label", value)} />
