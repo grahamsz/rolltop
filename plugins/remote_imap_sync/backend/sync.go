@@ -344,6 +344,9 @@ func (w *routineWorker) runLoop() {
 		}
 		failures++
 		delay := w.retryDelay(failures)
+		if isRemoteAuthenticationError(err) {
+			delay = remoteAuthenticationRetryDelay(failures)
+		}
 		select {
 		case <-w.ctx.Done():
 			return
@@ -385,10 +388,14 @@ func (w *routineWorker) idleLoop() {
 		failures++
 		log.Printf("remote imap sync idle user_id=%d routine_id=%d: %s",
 			w.item.UserID, w.item.ID, sanitizeRemoteError(err))
+		delay := w.retryDelay(failures)
+		if isRemoteAuthenticationError(err) {
+			delay = remoteAuthenticationRetryDelay(failures)
+		}
 		select {
 		case <-w.ctx.Done():
 			return
-		case <-time.After(w.retryDelay(failures)):
+		case <-time.After(delay):
 		}
 	}
 }
@@ -454,19 +461,11 @@ func (w *routineWorker) runOnce(trigger string, failureAttempt int) error {
 		}
 		message := sanitizeRemoteError(runErr)
 		_ = finishRun(context.Background(), db, item.UserID, runID, "failed", message)
+		delay := retryDelay(failureAttempt)
 		if isRemoteAuthenticationError(runErr) {
-			if err := suspendRoutineForCredentialError(context.Background(), db, item, message); err != nil {
-				// A transient SQLite lock must not leave this routine permanently
-				// active without a future chance to suspend it.
-				_ = failRoutineRun(context.Background(), db, item, message, time.Now().UTC().Add(retryDelay(failureAttempt)))
-			} else {
-				// The manager removes disabled workers on its next reconciliation. Stop
-				// this one immediately so neither its timer nor IDLE loop retries first.
-				w.stopOnce.Do(w.cancel)
-			}
-		} else {
-			_ = failRoutineRun(context.Background(), db, item, message, time.Now().UTC().Add(retryDelay(failureAttempt)))
+			delay = remoteAuthenticationRetryDelay(failureAttempt)
 		}
+		_ = failRoutineRun(context.Background(), db, item, message, time.Now().UTC().Add(delay))
 		runStatus.Finish("failed", runErr)
 		return runErr
 	}
@@ -1004,4 +1003,15 @@ func retryDelay(failures int) time.Duration {
 		return 5 * time.Minute
 	}
 	return delay
+}
+
+func remoteAuthenticationRetryDelay(failures int) time.Duration {
+	delays := [...]time.Duration{time.Hour, 6 * time.Hour, 12 * time.Hour, 24 * time.Hour, 48 * time.Hour}
+	if failures < 1 {
+		failures = 1
+	}
+	if failures > len(delays) {
+		failures = len(delays)
+	}
+	return delays[failures-1]
 }
